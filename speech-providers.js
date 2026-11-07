@@ -81,6 +81,30 @@ var YTD_SPEECH_PROVIDERS = (() => {
   };
 })();
 
+/**
+ * Builds the Error for a non-OK provider response, including a truncated
+ * copy of the response body. The body is where the service says WHY
+ * (unsupported audio format, invalid key, model not enabled) — dropping it
+ * leaves a failed Segment with only an HTTP status, undiagnosable from the
+ * panel's [语音转录失败] marker alone.
+ *
+ * @param {string} label - provider label used in the message prefix
+ * @param {Response} response - the failed fetch response (body unconsumed)
+ * @returns {Promise<Error>}
+ */
+async function providerHttpError(label, response) {
+  // Response.text() is guarded: test stubs (and some polyfills) hand back a
+  // minimal { ok, status } shape with no body reader at all.
+  const body =
+    typeof response?.text === "function"
+      ? await response.text().catch(() => "")
+      : "";
+  const detail = body ? `: ${body.slice(0, 500)}` : "";
+  return new Error(
+    `${label} Speech Provider request failed with HTTP ${response.status}${detail}`,
+  );
+}
+
 // --- Groq Speech Provider (OpenAI-compatible audio transcription) ---------
 //
 // The configurable base URL also covers local faster-whisper-style servers
@@ -153,9 +177,7 @@ var YTD_SPEECH_PROVIDER_GROQ = (() => {
       },
     );
     if (!response.ok) {
-      throw new Error(
-        `Groq Speech Provider request failed with HTTP ${response.status}`,
-      );
+      throw await providerHttpError("Groq", response);
     }
 
     const verboseJson = await response.json();
@@ -512,9 +534,7 @@ var YTD_SPEECH_PROVIDER_TENCENT = (() => {
       body: payload,
     });
     if (!response.ok) {
-      throw new Error(
-        `Tencent Speech Provider request failed with HTTP ${response.status}`,
-      );
+      throw await providerHttpError("Tencent", response);
     }
 
     const json = await response.json();
@@ -662,9 +682,7 @@ var YTD_SPEECH_PROVIDER_QWEN = (() => {
       },
     );
     if (!response.ok) {
-      throw new Error(
-        `Qwen Speech Provider request failed with HTTP ${response.status}`,
-      );
+      throw await providerHttpError("Qwen", response);
     }
 
     const json = await response.json();

@@ -426,7 +426,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "captureChunk") {
     // Backstop self-cut from the offscreen recorder (worker was asleep).
     handleBackstopChunk(message).catch((error) =>
-      debugLog("[Learning Digest BG] captureChunk error:", error),
+      // Loud on purpose: a dropped live chunk is otherwise invisible.
+      console.error("[Learning Digest] captureChunk handling failed:", error?.message || error),
     );
     return false;
   }
@@ -1078,8 +1079,14 @@ async function ensureCaptureResumed() {
       if (!started?.success) throw new Error(started?.error || "capture restart failed");
     } catch (error) {
       // Without the tab (closed or navigated away) capture cannot restart;
-      // the Session stays resumable the moment the learner returns.
-      debugLog("[Learning Digest BG] capture restart failed:", error);
+      // the Session stays resumable the moment the learner returns. Loud on
+      // purpose: this is also the zombie-Session path — the pointer stays
+      // active while nothing records, and every icon click then hits
+      // "already active" with no visible reason.
+      console.error(
+        "[Learning Digest] capture restart failed (Session stays active without audio):",
+        error?.message || error,
+      );
     }
   }
   if (context.timestampKind === "wallclock") startLiveTimer(context);
@@ -1248,7 +1255,14 @@ async function dispatchSegment(context, segment) {
       records: absoluteRecords,
     });
   } catch (error) {
-    debugLog("[Learning Digest BG] Segment transcription failed:", error);
+    // Loud on purpose: a failed Segment shows up in the panel only as an
+    // anonymous [语音转录失败] marker, so this console.error is the only
+    // place the reason (provider error body, audio shape, credentials)
+    // ever surfaces. Not gated by DEBUG.
+    console.error(
+      `[Learning Digest] Segment ${segmentId} transcription failed:`,
+      error?.message || error,
+    );
     context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
       type: "transcribeFailed",
       segmentId,

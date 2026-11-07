@@ -176,6 +176,20 @@ test("transcribe rejects a missing API key and HTTP errors", async () => {
   );
 });
 
+test("a non-OK response includes the response body in the error", async () => {
+  // The body is where dashscope says WHY (unsupported audio format, invalid
+  // key, model access); the error must carry it or failures are blind spots.
+  const { fetchImpl } = stubFetch(() => ({
+    ok: false,
+    status: 400,
+    text: async () => '{"error":{"code":"InvalidParameter","message":"audio format not supported"}}',
+  }));
+  await assert.rejects(
+    qwen.transcribe(makeAudio([1]), { apiKey: "sk-test" }, fetchImpl),
+    /HTTP 400.*audio format not supported/s,
+  );
+});
+
 test("audio whose base64 form exceeds 10 MB is rejected before the request", async () => {
   const { calls, fetchImpl } = stubFetch(() =>
     okResponse({ choices: [{ message: { content: "ok" } }] }),

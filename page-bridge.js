@@ -7,7 +7,11 @@
  * media element's position to the service worker once a second; the
  * segment scheduler (session-segmenter.js) turns that position stream into
  * Segments. Live pages need none of this (wall-clock elapsed), so missing
- * media is not an error here — the bridge simply stays quiet.
+ * media is not an error here — the bridge simply stays quiet on positions.
+ *
+ * Every page kind also reports document.title — once at startup and again
+ * on pagehide (#32) — so the Session knows the lesson's name for the
+ * report header; the background keeps only the first report.
  *
  * Browser-only by design: not unit-tested (see the spec's Testing
  * Decisions); verified manually per docs/agents verification checklist.
@@ -55,6 +59,25 @@
     }
   }
 
+  /** The lesson title for the report header (#32), sent unconditionally:
+   *  live pages have no position stream but do have a title. */
+  function reportPageTitle() {
+    let message;
+    try {
+      message = { action: "pageTitle", title: document.title };
+    } catch (_error) {
+      // A mid-navigation document has no title to give; never break the bridge.
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage(message, () => void chrome.runtime.lastError);
+    } catch (_error) {
+      // Extension context invalidated (reload/update) — the bridge is done.
+    }
+  }
+
+  reportPageTitle();
   setInterval(reportPosition, POSITION_INTERVAL_MS);
   window.addEventListener("pagehide", reportPosition);
+  window.addEventListener("pagehide", reportPageTitle);
 })();

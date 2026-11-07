@@ -152,6 +152,70 @@ test("topicsAppended rejects malformed payloads instead of corrupting the timeli
   assert.deepEqual(state.topics, []);
 });
 
+// --- titleCaptured: the page title for the report header (#32)
+
+test("titleCaptured stores the page title and a later title never overwrites it", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "titleCaptured",
+    title: "第十四讲：机器学习入门",
+  });
+  assert.equal(state.title, "第十四讲：机器学习入门");
+
+  // First write wins: the title captured at Session start stays stable even
+  // if the page renames itself later (SPA navigation, countdown suffixes).
+  const renamed = sessionPipeline.applyEvent(state, {
+    type: "titleCaptured",
+    title: "页面跳转后的其他标题",
+  });
+  assert.equal(renamed, state, "the second title is a no-op on the same state");
+  assert.equal(renamed.title, "第十四讲：机器学习入门");
+});
+
+test("titleCaptured rejects an empty or non-string title", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "titleCaptured", title: "" }),
+    /titleCaptured requires/,
+  );
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "titleCaptured", title: 42 }),
+    /titleCaptured requires/,
+  );
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "titleCaptured" }),
+    /titleCaptured requires/,
+  );
+  assert.equal(state.title, undefined);
+});
+
+test("a snapshot with a captured title resumes with the title intact; one without stays titleless", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "titleCaptured",
+    title: "第十四讲：机器学习入门",
+  });
+
+  const resumed = sessionPipeline.resumeFromSnapshot(
+    JSON.parse(JSON.stringify(state)),
+  );
+  assert.equal(resumed.title, "第十四讲：机器学习入门");
+  // The resumed Session still accepts events, and the title still wins.
+  const renamed = sessionPipeline.applyEvent(resumed, {
+    type: "titleCaptured",
+    title: "迟到的另一个标题",
+  });
+  assert.equal(renamed.title, "第十四讲：机器学习入门");
+
+  // Snapshots from before the title capture carry no title at all.
+  const bare = sessionPipeline.resumeFromSnapshot(
+    JSON.parse(
+      JSON.stringify(sessionPipeline.createSession({ sessionId: "s2" })),
+    ),
+  );
+  assert.equal(bare.title, undefined);
+});
+
 test("sessionEnd ends the Session and preserves everything captured", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   state = sessionPipeline.applyEvent(state, {

@@ -2,8 +2,8 @@
  * Session pipeline: a pure, event-driven state machine over Session state.
  *
  * Events (segmentCaptured, transcribeOk, transcribeFailed, topicsAppended,
- * sessionEnd) drive transitions over state
- * { sessionId, segments, transcriptRecords, topics, status }.
+ * titleCaptured, sessionEnd) drive transitions over state
+ * { sessionId, segments, transcriptRecords, topics, title?, status }.
  * Segments carry their own lifecycle (pending → done / failed).
  *
  * Pure logic with no browser dependencies, so it can be tested in Node and
@@ -87,6 +87,7 @@ var YTD_SESSION_PIPELINE = (() => {
    * - {type: "transcribeOk", segmentId, records: [{text, start, duration, language?}]}
    * - {type: "transcribeFailed", segmentId}
    * - {type: "topicsAppended", topics: [{start, end, title, text, continuation?}]}
+   * - {type: "titleCaptured", title: string} - the page title (#32)
    * - {type: "sessionEnd"}
    *
    * @param {object} state
@@ -106,6 +107,8 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTranscribeFailed(state, event);
       case "topicsAppended":
         return onTopicsAppended(state, event);
+      case "titleCaptured":
+        return onTitleCaptured(state, event);
       case "sessionEnd":
         return { ...state, status: "ended" };
       default:
@@ -183,6 +186,24 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
+   * Stores the page title the bridge reported (#32), the stable first line
+   * of the report header. First write wins: a later titleCaptured (pagehide
+   * re-report, SPA rename) never overwrites the title captured at Session
+   * start, so the header stays stable for the whole Session.
+   *
+   * @param {object} state
+   * @param {object} event
+   * @returns {object} the next Session state
+   */
+  function onTitleCaptured(state, event) {
+    if (typeof event?.title !== "string" || event.title.trim().length === 0) {
+      throw new Error("titleCaptured requires a non-empty title string");
+    }
+    if (state.title) return state;
+    return { ...state, title: event.title };
+  }
+
+  /**
    * Restores Session state from a persisted snapshot so the caller can keep
    * feeding events exactly where the Session left off. Snapshots from
    * before the Topic timeline carry the retired rollingSummary field and no
@@ -196,7 +217,7 @@ var YTD_SESSION_PIPELINE = (() => {
     if (!snapshot || typeof snapshot !== "object" || !snapshot.sessionId) {
       throw new Error("Session snapshot is malformed");
     }
-    return {
+    const restored = {
       sessionId: snapshot.sessionId,
       status: snapshot.status === "ended" ? "ended" : "active",
       segments: Array.isArray(snapshot.segments) ? snapshot.segments : [],
@@ -205,6 +226,12 @@ var YTD_SESSION_PIPELINE = (() => {
         : [],
       topics: Array.isArray(snapshot.topics) ? snapshot.topics : [],
     };
+    // The captured page title (#32) rides along when the snapshot has one;
+    // older snapshots simply resume titleless and can capture it later.
+    if (typeof snapshot.title === "string" && snapshot.title) {
+      restored.title = snapshot.title;
+    }
+    return restored;
   }
 
   /**

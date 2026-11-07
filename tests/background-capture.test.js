@@ -802,3 +802,170 @@ test("regenerateReport with no ended Session anywhere reports the dead end", asy
   assert.ok(retried.error);
   assert.equal(requests.length, 0, "no AI call without a Session to re-run");
 });
+
+// --- Page title capture (#32): the bridge's pageTitle message ----------------
+
+test("a pageTitle message from the capture tab stores it once and a later title never overwrites", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  assert.equal(started.success, true);
+  const sessionId = started.sessionId;
+
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "第十四讲：机器学习入门" },
+    { tab: { id: 7 } },
+  );
+
+  assert.equal(
+    helpers.readStored(`ytd_session_${sessionId}`).title,
+    "第十四讲：机器学习入门",
+  );
+  // The title survives a service-worker restart via the capture pointer.
+  assert.equal(
+    helpers.readStored("ytd_active_capture").pageTitle,
+    "第十四讲：机器学习入门",
+  );
+
+  // First write wins: the pagehide re-report or an SPA rename never
+  // replaces the title captured at Session start.
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "页面跳转后的其他标题" },
+    { tab: { id: 7 } },
+  );
+  assert.equal(
+    helpers.readStored(`ytd_session_${sessionId}`).title,
+    "第十四讲：机器学习入门",
+  );
+  assert.equal(
+    helpers.readStored("ytd_active_capture").pageTitle,
+    "第十四讲：机器学习入门",
+  );
+});
+
+test("a pageTitle message from another tab is ignored", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "别的标签页的标题" },
+    { tab: { id: 8 } },
+  );
+
+  assert.equal(
+    helpers.readStored(`ytd_session_${started.sessionId}`).title,
+    undefined,
+  );
+  assert.equal(helpers.readStored("ytd_active_capture").pageTitle, undefined);
+});
+
+test("ending a Session persists the report meta with the captured title", async () => {
+  const requests = [];
+  const sessionId = "s_titled";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  // Resume (worker restart), the bridge reports the title, the learner ends.
+  await helpers.handleGetSessionState();
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "第十四讲：机器学习入门" },
+    { tab: { id: 7 } },
+  );
+  const ended = await helpers.handleEndLearning();
+
+  assert.equal(ended.success, true);
+  const artifact = helpers.readStored(`report_${sessionId}`);
+  assert.ok(artifact, "the report artifact is persisted");
+  assert.equal(artifact.meta.title, "第十四讲：机器学习入门");
+});
+
+test("a retried pass reconstructs the title from the ended snapshot", async () => {
+  const requests = [];
+  const startMs = new Date(2026, 9, 1, 9, 0).getTime();
+  const sessionId = `s_${startMs.toString(36)}_retrytitle`;
+  let attempts = 0;
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      attempts += 1;
+      if (attempts === 1) {
+        // First end: the provider truncates mid-JSON, nothing is persisted.
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              { message: { content: '{"topics": [' }, finish_reason: "length" },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            { message: { content: JSON.stringify(REPORT_BODY) }, finish_reason: "stop" },
+          ],
+        }),
+      };
+    },
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await helpers.handleGetSessionState();
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "第十四讲：机器学习入门" },
+    { tab: { id: 7 } },
+  );
+  await helpers.handleEndLearning();
+  assert.equal(helpers.readStored(`report_${sessionId}`), undefined);
+
+  const retried = await helpers.handleRegenerateReport({});
+
+  assert.equal(retried.success, true);
+  const stored = helpers.readStored(`report_${sessionId}`);
+  assert.ok(stored, "the retried pass persists the artifact");
+  // The snapshot kept the title through the failed pass; the reconstructed
+  // meta carries it so the retried report header still names the lesson.
+  assert.equal(stored.meta.title, "第十四讲：机器学习入门");
+});
+
+test("a worker restart mid-session rebuilds the title from the capture pointer", async () => {
+  const requests = [];
+  const sessionId = "s_pointer_title";
+  // The worker died between persisting the pointer (title included) and
+  // saving the titleCaptured snapshot: the pointer is the only copy.
+  const pointer = { ...capturePointer(sessionId), pageTitle: "第十四讲：机器学习入门" };
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    stored: {
+      ytd_active_capture: pointer,
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await helpers.handleGetSessionState();
+  const ended = await helpers.handleEndLearning();
+
+  assert.equal(ended.success, true);
+  const artifact = helpers.readStored(`report_${sessionId}`);
+  assert.equal(
+    artifact.meta.title,
+    "第十四讲：机器学习入门",
+    "the rebuilt context's pageTitle reaches the report meta",
+  );
+});

@@ -197,3 +197,22 @@ test("compact fragment renders gracefully without meta or content", () => {
   assert.match(bare, /学习纪要/);
   assert.doesNotMatch(bare, /2026年/);
 });
+
+// The captured page title (#32) leads the header in every renderer; when the
+// bridge stayed silent the default title keeps the same prominent position.
+
+test("the captured course title is the leading header line in all three renderers", () => {
+  const html = renderer.renderReportHtml(REPORT, META);
+  assert.match(html, /<title>第十四讲：机器学习入门<\/title>/);
+  assert.match(html, /<h1 class="report-title">第十四讲：机器学习入门<\/h1>/);
+  assert.match(renderer.renderReportMarkdown(REPORT, META), /^# 第十四讲：机器学习入门$/m);
+  assert.match(
+    renderer.renderReportCompact(REPORT, META),
+    /<h2 class="report-title">第十四讲：机器学习入门<\/h2>/,
+  );
+
+  const untitled = { startedAtMs: STARTED_AT, endedAtMs: ENDED_AT, kind: "replay", platformId: "xiaoe-tech" };
+  const bareHtml = renderer.renderReportHtml(REPORT, untitled);
+  assert.match(bareHtml, /<h1 class="report-title">学习纪要<\/h1>/);
+  assert.doesNotMatch(bareHtml, /第十四讲/);
+});

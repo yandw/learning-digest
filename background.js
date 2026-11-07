@@ -482,6 +482,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.action === "pageTitle") {
+    // From the xiaoe page bridge (#32): the lesson title for the report
+    // header. Sent once at page load and again on pagehide, live pages
+    // included. No response needed.
+    handlePageTitle(message, sender).catch((error) =>
+      debugLog("[Learning Digest BG] pageTitle error:", error),
+    );
+    return false;
+  }
+
   if (message.action === "captureChunk") {
     // Backstop self-cut from the offscreen recorder (worker was asleep).
     handleBackstopChunk(message).catch((error) =>
@@ -684,6 +694,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleEndLearning,
   handleGetSessionState,
   handleActionClicked,
+  handlePageTitle,
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
@@ -766,6 +777,7 @@ async function persistContextPointer(context) {
       timestampKind: context.timestampKind,
       startedAtMs: context.startedAtMs,
       segmentLengthSeconds: context.segmentLengthSeconds,
+      pageTitle: context.pageTitle,
     },
   });
 }
@@ -805,6 +817,7 @@ function segmentsEndSeconds(state) {
  * @param {string} parts.timestampKind
  * @param {number} parts.startedAtMs - wall-clock Session start
  * @param {number} parts.segmentLengthSeconds
+ * @param {string} [parts.pageTitle] - page title reported by the bridge (#32)
  * @param {object} parts.state - Session state from session-pipeline.js
  * @param {object} parts.segmenter - scheduler from session-segmenter.js
  * @param {string} parts.providerId - selected Speech Provider id
@@ -818,6 +831,7 @@ function createCaptureContext({
   timestampKind,
   startedAtMs,
   segmentLengthSeconds,
+  pageTitle,
   state,
   segmenter,
   providerId,
@@ -831,6 +845,8 @@ function createCaptureContext({
     timestampKind,
     startedAtMs,
     segmentLengthSeconds,
+    // Absent until the bridge reports the page title; first write wins.
+    pageTitle,
     state,
     segmenter,
     lastPosition: segmentsEndSeconds(state),
@@ -1314,6 +1330,33 @@ async function handleMediaPosition(message, sender) {
   }
 }
 
+/**
+ * Stores the lesson title the page bridge reported (#32). Unlike positions,
+ * the title arrives on live pages too, and only the first message counts:
+ * the startup report fixes the title for the whole Session, so the pagehide
+ * re-report and SPA renames never overwrite it. The pointer is persisted
+ * before the state event, so a worker dying in between still rebuilds with
+ * the title (the meta then falls back from context.pageTitle to
+ * state.title).
+ */
+async function handlePageTitle(message, sender) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  if (sender.tab?.id !== context.tabId) return;
+  const title = typeof message.title === "string" ? message.title.trim() : "";
+  if (!title || context.pageTitle) return;
+  context.pageTitle = title;
+  await persistContextPointer(context);
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "titleCaptured",
+    title,
+  });
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+    chrome.storage.local,
+    context.state,
+  );
+}
+
 async function handleBackstopChunk(message) {
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
@@ -1346,13 +1389,18 @@ async function endActiveSession(context, { reason } = {}) {
   // pass from the ended state. A failed or truncated pass never blocks
   // ending: the panel gets the retry error instead of the artifact.
   // Artifact meta (#30): the ending capture context is the only place kind,
-  // platform and the wall-clock range are all known at once.
+  // platform and the wall-clock range are all known at once. The title
+  // (#32) prefers the capture context's pageTitle and falls back to the
+  // snapshot's, so a resumed Session still names the lesson; absent means
+  // the renderers fall back to their default header title.
   const reportMeta = {
     startedAtMs: context.startedAtMs,
     endedAtMs: Date.now(),
     kind: context.kind,
     platformId: context.platformId,
   };
+  const reportTitle = context.pageTitle || context.state.title;
+  if (reportTitle) reportMeta.title = reportTitle;
   const { report } = await produceSessionReport(context.state, reportMeta);
   broadcastSession(context.state, { report });
 
@@ -1441,10 +1489,13 @@ function reconstructReportMeta(sessionId, state) {
       ),
     0,
   );
-  return {
+  const meta = {
     startedAtMs,
     endedAtMs: startedAtMs + Math.round(contentEndSeconds * 1000),
   };
+  // The snapshot kept the page title (#32) through the failed first pass.
+  if (state?.title) meta.title = state.title;
+  return meta;
 }
 
 /**

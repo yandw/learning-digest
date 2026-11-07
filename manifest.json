@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Learning Digest",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "minimum_chrome_version": "116",
   "description": "把课程音频变成学习资料：分段中文转写、滚动摘要和完整的会话总结。",
   "permissions": ["sidePanel", "storage", "tabCapture", "offscreen"],

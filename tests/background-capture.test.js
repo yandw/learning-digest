@@ -153,7 +153,7 @@ test("action click on a live page arms the offscreen wallclock cut", async () =>
 
 test("action click on an unrecognized page only opens the panel", async () => {
   let streamRequested = false;
-  const { handleActionClicked } = loadBackgroundHelpers({
+  const { handleActionClicked, readLastStartFailure } = loadBackgroundHelpers({
     settings: baseSettings(),
     getMediaStreamId: async () => {
       streamRequested = true;
@@ -164,6 +164,8 @@ test("action click on an unrecognized page only opens the panel", async () => {
   await handleActionClicked({ id: 7, url: "https://example.com/", windowId: 1 });
 
   assert.equal(streamRequested, false);
+  const diag = await readLastStartFailure();
+  assert.match(diag.ytd_last_start_failure.error, /not recognized/);
 });
 
 // Chrome only honors a getMediaStreamId call made while the click's gesture

@@ -254,6 +254,11 @@ chrome.action.onClicked.addListener((tab) => {
   // Log BEFORE any await: if this line never appears, the click never
   // reached the extension and the problem is outside this code path.
   console.log("[Learning Digest] icon clicked:", tab?.url || "(no url)");
+  // Storage breadcrumb for the same purpose: console attachment has proven
+  // unreliable in the field, so the click itself is recorded in storage.
+  chrome.storage.local
+    .set({ ytd_last_icon_click: { at: Date.now(), url: tab?.url ?? null } })
+    .catch(() => {});
   void handleActionClicked(tab);
 });
 
@@ -271,12 +276,14 @@ async function handleActionClicked(tab) {
   // simply absent and we only open the panel.
   if (!tab?.url) {
     console.error("[Learning Digest] icon click ignored: tab.url is empty", tab);
+    await recordStartAttempt("tab.url is empty");
     await openPanelQuietly(tab);
     return;
   }
   const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tab.url);
   if (recognition.kind === "none") {
     console.error("[Learning Digest] icon click ignored: page not recognized:", tab.url);
+    await recordStartAttempt(`page not recognized: ${tab.url}`);
     await openPanelQuietly(tab);
     return;
   }
@@ -306,6 +313,9 @@ async function handleActionClicked(tab) {
   const existing = await ensureCaptureResumed();
   if (existing) {
     console.log("[Learning Digest] icon click: a Session is already active");
+    await recordStartAttempt(
+      `a Session is already active (${existing.sessionId})`,
+    );
     return; // Session already running; the panel shows its state.
   }
 
@@ -1300,6 +1310,22 @@ async function dispatchSegment(context, segment) {
   broadcastSession(context.state);
 }
 
+/**
+ * Persisted breadcrumb for every reason a click did not produce a running
+ * capture: ignored clicks, already-active, and start failures all land in
+ * ytd_last_start_failure, so one storage read reconstructs the outcome even
+ * when the console and panel are attached to dead contexts.
+ */
+async function recordStartAttempt(error, sessionId = null) {
+  try {
+    await chrome.storage.local.set({
+      ytd_last_start_failure: { at: Date.now(), sessionId, error },
+    });
+  } catch (_error) {
+    // Storage unavailable (context invalidated); nothing to do.
+  }
+}
+
 async function handleStartLearning(message) {
   const recognition = YTD_SOURCE_PLATFORMS.recognizePage(message.url);
   if (recognition.kind === "none") {
@@ -1371,16 +1397,7 @@ async function handleStartLearning(message) {
     await clearContextPointer();
     const message = error?.message || String(error);
     console.error("[Learning Digest] startLearning failed:", message);
-    // Storage breadcrumb: the panel alert and this console.error are both
-    // easy to miss (stale panel context, stale DevTools attach), so the
-    // failure reason is persisted for a reliable one-read diagnosis.
-    await chrome.storage.local.set({
-      ytd_last_start_failure: {
-        at: Date.now(),
-        sessionId: context.sessionId,
-        error: message,
-      },
-    });
+    await recordStartAttempt(message, context.sessionId);
     // Chrome only allows tabCapture after the user has INVOKED the extension
     // on the target tab (a toolbar icon click); a side-panel button click
     // does not count. Turn the raw English API error into an actionable

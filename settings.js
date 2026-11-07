@@ -106,9 +106,10 @@ var YTD_SETTINGS = (() => {
 
   /**
    * The Segment-length bounds, read from session-segmenter.js (the single
-   * source of truth) at call time: settings.js loads first in the service
-   * worker's importScripts order, so the segmenter global only exists by
-   * the time normalize() actually runs. In Node tests we require it.
+   * source of truth) at call time. The service worker loads the segmenter
+   * via a later importScripts, and the options page loads it with a plain
+   * script tag before settings.js, so the global exists by the time
+   * normalize() actually runs in both. In Node tests we require it.
    */
   function segmentLengthBounds() {
     const segmenter =

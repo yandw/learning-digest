@@ -46,7 +46,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.7");
+  assert.equal(manifest.version, "0.1.8");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -200,6 +200,13 @@ test("release copy documents current scope without em dashes", () => {
   assert.doesNotMatch(optionsPage, /~\/Documents\/youtube-digest/);
   assert.doesNotMatch(optionsPage, /%USERPROFILE%\\Documents\/youtube-digest/);
   assert.match(optionsPage, /id="copyCustomizationPromptBtn"/);
+  // normalize() reads YTD_SEGMENTER at call time; the options page must
+  // load the segmenter before settings.js or the browser falls into the
+  // Node-only require() path (\u201crequire is not defined\u201d).
+  assert.match(
+    optionsPage,
+    /<script src="session-segmenter\.js"><\/script>\s*<script src="settings\.js">/,
+  );
   assert.match(optionsStyles, /\.customization-summary:hover\s*\{/);
   assert.match(optionsStyles, /\.customization-summary:focus-visible\s*\{/);
   assert.match(optionsStyles, /\.data-card\s*\{[^}]*margin-top:\s*36px;/);

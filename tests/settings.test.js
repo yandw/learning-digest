@@ -141,10 +141,10 @@ test("Speech Provider selection and per-provider credentials are preserved", () 
   });
 });
 
-test("Speech Provider settings default to Groq with empty credentials", () => {
+test("Speech Provider settings default to Qwen with empty credentials", () => {
   const normalized = settings.normalize({});
 
-  assert.equal(normalized.speechProvider, "groq");
+  assert.equal(normalized.speechProvider, "qwen");
   assert.deepEqual(normalized.speechProviders, {});
 });
 
@@ -157,7 +157,7 @@ test("malformed Speech Provider credentials are dropped, not passed through", ()
     },
   });
 
-  assert.equal(normalized.speechProvider, "groq");
+  assert.equal(normalized.speechProvider, "qwen");
   assert.equal(normalized.speechProviders.groq, undefined);
   assert.deepEqual(normalized.speechProviders.tencent, { secretId: "id-1" });
 });

@@ -85,14 +85,14 @@ Learning Digest sends every request in non-thinking mode for responsive, predict
 
 ### Speech Provider key
 
-Session transcription defaults to Groq:
+Session transcription defaults to Qwen ASR on Alibaba Cloud Bailian:
 
 ```text
-Base URL: https://api.groq.com/openai/v1
-Model: whisper-large-v3-turbo
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+Model: qwen3-asr-flash
 ```
 
-Add a Groq API key in the Speech Provider section of Settings. Tencent Cloud ASR and Qwen (Bailian) ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
+Add a Bailian API key in the Speech Provider section of Settings. Groq Whisper and Tencent Cloud ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
 
 Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 

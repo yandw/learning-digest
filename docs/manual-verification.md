@@ -3,7 +3,7 @@
 照着本清单逐步操作即可完成的 Learning Digest 首次实测。开始前请确认：
 
 - 本仓库当前在 `poc/integration` 分支（`git -C /Users/atom/Workspace/learning-digest branch --show-current`）
-- 你有一个 Groq API key（三家服务商里目前只有 Groq 能直接跑通——腾讯/阿里云受 #22 阻塞：默认 2 分钟分段超过它们 60 秒的接口上限）
+- 你有一个阿里云百炼 API key（在 [百炼控制台](https://bailian.console.aliyun.com/)创建；默认 Speech Provider 已是 Qwen ASR，支持默认 2 分钟分段。腾讯云 ASR 仍受 #22 阻塞：默认分段超过其 60 秒接口上限）
 - 你有小鹅通上一节**录播回放课**（1 分钟以上的片段即可，不必真的听完 2–3 小时）
 
 ## 1. 加载扩展（约 2 分钟）
@@ -16,8 +16,8 @@
 ## 2. 配置 Speech Provider（约 2 分钟）
 
 1. 点扩展卡片上的**选项 / Options**（或右键工具栏图标 → Options）
-2. 在 **Speech Provider** 卡片选择 **Groq**，填入 API key
-   - Base URL 保持默认 `https://api.groq.com/openai/v1` 即可
+2. 在 **Speech Provider** 卡片选择 **阿里云百炼 Qwen ASR**（默认已选中），填入百炼 API key
+   - Base URL 保持默认 `https://dashscope.aliyuncs.com/compatible-mode/v1` 即可
    - key 只存在浏览器本地，不要贴给任何人或任何聊天窗口
 3. 保存。AI Provider（OpenRouter 默认）如未配置也可先不配——本次验证只测转写，不测总结
 4. 如果你用自定义/本地 OpenAI 兼容端点：先把它的域名加进 `manifest.json` 的 `host_permissions`（D15 限制，见 #26），重新加载扩展后再填 Base URL
@@ -32,7 +32,7 @@
 6. 切到别的标签页几分钟再切回：转写应**持续累积**，不中断
 7. 点**「结束学习 / End learning」**：会话结束，状态归整
 
-**预期之外时的排查**：转写不出现 → 检查 options 里 Groq key 是否保存、扩展是否重新加载、side panel 报错信息（缺字段会点名缺什么）。
+**预期之外时的排查**：转写不出现 → 检查 options 里百炼 key 是否保存、扩展是否重新加载、side panel 报错信息（缺字段会点名缺什么）。
 
 ## 4. 断点恢复实测（约 5 分钟）
 
@@ -52,7 +52,7 @@
 | 单课时费用 | 按服务商官网当日单价 × 课时音频总时长估算；Groq 可直接看控制台余额变化 |
 | 成功率 | side panel 里「语音转录失败」标注数 ÷ 总分段数 |
 
-腾讯/阿里云：等 #22（分段长度适配）合并后重复第 2–5 步。
+腾讯云 ASR：等 #22（分段长度适配）合并后重复第 2–5 步。Groq 无接口时长限制，可直接选测。
 
 ## 6. 直播课验证（可选，等录播通过后）
 

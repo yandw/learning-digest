@@ -34,6 +34,7 @@ test("manifest uses minimized install-time permissions", () => {
     "https://api.deepseek.com/*",
     "https://openrouter.ai/*",
     "https://api.groq.com/*",
+    "https://dashscope.aliyuncs.com/*",
     "https://*.xiaoe-tech.com/*",
   ]) {
     assert.ok(
@@ -46,7 +47,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.9");
+  assert.equal(manifest.version, "0.1.10");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

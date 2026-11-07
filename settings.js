@@ -21,7 +21,7 @@ var YTD_SETTINGS = (() => {
     // and that provider's own credentials. Credentials are keyed by provider
     // id so later providers (Tencent Cloud ASR, Qwen ASR) add their own
     // slot without touching existing ones. Stored locally only.
-    speechProvider: "groq",
+    speechProvider: "qwen",
     speechProviders: {},
     // Session capture: target Segment length in seconds. The browser layer
     // hands this to session-segmenter.js, which clamps to the same range.

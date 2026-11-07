@@ -32,7 +32,7 @@ The endpoint and `deepseek/deepseek-v4.1-flash-1017` model are fixed in the publ
 
 ### Speech Provider
 
-When you run a Session, each Segment's audio is sent directly to the Speech Provider you configured (Groq by default, at `https://api.groq.com`) for transcription. Credentials stay in Chrome's local extension storage and are sent only to that provider.
+When you run a Session, each Segment's audio is sent directly to the Speech Provider you configured (Qwen ASR on Alibaba Cloud Bailian by default, at `https://dashscope.aliyuncs.com`) for transcription. Credentials stay in Chrome's local extension storage and are sent only to that provider.
 
 AI requests go directly from the extension to the configured providers. They are authenticated with the keys you supply. Learning Digest's developer does not proxy or receive these requests.
 
@@ -68,7 +68,7 @@ Learning Digest uses Chrome permissions for these purposes:
 - `*.xiaoe-tech.com` host access: identify course pages and capture lesson audio on the first supported Source Platform.
 - DeepSeek host access: provide AI overviews, explanations, and translation through DeepSeek V4 Flash.
 - OpenRouter host access: allow AI features to use OpenRouter when it is configured as the AI provider in a local copy.
-- Speech Provider host access (default `api.groq.com`): transcribe Session Segments through your configured Speech Provider.
+- Speech Provider host access (default `dashscope.aliyuncs.com`): transcribe Session Segments through your configured Speech Provider.
 
 Learning Digest does not use these permissions to monitor general browsing activity.
 

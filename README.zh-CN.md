@@ -59,7 +59,7 @@ xiaoe-tech.com 的 Source Platform 采集和三个 Speech Provider（Groq、腾�
 
 ## 设置 API 密钥
 
-Learning Digest 使用你自己的 OpenRouter API 密钥生成摘要、解释内容、翻译和笔记功能。Session 转写使用 Speech Provider（默认为 Groq），需要单独的密钥。
+Learning Digest 使用你自己的 OpenRouter API 密钥生成摘要、解释内容、翻译和笔记功能。Session 转写使用 Speech Provider（默认为阿里云百炼 Qwen ASR），需要单独的密钥。
 
 ### 获取 OpenRouter API 密钥
 
@@ -85,14 +85,14 @@ Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速
 
 ### Speech Provider 密钥
 
-Session 转写默认使用 Groq：
+Session 转写默认使用阿里云百炼 Qwen ASR：
 
 ```text
-Base URL: https://api.groq.com/openai/v1
-Model: whisper-large-v3-turbo
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+Model: qwen3-asr-flash
 ```
 
-请在设置的 Speech Provider 区域填写 Groq API 密钥。腾讯云 ASR 和阿里云 ASR 也已内置，可在同一区域直接选择；各 Provider 的限制和评估状态见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。
+请在设置的 Speech Provider 区域填写百炼 API 密钥（在[百炼控制台](https://bailian.console.aliyun.com/)创建）。Groq Whisper 和腾讯云 ASR 也已内置，可在同一区域直接选择；各 Provider 的限制和评估状态见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。
 
 密钥和设置保存在本机 Chrome 的本地扩展存储中。发布版本不包含也不使用 `config.js`。
 

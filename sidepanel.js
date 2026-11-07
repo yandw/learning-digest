@@ -1850,6 +1850,14 @@ function setupSessionUI() {
     if (changeInfo.status === "complete" && !sessionUi.active) void refreshSessionUI();
   });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.action === "sessionUpdate" && message.startError) {
+      // Auto-start from the toolbar icon failed (e.g. missing API key);
+      // surface the reason in the panel that click just opened. alert()
+      // matches the manual start path's failure surfacing.
+      window.alert(message.startError);
+      sendResponse({ success: true });
+      return false;
+    }
     if (message.action === "sessionUpdate" && message.state) {
       if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
       sessionUi.sessionId = message.sessionId;

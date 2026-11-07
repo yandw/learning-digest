@@ -104,6 +104,58 @@ test("startLearning maps Chrome's not-invoked tabCapture error to a Chinese inst
   assert.doesNotMatch(result.error, /activeTab/);
 });
 
+// --- Toolbar icon click: the single capture entry point (invocation + start)
+
+test("action click on a recognized learning page starts the Session", async () => {
+  let streamRequested = false;
+  const { handleActionClicked, handleGetSessionState } = loadBackgroundHelpers({
+    settings: baseSettings(),
+    getMediaStreamId: async () => {
+      streamRequested = true;
+      return "test-stream-id";
+    },
+  });
+
+  await handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+
+  assert.equal(streamRequested, true);
+  const state = await handleGetSessionState();
+  assert.equal(state.active, true);
+});
+
+test("action click on an unrecognized page only opens the panel", async () => {
+  let streamRequested = false;
+  const { handleActionClicked } = loadBackgroundHelpers({
+    settings: baseSettings(),
+    getMediaStreamId: async () => {
+      streamRequested = true;
+      return "test-stream-id";
+    },
+  });
+
+  await handleActionClicked({ id: 7, url: "https://example.com/", windowId: 1 });
+
+  assert.equal(streamRequested, false);
+});
+
+test("action click start failure broadcasts the reason to the panel", async () => {
+  const sentMessages = [];
+  const { handleActionClicked } = loadBackgroundHelpers({
+    settings: baseSettings({
+      speechProviders: { groq: { apiKey: "" } },
+    }),
+    sentMessages,
+    setTimeoutImpl: setTimeout,
+    clearTimeoutImpl: clearTimeout,
+  });
+
+  await handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+
+  const startError = sentMessages.find((message) => message.startError);
+  assert.ok(startError, "the panel receives the failure reason");
+  assert.match(startError.startError, /apiKey/);
+});
+
 // --- Resume: an in-flight Segment at worker death leaves no orphan pending
 
 test("getSessionState after resume settles the interrupted Segment as failed with its annotation", async () => {

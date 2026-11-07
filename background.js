@@ -235,10 +235,50 @@ async function readBoundedAiResponse(response, onActivity) {
 // ============================================================
 
 /**
- * When the user clicks the extension icon, open the side panel.
- * Chrome's Side Panel API lets us show a persistent panel alongside the page.
+ * Icon click is the single capture entry point. Chrome only allows
+ * tabCapture after the user has INVOKED the extension on the target tab,
+ * and a click inside the side panel does not count — so the toolbar icon
+ * click must carry both the invocation and the gesture that authorizes
+ * capture. From Chrome 116 the action click can also open the side panel
+ * programmatically, so one click does both: open the panel, and when the
+ * active tab is a recognized learning page, start the Session immediately.
  */
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+chrome.action.onClicked.addListener((tab) => {
+  void handleActionClicked(tab);
+});
+
+async function handleActionClicked(tab) {
+  try {
+    await chrome.sidePanel.open({ tabId: tab.id, windowId: tab.windowId });
+  } catch (_error) {
+    // The panel may already be open for this tab; opening is best-effort.
+  }
+
+  // Without the "tabs" permission tab.url is only populated when the
+  // extension has host access to the page; on unrecognized hosts it is
+  // simply absent and we only open the panel.
+  if (!tab?.url) return;
+  if (YTD_SOURCE_PLATFORMS.recognizePage(tab.url).kind === "none") return;
+
+  const existing = await ensureCaptureResumed();
+  if (existing) return; // Session already running; the panel shows its state.
+
+  const result = await handleStartLearning({ url: tab.url, tabId: tab.id });
+  if (result && !result.success) {
+    // The panel just opened but may still be loading; retry briefly so the
+    // failure reason is visible instead of a silently empty session view.
+    const payload = { action: "sessionUpdate", startError: result.error };
+    for (const delayMs of [0, 600, 1800]) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        await chrome.runtime.sendMessage(payload);
+        return;
+      } catch (_error) {
+        // Panel not ready yet; next retry.
+      }
+    }
+  }
+}
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install") chrome.runtime.openOptionsPage();
@@ -791,6 +831,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // settlement of interrupted Segments) — see tests/background-capture.test.js.
   handleStartLearning,
   handleGetSessionState,
+  handleActionClicked,
 };
 
 // ============================================================

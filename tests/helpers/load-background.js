@@ -27,9 +27,11 @@ function loadBackgroundHelpers({
   clearIntervalImpl = () => {},
   offscreenDocument = true,
   getMediaStreamId = async () => "test-stream-id",
+  sentMessages = null,
   sidePanel = {
     setPanelBehavior() {},
     setOptions: () => Promise.resolve(),
+    open: () => Promise.resolve(),
   },
   stored = {},
 } = {}) {
@@ -82,7 +84,10 @@ function loadBackgroundHelpers({
         onConnect: listeners,
         openOptionsPage() {},
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
-        sendMessage: () => Promise.resolve({ success: true }),
+        sendMessage: (msg) => {
+          if (sentMessages) sentMessages.push(msg);
+          return Promise.resolve({ success: true });
+        },
       },
       tabs: { onUpdated: listeners, onActivated: listeners },
     },

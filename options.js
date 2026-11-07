@@ -37,6 +37,11 @@ const YTD_OPTIONS = (() => {
       speechProviderFieldApiKey: "API key",
       speechProviderFieldBaseUrl: "API base URL",
       speechProviderFieldModel: "Model",
+      speechProviderFieldSecretId: "SecretId",
+      speechProviderFieldSecretKey: "SecretKey",
+      speechProviderFieldRegion: "Region (e.g. ap-guangzhou)",
+      speechProviderFieldEngineModelType: "Engine model type (e.g. 16k_zh)",
+      speechProviderLinkTencent: "Create Tencent Cloud credentials",
       speechProviderCustomEndpointHelp:
         "A custom base URL must speak the OpenAI audio transcriptions API; local faster-whisper servers work through the same slot. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension.",
       speechProviderInvalidBaseUrl:
@@ -135,6 +140,11 @@ const YTD_OPTIONS = (() => {
       speechProviderFieldApiKey: "API 密钥",
       speechProviderFieldBaseUrl: "API 基础 URL",
       speechProviderFieldModel: "模型",
+      speechProviderFieldSecretId: "SecretId",
+      speechProviderFieldSecretKey: "SecretKey",
+      speechProviderFieldRegion: "地域（如 ap-guangzhou）",
+      speechProviderFieldEngineModelType: "引擎模型类型（如 16k_zh）",
+      speechProviderLinkTencent: "创建腾讯云凭证",
       speechProviderCustomEndpointHelp:
         "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
       speechProviderInvalidBaseUrl:
@@ -443,6 +453,7 @@ const YTD_OPTIONS = (() => {
     const aiModelInput = doc.getElementById("aiModel");
     const speechProviderSelect = doc.getElementById("speechProvider");
     const speechProviderFields = doc.getElementById("speechProviderFields");
+    const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
     const providersApi = root.YTD_SPEECH_PROVIDERS;
     // Per-provider credential drafts, keyed by Speech Provider id, so
     // switching providers never loses what the user already typed.
@@ -547,10 +558,28 @@ const YTD_OPTIONS = (() => {
       return `speechProviderField${suffix}`;
     }
 
+    function linkLabelKey(providerId) {
+      // e.g. speechProviderLinkTencent; falls back to the generic Groq copy.
+      const suffix = providerId.charAt(0).toUpperCase() + providerId.slice(1);
+      return `speechProviderLink${suffix}`;
+    }
+
+    function updateSpeechProviderHelpLink(provider) {
+      // Providers may carry a helpLink (e.g. the Tencent Cloud CAM console);
+      // without one the link keeps the generic Groq copy from the markup.
+      if (provider?.helpLink) {
+        speechProviderHelpLink.href = provider.helpLink;
+        const label = translate(currentLanguage, linkLabelKey(provider.id));
+        speechProviderHelpLink.textContent =
+          label || translate(currentLanguage, "speechProviderLink");
+      }
+    }
+
     function renderSpeechProviderFields() {
       const provider = getSelectedSpeechProvider();
       speechProviderFields.replaceChildren();
       if (!provider) return;
+      updateSpeechProviderHelpLink(provider);
 
       const draft = getSpeechProviderDraft(provider.id);
       for (const field of provider.credentialFields || []) {
@@ -660,10 +689,13 @@ const YTD_OPTIONS = (() => {
             return;
           }
         }
-        const needsKey = (selectedProvider.credentialFields || []).some(
-          (field) => field.key === "apiKey",
-        );
-        if (needsKey && !String(draft.apiKey || "").trim()) {
+        // Every credential field typed as a password (e.g. Groq's apiKey,
+        // Tencent's SecretId/SecretKey) is required on save; text fields
+        // such as baseUrl/region stay optional and fall back to defaults.
+        const missingSecret = (selectedProvider.credentialFields || [])
+          .filter((field) => field.type === "password")
+          .some((field) => !String(draft[field.key] || "").trim());
+        if (missingSecret) {
           setStatus(saveStatus, "speechProviderKeyRequired");
           return;
         }

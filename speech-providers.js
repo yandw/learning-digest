@@ -250,8 +250,13 @@ var YTD_SPEECH_PROVIDER_TENCENT = (() => {
         },
       };
     }
-    if (typeof crypto !== "undefined" && crypto.subtle) {
-      const subtle = crypto.subtle;
+    // globalThis.crypto, NOT the bare name `crypto`: this IIFE is the
+    // initializer of `const crypto` below, so a bare reference here would
+    // hit the temporal dead zone in the service worker (node:crypto exists
+    // in Node tests and masks it — the SW load path is what must work).
+    const webCrypto = globalThis.crypto;
+    if (webCrypto && webCrypto.subtle) {
+      const subtle = webCrypto.subtle;
       const encoder = new TextEncoder();
       return {
         async sha256Hex(string) {
@@ -626,8 +631,13 @@ var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
         },
       };
     }
-    if (typeof crypto !== "undefined" && crypto.subtle) {
-      const subtle = crypto.subtle;
+    // globalThis.crypto, NOT the bare name `crypto`: this IIFE is the
+    // initializer of `const crypto` below, so a bare reference here would
+    // hit the temporal dead zone in the service worker (node:crypto exists
+    // in Node tests and masks it — the SW load path is what must work).
+    const webCrypto = globalThis.crypto;
+    if (webCrypto && webCrypto.subtle) {
+      const subtle = webCrypto.subtle;
       const encoder = new TextEncoder();
       return {
         async hmacSha1Bytes(key, string) {

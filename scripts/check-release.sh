@@ -42,6 +42,7 @@ public_allowlist=(
   "sidepanel.css"
   "sidepanel.js"
   "options.html"
+  "options-diagnostics.js"
   "options.css"
   "options.js"
   "icons/icon16.png"

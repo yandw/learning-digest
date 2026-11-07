@@ -153,8 +153,8 @@ test("customization prompt switches languages and preserves technical values", (
   const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
 
   assert.doesNotMatch(html, /supadata/i);
-  assert.match(html, /placeholder="Paste your DeepSeek key"/);
-  assert.match(html, /https:\/\/platform\.deepseek\.com\/api_keys/);
+  assert.match(html, /placeholder="Paste your OpenRouter key"/);
+  assert.match(html, /https:\/\/openrouter\.ai\/keys/);
   assert.ok(html.includes(`>${englishPrompt}</textarea>`));
   assert.match(chinesePrompt, /^请把当前本地 Learning Digest 工作区改为使用/);
   assert.notEqual(chinesePrompt, englishPrompt);

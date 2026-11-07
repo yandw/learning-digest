@@ -1152,7 +1152,7 @@ function showError(title, message) {
 
 function showConfigError(configStatus) {
   const missingKeys = [];
-  if (!configStatus.hasAiKey) missingKeys.push("DeepSeek");
+  if (!configStatus.hasAiKey) missingKeys.push("OpenRouter API key");
 
   showState("error");
   document.getElementById("errorTitle").textContent = "API Keys Missing";

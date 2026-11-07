@@ -20,16 +20,15 @@ Depending on the feature you use, Learning Digest handles:
 
 ## Where data goes
 
-### AI Provider (DeepSeek)
+### AI Provider (OpenRouter)
 
-The published version sends AI feature content to DeepSeek V4 Flash at `https://api.deepseek.com`:
+The published version sends AI feature content to OpenRouter at `https://openrouter.ai/api/v1`, which routes it to the DeepSeek V4.1 Flash model:
 
-- transcript plus relevant title, course, description, or duration for an overview;
-- selected text plus nearby transcript context for an explanation;
+- transcript plus relevant session context for a rolling summary or the session digest;
 - small semantic transcript batches currently needed for progressive Chinese
-  translation, or requested overview or explanation content.
+  translation, or requested explanation content.
 
-The endpoint and `deepseek-v4-flash` model are fixed in the published Settings page. You provide one DeepSeek API key. To use another provider or model, you must adapt your own local source copy and its permissions. The Settings page provides a coding-agent prompt for that purpose and warns you never to include an API key in the prompt or chat.
+The endpoint and `deepseek/deepseek-v4.1-flash-1017` model are fixed in the published Settings page. You provide one OpenRouter API key. To use another provider or model, you must adapt your own local source copy and its permissions. The Settings page provides a coding-agent prompt for that purpose and warns you never to include an API key in the prompt or chat.
 
 ### Speech Provider
 
@@ -37,7 +36,7 @@ When you run a Session, each Segment's audio is sent directly to the Speech Prov
 
 AI requests go directly from the extension to the configured providers. They are authenticated with the keys you supply. Learning Digest's developer does not proxy or receive these requests.
 
-DeepSeek, Groq, and any other configured provider process data under their own terms, privacy policies, retention practices, and account settings. Do not send confidential, personal, or regulated content unless their terms and your obligations permit it.
+OpenRouter, DeepSeek, Groq, and any other configured provider process data under their own terms, privacy policies, retention practices, and account settings. Do not send confidential, personal, or regulated content unless their terms and your obligations permit it.
 
 ## Local storage and retention
 

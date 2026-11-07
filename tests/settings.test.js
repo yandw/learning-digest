@@ -23,11 +23,11 @@ test("custom AI base URL and model are preserved", () => {
 
 test("empty or invalid AI endpoint config falls back to DeepSeek defaults", () => {
   const empty = settings.normalize({});
-  assert.equal(empty.aiBaseUrl, "https://api.deepseek.com");
-  assert.equal(empty.aiModel, "deepseek-v4-flash");
+  assert.equal(empty.aiBaseUrl, "https://openrouter.ai/api/v1");
+  assert.equal(empty.aiModel, "deepseek/deepseek-v4.1-flash-1017");
   assert.equal(
     settings.chatCompletionsUrl(),
-    "https://api.deepseek.com/chat/completions",
+    "https://openrouter.ai/api/v1/chat/completions",
   );
 
   const invalid = settings.normalize({

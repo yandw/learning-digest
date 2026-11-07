@@ -46,7 +46,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.3");
+  assert.equal(manifest.version, "0.1.4");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -158,24 +158,24 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(chineseReadme, /不接受上游 Issue 或 Pull Request/);
 
   // Bring-your-own-key spirit: DeepSeek key setup docs stay.
-  assert.match(readme, /platform\.deepseek\.com\/api_keys/i);
-  assert.match(readme, /api-docs\.deepseek\.com/i);
-  assert.match(readme, /api-docs\.deepseek\.com\/quick_start\/pricing/i);
+  assert.match(readme, /openrouter\.ai\/keys/i);
+  assert.match(readme, /openrouter\.ai\/docs/i);
+  assert.match(readme, /openrouter\.ai\/models\/deepseek\/deepseek-v4\.1-flash-1017/i);
   assert.match(readme, /\$0\.007[\s\S]*\$0\.014/);
   assert.match(readme, /\$0\.22[\s\S]*\$0\.44/);
   assert.match(readme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(chineseReadme, /platform\.deepseek\.com\/api_keys/i);
+  assert.match(chineseReadme, /openrouter\.ai\/keys/i);
   assert.match(chineseReadme, /\$0\.007[\s\S]*\$0\.014/);
   assert.match(chineseReadme, /\$0\.22[\s\S]*\$0\.44/);
   assert.match(chineseReadme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(readme, /published version supports DeepSeek V4 Flash as its only AI provider/i);
-  assert.match(chineseReadme, /发布版本只支持 DeepSeek V4 Flash/);
+  assert.match(readme, /published version uses OpenRouter with the DeepSeek V4\.1 Flash model as its AI provider/i);
+  assert.match(chineseReadme, /发布版本通过 OpenRouter 使用 DeepSeek V4\.1 Flash 模型/);
   assert.match(readme, /bring-your-own-key/i);
 
   const optionsPage = read("options.html");
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
-  assert.match(optionsPage, /platform\.deepseek\.com\/api_keys/i);
+  assert.match(optionsPage, /openrouter\.ai\/keys/i);
   assert.doesNotMatch(optionsPage, /<select\b[^>]*\bid="provider"/);
   assert.doesNotMatch(optionsPage, /id="provider"/);
   assert.match(optionsPage, /id="aiBaseUrl"/);
@@ -329,7 +329,7 @@ test("runtime has no source-file credential dependency or retired model", () => 
   assert.doesNotMatch(runtime, /\bCONFIG\./);
   assert.doesNotMatch(runtime, /importScripts\(["']config\.js/);
   assert.doesNotMatch(runtime, /\bdeepseek-chat\b/);
-  assert.match(runtime, /deepseek-v4-flash/);
+  assert.match(runtime, /deepseek\/deepseek-v4\.1-flash-1017/);
 });
 
 test("retired files are absent", () => {

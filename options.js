@@ -9,23 +9,23 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "Interface language",
       heading: "Bring your own API keys",
       lede:
-        "Keys stay in this Chrome profile and are sent only to DeepSeek. This open-source extension has no developer server or analytics.",
+        "Keys stay in this Chrome profile and are sent only to OpenRouter. This open-source extension has no developer server or analytics.",
       aiProvider: "AI provider",
       providerSummaryLabel: "Supported AI provider",
       providerBadge: "Supported in this version",
-      deepseekApiKeyLabel: "DeepSeek API key",
+      deepseekApiKeyLabel: "OpenRouter API key",
       deepseekHelp:
-        "Learning Digest uses DeepSeek V4 Flash for overviews, explanations, translation, and note polishing. ",
-      deepseekLink: "Create a DeepSeek API key",
+        "Learning Digest uses OpenRouter with the DeepSeek V4.1 Flash model for rolling summaries, the session digest, translation, and note polishing. ",
+      deepseekLink: "Create an OpenRouter API key",
       deepseekHelpSuffix: ".",
       aiBaseUrlLabel: "API base URL",
       aiModelLabel: "Model",
       customEndpointHelp:
-        "Leave both fields empty to keep the DeepSeek defaults. A custom endpoint must speak the OpenAI chat-completions API. If its host is not api.deepseek.com, add that host to host_permissions in manifest.json and reload the extension.",
+        "Leave both fields empty to keep the OpenRouter defaults. A custom endpoint must speak the OpenAI chat-completions API. If its host is not openrouter.ai, add that host to host_permissions in manifest.json and reload the extension.",
       invalidBaseUrl:
         "The API base URL is not a valid https URL (http is allowed only for localhost).",
       privacyNote:
-        "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
+        "When you use AI features, OpenRouter receives the transcript and relevant session context, and routes it to the configured model provider. Review OpenRouter's terms and pricing before saving.",
       speechProvider: "Speech Provider",
       speechProviderSummaryLabel: "Speech Provider",
       speechProviderBadge: "Transcribes lesson audio into Transcript records",
@@ -87,7 +87,7 @@ const YTD_OPTIONS = (() => {
       footer:
         'Read <a href="PRIVACY.md" target="_blank">PRIVACY.md</a> in the repository for the complete data-flow description.',
       migrationWarning:
-        "Custom provider settings were removed safely. The AI key was cleared. Enter a DeepSeek API key to continue.",
+        "Custom provider settings were removed safely. The AI key was cleared. Enter an OpenRouter API key to continue.",
       saving: "Saving…",
       verifying: "Saved. Verifying API connections…",
       savedVerified:
@@ -100,7 +100,7 @@ const YTD_OPTIONS = (() => {
       aiHttpError: ({ status }) => `the AI endpoint returned HTTP ${status}`,
       aiUnreachable:
         "the AI endpoint could not be reached (check the base URL and manifest host_permissions)",
-      addDeepseekKey: "Add a DeepSeek API key.",
+      addDeepseekKey: "Add an OpenRouter API key.",
       saveFailed: "Could not save settings. Please try again.",
       copying: "Copying…",
       promptCopied: "Edited prompt copied.",
@@ -120,23 +120,23 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "界面语言",
       heading: "使用你自己的 API 密钥",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
+        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 OpenRouter。本开源扩展没有开发者服务器，也不使用分析服务。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
-      deepseekApiKeyLabel: "DeepSeek API 密钥",
+      deepseekApiKeyLabel: "OpenRouter API 密钥",
       deepseekHelp:
-        "Learning Digest 使用 DeepSeek V4 Flash 生成概览、解释内容、翻译字幕和润色笔记。",
-      deepseekLink: "创建 DeepSeek API 密钥",
+        "Learning Digest 通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型，生成滚动总结、完整稿、翻译和润色笔记。",
+      deepseekLink: "创建 OpenRouter API 密钥",
       deepseekHelpSuffix: "。",
       aiBaseUrlLabel: "API 基础 URL",
       aiModelLabel: "模型",
       customEndpointHelp:
-        "两个字段都留空则保持 DeepSeek 默认值。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 api.deepseek.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+        "两个字段都留空则保持 OpenRouter 默认值。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 openrouter.ai，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
       invalidBaseUrl:
         "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
-        "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
+        "使用 AI 功能时，OpenRouter 会收到逐字稿及相关会话上下文，并转发给你配置的模型服务商。保存前请查看 OpenRouter 的服务条款和价格。",
       speechProvider: "语音转录服务",
       speechProviderSummaryLabel: "语音转录服务",
       speechProviderBadge: "将课程音频转录为 Transcript 记录",
@@ -196,7 +196,7 @@ const YTD_OPTIONS = (() => {
       footer:
         '完整数据流说明请参阅仓库中的 <a href="PRIVACY.md" target="_blank">PRIVACY.md</a>。',
       migrationWarning:
-        "已安全移除自定义服务设置。AI 密钥已清除。请输入 DeepSeek API 密钥以继续使用。",
+        "已安全移除自定义服务设置。AI 密钥已清除。请输入 OpenRouter API 密钥以继续使用。",
       saving: "正在保存…",
       verifying: "已保存。正在校验 API 连接…",
       savedVerified:
@@ -207,7 +207,7 @@ const YTD_OPTIONS = (() => {
       aiHttpError: ({ status }) => `AI 端点返回 HTTP ${status}`,
       aiUnreachable:
         "无法连接 AI 端点（请检查基础 URL 和 manifest 的 host_permissions）",
-      addDeepseekKey: "请添加 DeepSeek API 密钥。",
+      addDeepseekKey: "请添加 OpenRouter API 密钥。",
       saveFailed: "无法保存设置，请重试。",
       copying: "正在复制…",
       promptCopied: "已复制编辑后的提示词。",

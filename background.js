@@ -86,7 +86,7 @@ async function requestAiCompletion({
   const settings = await getSettings();
   if (!settings.aiApiKey) {
     const error = new Error(
-      "DeepSeek API key not configured. Open Learning Digest Settings.",
+      "AI provider API key not configured. Open Learning Digest Settings.",
     );
     error.code = "NO_AI_KEY";
     throw error;
@@ -148,7 +148,7 @@ async function requestAiCompletion({
       const error = new Error(
         errorData.error?.message ||
           errorData.message ||
-          `DeepSeek error: ${response.status}`,
+          `AI provider error: ${response.status}`,
       );
       error.status = response.status;
       throw error;
@@ -156,7 +156,7 @@ async function requestAiCompletion({
 
     const text = data.choices?.[0]?.message?.content;
     if (typeof text !== "string" || !text.trim()) {
-      const error = new Error("DeepSeek returned an empty response.");
+      const error = new Error("The AI provider returned an empty response.");
       error.code = "EMPTY_AI_RESPONSE";
       throw error;
     }
@@ -165,14 +165,14 @@ async function requestAiCompletion({
   } catch (error) {
     if (timeoutKind === "idle") {
       const timeoutError = new Error(
-        "DeepSeek request was inactive for 50 seconds. Please Retry.",
+        "The AI request was inactive for 50 seconds. Please Retry.",
       );
       timeoutError.code = "AI_IDLE_TIMEOUT";
       throw timeoutError;
     }
     if (timeoutKind === "hard") {
       const timeoutError = new Error(
-        "DeepSeek request exceeded the 120-second limit. Please Retry.",
+        "The AI request exceeded the 120-second limit. Please Retry.",
       );
       timeoutError.code = "AI_HARD_TIMEOUT";
       throw timeoutError;
@@ -199,7 +199,7 @@ async function readBoundedAiResponse(response, onActivity) {
       responseBytes += byteLength;
       if (responseBytes > AI_PROVIDER_MAX_RESPONSE_BYTES) {
         await reader.cancel?.().catch(() => {});
-        const error = new Error("DeepSeek response exceeded the 2 MiB limit.");
+        const error = new Error("The AI provider response exceeded the 2 MiB limit.");
         error.code = "AI_RESPONSE_TOO_LARGE";
         throw error;
       }
@@ -216,7 +216,7 @@ async function readBoundedAiResponse(response, onActivity) {
     onActivity();
     const byteLength = new TextEncoder().encode(responseText).byteLength;
     if (byteLength > AI_PROVIDER_MAX_RESPONSE_BYTES) {
-      const error = new Error("DeepSeek response exceeded the 2 MiB limit.");
+      const error = new Error("The AI provider response exceeded the 2 MiB limit.");
       error.code = "AI_RESPONSE_TOO_LARGE";
       throw error;
     }
@@ -454,7 +454,7 @@ async function handleAnalyzeTranscript(
       return {
         success: false,
         error: "NO_AI_KEY",
-        message: "DeepSeek API key not configured. Open Learning Digest Settings.",
+        message: "AI provider API key not configured. Open Learning Digest Settings.",
       };
     }
 
@@ -533,14 +533,14 @@ async function handleAnalyzeTranscript(
       return {
         success: false,
         error: "INVALID_AI_KEY",
-        message: "DeepSeek rejected the API key.",
+        message: "The AI provider rejected the API key.",
       };
     }
     if (error.status === 429) {
       return {
         success: false,
         error: "RATE_LIMITED",
-        message: "DeepSeek rate-limited this request. Try again shortly.",
+        message: "The AI provider rate-limited this request. Try again shortly.",
       };
     }
     return {
@@ -645,7 +645,7 @@ async function handleExplainSelection(
       return {
         success: false,
         error: "NO_AI_KEY",
-        message: "DeepSeek API key not configured.",
+        message: "AI provider API key not configured.",
       };
     }
 
@@ -920,7 +920,7 @@ async function handleTranslateContent(
 
     const settings = await getSettings();
     if (!settings.aiApiKey) {
-      return { success: false, error: "DeepSeek API key not configured" };
+      return { success: false, error: "AI provider API key not configured" };
     }
 
     const sourceSegments = validateTranscriptBatchRequest(content);

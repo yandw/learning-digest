@@ -19,7 +19,7 @@
 2. 在 **Speech Provider** 卡片选择 **Groq**，填入 API key
    - Base URL 保持默认 `https://api.groq.com/openai/v1` 即可
    - key 只存在浏览器本地，不要贴给任何人或任何聊天窗口
-3. 保存。AI Provider（DeepSeek 默认）如未配置也可先不配——本次验证只测转写，不测总结
+3. 保存。AI Provider（OpenRouter 默认）如未配置也可先不配——本次验证只测转写，不测总结
 4. 如果你用自定义/本地 OpenAI 兼容端点：先把它的域名加进 `manifest.json` 的 `host_permissions`（D15 限制，见 #26），重新加载扩展后再填 Base URL
 
 ## 3. 录播课转写实测（约 10 分钟）

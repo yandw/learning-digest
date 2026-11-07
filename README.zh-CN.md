@@ -59,29 +59,29 @@ xiaoe-tech.com 的 Source Platform 采集和三个 Speech Provider（Groq、腾�
 
 ## 设置 API 密钥
 
-Learning Digest 使用你自己的 DeepSeek API 密钥生成摘要、解释内容、翻译和笔记功能。Session 转写使用 Speech Provider（默认为 Groq），需要单独的密钥。
+Learning Digest 使用你自己的 OpenRouter API 密钥生成摘要、解释内容、翻译和笔记功能。Session 转写使用 Speech Provider（默认为 Groq），需要单独的密钥。
 
-### 获取 DeepSeek API 密钥
+### 获取 OpenRouter API 密钥
 
-1. 打开官方 [DeepSeek API Keys 页面](https://platform.deepseek.com/api_keys)。
-2. 按提示登录或创建 DeepSeek Platform 账号。
-3. 选择 **Create new API key**，起一个容易识别的名字，例如 `Learning Digest`，然后创建。
+1. 打开官方 [OpenRouter API Keys 页面](https://openrouter.ai/keys)。
+2. 按提示登录或创建 OpenRouter 账号。
+3. 选择 **Create API Key**，起一个容易识别的名字，例如 `Learning Digest`，然后创建。
 4. 立即复制密钥，完整密钥可能只显示一次。
-5. 把密钥粘贴到 Learning Digest 设置的 **DeepSeek API key** 字段中。
-6. 如果 DeepSeek 提示余额不足，请在 DeepSeek Platform 账号中充值后重试。
+5. 把密钥粘贴到 Learning Digest 设置的 **OpenRouter API key** 字段中。
+6. 如果 OpenRouter 提示额度不足，请在 OpenRouter 账号中充值后重试。
 
-当前账号和 API 详情以 [DeepSeek 官方 API 文档](https://api-docs.deepseek.com/) 为准。
+当前账号和 API 详情以 [OpenRouter 官方文档](https://openrouter.ai/docs/) 为准。
 
 从侧边栏打开 **Settings**。你也可以在 `chrome://extensions` 的扩展卡片上打开 Learning Digest 的 **Options** 页面，或右键点击工具栏图标。请只在这些设置字段中粘贴密钥，永远不要把密钥粘贴到 AI 聊天、仓库文件、截图或公开信息中。
 
-发布版本只支持 DeepSeek V4 Flash 作为 AI 服务：
+发布版本通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型作为 AI 服务：
 
 ```text
-Base URL: https://api.deepseek.com
-Model: deepseek-v4-flash
+Base URL: https://openrouter.ai/api/v1
+Model: deepseek/deepseek-v4.1-flash-1017
 ```
 
-Learning Digest 所有 DeepSeek 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在设置中固定，因此你需要输入的 AI 凭证只有 DeepSeek API 密钥。如果想换其他服务或模型，请复制设置页中安全自定义提示词，交给编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
+Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在设置中固定，因此你需要输入的 AI 凭证只有 OpenRouter API 密钥。如果想换其他服务或模型，请复制设置页中安全自定义提示词，交给编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
 
 ### Speech Provider 密钥
 
@@ -117,9 +117,9 @@ Model: whisper-large-v3-turbo
 
 xiaoe-tech.com 的 Source Platform 采集已实现；真实课程上的 Provider 评估见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。Firefox、Safari、移动端浏览器和其他 Chromium 浏览器目前未做测试和支持。
 
-## DeepSeek V4 Flash 定价
+## AI 费用
 
-截至 2026 年 8 月 27 日，DeepSeek 在官方 [定价页面](https://api-docs.deepseek.com/quick_start/pricing)上公布的每 100 万 token 美元价格如下：
+OpenRouter 在模型服务商价格之上收取自己的加成；`deepseek/deepseek-v4.1-flash-1017` 的当前费率见 [OpenRouter 模型页面](https://openrouter.ai/models/deepseek/deepseek-v4.1-flash-1017)。DeepSeek 原始 list 价格（2026 年 8 月 27 日，每 100 万 token 美元价，仅供参考）：
 
 | Token 类型 | 非高峰 | 高峰 |
 | --- | ---: | ---: |

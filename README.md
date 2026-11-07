@@ -59,29 +59,29 @@ Because this is an unpacked extension, it does not update automatically. After d
 
 ## Set up your API keys
 
-Learning Digest uses your own DeepSeek API key for summaries, explanations, translation, and note features. Session transcription uses a Speech Provider, Groq by default, with its own key.
+Learning Digest uses your own OpenRouter API key for summaries, explanations, translation, and note features. Session transcription uses a Speech Provider, Groq by default, with its own key.
 
-### Get a DeepSeek API key
+### Get an OpenRouter API key
 
-1. Open the official [DeepSeek API Keys page](https://platform.deepseek.com/api_keys).
-2. Sign in or create a DeepSeek Platform account when prompted.
-3. Choose **Create new API key**, give it a recognizable name such as `Learning Digest`, and create it.
+1. Open the official [OpenRouter API Keys page](https://openrouter.ai/keys).
+2. Sign in or create an OpenRouter account when prompted.
+3. Choose **Create API Key**, give it a recognizable name such as `Learning Digest`, and create it.
 4. Copy the key immediately. The full key may only be shown once.
-5. Paste it into **DeepSeek API key** in Learning Digest Settings.
-6. If DeepSeek reports insufficient balance, add credit in your DeepSeek Platform account and try again.
+5. Paste it into **OpenRouter API key** in Learning Digest Settings.
+6. If OpenRouter reports insufficient credits, add credit in your OpenRouter account and try again.
 
-See the [official DeepSeek API documentation](https://api-docs.deepseek.com/) for current account and API details.
+See the [official OpenRouter documentation](https://openrouter.ai/docs/) for current account and API details.
 
 Open **Settings** from the side panel. You can also open the Learning Digest **Options** page from its card at `chrome://extensions` or by right-clicking its toolbar icon. Paste keys only into these Settings fields. Never paste a key into an AI chat, repository file, screenshot, or public message.
 
-The published version supports DeepSeek V4 Flash as its only AI provider:
+The published version uses OpenRouter with the DeepSeek V4.1 Flash model as its AI provider:
 
 ```text
-Base URL: https://api.deepseek.com
-Model: deepseek-v4-flash
+Base URL: https://openrouter.ai/api/v1
+Model: deepseek/deepseek-v4.1-flash-1017
 ```
 
-Learning Digest sends every DeepSeek request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your DeepSeek API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
+Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your OpenRouter API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
 
 ### Speech Provider key
 
@@ -113,13 +113,13 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 - The Speech Provider registry with Groq, Tencent Cloud ASR, and Aliyun ASR.
 - AI overviews, selected-text explanations, translation, and local notes against transcripts already in the cache.
 - Local notes and a local cache for recent transcript and digest results.
-- DeepSeek V4 Flash for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
+- OpenRouter (DeepSeek V4.1 Flash) for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
 
 Source Platform capture for xiaoe-tech.com is implemented; real-lesson provider evaluation is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 
-## DeepSeek V4 Flash pricing
+## AI pricing
 
-As of August 27, 2026, DeepSeek lists these USD prices per 1 million tokens on its official [pricing page](https://api-docs.deepseek.com/quick_start/pricing):
+OpenRouter passes through model provider pricing plus its own margin; current rates for `deepseek/deepseek-v4.1-flash-1017` are listed on the [OpenRouter model page](https://openrouter.ai/models/deepseek/deepseek-v4.1-flash-1017). The original DeepSeek list prices (August 27, 2026, per 1 million tokens, for reference) are:
 
 | Token type | Off-peak | Peak |
 | --- | ---: | ---: |

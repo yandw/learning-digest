@@ -9,8 +9,8 @@ var YTD_SETTINGS = (() => {
   const DEFAULTS = Object.freeze({
     provider: "deepseek",
     aiApiKey: "",
-    aiBaseUrl: "https://api.deepseek.com",
-    aiModel: "deepseek-v4-flash",
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
     // Speech Transcription Provider: independent of the AI Provider above.
     // Defaults to Groq's OpenAI-compatible endpoint, but the user can point
     // it at any OpenAI-compatible /audio/transcriptions host.

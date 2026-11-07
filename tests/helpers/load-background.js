@@ -17,8 +17,8 @@ function loadBackgroundHelpers({
   settings = {
     provider: "deepseek",
     aiApiKey: "test-key",
-    aiBaseUrl: "https://api.deepseek.com",
-    aiModel: "deepseek-v4-flash",
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
   },
   fetchImpl = fetch,
   setTimeoutImpl = () => 0,

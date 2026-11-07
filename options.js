@@ -39,9 +39,13 @@ const YTD_OPTIONS = (() => {
       speechProviderFieldModel: "Model",
       speechProviderFieldSecretId: "SecretId",
       speechProviderFieldSecretKey: "SecretKey",
-      speechProviderFieldRegion: "Region (e.g. ap-guangzhou)",
+      speechProviderFieldRegion: "Region",
       speechProviderFieldEngineModelType: "Engine model type (e.g. 16k_zh)",
+      speechProviderFieldAccessKeyId: "AccessKey ID",
+      speechProviderFieldAccessKeySecret: "AccessKey Secret",
+      speechProviderFieldAppKey: "AppKey",
       speechProviderLinkTencent: "Create Tencent Cloud credentials",
+      speechProviderLinkAliyun: "Create Alibaba Cloud AccessKeys",
       speechProviderCustomEndpointHelp:
         "A custom base URL must speak the OpenAI audio transcriptions API; local faster-whisper servers work through the same slot. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension.",
       speechProviderInvalidBaseUrl:
@@ -146,9 +150,13 @@ const YTD_OPTIONS = (() => {
       speechProviderFieldModel: "模型",
       speechProviderFieldSecretId: "SecretId",
       speechProviderFieldSecretKey: "SecretKey",
-      speechProviderFieldRegion: "地域（如 ap-guangzhou）",
+      speechProviderFieldRegion: "地域",
       speechProviderFieldEngineModelType: "引擎模型类型（如 16k_zh）",
+      speechProviderFieldAccessKeyId: "AccessKey ID",
+      speechProviderFieldAccessKeySecret: "AccessKey Secret",
+      speechProviderFieldAppKey: "AppKey",
       speechProviderLinkTencent: "创建腾讯云凭证",
+      speechProviderLinkAliyun: "创建阿里云 AccessKey",
       speechProviderCustomEndpointHelp:
         "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
       speechProviderInvalidBaseUrl:

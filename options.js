@@ -1,11 +1,11 @@
 const YTD_OPTIONS = (() => {
   const LANGUAGE_STORAGE_KEY = "ytd_options_language";
-  const PREVIEW_STORAGE_PREFIX = "youtubeDigestPreview:";
+  const PREVIEW_STORAGE_PREFIX = "learningDigestPreview:";
   const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN"]);
 
   const COPY = {
     en: {
-      pageTitle: "YouTube Digest Settings",
+      pageTitle: "Learning Digest Settings",
       languageGroupLabel: "Interface language",
       heading: "Bring your own API keys",
       lede:
@@ -15,7 +15,7 @@ const YTD_OPTIONS = (() => {
       providerBadge: "Supported in this version",
       deepseekApiKeyLabel: "DeepSeek API key",
       deepseekHelp:
-        "YouTube Digest uses DeepSeek V4 Flash for overviews, explanations, translation, and note polishing. ",
+        "Learning Digest uses DeepSeek V4 Flash for overviews, explanations, translation, and note polishing. ",
       deepseekLink: "Create a DeepSeek API key",
       deepseekHelpSuffix: ".",
       aiBaseUrlLabel: "API base URL",
@@ -53,7 +53,7 @@ const YTD_OPTIONS = (() => {
       customizationIntro:
         "You can edit the prompt directly. Complete these three steps before copying:",
       customizationStepFolder:
-        "Open the extracted YouTube Digest project folder in your coding agent.",
+        "Open the extracted Learning Digest project folder in your coding agent.",
       customizationStepReplace:
         "Replace [PROVIDER] and [MODEL] with the service and model you want to use.",
       customizationStepKeys:
@@ -63,7 +63,7 @@ const YTD_OPTIONS = (() => {
       customizationReminder:
         "Before copying, replace [PROVIDER] and [MODEL] with the provider and model you want to use.",
       customizationPrompt:
-        "Customize this local YouTube Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is YouTube Digest. If verification fails, stop and ask me to open the extracted YouTube Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and test it on a real YouTube video.",
+        "Customize this local Learning Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is Learning Digest. If verification fails, stop and ask me to open the extracted Learning Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and verify the change in the Learning Digest side panel.",
       copyCustomizationPrompt: "Copy edited prompt",
       localData: "Local data",
       localDataHelp:
@@ -78,7 +78,7 @@ const YTD_OPTIONS = (() => {
       saving: "Saving…",
       verifying: "Saved. Verifying API connections…",
       savedVerified:
-        "Saved and verified. Reopen YouTube Digest to use these settings.",
+        "Saved and verified. Reopen Learning Digest to use these settings.",
       verifyFailed: ({ detail }) =>
         `Saved, but the connection check failed: ${detail}`,
       aiKeyRejected: "the AI API key was rejected",
@@ -98,12 +98,12 @@ const YTD_OPTIONS = (() => {
       notesDeleted: "Deleted all saved notes.",
       resetConfirm:
         "Delete API keys, cached digests, translations, and saved notes from this Chrome profile?",
-      allDataDeleted: "All YouTube Digest data was deleted.",
+      allDataDeleted: "All Learning Digest data was deleted.",
       settingsLoadFailed:
         "Could not load saved settings. You can still preview this page.",
     },
     "zh-CN": {
-      pageTitle: "YouTube Digest 设置",
+      pageTitle: "Learning Digest 设置",
       languageGroupLabel: "界面语言",
       heading: "使用你自己的 API 密钥",
       lede:
@@ -113,7 +113,7 @@ const YTD_OPTIONS = (() => {
       providerBadge: "当前版本支持",
       deepseekApiKeyLabel: "DeepSeek API 密钥",
       deepseekHelp:
-        "YouTube Digest 使用 DeepSeek V4 Flash 生成概览、解释内容、翻译字幕和润色笔记。",
+        "Learning Digest 使用 DeepSeek V4 Flash 生成概览、解释内容、翻译字幕和润色笔记。",
       deepseekLink: "创建 DeepSeek API 密钥",
       deepseekHelpSuffix: "。",
       aiBaseUrlLabel: "API 基础 URL",
@@ -149,7 +149,7 @@ const YTD_OPTIONS = (() => {
       agentBadge: "可交给编程 Agent",
       customizationIntro: "你可以直接编辑提示词。复制前完成以下三步：",
       customizationStepFolder:
-        "在编程 Agent 中打开 YouTube Digest 解压后的项目文件夹。",
+        "在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。",
       customizationStepReplace:
         "把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。",
       customizationStepKeys:
@@ -159,7 +159,7 @@ const YTD_OPTIONS = (() => {
       customizationReminder:
         "复制前，请先把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。",
       customizationPrompt:
-        "请把当前本地 YouTube Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 YouTube Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 YouTube Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，并在真实 YouTube 视频上测试。",
+        "请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。",
       copyCustomizationPrompt: "复制编辑后的提示词",
       localData: "本地数据",
       localDataHelp:
@@ -174,7 +174,7 @@ const YTD_OPTIONS = (() => {
       saving: "正在保存…",
       verifying: "已保存。正在校验 API 连接…",
       savedVerified:
-        "已保存，AI 连接校验通过。请重新打开 YouTube Digest 以使用这些设置。",
+        "已保存，AI 连接校验通过。请重新打开 Learning Digest 以使用这些设置。",
       verifyFailed: ({ detail }) => `已保存，但连接校验未通过：${detail}`,
       aiKeyRejected: "AI API 密钥被拒绝",
       aiNotFound: "找不到 AI 端点或模型（请检查基础 URL 和模型名称）",
@@ -190,7 +190,7 @@ const YTD_OPTIONS = (() => {
       notesDeleted: "已删除全部已保存的笔记。",
       resetConfirm:
         "要从当前 Chrome 个人资料中删除 API 密钥、缓存摘要、翻译和已保存的笔记吗？",
-      allDataDeleted: "已删除全部 YouTube Digest 数据。",
+      allDataDeleted: "已删除全部 Learning Digest 数据。",
       settingsLoadFailed: "无法加载已保存的设置，但你仍可预览此页面。",
     },
   };

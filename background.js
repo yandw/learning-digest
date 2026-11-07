@@ -3,9 +3,14 @@
  *
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
- * 2. Fetching YouTube transcripts from caption tracks via page injection
- * 3. Calling DeepSeek to analyze the transcript
+ * 2. Calling the AI Provider to analyze transcripts, explain selections,
+ *    translate content, and clean up saved notes
+ * 3. Note storage
  * 4. Sending results back to the side panel
+ *
+ * Source Platform capture (xiaoe-tech.com) and the Session pipeline land in a
+ * later ticket; the Session state machine and Speech Provider registry are
+ * already loaded here and ready to be driven by that capture layer.
  *
  * Think of it like a backend server — it does the heavy lifting
  * so the UI (side panel) can stay fast and responsive.
@@ -13,25 +18,21 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js", "captions.js", "speech-transcription.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
 const AI_PROVIDER_HARD_TIMEOUT_MS = 120_000;
 const AI_PROVIDER_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-const STT_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
-const STT_PROVIDER_HARD_TIMEOUT_MS = 120_000;
-const STT_CHUNK_DURATION_SECONDS = 10 * 60;
 const debugLog = (...args) => {
   if (DEBUG) console.log(...args);
 };
 
-// Prevent the YouTube content script from reading API keys or cached data.
-// Side panel, options, and service-worker contexts remain trusted.
+// Keep storage limited to trusted extension contexts.
 chrome.storage.local
   .setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" })
   .catch((error) =>
-    console.warn("[YouTube Digest] Could not restrict storage access:", error),
+    console.warn("[Learning Digest] Could not restrict storage access:", error),
   );
 
 async function getSettings() {
@@ -84,7 +85,7 @@ async function requestAiCompletion({
   const settings = await getSettings();
   if (!settings.aiApiKey) {
     const error = new Error(
-      "DeepSeek API key not configured. Open YouTube Digest Settings.",
+      "DeepSeek API key not configured. Open Learning Digest Settings.",
     );
     error.code = "NO_AI_KEY";
     throw error;
@@ -136,8 +137,8 @@ async function requestAiCompletion({
         signal: controller.signal,
       },
     );
-    // Receiving headers proves DeepSeek is still making progress. DeepSeek
-    // may then send blank-line body chunks while a non-streaming request queues.
+    // Receiving headers proves the provider is still making progress. It may
+    // then send blank-line body chunks while a non-streaming request queues.
     resetIdleTimeout();
 
     const data = await readBoundedAiResponse(response, resetIdleTimeout);
@@ -191,7 +192,7 @@ async function readBoundedAiResponse(response, onActivity) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // Every received chunk is activity, including DeepSeek's blank lines.
+      // Every received chunk is activity, including the provider's blank lines.
       onActivity();
       const byteLength = value?.byteLength ?? 0;
       responseBytes += byteLength;
@@ -236,156 +237,24 @@ async function readBoundedAiResponse(response, onActivity) {
  * When the user clicks the extension icon, open the side panel.
  * Chrome's Side Panel API lets us show a persistent panel alongside the page.
  */
-chrome.action.onClicked.addListener((tab) => {
-  if (!(tab.url || "").startsWith("https://www.youtube.com")) {
-    void updatePanelForTab(tab.id, tab.url, tab.windowId);
-    return;
-  }
-
-  // Re-enable + open without awaiting — preserves user gesture context
-  chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    path: "sidepanel.html",
-    enabled: true,
-  });
-  chrome.sidePanel.open({ tabId: tab.id });
-});
-
-/**
- * Allow the side panel to open on any page, but it's designed for YouTube.
- */
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === "install") chrome.runtime.openOptionsPage();
 });
 
-/**
- * Keep the side panel scoped to YouTube tabs only.
- *
- * Chrome side panels are "global" by default: once opened, the panel follows
- * you to every tab. To make YouTube Digest behave like a YouTube-only tool, we
- * enable the panel on YouTube tabs and disable it everywhere else. Disabling
- * on a tab makes Chrome hide/close the panel for that tab, so it never lingers
- * on a new tab or some other website.
- *
- * We have to react to BOTH things that can change "what tab you're looking at":
- *   - onUpdated: the current tab navigates to a new URL
- *   - onActivated: you switch to (or open) a different tab
- * The original code only handled onUpdated, which is why the panel stayed
- * visible when switching to an already-loaded non-YouTube tab.
- */
-async function closePanelForTab(tabId, windowId) {
-  // Chrome 141 added an explicit close API. On older supported versions,
-  // disabling the tab-specific panel below remains the compatibility path.
-  if (typeof chrome.sidePanel.close !== "function") return;
-
-  try {
-    // This closes the tab-specific panel used by YouTube Digest.
-    await chrome.sidePanel.close({ tabId });
-    return;
-  } catch (error) {
-    // Chrome 145+ rejects tabId when the visible instance is global. Close
-    // that instance by window instead.
-  }
-
-  if (Number.isInteger(windowId)) {
-    await chrome.sidePanel.close({ windowId }).catch(() => {});
-  }
-}
-
-async function updatePanelForTab(tabId, url, windowId) {
-  const isYouTube = (url || "").startsWith("https://www.youtube.com");
-  if (!isYouTube) {
-    // Close the visible instance first. Then disable this tab so Chrome cannot
-    // reopen the global default panel as navigation settles.
-    await closePanelForTab(tabId, windowId);
-    await chrome.sidePanel.setOptions({ tabId, enabled: false }).catch(() => {});
-    return;
-  }
-
-  // setOptions can reject if the tab just closed. Ignore that harmlessly.
-  await chrome.sidePanel
-    .setOptions({ tabId, path: "sidepanel.html", enabled: true })
-    .catch(() => {});
-}
-
-/**
- * Gets the best URL from a tab update that can change panel availability.
- * Chrome can apply tab-specific side-panel state before a navigation commits,
- * then reset it during the commit. Handling loading and complete gives the
- * first non-YouTube navigation a reliable second reconciliation.
- */
-function getNavigationUrl(changeInfo, tab) {
-  if (changeInfo.url) return changeInfo.url;
-  if (changeInfo.status !== "loading" && changeInfo.status !== "complete") {
-    return "";
-  }
-  return tab.pendingUrl || tab.url || "";
-}
-
-// A tab started or completed navigation. Reconcile at both stages because
-// Chrome can replace per-tab side-panel options while the page commits.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  const url = getNavigationUrl(changeInfo, tab);
-  if (!url) return; // Ignore title and favicon-only updates.
-  void updatePanelForTab(tabId, url, tab.windowId);
-});
-
-// The user switched to a different tab (or opened a new one).
-chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    void updatePanelForTab(tabId, tab.url || tab.pendingUrl, windowId);
-  } catch (e) {
-    // Tab vanished before we could read it — nothing to do.
-  }
-});
-
 // ============================================================
 // MESSAGE HANDLING
 // ============================================================
 
-// Each side panel (one per browser window) opens this port for as long as
-// it's showing a given video, solely so background.js can detect that
-// specific panel closing (chrome.runtime.sendMessage has no "the receiver
-// is gone" signal; a port's onDisconnect does). Nothing else is sent over
-// it. Needed to stop a Speech Transcription recording when the user closes
-// the panel mid-video — without this, the MAIN-world recorder and chunk
-// uploads would run unattended until the video itself ends.
-//
-// Keyed by windowId rather than a single shared variable: a side panel is
-// scoped to one browser window, and a user can have the panel open in more
-// than one window at once, each transcribing a different video. A single
-// shared port would let the second window's connect silently steal the
-// first window's stop signal.
-const sidePanelPortsByWindow = new Map();
-chrome.runtime.onConnect.addListener((port) => {
-  if (!port.name.startsWith("sidePanelLifecycle:")) return;
-  const windowId = Number(port.name.slice("sidePanelLifecycle:".length));
-  sidePanelPortsByWindow.set(windowId, port);
-  port.onDisconnect.addListener(() => {
-    if (sidePanelPortsByWindow.get(windowId) === port) {
-      sidePanelPortsByWindow.delete(windowId);
-    }
-  });
-});
-
 /**
- * Listen for messages from the side panel and content script.
+ * Listen for messages from the side panel.
  * This is like a switchboard — different "actions" trigger different handlers.
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // We need to return true to indicate we'll respond asynchronously
-  if (message.action === "fetchTranscript") {
-    handleFetchTranscript(message.videoId)
-      .then(sendResponse)
-      .catch((err) => sendResponse({ error: err.message }));
-    return true; // Keep the message channel open for async response
-  }
-
   if (message.action === "analyzeTranscript") {
-    // Pass video duration to help the AI validate timestamps
+    // Pass content duration to help the AI validate timestamps
     handleAnalyzeTranscript(
       message.transcriptText,
       message.videoTitle,
@@ -399,7 +268,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "explainSelection") {
-    // Explain selected text using DeepSeek.
+    // Explain selected text using the AI Provider.
     handleExplainSelection(
       message.selectedText,
       message.transcriptContext,
@@ -411,8 +280,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "saveNote") {
-    // Save a note at the current timestamp, or save exact selected transcript
-    // text when the side panel supplies it.
+    // Save exact selected transcript text as a timestamped note.
     handleSaveNote(
       message.videoId,
       message.timestamp,
@@ -441,14 +309,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.action === "getVideoInfo") {
-    handleGetVideoInfo(message.tabId)
-      .then(sendResponse)
-      .catch((err) => sendResponse({ error: err.message }));
-    return true;
-  }
-
-  // Translation: send content to DeepSeek.
+  // Translation: send content to the AI Provider.
   if (message.action === "translateContent") {
     handleTranslateContent(
       message.content,
@@ -478,908 +339,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  if (message.action === "openSidePanel") {
-    const tabId = sender.tab?.id;
-    debugLog("[YouTube Digest BG] openSidePanel requested from tab:", tabId);
-
-    // Re-enable the panel (it may have been disabled by auto-close) and open it.
-    // IMPORTANT: we call setOptions + open synchronously (no await between them)
-    // to preserve the user gesture context. Chrome requires sidePanel.open()
-    // to be called within a user gesture — awaiting anything first can expire it.
-    if (tabId) {
-      chrome.sidePanel.setOptions({
-        tabId,
-        path: "sidepanel.html",
-        enabled: true,
-      });
-      chrome.sidePanel
-        .open({ tabId })
-        .then(() => {
-          // Broadcast to side panel to start digest (in case it's already open)
-          setTimeout(() => {
-            chrome.runtime
-              .sendMessage({ action: "startDigestFromButton" })
-              .catch(() => {});
-          }, 300);
-        })
-        .catch((err) => {
-          console.error("[YouTube Digest BG] openSidePanel error:", err);
-        });
-    } else {
-      // Fallback: find the active tab
-      chrome.tabs
-        .query({ active: true, lastFocusedWindow: true })
-        .then((tabs) => {
-          if (tabs[0]) {
-            chrome.sidePanel.setOptions({
-              tabId: tabs[0].id,
-              path: "sidepanel.html",
-              enabled: true,
-            });
-            chrome.sidePanel.open({ tabId: tabs[0].id }).catch((err) => {
-              console.error(
-                "[YouTube Digest BG] openSidePanel fallback error:",
-                err,
-              );
-            });
-          }
-        });
-    }
-
-    sendResponse({ success: true });
-    return false;
-  }
-
-  // Relay messages from side panel to content script
-  if (message.action === "relayToContent") {
-    debugLog("[YouTube Digest BG] Relay request:", message.payload?.action);
-    (async () => {
-      try {
-        // Query specifically for YouTube tabs to avoid side panel context issues
-        // Try multiple query strategies to find the right tab
-        let tabs = await chrome.tabs.query({
-          active: true,
-          lastFocusedWindow: true,
-        });
-        debugLog(
-          "[YouTube Digest BG] Active tab in last focused window:",
-          tabs.length,
-          tabs[0]?.url,
-        );
-
-        // If no YouTube tab found, try broader query
-        if (!tabs[0] || !tabs[0].url?.includes("youtube.com")) {
-          tabs = await chrome.tabs.query({
-            url: "https://www.youtube.com/*",
-            active: true,
-          });
-          debugLog("[YouTube Digest BG] Active YouTube tabs:", tabs.length);
-        }
-
-        // Still nothing? Try any YouTube tab
-        if (!tabs[0]) {
-          tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
-          debugLog("[YouTube Digest BG] Any YouTube tabs:", tabs.length);
-        }
-
-        if (tabs[0]) {
-          debugLog(
-            "[YouTube Digest BG] Sending to tab:",
-            tabs[0].id,
-            "URL:",
-            tabs[0].url,
-          );
-          let response = await chrome.tabs.sendMessage(
-            tabs[0].id,
-            message.payload,
-          );
-
-          // For getVideoInfo, PREFER YouTube's own player data over the
-          // DOM scrape. The player's videoDetails is canonical: its `author`
-          // is always THIS video's channel and its `shortDescription` is the
-          // full text. The DOM scrape is unreliable — e.g. on a playlist page
-          // it grabbed the playlist owner's name ("Zara Zhang") instead of the
-          // real channel ("Replit and Stripe"), and its description is
-          // truncated while the box is collapsed. We fall back to the DOM
-          // only for fields the player didn't provide.
-          if (message.payload?.action === "getVideoInfo") {
-            const playerInfo = await getPlayerVideoDetails(tabs[0].id);
-            if (playerInfo) {
-              response = {
-                title: playerInfo.title || response?.title || "",
-                channelName:
-                  playerInfo.channelName || response?.channelName || "",
-                duration: playerInfo.duration || response?.duration || 0,
-                description:
-                  playerInfo.description || response?.description || "",
-              };
-            }
-          }
-
-          debugLog("[YouTube Digest BG] Got response from content:", response);
-          sendResponse({ success: true, response });
-        } else {
-          debugLog("[YouTube Digest BG] No YouTube tab found");
-          sendResponse({ success: false, error: "No YouTube tab found" });
-        }
-      } catch (err) {
-        console.error("[YouTube Digest BG] Relay error:", err.message);
-        sendResponse({ success: false, error: err.message });
-      }
-    })();
-    return true; // Keep channel open for async response
-  }
+  // Unknown action - still send a response to prevent hanging
+  debugLog("[Learning Digest BG] Unknown action:", message.action);
+  sendResponse({ success: false, error: "Unknown action" });
+  return false;
 });
-
-/**
- * Reads the current video's full details straight from YouTube's player.
- *
- * Content scripts live in an isolated world and can't touch the page's own
- * JavaScript. But with the "scripting" permission we can run a tiny function
- * in the page's MAIN world, where YouTube's player object lives. Its
- * getPlayerResponse() carries videoDetails with the FULL description —
- * unlike the DOM, which truncates it until the user clicks "...more".
- *
- * Returns null on any failure so callers can fall back to DOM scraping.
- */
-async function getPlayerVideoDetails(tabId) {
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: () => {
-        try {
-          const player = document.getElementById("movie_player");
-          const details = player?.getPlayerResponse?.()?.videoDetails;
-          if (!details) return null;
-          return {
-            title: details.title || "",
-            channelName: details.author || "",
-            description: details.shortDescription || "",
-            duration: Number(details.lengthSeconds) || 0,
-          };
-        } catch (e) {
-          return null;
-        }
-      },
-    });
-    return results?.[0]?.result || null;
-  } catch (e) {
-    console.warn("[YouTube Digest BG] Player details unavailable:", e.message);
-    return null;
-  }
-}
-
-/**
- * Chrome does not inject manifest content scripts into tabs that were already
- * open when the extension was reloaded. Reconcile an existing script, or
- * inject content.js once when that isolated world has no copy yet.
- */
-async function ensureYouTubeContentScript(tabId) {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "ISOLATED",
-    func: () => {
-      if (typeof injectDigestButton !== "function") return { loaded: false };
-      injectDigestButton();
-      return { loaded: true };
-    },
-  });
-  if (results?.[0]?.result?.loaded) return;
-
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["content.js"],
-  });
-}
-
-// ============================================================
-// TRANSCRIPT FETCHING FROM YOUTUBE CAPTIONS
-// ============================================================
-
-// Runs in the YouTube MAIN world. The player adds a PO Token and client
-// parameters only when it issues its own timedtext request. Capture that
-// request, then restore both the patched network functions and the user's
-// original caption-switch state.
-async function capturePlayerCaptionRequest(expectedVideoId, timeoutMs = 8000) {
-  return new Promise((resolve) => {
-    const button = document.querySelector(".ytp-subtitles-button");
-    if (!button) {
-      resolve(null);
-      return;
-    }
-
-    const captionsInitiallyOn =
-      button.getAttribute("aria-pressed") === "true";
-    const originalFetch = window.fetch;
-    const originalOpen = XMLHttpRequest.prototype.open;
-    let settled = false;
-    let timeoutId = null;
-    let reenableId = null;
-
-    function restore() {
-      window.fetch = originalFetch;
-      XMLHttpRequest.prototype.open = originalOpen;
-      if (timeoutId !== null) clearTimeout(timeoutId);
-      if (reenableId !== null) clearTimeout(reenableId);
-    }
-
-    function finish(url) {
-      if (settled) return;
-      settled = true;
-      restore();
-      if (
-        !captionsInitiallyOn &&
-        button.getAttribute("aria-pressed") === "true"
-      ) {
-        button.click();
-      }
-      resolve(url);
-    }
-
-    function capture(input) {
-      try {
-        const raw =
-          typeof input === "string"
-            ? input
-            : input instanceof URL
-              ? input.toString()
-              : input?.url;
-        const url = new URL(raw, window.location.origin);
-        if (
-          url.pathname === "/api/timedtext" &&
-          url.searchParams.get("v") === expectedVideoId &&
-          url.searchParams.get("pot")
-        ) {
-          finish(url.toString());
-        }
-      } catch (_e) {
-        // Ignore unrelated or malformed requests.
-      }
-    }
-
-    window.fetch = function (input, ...args) {
-      capture(input);
-      return originalFetch.call(this, input, ...args);
-    };
-    XMLHttpRequest.prototype.open = function (method, url, ...args) {
-      capture(url);
-      return originalOpen.call(this, method, url, ...args);
-    };
-
-    timeoutId = setTimeout(() => finish(null), timeoutMs);
-    if (captionsInitiallyOn) {
-      // Force one fresh request, ending with captions on again.
-      button.click();
-      reenableId = setTimeout(() => button.click(), 100);
-    } else {
-      button.click();
-    }
-  });
-}
-
-/**
- * Fetches the transcript for a YouTube video by reading Caption Tracks
- * directly from the watch page and requesting timedtext data.
- *
- * Supadata-free: no third-party API, no extra key, works for both native
- * and auto-generated captions. Trade-off: depends on YouTube's non-public
- * page structure and timedtext endpoint.
- *
- * Caption candidates are limited to Simplified Chinese, Traditional Chinese,
- * automatically translated Chinese, English, and automatically translated
- * English, in that order. Empty or failed responses fall through to the next
- * candidate. If none produce a transcript, returns NO_SUITABLE_CAPTION.
- *
- * @param {string} videoId - The 11-character YouTube video ID
- * @returns {Promise<Object>} { success, transcript, transcriptText, transcriptTextTimestamped, language, captionKind, error, message }
- */
-async function handleFetchTranscript(videoId) {
-  try {
-    // 1. Inject MAIN-world script to read caption tracks and translation targets.
-    // Find the tab playing this exact video; the active tab may be another one.
-    const watchTabs = await chrome.tabs.query({
-      url: "https://www.youtube.com/watch*",
-    });
-    const tab = watchTabs.find((t) => {
-      try {
-        return new URL(t.url).searchParams.get("v") === videoId;
-      } catch (_e) {
-        return false;
-      }
-    });
-    if (!tab?.id) {
-      return {
-        success: false,
-        error: "NO_TAB",
-        message: "请先在 YouTube 标签页打开这个视频。",
-      };
-    }
-
-    try {
-      await ensureYouTubeContentScript(tab.id);
-    } catch (error) {
-      // Transcript extraction uses the MAIN world and may still be available.
-      console.warn("[YouTube Digest BG] Content script recovery failed:", error.message);
-    }
-
-    const injectionResults = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      func: (expectedVideoId) => {
-        try {
-          // getPlayerResponse() follows SPA navigation; ytInitialPlayerResponse does not.
-          const player = document.getElementById("movie_player");
-          const response = player?.getPlayerResponse?.();
-          if (response?.videoDetails?.videoId !== expectedVideoId) return null;
-          const renderer =
-            response.captions?.playerCaptionsTracklistRenderer;
-          return {
-            tracks: Array.isArray(renderer?.captionTracks)
-              ? renderer.captionTracks
-              : [],
-            translationLanguages: Array.isArray(renderer?.translationLanguages)
-              ? renderer.translationLanguages
-              : [],
-          };
-        } catch (e) {
-          return null;
-        }
-      },
-      args: [videoId],
-    });
-
-    const captionData = injectionResults?.[0]?.result;
-    if (!captionData) {
-      return {
-        success: false,
-        error: "PLAYER_NOT_READY",
-        message: "播放器还没加载完成,请稍后重试。",
-      };
-    }
-
-    // 2. Try the public track URLs first. YouTube may return an empty body
-    // when the request lacks the player-issued PO Token.
-    const directResult = await YTD_CAPTIONS.fetchCaptionTranscript(
-      captionData.tracks,
-      captionData.translationLanguages,
-      fetch,
-    );
-    if (directResult.success) return directResult;
-    if (
-      YTD_CAPTIONS.selectCaptionCandidates(
-        captionData.tracks,
-        captionData.translationLanguages,
-      ).length === 0
-    ) {
-      return directResult;
-    }
-
-    // 3. Retry with the authorization parameters from the player's own
-    // caption request. The MAIN-world helper restores the caption switch.
-    let playerRequestUrl = null;
-    try {
-      const authorizedResults = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        world: "MAIN",
-        func: capturePlayerCaptionRequest,
-        args: [videoId, 8000],
-      });
-      playerRequestUrl = authorizedResults?.[0]?.result || null;
-    } catch (_e) {
-      // Keep the readable direct-fetch failure if capture is unavailable.
-    }
-    if (!playerRequestUrl) return directResult;
-
-    return await YTD_CAPTIONS.fetchCaptionTranscript(
-      captionData.tracks,
-      captionData.translationLanguages,
-      fetch,
-      (url) =>
-        YTD_CAPTIONS.withPlayerCaptionAuthorization(url, playerRequestUrl),
-    );
-  } catch (error) {
-    console.error("Transcript fetch error:", error);
-    return {
-      success: false,
-      error: error.message || "Failed to fetch transcript",
-    };
-  }
-}
-
-// ============================================================
-// SPEECH TRANSCRIPTION (currently dormant)
-// ============================================================
-//
-// Caption fetching no longer calls this subsystem. The implementation and
-// stored settings are retained on this feature branch, but no transcript
-// request starts recording or uploads audio.
-
-// One entry per videoId currently being recorded, so a second request for
-// the same video (or a stray chunk after the panel closed) can be ignored
-// instead of starting a duplicate recorder.
-const activeSpeechTranscriptions = new Map();
-
-/**
- * Finds the YouTube tab currently playing `videoId`. Shared with
- * handleFetchTranscript's own lookup; kept as a separate small helper here
- * so handleSpeechTranscribe doesn't need to reach into that function.
- */
-async function findWatchTab(videoId) {
-  const watchTabs = await chrome.tabs.query({
-    url: "https://www.youtube.com/watch*",
-  });
-  return watchTabs.find((t) => {
-    try {
-      return new URL(t.url).searchParams.get("v") === videoId;
-    } catch (_e) {
-      return false;
-    }
-  });
-}
-
-/**
- * Injected into the YouTube tab's MAIN world (the only place with a real
- * reference to the <video> element). Records the currently playing audio
- * in fixed-length chunks via MediaRecorder, and posts each finished chunk
- * back to the page as a window.postMessage — content.js (isolated world)
- * picks it up and relays it to background.js over chrome.runtime.sendMessage,
- * since MAIN-world code cannot call that API directly.
- *
- * This can't use chrome.scripting.executeScript's normal return-value
- * pattern (see getPlayerVideoDetails / handleFetchTranscript above):
- * that pattern captures one return value when the injected function ends,
- * but this recorder needs to keep running and emit a chunk every
- * chunkDurationSeconds while playback continues.
- */
-function injectSpeechTranscriptionRecorder(videoId, chunkDurationSeconds) {
-  const SOURCE = "ytd-speech-transcription";
-
-  // "*" as the postMessage targetOrigin would let any other script on this
-  // page (YouTube's own, or another extension's) receive and forge these
-  // messages; window.location.origin is always https://www.youtube.com
-  // here, so there's no reason to broadcast wider than that.
-  const targetOrigin = window.location.origin;
-
-  const video = document.querySelector("video.html5-main-video");
-  if (!video || typeof video.captureStream !== "function") {
-    window.postMessage(
-      { source: SOURCE, videoId, isFinal: true, error: "NO_VIDEO_ELEMENT" },
-      targetOrigin,
-    );
-    return;
-  }
-
-  const stream = video.captureStream();
-  if (stream.getAudioTracks().length === 0) {
-    window.postMessage(
-      { source: SOURCE, videoId, isFinal: true, error: "NO_AUDIO_TRACK" },
-      targetOrigin,
-    );
-    return;
-  }
-
-  const audioOnlyStream = new MediaStream(stream.getAudioTracks());
-  const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-    ? "audio/webm;codecs=opus"
-    : "audio/webm";
-
-  let chunkIndex = 0;
-  // The offset is anchored to the video's own clock, not wall time, so a
-  // paused video doesn't drift the chunk boundaries away from where its
-  // audio actually is.
-  let chunkStartVideoTime = video.currentTime;
-  let stopped = false;
-  let recorder = null;
-  let chunkTimer = null;
-
-  function startChunk() {
-    if (stopped) return;
-    const chunkBuffer = [];
-    recorder = new MediaRecorder(audioOnlyStream, { mimeType });
-    const chunkStart = chunkStartVideoTime;
-
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) chunkBuffer.push(e.data);
-    };
-
-    recorder.onstop = async () => {
-      const blob = new Blob(chunkBuffer, { type: mimeType });
-      const arrayBuffer = await blob.arrayBuffer();
-      const durationSeconds = Math.max(0, video.currentTime - chunkStart);
-
-      window.postMessage(
-        {
-          source: SOURCE,
-          videoId,
-          chunkIndex: chunkIndex++,
-          offsetSeconds: chunkStart,
-          durationSeconds,
-          isFinal: stopped,
-          audioBytes: arrayBuffer,
-          mimeType,
-        },
-        targetOrigin,
-      );
-
-      if (!stopped) {
-        chunkStartVideoTime = video.currentTime;
-        startChunk();
-      }
-    };
-
-    recorder.start();
-    chunkTimer = setTimeout(() => {
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-    }, chunkDurationSeconds * 1000);
-  }
-
-  function stopRecording() {
-    if (stopped) return;
-    stopped = true;
-    clearTimeout(chunkTimer);
-    if (recorder && recorder.state !== "inactive") {
-      recorder.stop();
-    } else {
-      // No in-flight chunk to flush; tell content.js we're done so it can
-      // stop waiting for a final postMessage that will never arrive.
-      window.postMessage({ source: SOURCE, videoId, isFinal: true, audioBytes: null }, targetOrigin);
-    }
-    video.removeEventListener("ended", stopRecording);
-    window.removeEventListener("message", onStopCommand);
-  }
-
-  function onStopCommand(event) {
-    if (event.source !== window) return;
-    if (event.origin !== targetOrigin) return;
-    const data = event.data;
-    if (!data || data.source !== SOURCE) return;
-    if (data.command === "stop" && data.videoId === videoId) stopRecording();
-    // Sent on every SPA navigation (content.js's yt-navigate-finish
-    // handler), with no videoId: YouTube swaps the page's <video> content
-    // without reloading, so a recorder tied to the video we're leaving
-    // would otherwise keep running since its "ended" listener never fires
-    // for a video that's simply been navigated away from, not ended.
-    if (data.command === "stopAll") stopRecording();
-  }
-
-  video.addEventListener("ended", stopRecording);
-  window.addEventListener("message", onStopCommand);
-  startChunk();
-}
-
-/**
- * Builds the multipart/form-data body for one chunk's request to the
- * Speech Transcription Provider's /audio/transcriptions endpoint, and
- * posts it with the same idle+hard dual-timer pattern requestAiCompletion
- * uses for the AI Provider (see above) — a per-chunk idle timer that resets
- * on response progress, plus a hard ceiling that doesn't reset.
- */
-async function requestSttTranscription(audioBlob, mimeType, settings) {
-  const formData = new FormData();
-  const extension = mimeType.includes("webm") ? "webm" : "bin";
-  formData.append("file", audioBlob, `chunk.${extension}`);
-  formData.append("model", settings.sttModel);
-  formData.append("response_format", "verbose_json");
-  // No `language` field: Speech Transcription always lets the model
-  // auto-detect, independent of the user's Display Mode (see GLOSSARY.md).
-
-  const controller = new AbortController();
-  let timeoutKind = "";
-  let idleTimeoutId;
-  let hardTimeoutId;
-  const abortForTimeout = (kind) => {
-    if (controller.signal.aborted) return;
-    timeoutKind = kind;
-    controller.abort();
-  };
-  const resetIdleTimeout = () => {
-    clearTimeout(idleTimeoutId);
-    idleTimeoutId = setTimeout(
-      () => abortForTimeout("idle"),
-      STT_PROVIDER_IDLE_TIMEOUT_MS,
-    );
-  };
-
-  hardTimeoutId = setTimeout(
-    () => abortForTimeout("hard"),
-    STT_PROVIDER_HARD_TIMEOUT_MS,
-  );
-  resetIdleTimeout();
-  try {
-    const response = await fetch(YTD_SETTINGS.sttTranscriptionsUrl(settings.sttBaseUrl), {
-      method: "POST",
-      headers: { Authorization: `Bearer ${settings.sttApiKey}` },
-      body: formData,
-      signal: controller.signal,
-    });
-    resetIdleTimeout();
-
-    const data = await response.json();
-    resetIdleTimeout();
-
-    if (!response.ok) {
-      const error = new Error(
-        data?.error?.message || `Speech Transcription Provider error: ${response.status}`,
-      );
-      error.status = response.status;
-      throw error;
-    }
-    return data;
-  } catch (error) {
-    if (timeoutKind === "idle") {
-      const timeoutError = new Error(
-        "Speech Transcription request was inactive for 50 seconds.",
-      );
-      timeoutError.code = "STT_TIMEOUT";
-      throw timeoutError;
-    }
-    if (timeoutKind === "hard") {
-      const timeoutError = new Error(
-        "Speech Transcription request exceeded the 120-second limit.",
-      );
-      timeoutError.code = "STT_TIMEOUT";
-      throw timeoutError;
-    }
-    if (!error.code) error.code = "STT_REQUEST_ERROR";
-    throw error;
-  } finally {
-    clearTimeout(idleTimeoutId);
-    clearTimeout(hardTimeoutId);
-  }
-}
-
-const STT_MAX_AUTO_ATTEMPTS = 3;
-const STT_RETRY_BASE_DELAY_MS = 2000;
-
-/**
- * Decides whether a chunk request deserves an automatic retry, mirroring
- * sidepanel.js's isRetryableTranslationError: auth/config errors never
- * recover on their own, rate limits and timeouts usually do.
- */
-function isRetryableSttError(error) {
-  if (error?.status === 401 || error?.status === 403) return false;
-  if (error?.code === "STT_TIMEOUT") return true;
-  if (error?.status === 429) return true;
-  if (typeof error?.status === "number" && error.status >= 500) return true;
-  return /timed? out|inactive|exceeded|network|failed to fetch/i.test(
-    String(error?.message || ""),
-  );
-}
-
-function sttRetryDelay(attempt) {
-  return new Promise((resolve) =>
-    setTimeout(resolve, STT_RETRY_BASE_DELAY_MS * attempt),
-  );
-}
-
-/**
- * Retries a chunk's Speech Transcription request up to STT_MAX_AUTO_ATTEMPTS
- * times with linear backoff, same shape as sidepanel.js's
- * sendTranslationWithRetry. A single dropped chunk on a multi-chunk video
- * would otherwise permanently show as a transcript gap for what's often a
- * transient rate limit or timeout, one retry away from succeeding.
- */
-async function requestSttTranscriptionWithRetry(audioBlob, mimeType, settings) {
-  let lastError;
-  for (let attempt = 1; attempt <= STT_MAX_AUTO_ATTEMPTS; attempt += 1) {
-    try {
-      return await requestSttTranscription(audioBlob, mimeType, settings);
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableSttError(error)) throw error;
-    }
-    if (attempt < STT_MAX_AUTO_ATTEMPTS) await sttRetryDelay(attempt);
-  }
-  throw lastError;
-}
-
-/**
- * Pushes a transcriptProgress update to the open side panel. Fire-and-forget:
- * sendMessage throws if the panel isn't listening (closed, or never opened),
- * which is expected and not an error worth surfacing.
- *
- * secondsTranscribed is omitted (not zero) for progress updates that aren't
- * Speech Transcription (e.g. the existing "Fetching transcript" caption
- * path), so sidepanel.js knows to keep showing the indeterminate bar
- * instead of a 0% fill.
- */
-function pushTranscriptProgress(title, subtitle, secondsTranscribed) {
-  chrome.runtime
-    .sendMessage({
-      action: "transcriptProgress",
-      title,
-      subtitle,
-      secondsTranscribed,
-    })
-    .catch(() => {});
-}
-
-/**
- * Runs Speech Transcription for a No-Caption Video: injects the MAIN-world
- * recorder, transcribes each chunk as it arrives via the Speech
- * Transcription Provider, and resolves once recording stops (video ends,
- * the side panel disconnects, or the tab goes away) with the same result
- * shape handleFetchTranscript returns, so callers don't need to know which
- * path produced the Transcript.
- *
- * @param {string} videoId
- * @param {{onDisconnect?: (cb: () => void) => void}} [panel] - lets the
- *   caller register a stop signal (the side panel's port disconnecting)
- * @returns {Promise<Object>}
- */
-async function handleSpeechTranscribe(videoId, panel = {}) {
-  const settings = await getSettings();
-  if (!settings.sttApiKey) {
-    return {
-      success: false,
-      error: "STT_NO_KEY",
-      message: "本视频没有字幕。",
-    };
-  }
-
-  const tab = await findWatchTab(videoId);
-  if (!tab?.id) {
-    return {
-      success: false,
-      error: "NO_TAB",
-      message: "请先在 YouTube 标签页打开这个视频。",
-    };
-  }
-
-  // A second call for a videoId that's still recording (e.g. the user
-  // double-clicks Digest, or closes and reopens the panel quickly before
-  // the first attempt's stop() has actually silenced the MAIN-world
-  // recorder) must not inject a second MediaRecorder on top of the first:
-  // captureStream() then records duplicate chunks, and two onChunkMessage
-  // listeners race to write into two different chunkRecordLists closures.
-  // Join the in-flight attempt's own result instead of starting a new one.
-  if (activeSpeechTranscriptions.has(videoId)) {
-    return activeSpeechTranscriptions.get(videoId).resultPromise;
-  }
-
-  const chunkRecordLists = [];
-  let settled = false;
-  let recorderError = null;
-  let resolveResult;
-  const resultPromise = new Promise((resolve) => {
-    resolveResult = resolve;
-  });
-
-  const stop = () => {
-    chrome.tabs
-      .sendMessage(tab.id, { action: "stopSpeechTranscriptionRecording", videoId })
-      .catch(() => {});
-  };
-  activeSpeechTranscriptions.set(videoId, { stop, resultPromise });
-
-  function finish() {
-    if (settled) return;
-    settled = true;
-    activeSpeechTranscriptions.delete(videoId);
-
-    if (YTD_SPEECH_TRANSCRIPTION.allChunksFailed(chunkRecordLists)) {
-      // The recorder failing to even start (no <video>, no audio track) is a
-      // different, more specific situation than every chunk's upload
-      // failing — keep that distinction visible instead of collapsing both
-      // into the same generic "did not produce anything" message.
-      if (recorderError === "NO_AUDIO_TRACK") {
-        resolveResult({
-          success: false,
-          error: "STT_NO_AUDIO_TRACK",
-          message: "本视频没有字幕,且视频没有可转录的音轨。",
-        });
-        return;
-      }
-      if (recorderError === "NO_VIDEO_ELEMENT") {
-        resolveResult({
-          success: false,
-          error: "PLAYER_NOT_READY",
-          message: "播放器还没加载完成,请稍后重试。",
-        });
-        return;
-      }
-      resolveResult({
-        success: false,
-        error: "STT_REQUEST_ERROR",
-        message: "本视频没有字幕。语音转录未能生成任何内容。",
-      });
-      return;
-    }
-
-    const stitched = YTD_SPEECH_TRANSCRIPTION.stitchChunks(chunkRecordLists);
-    resolveResult({
-      success: true,
-      transcript: stitched.transcript,
-      transcriptText: stitched.transcriptTextPlain,
-      transcriptTextTimestamped: stitched.transcriptTextTimestamped,
-      language: null,
-      captionKind: "speech",
-      hasFailures: stitched.hasFailures,
-    });
-  }
-
-  async function onChunkMessage(message, sender) {
-    if (message.action !== "speechTranscriptionChunk") return;
-    if (message.videoId !== videoId) return;
-    if (sender.tab?.id !== tab.id) return;
-    if (settled) return;
-
-    if (message.error) {
-      // The recorder couldn't start at all (no <video>, no audio track).
-      recorderError = message.error;
-      chunkRecordLists[0] = [
-        YTD_SPEECH_TRANSCRIPTION.failedChunkRecord(0, 0),
-      ];
-      finish();
-      return;
-    }
-
-    if (message.audioBytes) {
-      const audioBlob = new Blob([new Uint8Array(message.audioBytes)], {
-        type: message.mimeType,
-      });
-      pushTranscriptProgress(
-        "正在语音转录",
-        `已转录到 ${Math.floor(message.offsetSeconds / 60)} 分钟`,
-        message.offsetSeconds,
-      );
-      try {
-        const verboseJson = await requestSttTranscriptionWithRetry(
-          audioBlob,
-          message.mimeType,
-          settings,
-        );
-        chunkRecordLists[message.chunkIndex] =
-          YTD_SPEECH_TRANSCRIPTION.alignChunkSegments(
-            verboseJson,
-            message.offsetSeconds,
-          );
-      } catch (error) {
-        console.error("Speech Transcription chunk error:", error);
-        chunkRecordLists[message.chunkIndex] = [
-          YTD_SPEECH_TRANSCRIPTION.failedChunkRecord(
-            message.offsetSeconds,
-            message.durationSeconds,
-          ),
-        ];
-      }
-      pushTranscriptProgress(
-        "正在语音转录",
-        `已转录到 ${Math.floor((message.offsetSeconds + message.durationSeconds) / 60)} 分钟`,
-        message.offsetSeconds + message.durationSeconds,
-      );
-    }
-
-    if (message.isFinal) finish();
-  }
-
-  chrome.runtime.onMessage.addListener(onChunkMessage);
-  if (typeof panel.onDisconnect === "function") {
-    panel.onDisconnect(stop);
-  }
-
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      func: injectSpeechTranscriptionRecorder,
-      args: [videoId, STT_CHUNK_DURATION_SECONDS],
-    });
-  } catch (error) {
-    chrome.runtime.onMessage.removeListener(onChunkMessage);
-    activeSpeechTranscriptions.delete(videoId);
-    return {
-      success: false,
-      error: "PLAYER_NOT_READY",
-      message: "播放器还没加载完成,请稍后重试。",
-    };
-  }
-
-  const result = await resultPromise;
-  chrome.runtime.onMessage.removeListener(onChunkMessage);
-  return result;
-}
 
 // ============================================================
 // JSON HELPER
@@ -1422,18 +386,18 @@ function parseLooseJson(text) {
 }
 
 // ============================================================
-// DEEPSEEK ANALYSIS
+// AI ANALYSIS
 // ============================================================
 
 /**
- * Sends the transcript to DeepSeek for analysis.
+ * Sends the transcript to the AI Provider for analysis.
  *
- * The prompt asks the model to produce chapters covering the whole video
+ * The prompt asks the model to produce chapters covering the whole session
  * and 3-5 key quotes with timestamps.
  *
  * @param {string} transcriptText - The full transcript as plain text
- * @param {string} videoTitle - The video title
- * @param {string} channelName - The channel name
+ * @param {string} videoTitle - The session/lesson title
+ * @param {string} channelName - The course/channel name
  * @returns {Object} - { success, analysis } or { success: false, error }
  */
 async function handleAnalyzeTranscript(
@@ -1449,7 +413,7 @@ async function handleAnalyzeTranscript(
       return {
         success: false,
         error: "NO_AI_KEY",
-        message: "DeepSeek API key not configured. Open YouTube Digest Settings.",
+        message: "DeepSeek API key not configured. Open Learning Digest Settings.",
       };
     }
 
@@ -1476,7 +440,7 @@ async function handleAnalyzeTranscript(
     const maxTimestampSeconds = effectiveSeconds;
 
     // The "last chapter must be after" threshold (75% in) forces the model to
-    // cover the WHOLE video instead of front-loading chapters near the start.
+    // cover the WHOLE session instead of front-loading chapters near the start.
     // We do NOT prescribe a chapter count — the model picks the natural splits.
     const lateThresholdSeconds = Math.floor(effectiveSeconds * 0.75);
     const lateThreshold = `${Math.floor(lateThresholdSeconds / 60)}:${String(
@@ -1503,7 +467,7 @@ async function handleAnalyzeTranscript(
       promptVariables,
     );
 
-    debugLog("[YouTube Digest] Requesting video analysis", settings.aiModel);
+    debugLog("[Learning Digest] Requesting session analysis", settings.aiModel);
     const { text: responseText } = await requestAiCompletion({
       maxTokens: 8192,
       responseFormat: { type: "json_object" },
@@ -1548,10 +512,10 @@ async function handleAnalyzeTranscript(
 }
 
 /**
- * Validates all timestamps in the analysis and fixes any that exceed video duration.
+ * Validates all timestamps in the analysis and fixes any that exceed content duration.
  * This is a safety net to prevent hallucinated timestamps from reaching the UI.
  *
- * @param {Object} analysis - The parsed analysis from DeepSeek
+ * @param {Object} analysis - The parsed analysis from the AI Provider
  * @param {number} maxSeconds - Maximum valid timestamp in seconds
  * @returns {Object} - Analysis with validated timestamps
  */
@@ -1622,354 +586,18 @@ function validateAndFixTimestamps(analysis, maxSeconds) {
 }
 
 // ============================================================
-// VIDEO INFO EXTRACTION
-// ============================================================
-
-/**
- * Gets video info (title, channel, description) from the active YouTube tab.
- * We do this by asking the content script to read the page.
- */
-async function handleGetVideoInfo(tabId) {
-  try {
-    const response = await chrome.tabs.sendMessage(tabId, {
-      action: "getVideoInfo",
-    });
-    return response;
-  } catch (error) {
-    return { title: "", channelName: "", description: "" };
-  }
-}
-
-// ============================================================
 // EXPLAIN SELECTION
 // ============================================================
 
 /**
- * Explains selected text using DeepSeek.
+ * Explains selected text using the AI Provider.
  * Provides context, definitions, and clarification for complex terms.
  *
  * @param {string} selectedText - The text the user selected
  * @param {string} transcriptContext - Surrounding transcript for context
- * @param {string} videoTitle - Video title for additional context
+ * @param {string} videoTitle - Session title for additional context
  * @returns {Object} - { success, explanation } or { success: false, error }
  */
-// ============================================================
-// NOTE MANAGEMENT
-// ============================================================
-
-/**
- * Saves a note at a timestamp. Exact selected text is stored directly.
- * Other note requests find the relevant transcript line and clean it up.
- */
-async function handleSaveNote(
-  videoId,
-  timestamp,
-  videoTitle,
-  channelName,
-  selectedText,
-) {
-  try {
-    const canonicalVideoUrl = YTD_SETTINGS.canonicalYouTubeUrl(videoId);
-    const safeTimestamp = Math.max(0, Math.floor(Number(timestamp) || 0));
-    const exactSelectedText =
-      typeof selectedText === "string"
-        ? selectedText.replace(/\s+/g, " ").trim().slice(0, 3000)
-        : "";
-
-    // A selected transcript note is already the exact text the user wants.
-    // Save it directly without a transcript fetch or an AI cleanup request.
-    if (exactSelectedText) {
-      const minutes = Math.floor(safeTimestamp / 60);
-      const seconds = safeTimestamp % 60;
-      const note = {
-        id: `note_${Date.now()}`,
-        videoId,
-        videoTitle:
-          typeof videoTitle === "string"
-            ? videoTitle.slice(0, 500)
-            : "Untitled Video",
-        channelName:
-          typeof channelName === "string" ? channelName.slice(0, 300) : "",
-        timestamp: `${minutes}:${String(seconds).padStart(2, "0")}`,
-        timestampSeconds: safeTimestamp,
-        timestampedUrl: `${canonicalVideoUrl}&t=${safeTimestamp}s`,
-        text: exactSelectedText,
-        rawText: exactSelectedText,
-        createdAt: Date.now(),
-      };
-
-      await saveNoteToStorage(note);
-      chrome.runtime.sendMessage({ action: "noteSaved", note }).catch(() => {});
-      return { success: true, note };
-    }
-
-    // First, try to get the transcript from the digest cache. The side panel
-    // saves digests to chrome.storage.LOCAL — this used to look in
-    // storage.session (the wrong store), so it missed every time and
-    // refetched the transcript on every saved note.
-    let transcript = null;
-    try {
-      const cached = await chrome.storage.local.get(`digest_${videoId}`);
-      if (cached[`digest_${videoId}`]?.transcript) {
-        transcript = cached[`digest_${videoId}`].transcript;
-        debugLog("[YouTube Digest] Using cached transcript for note");
-      }
-    } catch (e) {
-      debugLog("[YouTube Digest] No cached transcript, fetching...");
-    }
-
-    // If no cached transcript, fetch it
-    if (!transcript) {
-      const transcriptResult = await handleFetchTranscript(videoId);
-      if (!transcriptResult.success) {
-        return { success: false, error: "Could not fetch transcript" };
-      }
-      transcript = transcriptResult.transcript;
-    }
-
-    // Find the transcript line at the current timestamp
-    // Look for the line that contains this timestamp (or the closest one before)
-    let matchedLine = null;
-    let matchedIndex = 0;
-    let contextLines = [];
-    let beforeLine = null; // a few sentences before
-    let afterLine = null; // a few sentences after
-
-    for (let i = 0; i < transcript.length; i++) {
-      const line = transcript[i];
-      if (
-        line.start <= safeTimestamp &&
-        (!transcript[i + 1] || transcript[i + 1].start > safeTimestamp)
-      ) {
-        matchedLine = line;
-        matchedIndex = i;
-
-        // Build a buffer of 2 lines before and 4 lines after the target.
-        // This gives the model enough text to find a natural sentence boundary
-        // and complete a thought that spans multiple short caption chunks.
-        const beforeLines = [];
-        for (let j = 1; j <= 2 && i - j >= 0; j++) {
-          beforeLines.unshift(transcript[i - j].text);
-        }
-        if (beforeLines.length > 0) {
-          beforeLine = beforeLines.join(" ");
-        }
-
-        const afterLines = [];
-        for (let j = 1; j <= 4 && i + j < transcript.length; j++) {
-          afterLines.push(transcript[i + j].text);
-        }
-        if (afterLines.length > 0) {
-          afterLine = afterLines.join(" ");
-        }
-
-        // Get broader context (8 lines before and 12 lines after) for understanding
-        const startIdx = Math.max(0, i - 8);
-        const endIdx = Math.min(transcript.length - 1, i + 12);
-        for (let j = startIdx; j <= endIdx; j++) {
-          contextLines.push(transcript[j].text);
-        }
-        break;
-      }
-    }
-
-    if (!matchedLine) {
-      // Fallback: use the last line if timestamp is beyond transcript
-      matchedLine = transcript[transcript.length - 1];
-      matchedIndex = transcript.length - 1;
-
-      // Get buffer sentence (only before, since we're at the end)
-      const beforeLines = [];
-      for (let j = 1; j <= 2 && matchedIndex - j >= 0; j++) {
-        beforeLines.unshift(transcript[matchedIndex - j].text);
-      }
-      if (beforeLines.length > 0) {
-        beforeLine = beforeLines.join(" ");
-      }
-
-      const startIdx = Math.max(0, matchedIndex - 8);
-      for (let j = startIdx; j <= matchedIndex; j++) {
-        contextLines.push(transcript[j].text);
-      }
-    }
-
-    // Clean up the text with DeepSeek.
-    const cleanedText = await cleanupNoteText(
-      matchedLine.text,
-      beforeLine,
-      afterLine,
-      contextLines.join(" "),
-      videoTitle,
-    );
-
-    // Format timestamp as MM:SS
-    const minutes = Math.floor(safeTimestamp / 60);
-    const seconds = safeTimestamp % 60;
-    const formattedTimestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-
-    // Create timestamped URL
-    const timestampedUrl = `${canonicalVideoUrl}&t=${safeTimestamp}s`;
-
-    // Create the note object
-    const note = {
-      id: `note_${Date.now()}`,
-      videoId: videoId,
-      videoTitle:
-        typeof videoTitle === "string"
-          ? videoTitle.slice(0, 500)
-          : "Untitled Video",
-      channelName:
-        typeof channelName === "string" ? channelName.slice(0, 300) : "",
-      timestamp: formattedTimestamp,
-      timestampSeconds: safeTimestamp,
-      timestampedUrl: timestampedUrl,
-      text: cleanedText,
-      rawText: matchedLine.text,
-      createdAt: Date.now(),
-    };
-
-    // Save to storage
-    await saveNoteToStorage(note);
-
-    // Notify side panel to refresh notes list
-    chrome.runtime.sendMessage({ action: "noteSaved", note }).catch(() => {});
-
-    return { success: true, note };
-  } catch (error) {
-    console.error("[YouTube Digest] Save note error:", error);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * Cleans up transcript lines using DeepSeek.
- * Takes the target line plus buffer sentences (1 before, 1 after).
- * Uses JSON output to prevent any preambles from appearing.
- */
-async function cleanupNoteText(
-  targetText,
-  beforeText,
-  afterText,
-  fullContext,
-  videoTitle,
-) {
-  const settings = await getSettings();
-  if (!settings.aiApiKey) {
-    return [beforeText, targetText, afterText].filter(Boolean).join(" ");
-  }
-
-  try {
-    debugLog("[YouTube Digest] Requesting note cleanup");
-    const variables = {
-      videoTitle: videoTitle || "Unknown",
-      fullContext,
-      beforeText: beforeText || "(none)",
-      targetText,
-      afterText: afterText || "(none)",
-    };
-    const systemPrompt = await loadPromptSection(
-      "note-cleanup.md",
-      "System prompt",
-      variables,
-    );
-    const userPrompt = await loadPromptSection(
-      "note-cleanup.md",
-      "User prompt",
-      variables,
-    );
-    const { text: resultText } = await requestAiCompletion({
-      maxTokens: 512,
-      responseFormat: { type: "json_object" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    });
-
-    let result = resultText.trim() || targetText;
-
-    // Parse the JSON response (tolerating trailing commas / fences).
-    try {
-      const parsed = parseLooseJson(result);
-      if (typeof parsed.quote === "string" && parsed.quote.trim()) {
-        return parsed.quote.trim().slice(0, 3000);
-      }
-    } catch (parseError) {
-      console.warn(
-        "[YouTube Digest] JSON parse failed for note, stripping preambles:",
-        parseError,
-      );
-      result = result.replace(
-        /^(Here'?s?( the)?( cleaned)?( version)?:?\s*)/i,
-        "",
-      );
-      result = result.replace(
-        /^(The cleaned (quote|text|version)( is)?:?\s*)/i,
-        "",
-      );
-      result = result.replace(/^(I will.*?:?\s*)/i, "");
-      result = result.replace(/^(Cleaned:?\s*)/i, "");
-      result = result.replace(/^["']|["']$/g, "");
-    }
-
-    return result.slice(0, 3000);
-  } catch (e) {
-    console.error("[YouTube Digest] Cleanup error:", e);
-  }
-
-  // Return combined raw text if cleanup fails
-  return [beforeText, targetText, afterText].filter(Boolean).join(" ");
-}
-
-/**
- * Saves a note to chrome.storage.local
- */
-async function saveNoteToStorage(note) {
-  const result = await chrome.storage.local.get("ytd_notes");
-  const notes = result.ytd_notes || [];
-  notes.unshift(note); // Add to beginning (newest first)
-
-  // Keep only last 100 notes to prevent storage bloat
-  if (notes.length > 100) {
-    notes.splice(100);
-  }
-
-  await chrome.storage.local.set({ ytd_notes: notes });
-}
-
-/**
- * Gets notes from storage, optionally filtered by video ID
- */
-async function handleGetNotes(videoId) {
-  try {
-    const result = await chrome.storage.local.get("ytd_notes");
-    let notes = result.ytd_notes || [];
-
-    if (videoId) {
-      notes = notes.filter((n) => n.videoId === videoId);
-    }
-
-    return { success: true, notes };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * Deletes a note by ID
- */
-async function handleDeleteNote(noteId) {
-  try {
-    const result = await chrome.storage.local.get("ytd_notes");
-    let notes = result.ytd_notes || [];
-    notes = notes.filter((n) => n.id !== noteId);
-    await chrome.storage.local.set({ ytd_notes: notes });
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
 async function handleExplainSelection(
   selectedText,
   transcriptContext,
@@ -2001,7 +629,7 @@ async function handleExplainSelection(
       variables,
     );
 
-    debugLog("[YouTube Digest] Requesting selection explanation");
+    debugLog("[Learning Digest] Requesting selection explanation");
     const { text: explanation } = await requestAiCompletion({
       maxTokens: 1024,
       messages: [
@@ -2020,6 +648,115 @@ async function handleExplainSelection(
       success: false,
       error: error.message || "Failed to explain selection",
     };
+  }
+}
+
+// ============================================================
+// NOTE MANAGEMENT
+// ============================================================
+
+/**
+ * Saves a note for the current Session. The side panel supplies the exact
+ * selected transcript text, which is stored directly without an AI cleanup
+ * request.
+ */
+async function handleSaveNote(
+  videoId,
+  timestamp,
+  videoTitle,
+  channelName,
+  selectedText,
+) {
+  try {
+    const safeTimestamp = Math.max(0, Math.floor(Number(timestamp) || 0));
+    const exactSelectedText =
+      typeof selectedText === "string"
+        ? selectedText.replace(/\s+/g, " ").trim().slice(0, 3000)
+        : "";
+
+    // A selected transcript note is already the exact text the user wants.
+    // Save it directly without asking the AI to rewrite the text.
+    if (!exactSelectedText) {
+      return {
+        success: false,
+        error: "NO_SELECTED_TEXT",
+        message: "Select transcript text in the side panel to save a note.",
+      };
+    }
+
+    const minutes = Math.floor(safeTimestamp / 60);
+    const seconds = safeTimestamp % 60;
+    const note = {
+      id: `note_${Date.now()}`,
+      videoId,
+      videoTitle:
+        typeof videoTitle === "string"
+          ? videoTitle.slice(0, 500)
+          : "Untitled Session",
+      channelName:
+        typeof channelName === "string" ? channelName.slice(0, 300) : "",
+      timestamp: `${minutes}:${String(seconds).padStart(2, "0")}`,
+      timestampSeconds: safeTimestamp,
+      text: exactSelectedText,
+      rawText: exactSelectedText,
+      createdAt: Date.now(),
+    };
+
+    await saveNoteToStorage(note);
+    chrome.runtime.sendMessage({ action: "noteSaved", note }).catch(() => {});
+    return { success: true, note };
+  } catch (error) {
+    console.error("[Learning Digest] Save note error:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Saves a note to chrome.storage.local
+ */
+async function saveNoteToStorage(note) {
+  const result = await chrome.storage.local.get("ytd_notes");
+  const notes = result.ytd_notes || [];
+  notes.unshift(note); // Add to beginning (newest first)
+
+  // Keep only last 100 notes to prevent storage bloat
+  if (notes.length > 100) {
+    notes.splice(100);
+  }
+
+  await chrome.storage.local.set({ ytd_notes: notes });
+}
+
+/**
+ * Gets notes from storage, optionally filtered by session ID
+ */
+async function handleGetNotes(videoId) {
+  try {
+    const result = await chrome.storage.local.get("ytd_notes");
+    let notes = result.ytd_notes || [];
+
+    if (videoId) {
+      notes = notes.filter((n) => n.videoId === videoId);
+    }
+
+    return { success: true, notes };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Deletes a note by ID
+ */
+async function handleDeleteNote(noteId) {
+  try {
+    const result = await chrome.storage.local.get("ytd_notes");
+    let notes = result.ytd_notes || [];
+    notes = notes.filter((n) => n.id !== noteId);
+    await chrome.storage.local.set({ ytd_notes: notes });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 }
 
@@ -2080,7 +817,7 @@ function validateTranscriptBatchRequest(content) {
 function looksLikeChineseTranslation(text, sourceText) {
   const latinLetters = (sourceText.match(/[A-Za-z]/g) || []).length;
   if (latinLetters < 20) return true;
-  return /[\u3400-\u9fff]/.test(text);
+  return /[㐀-鿿]/.test(text);
 }
 
 /**
@@ -2120,11 +857,11 @@ function normalizeTranslatedSegmentBatch(parsed, sourceSegments) {
 }
 
 /**
- * Translates content using DeepSeek.
+ * Translates content using the AI Provider.
  * @param {Object} content - JSON object containing semantic transcript segments
  * @param {string} contentType - 'transcriptBatch' or 'interfaceBatch'
  * @param {string} targetLanguage - 'zh' for Simplified Chinese
- * @param {string} videoTitle - The video title (for context)
+ * @param {string} videoTitle - The session title (for context)
  * @returns {Object} - { success, translatedContent } or { success: false, error }
  */
 async function handleTranslateContent(
@@ -2200,13 +937,13 @@ async function handleTranslateContent(
     }
     return { success: true, translatedContent: aligned };
   } catch (error) {
-    console.error("[YouTube Digest] Translation error:", error);
+    console.error("[Learning Digest] Translation error:", error);
     return { success: false, error: error.message || "Translation failed" };
   }
 }
 
 /**
- * Makes a single DeepSeek call for translation.
+ * Makes a single AI Provider call for translation.
  * Uses temperature 0.3 for consistent, predictable translations.
  *
  * @param {string} systemPrompt - The system-level instructions
@@ -2250,10 +987,4 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   normalizeTranslatedSegmentBatch,
   handleSaveNote,
   handleTranslateContent,
-  closePanelForTab,
-  updatePanelForTab,
-  isRetryableSttError,
-  requestSttTranscriptionWithRetry,
-  capturePlayerCaptionRequest,
-  ensureYouTubeContentScript,
 };

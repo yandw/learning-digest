@@ -161,6 +161,60 @@ test("action click on an unrecognized page only opens the panel", async () => {
   assert.equal(streamRequested, false);
 });
 
+// Chrome only honors a getMediaStreamId call made while the click's gesture
+// is still fresh; the panel open and the storage work that used to run first
+// let the gesture unwind, and every real Session start died on
+// "Extension has not been invoked" (observed live as orphaned active
+// snapshots with zero segments). The stream fetch must come first.
+
+test("action click fetches the streamId before opening the panel", async () => {
+  const order = [];
+  const { handleActionClicked } = loadBackgroundHelpers({
+    settings: baseSettings(),
+    getMediaStreamId: async () => {
+      order.push("getMediaStreamId");
+      return "test-stream-id";
+    },
+    sidePanel: {
+      setPanelBehavior() {},
+      setOptions: () => Promise.resolve(),
+      open: () => {
+        order.push("sidePanel.open");
+        return Promise.resolve();
+      },
+    },
+  });
+
+  await handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+
+  assert.deepEqual(order, ["getMediaStreamId", "sidePanel.open"]);
+});
+
+test("handleStartLearning consumes a pre-fetched streamId without fetching again", async () => {
+  let fetchCount = 0;
+  const sentMessages = [];
+  const { handleStartLearning } = loadBackgroundHelpers({
+    settings: baseSettings(),
+    sentMessages,
+    getMediaStreamId: async () => {
+      fetchCount += 1;
+      return "late-id";
+    },
+  });
+
+  const result = await handleStartLearning({
+    url: REPLAY_URL,
+    tabId: 7,
+    streamId: "pre-fetched-id",
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(fetchCount, 0, "the fresh streamId is used, no second fetch");
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.streamId, "pre-fetched-id");
+});
+
 test("action click start failure broadcasts the reason to the panel", async () => {
   const sentMessages = [];
   const { handleActionClicked } = loadBackgroundHelpers({

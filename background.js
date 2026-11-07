@@ -257,25 +257,51 @@ chrome.action.onClicked.addListener((tab) => {
   void handleActionClicked(tab);
 });
 
-async function handleActionClicked(tab) {
+async function openPanelQuietly(tab) {
   try {
     await chrome.sidePanel.open({ tabId: tab.id, windowId: tab.windowId });
   } catch (_error) {
     // The panel may already be open for this tab; opening is best-effort.
   }
+}
 
+async function handleActionClicked(tab) {
   // Without the "tabs" permission tab.url is only populated when the
   // extension has host access to the page; on unrecognized hosts it is
   // simply absent and we only open the panel.
   if (!tab?.url) {
     console.error("[Learning Digest] icon click ignored: tab.url is empty", tab);
+    await openPanelQuietly(tab);
     return;
   }
   const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tab.url);
   if (recognition.kind === "none") {
     console.error("[Learning Digest] icon click ignored: page not recognized:", tab.url);
+    await openPanelQuietly(tab);
     return;
   }
+
+  // First async act on the capture path, before ANY other await: Chrome
+  // grants tabCapture its activeTab-style "invoked" state on this click and
+  // only honors a getMediaStreamId call made while the click's gesture is
+  // still fresh. Everything that used to run first (sidePanel.open, storage
+  // reads/writes) let the gesture unwind, and the late fetch then always
+  // failed with "Extension has not been invoked" — every Session start died
+  // there. The streamId itself expires after a few seconds, but the panel
+  // open and the remaining setup before consumption are millisecond-scale.
+  let streamId = null;
+  try {
+    streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+  } catch (error) {
+    // handleStartLearning retries and maps the failure to the actionable
+    // instruction the panel shows; this log keeps the early path loud.
+    console.error(
+      "[Learning Digest] early streamId fetch failed:",
+      error?.message || error,
+    );
+  }
+
+  await openPanelQuietly(tab);
 
   const existing = await ensureCaptureResumed();
   if (existing) {
@@ -283,7 +309,7 @@ async function handleActionClicked(tab) {
     return; // Session already running; the panel shows its state.
   }
 
-  const result = await handleStartLearning({ url: tab.url, tabId: tab.id });
+  const result = await handleStartLearning({ url: tab.url, tabId: tab.id, streamId });
   if (result && !result.success) {
     // The panel just opened but may still be loading; retry briefly so the
     // failure reason is visible instead of a silently empty session view.
@@ -1323,7 +1349,13 @@ async function handleStartLearning(message) {
   await persistContextPointer(context);
 
   try {
-    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: context.tabId });
+    // The icon-click path supplies a streamId fetched while the click's
+    // gesture was still fresh (see handleActionClicked); direct callers
+    // fetch here, which outside a user gesture fails with Chrome's
+    // not-invoked error and surfaces the actionable instruction below.
+    const streamId =
+      message.streamId ||
+      (await chrome.tabCapture.getMediaStreamId({ targetTabId: context.tabId }));
     await ensureOffscreen();
     const started = await sendOffscreen({
       action: "captureStart",

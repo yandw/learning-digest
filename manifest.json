@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Learning Digest",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "minimum_chrome_version": "116",
-  "description": "Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest.",
+  "description": "把课程音频变成学习资料：分段中文转写、滚动摘要和完整的会话总结。",
   "permissions": ["sidePanel", "storage", "tabCapture", "offscreen"],
   "host_permissions": [
     "https://*.xiaoe-tech.com/*",

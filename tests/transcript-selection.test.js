@@ -11,7 +11,7 @@ const source = fs.readFileSync(
 test("the selection toolbar preserves selection and contains pointer events", () => {
   assert.match(
     source,
-    /class="explain-btn"[\s\S]*?>Explain<[\s\S]*class="selection-note-btn"[\s\S]*?>Note</,
+    /class="explain-btn"[\s\S]*?>解释<[\s\S]*class="selection-note-btn"[\s\S]*?>笔记</,
   );
   assert.match(
     source,

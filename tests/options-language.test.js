@@ -29,27 +29,23 @@ function createLocalStorage() {
   };
 }
 
-test("Settings copy covers English and Simplified Chinese", () => {
-  assert.equal(options.translate("en", "pageTitle"), "Learning Digest Settings");
+test("Settings copy is Chinese-only", () => {
   assert.equal(options.translate("zh-CN", "pageTitle"), "Learning Digest 设置");
-  assert.equal(options.translate("en", "saveSettings"), "Save settings");
   assert.equal(options.translate("zh-CN", "saveSettings"), "保存设置");
   assert.equal(
     options.translate("zh-CN", "clearedDigests", { count: 2 }),
     "已清除 2 条缓存摘要。",
   );
 
-  assert.deepEqual(
-    Object.keys(options.COPY.en).sort(),
-    Object.keys(options.COPY["zh-CN"]).sort(),
-  );
+  // Any non-Chinese request falls back to Chinese; there is no English copy.
+  assert.equal(options.translate("en", "pageTitle"), "Learning Digest 设置");
+  assert.deepEqual(Object.keys(options.COPY), ["zh-CN"]);
 
   const html = read("options.html");
   const referencedKeys = [
     ...html.matchAll(/data-i18n(?:-html|-aria-label)?="([^"]+)"/g),
   ].map((match) => match[1]);
   for (const key of referencedKeys) {
-    assert.ok(options.COPY.en[key], `Missing English copy for ${key}`);
     assert.ok(options.COPY["zh-CN"][key], `Missing Chinese copy for ${key}`);
   }
   assert.doesNotMatch(JSON.stringify(options.COPY), /—/);
@@ -90,35 +86,14 @@ test("non-extension preview safely persists language in localStorage", async () 
 
   const reopenedSession = options.createStorageAdapter(null, localStorage);
   assert.equal(await options.readPreferredLanguage(reopenedSession), "zh-CN");
-  assert.equal(options.normalizeLanguage("unsupported"), "en");
+  assert.equal(options.normalizeLanguage("unsupported"), "zh-CN");
+  assert.equal(options.normalizeLanguage("en"), "zh-CN");
 });
 
-test("language controls expose a labelled group and one pressed button", () => {
+test("options page has no language switcher", () => {
   const html = read("options.html");
-  assert.match(
-    html,
-    /class="language-switch"[\s\S]*role="group"[\s\S]*aria-label="Interface language"/,
-  );
-  assert.match(
-    html,
-    /data-language="en"[\s\S]*aria-pressed="true"[\s\S]*English/,
-  );
-  assert.match(
-    html,
-    /data-language="zh-CN"[\s\S]*aria-pressed="false"[\s\S]*中文/,
-  );
-
-  const buttons = ["en", "zh-CN"].map((language) => ({
-    dataset: { language },
-    attributes: {},
-    setAttribute(name, value) {
-      this.attributes[name] = value;
-    },
-  }));
-  options.updateLanguageButtonState(buttons, "zh-CN");
-
-  assert.equal(buttons[0].attributes["aria-pressed"], "false");
-  assert.equal(buttons[1].attributes["aria-pressed"], "true");
+  assert.doesNotMatch(html, /language-switch/);
+  assert.doesNotMatch(html, /data-language=/);
 });
 
 test("customization guidance is concise and has a visible placeholder reminder", () => {
@@ -136,10 +111,6 @@ test("customization guidance is concise and has a visible placeholder reminder",
     "复制前，请先把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。",
   );
   assert.equal(
-    options.translate("en", "customizationStepFolder"),
-    "Open the extracted Learning Digest project folder in your coding agent.",
-  );
-  assert.equal(
     options.translate("zh-CN", "customizationStepFolder"),
     "在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。",
   );
@@ -147,39 +118,32 @@ test("customization guidance is concise and has a visible placeholder reminder",
   assert.doesNotMatch(html, /%USERPROFILE%\\Documents\\learning-digest/);
 });
 
-test("customization prompt switches languages and preserves technical values", () => {
+test("customization prompt is prefilled in Chinese", () => {
   const html = read("options.html");
-  const englishPrompt = options.translate("en", "customizationPrompt");
   const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
 
   assert.doesNotMatch(html, /supadata/i);
   assert.match(html, /placeholder="Paste your OpenRouter key"/);
   assert.match(html, /https:\/\/openrouter\.ai\/keys/);
-  assert.ok(html.includes(`>${englishPrompt}</textarea>`));
+  assert.ok(html.includes(`>${chinesePrompt}</textarea>`));
   assert.match(chinesePrompt, /^请把当前本地 Learning Digest 工作区改为使用/);
-  assert.notEqual(chinesePrompt, englishPrompt);
-  assert.match(
-    englishPrompt,
-    /Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek\. Handle provider-specific rules separately so one provider does not affect another\./,
-  );
   assert.match(
     chinesePrompt,
     /DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。/,
   );
 
-  for (const prompt of [englishPrompt, chinesePrompt]) {
-    assert.match(prompt, /\[PROVIDER\]/);
-    assert.match(prompt, /\[MODEL\]/);
-    assert.match(prompt, /manifest\.json/);
-    assert.match(prompt, /README\.md/);
-    assert.match(prompt, /README\.zh-CN\.md/);
-    assert.match(prompt, /PRIVACY\.md/);
-    assert.match(prompt, /SECURITY\.md/);
-    assert.match(prompt, /npm test/);
-    assert.match(prompt, /npm run check/);
-    assert.match(prompt, /npm run package/);
-    assert.doesNotMatch(prompt, /—/);
-  }
+  assert.match(chinesePrompt, /\[PROVIDER\]/);
+  assert.match(chinesePrompt, /\[MODEL\]/);
+  assert.match(chinesePrompt, /manifest\.json/);
+  assert.match(chinesePrompt, /README\.md/);
+  assert.match(chinesePrompt, /README\.zh-CN\.md/);
+  assert.match(chinesePrompt, /PRIVACY\.md/);
+  assert.match(chinesePrompt, /SECURITY\.md/);
+  assert.match(chinesePrompt, /npm test/);
+  assert.match(chinesePrompt, /npm run check/);
+  assert.match(chinesePrompt, /npm run package/);
+  assert.doesNotMatch(chinesePrompt, /—/);
+
   const textareaTag = html.match(/<textarea id="customizationPrompt"[^>]*>/);
   assert.ok(textareaTag, "Expected the customization prompt textarea");
   assert.doesNotMatch(textareaTag[0], /\sreadonly(?:\s|=|>)/);
@@ -190,33 +154,28 @@ test("customization prompt switches languages and preserves technical values", (
   assert.doesNotMatch(html, /<textarea id="customizationPrompt"[^>]*data-i18n/);
 });
 
-test("language switching preserves edited prompt drafts for the page session", () => {
+test("edited prompt drafts survive a same-language round trip", () => {
   const drafts = options.createPromptDrafts();
   const chineseDefault = drafts["zh-CN"];
+  assert.equal(typeof chineseDefault, "string");
 
-  const chinese = options.switchPromptDraft(
-    drafts,
-    "en",
-    "zh-CN",
-    "Edited English [PROVIDER] [MODEL]",
-  );
-  assert.equal(chinese.prompt, chineseDefault);
-
-  const english = options.switchPromptDraft(
+  const edited = options.switchPromptDraft(
     drafts,
     "zh-CN",
-    "en",
-    "已编辑中文 [PROVIDER] [MODEL]",
-  );
-  assert.equal(english.prompt, "Edited English [PROVIDER] [MODEL]");
-
-  const restoredChinese = options.switchPromptDraft(
-    drafts,
-    "en",
     "zh-CN",
-    english.prompt,
+    "已编辑 [PROVIDER] [MODEL]",
   );
-  assert.equal(restoredChinese.prompt, "已编辑中文 [PROVIDER] [MODEL]");
+  assert.equal(edited.prompt, "已编辑 [PROVIDER] [MODEL]");
+  assert.equal(edited.language, "zh-CN");
+
+  // Unknown languages normalize to Chinese instead of falling back to English.
+  const normalized = options.switchPromptDraft(
+    drafts,
+    "fr",
+    "en",
+    "ignored",
+  );
+  assert.equal(normalized.language, "zh-CN");
 });
 
 test("copy helper writes the current edited textarea value", async () => {
@@ -236,8 +195,9 @@ test("copy helper writes the current edited textarea value", async () => {
 });
 
 test("localized prompt updates preserve the textarea selection and scroll", () => {
+  const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
   const textarea = {
-    value: options.translate("en", "customizationPrompt"),
+    value: chinesePrompt,
     selectionStart: 12,
     selectionEnd: 48,
     selectionDirection: "forward",
@@ -249,7 +209,6 @@ test("localized prompt updates preserve the textarea selection and scroll", () =
       this.selectionDirection = direction;
     },
   };
-  const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
 
   options.updateLocalizedPrompt(textarea, chinesePrompt);
 

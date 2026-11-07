@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -22,50 +22,19 @@
             class="settings-btn"
             id="settingsBtn"
             type="button"
-            title="Open Learning Digest settings"
-            aria-label="Open Learning Digest settings"
+            title="打开 Learning Digest 设置"
+            aria-label="打开 Learning Digest 设置"
           >
-            Settings
+            设置
           </button>
-          <div
-            class="transcript-mode-control global-language-control"
-            id="transcriptModeControl"
-            role="group"
-            aria-label="Content language"
-            style="display: none"
-          >
-            <button
-              class="transcript-mode-btn active"
-              type="button"
-              data-transcript-mode="original"
-              aria-pressed="true"
-            >Original</button>
-            <button
-              class="transcript-mode-btn"
-              type="button"
-              data-transcript-mode="zh"
-              aria-pressed="false"
-            >中文</button>
-            <button
-              class="transcript-mode-btn"
-              type="button"
-              data-transcript-mode="bilingual"
-              aria-pressed="false"
-            >双语</button>
-            <span
-              class="translation-spinner"
-              id="langSpinner"
-              aria-label="Translating"
-            ></span>
-          </div>
         </div>
       </div>
 
       <!-- Tab navigation -->
       <div class="tabs" id="tabsNav" style="display: none">
-        <button class="tab active" data-tab="transcript">Transcript</button>
-        <button class="tab" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="notes">Notes</button>
+        <button class="tab active" data-tab="transcript">逐字稿</button>
+        <button class="tab" data-tab="overview">概览</button>
+        <button class="tab" data-tab="notes">笔记</button>
       </div>
     </div>
 
@@ -75,20 +44,20 @@
       <div id="sessionBar" class="session-bar" style="display: none">
         <div class="session-status" id="sessionStatus"></div>
         <button class="session-btn" id="startLearningBtn" type="button" style="display: none">
-          开始学习 / Start learning
+          开始学习
         </button>
         <button class="session-btn session-btn-end" id="endLearningBtn" type="button" style="display: none">
-          结束学习 / End learning
+          结束学习
         </button>
       </div>
       <div id="sessionView" class="session-view" style="display: none">
         <div id="sessionSummary" class="session-summary" style="display: none">
-          <div class="session-summary-title">Rolling Summary 滚动摘要</div>
+          <div class="session-summary-title">滚动摘要</div>
           <div id="sessionSummaryText" class="session-summary-text"></div>
         </div>
         <div class="session-transcript" id="sessionTranscript"></div>
         <div id="sessionDigest" class="session-summary session-digest" style="display: none">
-          <div class="session-summary-title">Session Digest 会话摘要</div>
+          <div class="session-summary-title">会话总结</div>
           <div id="sessionDigestText" class="session-summary-text"></div>
         </div>
       </div>
@@ -98,10 +67,8 @@
         <div class="welcome-icon" aria-hidden="true"></div>
         <div class="welcome-title">Learning Digest</div>
         <div class="welcome-desc">
-          Open a lesson on a supported course platform to start a Session:
-          segment-by-segment transcription, rolling summaries, and a
-          full-session digest. Platform capture is rolling out first for
-          xiaoe-tech.com.
+          在支持的课程平台（首批适配 xiaoe-tech.com）打开一节课，点击「开始学习」：
+          扩展会分段转写课程内容，滚动生成摘要，并在课程结束时输出完整的会话总结。
         </div>
       </div>
 
@@ -111,7 +78,7 @@
           <div class="loading-bar" id="loadingBar">
             <div class="loading-bar-fill" id="loadingBarFill"></div>
           </div>
-          <div class="loading-text" id="loadingText">Working</div>
+          <div class="loading-text" id="loadingText">处理中</div>
           <div class="loading-subtext" id="loadingSubtext"></div>
         </div>
       </div>
@@ -120,11 +87,11 @@
       <div id="errorState" style="display: none">
         <div class="error-container">
           <div class="error-icon" aria-hidden="true">!</div>
-          <div class="error-title" id="errorTitle">Error</div>
+          <div class="error-title" id="errorTitle">出错了</div>
           <div class="error-message" id="errorMessage">
-            Something went wrong.
+            出现了未知错误。
           </div>
-          <button class="error-btn" id="errorBtn">Try Again</button>
+          <button class="error-btn" id="errorBtn">重试</button>
         </div>
       </div>
 
@@ -134,11 +101,11 @@
         <div class="tab-panel active" data-panel="transcript">
           <div class="section">
             <div class="section-header transcript-section-header">
-              <div class="section-title">Full Transcript</div>
+              <div class="section-title">完整逐字稿</div>
               <div class="transcript-actions">
-                <button class="enhance-btn" id="copyTranscriptBtn">Copy</button>
+                <button class="enhance-btn" id="copyTranscriptBtn">复制</button>
                 <button class="enhance-btn" id="exportTranscriptBtn">
-                  Export
+                  导出
                 </button>
               </div>
             </div>
@@ -156,8 +123,8 @@
                 class="transcript-search-input"
                 id="transcriptSearchInput"
                 type="search"
-                placeholder="Search words or phrases"
-                aria-label="Search transcript"
+                placeholder="搜索字词或短语"
+                aria-label="搜索逐字稿"
                 aria-controls="transcriptList"
                 autocomplete="off"
                 spellcheck="false"
@@ -166,8 +133,8 @@
                 class="transcript-search-clear"
                 id="transcriptSearchClearBtn"
                 type="button"
-                aria-label="Clear transcript search"
-                title="Clear search"
+                aria-label="清除搜索"
+                title="清除搜索"
                 hidden
               >
                 &times;
@@ -180,13 +147,13 @@
               <div
                 class="transcript-search-nav"
                 role="group"
-                aria-label="Search results"
+                aria-label="搜索结果"
               >
                 <button
                   id="transcriptSearchPrevBtn"
                   type="button"
-                  aria-label="Previous transcript match"
-                  title="Previous match (Shift + Enter)"
+                  aria-label="上一个匹配项"
+                  title="上一个匹配项（Shift + Enter）"
                   disabled
                 >
                   &#8593;
@@ -194,8 +161,8 @@
                 <button
                   id="transcriptSearchNextBtn"
                   type="button"
-                  aria-label="Next transcript match"
-                  title="Next match (Enter)"
+                  aria-label="下一个匹配项"
+                  title="下一个匹配项（Enter）"
                   disabled
                 >
                   &#8595;
@@ -210,7 +177,7 @@
         <div class="tab-panel" data-panel="overview">
           <!-- Chapters -->
           <div class="section">
-            <div class="section-title">Chapters</div>
+            <div class="section-title">章节</div>
             <ul class="chapter-list" id="chapterList">
               <li
                 class="chapter-item"
@@ -220,14 +187,14 @@
                   border-color: var(--border);
                 "
               >
-                Chapters will appear here
+                章节会显示在这里
               </li>
             </ul>
           </div>
 
           <!-- Key Quotes -->
           <div class="section">
-            <div class="section-title">Key Quotes</div>
+            <div class="section-title">金句</div>
             <div id="quotesList">
               <div
                 class="quote-item"
@@ -238,7 +205,7 @@
                 "
               >
                 <div class="quote-text" style="font-style: normal">
-                  Quotes will be extracted when you view this tab...
+                  查看此标签页时会自动提取金句…
                 </div>
               </div>
             </div>
@@ -249,27 +216,26 @@
         <div class="tab-panel" data-panel="notes">
           <div class="section">
             <div class="section-header">
-              <div class="section-title">Saved Notes</div>
+              <div class="section-title">已保存的笔记</div>
               <div class="notes-filter">
                 <button
                   class="enhance-btn active"
                   id="notesFilterThis"
                   aria-pressed="true"
                 >
-                  This Video
+                  本课程
                 </button>
                 <button
                   class="enhance-btn"
                   id="notesFilterAll"
                   aria-pressed="false"
                 >
-                  All Notes
+                  全部笔记
                 </button>
               </div>
             </div>
             <p class="notes-intro" id="notesIntro">
-              Select transcript text and click Note to save it with its
-              timestamp.
+              在逐字稿中选中文字，点击「笔记」即可连同时间戳一起保存。
             </p>
             <div id="notesList"></div>
           </div>

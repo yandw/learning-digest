@@ -2,7 +2,7 @@
  * SIDE PANEL LOGIC
  *
  * Handles the UI for Learning Digest: rendering transcripts, analysis,
- * translation, and notes. Source Platform capture that feeds new Sessions
+ * and notes. Source Platform capture that feeds new Sessions
  * lands with the platform ticket; until then the panel shows its welcome
  * state and can render previously cached digests.
  */
@@ -30,124 +30,13 @@ let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
 let errorAction = null;
 
-// --- Translation state ---
-// The universal language control supports original content, Chinese, and an
-// aligned bilingual view across Transcript, Overview, and Notes.
-let currentTranscriptMode = "original";
-const DISPLAY_LANGUAGE_MODE_KEY = "ytd_display_language_modes_by_video";
-const DISPLAY_LANGUAGE_MODES = new Set(["original", "zh", "bilingual"]);
-let translationGeneration = 0; // Invalidates responses from older UI modes/videos.
-let translationWorkCount = 0;
-let transcriptScrollObserver = null;
-// Stable keys include the video, source mode, language, and semantic segment ID.
-let transcriptParagraphCache = new Map();
-let interfaceTranslationCache = new Map();
-let interfaceTranslationInFlight = new Set();
-let interfaceTranslationFailures = new Set();
 let currentNotes = [];
 let currentNotesFilterVideoId = null;
-const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
-const TRANSLATION_BATCH_SIZE = 3;
-const TRANSLATION_MAX_AUTO_ATTEMPTS = 3;
-const TRANSLATION_RETRY_BASE_DELAY_MS = 2000;
 
 // --- Transcript search state ---
-// Matches point to visible marks in the active transcript language mode.
 // Search navigation only scrolls the panel. It does not seek the video.
 let transcriptSearchMatches = [];
 let transcriptSearchIndex = -1;
-
-/**
- * Prevent a stopped service worker or dead message channel from leaving the
- * transcript queue stuck forever. The underlying Chrome message cannot be
- * cancelled, so settled guards deliberately ignore any late response.
- */
-function sendTranslationMessage(message) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let timeoutId;
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutId);
-      callback(value);
-    };
-
-    timeoutId = setTimeout(() => {
-      finish(
-        reject,
-        new Error(
-          "Translation request timed out after 130 seconds. Please Retry.",
-        ),
-      );
-    }, TRANSLATION_MESSAGE_TIMEOUT_MS);
-
-    let messagePromise;
-    try {
-      messagePromise = chrome.runtime.sendMessage(message);
-    } catch (error) {
-      finish(reject, error);
-      return;
-    }
-
-    Promise.resolve(messagePromise).then(
-      (result) => finish(resolve, result),
-      (error) => finish(reject, error),
-    );
-  });
-}
-
-/**
- * Decides whether a failed batch deserves an automatic retry. Auth/config
- * errors never recover on their own; rate limits, timeouts, truncated or
- * malformed model output usually do.
- */
-function isRetryableTranslationError(result) {
-  if (!result || result.success) return false;
-  if (result.code === "NO_AI_KEY" || result.code === "INVALID_AI_KEY") {
-    return false;
-  }
-  if (result.code === "RATE_LIMITED" || result.code === "EMPTY_AI_RESPONSE") {
-    return true;
-  }
-  return /timed? out|inactive|exceeded|network|failed to fetch|JSON|unexpected token|unterminated/i.test(
-    String(result.error || ""),
-  );
-}
-
-function translationRetryDelay(attempt) {
-  return new Promise((resolve) =>
-    setTimeout(resolve, TRANSLATION_RETRY_BASE_DELAY_MS * attempt),
-  );
-}
-
-/**
- * Retries a translation message up to TRANSLATION_MAX_AUTO_ATTEMPTS times with
- * linear backoff. Non-retryable errors return immediately. Stops early when
- * the caller's generation went stale (user switched video or language mode).
- */
-async function sendTranslationWithRetry(message, isStale) {
-  let lastResult = null;
-  let lastError = null;
-  for (let attempt = 1; attempt <= TRANSLATION_MAX_AUTO_ATTEMPTS; attempt += 1) {
-    if (isStale()) return { success: false, error: "Translation cancelled." };
-    try {
-      const result = await sendTranslationMessage(message);
-      if (result?.success || !isRetryableTranslationError(result)) {
-        return result;
-      }
-      lastResult = result;
-    } catch (error) {
-      // Watchdog timeouts and dead message channels are transient.
-      lastError = error;
-    }
-    if (attempt < TRANSLATION_MAX_AUTO_ATTEMPTS) {
-      await translationRetryDelay(attempt);
-    }
-  }
-  if (!lastResult && lastError) throw lastError;
-  return lastResult;
-}
 
 // --- Transcript reading position state ---
 // Session storage survives a side panel close but clears when Chrome closes.
@@ -303,7 +192,6 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 // ============================================================
 
 document.addEventListener("DOMContentLoaded", async () => {
-  setTranscriptModeButtons("original");
   setupEventListeners();
   await evictOldCacheEntries(20);
 
@@ -365,11 +253,6 @@ function setupEventListeners() {
   document
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
-  document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      handleDisplayLanguageModeChange(button.dataset.transcriptMode);
-    });
-  });
   setupTranscriptSearch();
 
   // pagehide also covers closing the side panel without a tab change.
@@ -420,17 +303,10 @@ async function startDigest(videoId, videoUrl) {
 
   const videoChanged = videoId !== currentVideoId;
 
-  // Every video change invalidates observer work and in-flight translations.
   if (videoChanged) {
-    translationGeneration += 1;
-    if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
-    transcriptScrollObserver = null;
     resetTranscriptSearch();
     lastTranscriptScrollTop = 0;
     pendingTranscriptViewState = await loadTranscriptViewState(videoId);
-    // An unseen video always starts in Original, so opening it never spends
-    // translation tokens. A saved choice is restored only for this video.
-    currentTranscriptMode = await loadDisplayLanguageMode(videoId);
     document
       .getElementById("contentArea")
       ?.classList.toggle(
@@ -452,17 +328,6 @@ async function startDigest(videoId, videoUrl) {
     currentTranscriptLanguage = cached.transcriptLanguage || null;
     isAnalysisLoading = false;
 
-    // Restore semantic-segment translations from persistent storage.
-    if (cached.paragraphCache) {
-      for (const [key, value] of Object.entries(cached.paragraphCache)) {
-        transcriptParagraphCache.set(key, value);
-      }
-    }
-    if (cached.interfaceCache) {
-      for (const [key, value] of Object.entries(cached.interfaceCache)) {
-        interfaceTranslationCache.set(key, value);
-      }
-    }
 
     if (currentVideoTitle || currentChannelName) {
       const videoInfo = document.getElementById("videoInfo");
@@ -488,7 +353,6 @@ async function startDigest(videoId, videoUrl) {
 
     // Setup explain feature
     setupExplainFeature();
-    if (currentTranscriptMode !== "original") translateTranscript();
     return;
   }
 
@@ -511,176 +375,6 @@ async function startDigest(videoId, videoUrl) {
 // RENDERING
 // ============================================================
 
-function interfaceTranslationCacheKey(surface, id, text) {
-  return `${currentVideoId || "none"}:zh:${surface}:${id}:${text}`;
-}
-
-function getInterfaceTranslation(surface, id, text) {
-  return interfaceTranslationCache.get(
-    interfaceTranslationCacheKey(surface, id, text),
-  );
-}
-
-function renderLocalizedContent(text, surface, id) {
-  const original = String(text || "");
-  if (!original) return "";
-  const cacheKey = interfaceTranslationCacheKey(surface, id, original);
-  const translated = getInterfaceTranslation(surface, id, original);
-  if (currentTranscriptMode === "original") return escapeHtml(original);
-
-  const translation = translated
-    ? escapeHtml(translated)
-    : interfaceTranslationFailures.has(cacheKey)
-      ? '<span class="translation-error">Translation unavailable.</span>'
-      : '<span class="translation-pending">Translating...</span>';
-  if (currentTranscriptMode === "bilingual") {
-    return `<span class="localized-copy"><span class="localized-original">${escapeHtml(original)}</span><span class="localized-translation">${translation}</span></span>`;
-  }
-  return `<span class="localized-copy"><span class="localized-translation">${translation}</span></span>`;
-}
-
-function getLocalizedPlainText(text, surface, id) {
-  const original = String(text || "");
-  const translated = getInterfaceTranslation(surface, id, original);
-  if (currentTranscriptMode === "zh") return translated || original;
-  if (currentTranscriptMode === "bilingual" && translated) {
-    return `${original}\n\n${translated}`;
-  }
-  return original;
-}
-
-async function translateInterfaceSegments(surface, segments, rerender) {
-  if (currentTranscriptMode === "original" || !segments.length) return;
-  const generation = translationGeneration;
-  const videoId = currentVideoId;
-  const missing = segments
-    .filter((segment) => segment.text)
-    .map((segment) => ({
-      ...segment,
-      cacheKey: interfaceTranslationCacheKey(
-        surface,
-        segment.id,
-        segment.text,
-      ),
-    }))
-    .filter(
-      (segment) =>
-        !interfaceTranslationCache.has(segment.cacheKey) &&
-        !interfaceTranslationFailures.has(segment.cacheKey) &&
-        !interfaceTranslationInFlight.has(segment.cacheKey),
-    );
-  if (!missing.length) return;
-
-  missing.forEach((segment) => interfaceTranslationInFlight.add(segment.cacheKey));
-  setTranslatingSpinner(true);
-  try {
-    for (
-      let start = 0;
-      start < missing.length;
-      start += TRANSLATION_BATCH_SIZE
-    ) {
-      const batch = missing.slice(start, start + TRANSLATION_BATCH_SIZE);
-      let result;
-      try {
-        result = await sendTranslationMessage({
-          action: "translateContent",
-          content: {
-            segments: batch.map(({ id, text }) => ({ id, text })),
-          },
-          contentType: "interfaceBatch",
-          targetLanguage: "zh",
-          videoTitle: currentVideoTitle,
-        });
-      } catch (error) {
-        console.error("[Learning Digest] Interface batch error:", error);
-        result = { success: false, error: error.message };
-      }
-      if (
-        generation !== translationGeneration ||
-        videoId !== currentVideoId ||
-        currentTranscriptMode === "original"
-      ) {
-        return;
-      }
-      const aligned = alignTranslatedSegmentBatch(
-        batch,
-        result?.success ? result.translatedContent?.segments : [],
-      );
-      aligned.forEach((item, index) => {
-        if (item.text) {
-          interfaceTranslationCache.set(batch[index].cacheKey, item.text);
-        } else {
-          interfaceTranslationFailures.add(batch[index].cacheKey);
-        }
-      });
-      // Match the Transcript UX: reveal and persist every small batch as soon
-      // as it returns instead of waiting for the full Overview or Notes list.
-      rerender();
-      await updateCache();
-    }
-  } catch (error) {
-    console.error("[Learning Digest] Interface translation error:", error);
-    missing.forEach((segment) =>
-      interfaceTranslationFailures.add(segment.cacheKey),
-    );
-  } finally {
-    missing.forEach((segment) => interfaceTranslationInFlight.delete(segment.cacheKey));
-    setTranslatingSpinner(false);
-  }
-}
-
-function getOverviewTranslationSegments() {
-  if (!currentAnalysis) return [];
-  const segments = [];
-  (currentAnalysis.chapters || []).forEach((chapter, index) => {
-    if (chapter.title) {
-      segments.push({ id: `chapter-${index}-title`, text: chapter.title });
-    }
-    if (chapter.summary) {
-      segments.push({ id: `chapter-${index}-summary`, text: chapter.summary });
-    }
-  });
-  [...(currentAnalysis.keyQuotes || [])]
-    .sort((a, b) => (a.timestampSeconds || 0) - (b.timestampSeconds || 0))
-    .forEach((quote, index) => {
-      if (quote.quote) segments.push({ id: `quote-${index}`, text: quote.quote });
-    });
-  return segments;
-}
-
-function translateOverviewContent() {
-  return translateInterfaceSegments(
-    "overview",
-    getOverviewTranslationSegments(),
-    () => {
-      const contentArea = document.getElementById("contentArea");
-      const scrollTop = contentArea?.scrollTop || 0;
-      renderAnalysisResults(currentAnalysis);
-      if (contentArea) contentArea.scrollTop = scrollTop;
-    },
-  );
-}
-
-function getNoteTranslationId(note, index) {
-  const stablePart = String(note.id || note.createdAt || index)
-    .replace(/[^A-Za-z0-9_-]/g, "-")
-    .slice(0, 96);
-  return `note-${stablePart || index}`;
-}
-
-function translateNotesContent() {
-  const segments = currentNotes.map((note, index) => ({
-    id: getNoteTranslationId(note, index),
-    text: note.text || "",
-  }));
-  return translateInterfaceSegments("notes", segments, () => {
-    const contentArea = document.getElementById("contentArea");
-    const scrollTop = contentArea?.scrollTop || 0;
-    renderNotes(currentNotes, currentNotesFilterVideoId);
-    if (contentArea) contentArea.scrollTop = scrollTop;
-  });
-}
-
 /**
  * Renders the analysis results into the Overview tab.
  * Shows chapters and key quotes only.
@@ -696,8 +390,8 @@ function renderAnalysisResults(analysis) {
     li.innerHTML = `
       <span class="chapter-timestamp">${escapeHtml(chapter.timestamp)}</span>
       <div class="chapter-content">
-        <span class="chapter-title">${renderLocalizedContent(chapter.title, "overview", `chapter-${index}-title`)}</span>
-        <span class="chapter-summary">${renderLocalizedContent(chapter.summary || "", "overview", `chapter-${index}-summary`)}</span>
+        <span class="chapter-title">${escapeHtml(chapter.title)}</span>
+        <span class="chapter-summary">${escapeHtml(chapter.summary || "")}</span>
       </div>
     `;
     chapterList.appendChild(li);
@@ -714,12 +408,12 @@ function renderAnalysisResults(analysis) {
     div.className = "quote-item";
     div.dataset.seconds = quote.timestampSeconds;
     div.innerHTML = `
-      <div class="quote-text">${renderLocalizedContent(quote.quote, "overview", `quote-${index}`)}</div>
+      <div class="quote-text">${escapeHtml(quote.quote)}</div>
       <div class="quote-meta">
         <span class="quote-timestamp">${escapeHtml(quote.timestamp)}</span>
         <div class="quote-actions">
-          <button class="quote-save-note-btn" title="Save this quote as a note">Note</button>
-          <button class="quote-copy-btn" title="Copy this quote">Copy</button>
+          <button class="quote-save-note-btn" title="把这条金句保存为笔记">笔记</button>
+          <button class="quote-copy-btn" title="复制这条金句">复制</button>
         </div>
       </div>
     `;
@@ -728,12 +422,10 @@ function renderAnalysisResults(analysis) {
     quoteCopyBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       try {
-        await navigator.clipboard.writeText(
-          getLocalizedPlainText(quote.quote, "overview", `quote-${index}`),
-        );
-        quoteCopyBtn.textContent = "Copied";
+        await navigator.clipboard.writeText(quote.quote);
+        quoteCopyBtn.textContent = "已复制";
         setTimeout(() => {
-          quoteCopyBtn.textContent = "Copy";
+          quoteCopyBtn.textContent = "复制";
         }, 1500);
       } catch (err) {
         console.error("Copy failed:", err);
@@ -749,12 +441,6 @@ function renderAnalysisResults(analysis) {
     quotesList.appendChild(div);
   });
 
-  if (
-    currentTranscriptMode !== "original" &&
-    resultTabIsActive("overview")
-  ) {
-    void translateOverviewContent();
-  }
 }
 
 /**
@@ -764,7 +450,7 @@ async function saveQuoteAsNote(quote, btn) {
   if (!currentVideoId) return;
 
   const originalText = btn.textContent;
-  btn.textContent = "Saving...";
+  btn.textContent = "保存中…";
   btn.disabled = true;
 
   try {
@@ -777,7 +463,7 @@ async function saveQuoteAsNote(quote, btn) {
     });
 
     if (result.success) {
-      btn.textContent = "Saved";
+      btn.textContent = "已保存";
       setTimeout(() => {
         btn.textContent = originalText;
         btn.disabled = false;
@@ -786,7 +472,7 @@ async function saveQuoteAsNote(quote, btn) {
       loadNotes(currentVideoId);
     } else {
       console.error("[Learning Digest] Save quote as note failed:", result.error);
-      btn.textContent = "Error";
+      btn.textContent = "出错";
       setTimeout(() => {
         btn.textContent = originalText;
         btn.disabled = false;
@@ -794,7 +480,7 @@ async function saveQuoteAsNote(quote, btn) {
     }
   } catch (error) {
     console.error("[Learning Digest] Save quote as note error:", error);
-    btn.textContent = "Error";
+    btn.textContent = "出错";
     setTimeout(() => {
       btn.textContent = originalText;
       btn.disabled = false;
@@ -943,8 +629,8 @@ function updateTranscriptSearchControls(query) {
     count.textContent = !query
       ? ""
       : hasMatches
-        ? `${transcriptSearchIndex + 1} of ${transcriptSearchMatches.length}`
-        : "No matches";
+        ? `${transcriptSearchIndex + 1} / ${transcriptSearchMatches.length}`
+        : "无匹配结果";
   }
   if (previous) previous.disabled = !hasMatches;
   if (next) next.disabled = !hasMatches;
@@ -1077,16 +763,7 @@ function setupTranscriptSearch() {
 }
 
 function getDisplayedTranscriptText() {
-  if (currentTranscriptMode === "original") return currentTranscriptText || "";
-  return getActiveTranscriptSegments()
-    .map((segment) => {
-      const translated = transcriptParagraphCache.get(
-        transcriptTranslationCacheKey(segment),
-      );
-      if (currentTranscriptMode === "zh") return translated || segment.text;
-      return translated ? `${segment.text}\n${translated}` : segment.text;
-    })
-    .join("\n\n");
+  return currentTranscriptText || "";
 }
 
 function copyTranscript() {
@@ -1097,15 +774,15 @@ function exportTranscript() {
   const transcriptContent = getDisplayedTranscriptText();
 
   let exportText = "";
-  exportText += `TRANSCRIPT\n`;
+  exportText += `逐字稿\n`;
   exportText += `${"=".repeat(60)}\n\n`;
-  exportText += `Title: ${currentVideoTitle || "Unknown"}\n`;
-  exportText += `Course: ${currentChannelName || "Unknown"}\n`;
+  exportText += `标题：${currentVideoTitle || "未知"}\n`;
+  exportText += `课程：${currentChannelName || "未知"}\n`;
   exportText += `\n${"=".repeat(60)}\n\n`;
 
-  exportText += `TRANSCRIPT:\n\n${transcriptContent}\n`;
+  exportText += `逐字稿：\n\n${transcriptContent}\n`;
   exportText += `\n${"=".repeat(60)}\n`;
-  exportText += `Exported by Learning Digest\n`;
+  exportText += `由 Learning Digest 导出\n`;
 
   const filename = `${sanitizeFilename(currentVideoTitle)}-transcript.txt`;
   downloadTextFile(exportText, filename);
@@ -1133,8 +810,6 @@ function showState(state) {
   // which is why the tabs could vanish when re-opening an already-analyzed video.
   document.getElementById("tabsNav").style.display =
     state === "results" ? "flex" : "none";
-  document.getElementById("transcriptModeControl").style.display =
-    state === "results" ? "inline-flex" : "none";
 }
 
 function updateLoading(title, subtitle) {
@@ -1147,18 +822,18 @@ function showError(title, message) {
   showState("error");
   document.getElementById("errorTitle").textContent = title;
   document.getElementById("errorMessage").textContent = message;
-  document.getElementById("errorBtn").textContent = "Try Again";
+  document.getElementById("errorBtn").textContent = "重试";
 }
 
 function showConfigError(configStatus) {
   const missingKeys = [];
-  if (!configStatus.hasAiKey) missingKeys.push("OpenRouter API key");
+  if (!configStatus.hasAiKey) missingKeys.push("OpenRouter API 密钥");
 
   showState("error");
-  document.getElementById("errorTitle").textContent = "API Keys Missing";
+  document.getElementById("errorTitle").textContent = "缺少 API 密钥";
   document.getElementById("errorMessage").textContent =
-    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in Learning Digest Settings.`;
-  document.getElementById("errorBtn").textContent = "Open Settings";
+    `请在 Learning Digest 设置中填写你的 ${missingKeys.join(" 和 ")}。`;
+  document.getElementById("errorBtn").textContent = "打开设置";
   errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
 }
 
@@ -1204,25 +879,8 @@ function switchTab(tabName) {
     });
   }
 
-  // Translate only the visible tab. This prevents hidden surfaces from using
-  // tokens or competing with the batch queue the user is waiting for.
-  if (tabName === "overview") {
-    if (!currentAnalysis && !isAnalysisLoading) {
-      triggerAnalysis();
-    } else if (currentAnalysis && currentTranscriptMode !== "original") {
-      void translateOverviewContent();
-    }
-  } else if (
-    tabName === "notes" &&
-    currentTranscriptMode !== "original"
-  ) {
-    void translateNotesContent();
-  } else if (
-    tabName === "transcript" &&
-    currentTranscriptMode !== "original" &&
-    !transcriptScrollObserver
-  ) {
-    void translateTranscript();
+  if (tabName === "overview" && !currentAnalysis && !isAnalysisLoading) {
+    triggerAnalysis();
   }
 }
 
@@ -1242,10 +900,10 @@ async function triggerAnalysis() {
 
   if (chapterList)
     chapterList.innerHTML =
-      '<li class="chapter-item" style="color: var(--text-muted); border: none;">Loading chapters...</li>';
+      '<li class="chapter-item" style="color: var(--text-muted); border: none;">正在加载章节…</li>';
   if (quotesList)
     quotesList.innerHTML =
-      '<div class="quote-item" style="color: var(--text-muted); border-left-color: var(--border);">Loading quotes...</div>';
+      '<div class="quote-item" style="color: var(--text-muted); border-left-color: var(--border);">正在加载金句…</div>';
 
   try {
     const analysisResult = await chrome.runtime.sendMessage({
@@ -1259,7 +917,7 @@ async function triggerAnalysis() {
 
     if (!analysisResult.success) {
       if (chapterList)
-        chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">Analysis failed: ${escapeHtml(analysisResult.error || "Unknown error")}</li>`;
+        chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">分析失败：${escapeHtml(analysisResult.error || "未知错误")}</li>`;
       isAnalysisLoading = false;
       return;
     }
@@ -1272,7 +930,7 @@ async function triggerAnalysis() {
   } catch (error) {
     console.error("[Learning Digest Panel] Analysis error:", error);
     if (chapterList)
-      chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">Error: ${escapeHtml(error.message)}</li>`;
+      chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">错误：${escapeHtml(error.message)}</li>`;
   }
 
   isAnalysisLoading = false;
@@ -1317,7 +975,7 @@ async function copyToClipboardWithFeedback(text, buttonId) {
 
   const success = await copyToClipboard(text);
   if (success) {
-    btn.textContent = "Copied";
+    btn.textContent = "已复制";
     setTimeout(() => {
       btn.textContent = original;
     }, 2000);
@@ -1379,10 +1037,10 @@ function setupExplainFeature() {
   tooltip.id = "explainTooltip";
   tooltip.className = "explain-tooltip";
   tooltip.setAttribute("role", "toolbar");
-  tooltip.setAttribute("aria-label", "Selected transcript actions");
+  tooltip.setAttribute("aria-label", "选中文字操作");
   tooltip.innerHTML = `
-    <button class="explain-btn" type="button">Explain</button>
-    <button class="selection-note-btn" type="button">Note</button>
+    <button class="explain-btn" type="button">解释</button>
+    <button class="selection-note-btn" type="button">笔记</button>
   `;
   tooltip.style.display = "none";
   document.body.appendChild(tooltip);
@@ -1478,7 +1136,7 @@ function setupExplainFeature() {
 
       const button = event.currentTarget;
       const originalText = button.textContent;
-      button.textContent = "Saving...";
+      button.textContent = "保存中…";
       button.disabled = true;
 
       try {
@@ -1495,7 +1153,7 @@ function setupExplainFeature() {
           throw new Error(result?.error || "Could not save note");
         }
 
-        button.textContent = "Saved";
+        button.textContent = "已保存";
         loadNotes(currentVideoId);
         setTimeout(() => {
           tooltip.style.display = "none";
@@ -1504,7 +1162,7 @@ function setupExplainFeature() {
         }, 900);
       } catch (error) {
         console.error("[Learning Digest] Save selected note error:", error);
-        button.textContent = "Error";
+        button.textContent = "出错";
         setTimeout(() => {
           button.textContent = originalText;
           button.disabled = false;
@@ -1524,14 +1182,14 @@ async function showExplanation(selectedText) {
   modal.innerHTML = `
     <div class="explain-modal">
       <div class="explain-modal-header">
-        <div class="explain-modal-title">Explain</div>
-        <button class="explain-modal-close" id="closeExplain">Close</button>
+        <div class="explain-modal-title">解释</div>
+        <button class="explain-modal-close" id="closeExplain">关闭</button>
       </div>
       <div class="explain-selected-text">"${escapeHtml(selectedText.substring(0, 200))}${selectedText.length > 200 ? "..." : ""}"</div>
       <div class="explain-modal-content" id="explanationContent">
         <div class="explain-loading">
           <div class="loading-bar"></div>
-          <span>Analyzing...</span>
+          <span>正在分析…</span>
         </div>
       </div>
     </div>
@@ -1563,11 +1221,11 @@ async function showExplanation(selectedText) {
     if (result.success) {
       contentDiv.innerHTML = `<div class="explain-text">${escapeHtml(result.explanation).replace(/\n\n/g, "</p><p>").replace(/\n/g, "<br>")}</div>`;
     } else {
-      contentDiv.innerHTML = `<div class="explain-error">Failed to get explanation: ${escapeHtml(result.error)}</div>`;
+      contentDiv.innerHTML = `<div class="explain-error">获取解释失败：${escapeHtml(result.error)}</div>`;
     }
   } catch (error) {
     const contentDiv = document.getElementById("explanationContent");
-    contentDiv.innerHTML = `<div class="explain-error">Error: ${escapeHtml(error.message)}</div>`;
+    contentDiv.innerHTML = `<div class="explain-error">错误：${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -1601,20 +1259,6 @@ async function saveToCache(videoId) {
   if (!videoId || !currentTranscript) return;
 
   try {
-    // Persist semantic-segment translations for this video.
-    const paragraphCacheForVideo = {};
-    for (const [key, value] of transcriptParagraphCache.entries()) {
-      if (key.startsWith(`${videoId}:`)) {
-        paragraphCacheForVideo[key] = value;
-      }
-    }
-    const interfaceCacheForVideo = {};
-    for (const [key, value] of interfaceTranslationCache.entries()) {
-      if (key.startsWith(`${videoId}:`)) {
-        interfaceCacheForVideo[key] = value;
-      }
-    }
-
     const cacheData = {
       analysis: currentAnalysis, // May be null if not yet analyzed
       transcript: currentTranscript,
@@ -1623,8 +1267,6 @@ async function saveToCache(videoId) {
       transcriptLanguage: currentTranscriptLanguage,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
-      paragraphCache: paragraphCacheForVideo,
-      interfaceCache: interfaceCacheForVideo,
       timestamp: Date.now(),
     };
 
@@ -1712,7 +1354,7 @@ async function loadFromCache(videoId) {
 }
 
 /**
- * Updates the cache after enhance or translation operations.
+ * Updates the cache after enhance operations.
  */
 async function updateCache() {
   if (currentVideoId) {
@@ -1759,15 +1401,14 @@ function renderNotes(notes, filteredVideoId) {
   if (!notes || notes.length === 0) {
     notesIntro.style.display = "block";
     notesIntro.textContent = filteredVideoId
-      ? "No notes for this session yet. Select transcript text and click Note to save."
-      : "No notes saved yet. Select transcript text and click Note to save.";
+      ? "本会话还没有笔记。在逐字稿中选中文字，点击「笔记」即可保存。"
+      : "还没有保存任何笔记。在逐字稿中选中文字，点击「笔记」即可保存。";
     return;
   }
 
   notesIntro.style.display = "none";
 
   notes.forEach((note, index) => {
-    const translationId = getNoteTranslationId(note, index);
     const noteEl = document.createElement("div");
     noteEl.className = "note-item";
     noteEl.innerHTML = `
@@ -1775,10 +1416,10 @@ function renderNotes(notes, filteredVideoId) {
         <span class="note-timestamp" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>
         ${!filteredVideoId ? `<span class="note-video-title">${escapeHtml(note.videoTitle)}</span>` : ""}
       </div>
-      <div class="note-text">${renderLocalizedContent(note.text, "notes", translationId)}</div>
+      <div class="note-text">${escapeHtml(note.text)}</div>
       <div class="note-actions">
-        <button class="note-action-btn note-copy-text">Copy text</button>
-        <button class="note-delete" data-id="${escapeHtml(note.id)}" type="button" aria-label="Delete note" title="Delete note">
+        <button class="note-action-btn note-copy-text">复制文字</button>
+        <button class="note-delete" data-id="${escapeHtml(note.id)}" type="button" aria-label="删除笔记" title="删除笔记">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 6h18"></path>
             <path d="M8 6V4h8v2"></path>
@@ -1804,13 +1445,11 @@ function renderNotes(notes, filteredVideoId) {
       .querySelector(".note-copy-text")
       .addEventListener("click", async () => {
         try {
-          await navigator.clipboard.writeText(
-            getLocalizedPlainText(note.text, "notes", translationId),
-          );
+          await navigator.clipboard.writeText(note.text);
           const btn = noteEl.querySelector(".note-copy-text");
-          btn.textContent = "Copied";
+          btn.textContent = "已复制";
           setTimeout(() => {
-            btn.textContent = "Copy text";
+            btn.textContent = "复制文字";
           }, 2000);
         } catch (err) {
           console.error("Copy failed:", err);
@@ -1820,9 +1459,6 @@ function renderNotes(notes, filteredVideoId) {
     notesList.appendChild(noteEl);
   });
 
-  if (currentTranscriptMode !== "original" && resultTabIsActive("notes")) {
-    void translateNotesContent();
-  }
 }
 
 /**
@@ -1981,403 +1617,16 @@ function restorePendingTranscriptViewState(videoId) {
   });
 }
 
-// ============================================================
-// UNIVERSAL DISPLAY LANGUAGE — Original / Chinese / aligned bilingual
-// ============================================================
-
-async function loadDisplayLanguageMode(videoId) {
-  if (!videoId) {
-    setTranscriptModeButtons("original");
-    return "original";
-  }
-  try {
-    const stored = await chrome.storage.local.get(DISPLAY_LANGUAGE_MODE_KEY);
-    const mode = stored?.[DISPLAY_LANGUAGE_MODE_KEY]?.[videoId]?.mode;
-    currentTranscriptMode = DISPLAY_LANGUAGE_MODES.has(mode)
-      ? mode
-      : "original";
-  } catch (error) {
-    currentTranscriptMode = "original";
-  }
-  setTranscriptModeButtons(currentTranscriptMode);
-  return currentTranscriptMode;
-}
-
-async function saveDisplayLanguageMode(videoId, mode) {
-  if (!videoId || !DISPLAY_LANGUAGE_MODES.has(mode)) return;
-  const stored = await chrome.storage.local.get(DISPLAY_LANGUAGE_MODE_KEY);
-  const modes = stored?.[DISPLAY_LANGUAGE_MODE_KEY] || {};
-  modes[videoId] = { mode, updatedAt: Date.now() };
-  const recentModes = Object.fromEntries(
-    Object.entries(modes)
-      .sort(([, a], [, b]) => (b.updatedAt || 0) - (a.updatedAt || 0))
-      .slice(0, 50),
-  );
-  await chrome.storage.local.set({
-    [DISPLAY_LANGUAGE_MODE_KEY]: recentModes,
-  });
-}
-
-function getActiveTranscriptSegments() {
-  return groupTranscriptEntries(currentTranscript || []);
-}
-
-function transcriptTranslationCacheKey(segment) {
-  return `${currentVideoId}:zh:semantic:${segment.id}`;
-}
-
-function setTranscriptModeButtons(mode) {
-  document.querySelectorAll(".transcript-mode-btn").forEach((button) => {
-    const active = button.dataset.transcriptMode === mode;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
-}
-
-async function handleDisplayLanguageModeChange(mode) {
-  if (!DISPLAY_LANGUAGE_MODES.has(mode)) return;
-  if (mode === currentTranscriptMode) return;
-
-  currentTranscriptMode = mode;
-  await saveDisplayLanguageMode(currentVideoId, mode);
-  if (mode !== "original") interfaceTranslationFailures.clear();
-  translationGeneration += 1;
-  translationWorkCount = 0;
-  setTranslatingSpinner(false);
-  if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
-  transcriptScrollObserver = null;
-  setTranscriptModeButtons(mode);
-  const activeTabName =
-    document.querySelector(".tab.active")?.dataset.tab || "transcript";
-
-  if (mode === "original") {
-    renderTranscript();
-    if (currentAnalysis) renderAnalysisResults(currentAnalysis);
-    if (currentNotes.length) renderNotes(currentNotes, currentNotesFilterVideoId);
-    return;
-  }
-
-  if (currentAnalysis) {
-    renderAnalysisResults(currentAnalysis);
-  }
-  if (currentNotes.length) {
-    renderNotes(currentNotes, currentNotesFilterVideoId);
-  }
-  if (activeTabName === "overview" && currentAnalysis) {
-    await translateOverviewContent();
-  } else if (activeTabName === "notes" && currentNotes.length) {
-    await translateNotesContent();
-  } else if (activeTabName === "transcript") {
-    await translateTranscript();
-  }
-}
-
-function renderTranscriptSegmentContent(segment, mode, translated, error) {
-  const original = renderSubtitleInlineMarkup(segment.text);
-  let translationHtml = "";
-  if (translated) {
-    translationHtml = renderSubtitleInlineMarkup(translated);
-  } else if (error) {
-    translationHtml = `${escapeHtml(error)}<button class="translation-retry-btn" type="button">Retry</button>`;
-  } else {
-    translationHtml = "Waiting for translation…";
-  }
-
-  if (mode === "bilingual") {
-    return `<span class="transcript-copy"><span class="transcript-original">${original}</span><span class="transcript-translation ${translated ? "" : error ? "translation-error" : "translation-pending"}">${translationHtml}</span></span>`;
-  }
-
-  return `<span class="transcript-copy"><span class="transcript-translation ${translated ? "" : error ? "translation-error" : "translation-pending"}">${translationHtml}</span></span>`;
-}
-
-function renderTranscriptModeRows(segments, mode) {
-  const transcriptList = document.getElementById("transcriptList");
-  if (!transcriptList) return [];
-  transcriptList.innerHTML = "";
-
-  const existingBadge = document.getElementById("transcriptSourceBadge");
-  if (existingBadge) existingBadge.remove();
-
-  const rows = [];
-  segments.forEach((segment, index) => {
-    const div = document.createElement("div");
-    const cached = transcriptParagraphCache.get(
-      transcriptTranslationCacheKey(segment),
-    );
-    div.className = `transcript-entry ${cached ? "translated" : "translating"}`;
-    div.dataset.seconds = segment.start;
-    div.dataset.segmentId = segment.id;
-    div.dataset.segmentIndex = index;
-
-    const minutes = Math.floor(segment.start / 60);
-    const seconds = Math.floor(segment.start % 60);
-    const timestamp = `${minutes}:${String(seconds).padStart(2, "0")}`;
-    div.innerHTML = `
-      <span class="transcript-time">${timestamp}</span>
-      ${renderTranscriptSegmentContent(segment, mode, cached, "")}
-    `;
-    div.addEventListener("click", (event) =>
-      seekFromTranscriptEntryClick(event, segment.start),
-    );
-    transcriptList.appendChild(div);
-    rows.push(div);
-  });
-
-  // Bilingual mode can find source text before each translation arrives.
-  refreshTranscriptSearch({ preserveIndex: false, scroll: false });
-
-  startPlaybackTracking();
-  return rows;
-}
-
-/**
- * Rebuilds a provider response in source order. Unknown IDs are ignored and
- * missing IDs remain explicit errors, never positional guesses.
- */
-function alignTranslatedSegmentBatch(sourceSegments, responseSegments) {
-  const translatedById = new Map();
-  if (Array.isArray(responseSegments)) {
-    responseSegments.forEach((item) => {
-      if (!item || typeof item.id !== "string" || typeof item.text !== "string")
-        return;
-      const text = item.text.trim();
-      if (text && !translatedById.has(item.id)) {
-        translatedById.set(item.id, text);
-      }
-    });
-  }
-
-  return sourceSegments.map((segment) => ({
-    id: segment.id,
-    text: translatedById.get(segment.id) || "",
-    error: translatedById.has(segment.id) ? "" : "Translation unavailable.",
-  }));
-}
-
-function updateTranslatedRow(segment, index, alignedItem, generation) {
-  if (generation !== translationGeneration) return;
-  const row = document.querySelector(
-    `.transcript-entry[data-segment-id="${CSS.escape(segment.id)}"]`,
-  );
-  if (!row) return;
-
-  if (alignedItem.text) {
-    transcriptParagraphCache.set(
-      transcriptTranslationCacheKey(segment),
-      alignedItem.text,
-    );
-  }
-
-  const copy = row.querySelector(".transcript-copy");
-  if (copy) {
-    copy.outerHTML = renderTranscriptSegmentContent(
-      segment,
-      currentTranscriptMode,
-      alignedItem.text,
-      alignedItem.error,
-    );
-  }
-  row.classList.toggle("translated", !!alignedItem.text);
-  row.classList.toggle("translating", false);
-  row.classList.toggle("translation-failed", !alignedItem.text);
-
-  const retry = row.querySelector(".translation-retry-btn");
-  if (retry) {
-    ["mousedown", "mouseup"].forEach((eventName) => {
-      retry.addEventListener(eventName, (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      });
-    });
-    retry.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      retryTranslationSegment(index, generation);
-    });
-  }
-}
-
-let activeTranslationQueue = null;
-
-async function requestTranscriptTranslationBatch(
-  indices,
-  segments,
-  generation,
-  videoId,
-  mode,
-) {
-  const sourceBatch = indices.map((index) => segments[index]);
-  setTranslatingSpinner(true);
-  try {
-    const result = await sendTranslationWithRetry(
-      {
-        action: "translateContent",
-        content: {
-          segments: sourceBatch.map(({ id, text }) => ({ id, text })),
-        },
-        contentType: "transcriptBatch",
-        targetLanguage: "zh",
-        videoTitle: currentVideoTitle,
-      },
-      () => generation !== translationGeneration,
-    );
-
-    const isStale =
-      generation !== translationGeneration ||
-      videoId !== currentVideoId ||
-      mode !== currentTranscriptMode;
-    if (isStale) return;
-
-    const responseSegments = result?.success
-      ? result.translatedContent?.segments
-      : [];
-    const aligned = alignTranslatedSegmentBatch(sourceBatch, responseSegments);
-    aligned.forEach((item, batchIndex) => {
-      if (!result?.success) {
-        item.error = result?.error || "Translation failed.";
-      }
-      updateTranslatedRow(
-        sourceBatch[batchIndex],
-        indices[batchIndex],
-        item,
-        generation,
-      );
-    });
-    refreshTranscriptSearch({ preserveIndex: true, scroll: false });
-    await updateCache();
-  } catch (error) {
-    if (generation !== translationGeneration) return;
-    sourceBatch.forEach((segment, batchIndex) => {
-      updateTranslatedRow(
-        segment,
-        indices[batchIndex],
-        { id: segment.id, text: "", error: error.message || "Translation failed." },
-        generation,
-      );
-    });
-    refreshTranscriptSearch({ preserveIndex: true, scroll: false });
-  } finally {
-    setTranslatingSpinner(false);
-  }
-}
-
-function retryTranslationSegment(index, generation) {
-  if (generation !== translationGeneration || !activeTranslationQueue) return;
-  const row = document.querySelector(
-    `.transcript-entry[data-segment-index="${index}"]`,
-  );
-  if (row) {
-    row.classList.add("translating");
-    row.classList.remove("translation-failed");
-    const translation = row.querySelector(".transcript-translation");
-    if (translation) {
-      translation.className = "transcript-translation translation-pending";
-      translation.textContent = "Retrying…";
-    }
-  }
-  activeTranslationQueue.enqueue(index, true);
-}
-
-/**
- * Renders immediately, translates the first small batch, then observes the
- * remaining rows. Batches are sequential so the provider is never flooded.
- */
-async function translateTranscript() {
-  const segments = getActiveTranscriptSegments();
-  if (!segments.length || currentTranscriptMode === "original") return;
-
-  const generation = translationGeneration;
-  const videoId = currentVideoId;
-  const mode = currentTranscriptMode;
-  if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
-
-  const rows = renderTranscriptModeRows(segments, mode);
-  const queue = [];
-  const queued = new Set();
-  let processing = false;
-
-  const processNext = async () => {
-    if (processing || queue.length === 0 || generation !== translationGeneration)
-      return;
-    processing = true;
-    const indices = queue.splice(0, TRANSLATION_BATCH_SIZE);
-    indices.forEach((index) => queued.delete(index));
-    try {
-      await requestTranscriptTranslationBatch(
-        indices,
-        segments,
-        generation,
-        videoId,
-        mode,
-      );
-    } finally {
-      processing = false;
-      if (queue.length && generation === translationGeneration) processNext();
-    }
-  };
-
-  const enqueue = (index, force = false) => {
-    if (!Number.isInteger(index) || !segments[index]) return;
-    const cached = transcriptParagraphCache.has(
-      transcriptTranslationCacheKey(segments[index]),
-    );
-    if ((!force && cached) || queued.has(index)) return;
-    queue.push(index);
-    queued.add(index);
-    // Let all entries reported in the same viewport turn collect before the
-    // worker starts, producing one small contextual multi-segment request.
-    Promise.resolve().then(processNext);
-  };
-  activeTranslationQueue = { enqueue };
-
-  transcriptScrollObserver = new IntersectionObserver(
-    (observerEntries) => {
-      observerEntries
-        .filter((entry) => entry.isIntersecting)
-        .sort(
-          (a, b) =>
-            Number(a.target.dataset.segmentIndex) -
-            Number(b.target.dataset.segmentIndex),
-        )
-        .forEach((entry) => enqueue(Number(entry.target.dataset.segmentIndex)));
-    },
-    {
-      root: document.getElementById("contentArea"),
-      rootMargin: "320px 0px",
-      threshold: 0,
-    },
-  );
-
-  rows.forEach((row, index) => {
-    if (!row.classList.contains("translated")) transcriptScrollObserver.observe(row);
-    if (index < TRANSLATION_BATCH_SIZE) enqueue(index);
-  });
-}
-
-function setTranslatingSpinner(show) {
-  if (show) translationWorkCount += 1;
-  else translationWorkCount = Math.max(0, translationWorkCount - 1);
-  const isTranslating = translationWorkCount > 0;
-  const spinner = document.getElementById("langSpinner");
-  if (spinner) spinner.classList.toggle("visible", isTranslating);
-}
 
 // Pure helpers are exposed for the repository's Node tests. The extension does
 // not read this object at runtime.
 globalThis.__YTD_TRANSCRIPT_TESTING__ = {
-  sendTranslationMessage,
-  sendTranslationWithRetry,
-  isRetryableTranslationError,
   groupTranscriptEntries,
   splitOversizedThought,
-  alignTranslatedSegmentBatch,
   findLiteralTranscriptMatches,
   loadTranscriptViewState,
   saveTranscriptViewState,
-  loadDisplayLanguageMode,
-  saveDisplayLanguageMode,
   renderSubtitleInlineMarkup,
-  renderTranscriptSegmentContent,
 };
 
 // ============================================================
@@ -2399,9 +1648,9 @@ const sessionUi = {
 };
 
 const SESSION_KIND_LABELS = {
-  live: "直播 / Live",
-  replay: "回放 / Replay",
-  course: "课程 / Course",
+  live: "直播",
+  replay: "回放",
+  course: "课程",
 };
 
 function sessionTimestampLabel(startSeconds) {
@@ -2418,7 +1667,7 @@ function renderSessionStatus() {
   if (!status) return;
   const kindLabel = SESSION_KIND_LABELS[sessionUi.kind] || sessionUi.kind || "";
   status.textContent = sessionUi.active
-    ? `${kindLabel} · Session active`
+    ? `${kindLabel} · 进行中`
     : kindLabel;
 }
 
@@ -2467,8 +1716,8 @@ function renderSessionDigest(digest) {
   } else if (digest && (digest.error || digest.skipped)) {
     text.textContent =
       digest.skipped === "noTranscript"
-        ? "No transcript was captured, so no Session Digest was generated. 未捕获到 Transcript，未生成会话摘要。"
-        : `Session Digest failed: ${digest.error}`;
+        ? "未捕获到逐字稿，未生成会话总结。"
+        : `会话总结生成失败：${digest.error}`;
     section.style.display = "flex";
   } else {
     text.textContent = "";
@@ -2555,7 +1804,7 @@ async function startLearning() {
       url: tab.url,
     });
     if (!result?.success) {
-      window.alert(result?.error || "Could not start the Session.");
+      window.alert(result?.error || "无法开始学习，请稍后重试。");
       return;
     }
     sessionUi.sessionId = result.sessionId;
@@ -2578,7 +1827,7 @@ async function endLearning() {
       renderSessionTranscript(result.state);
       renderSessionSummary(result.state);
       const status = document.getElementById("sessionStatus");
-      if (status) status.textContent = "Session ended 会话已结束";
+      if (status) status.textContent = "会话已结束";
       if (result.digest) {
         // Keep the Session view open so the Session Digest stays readable.
         renderSessionDigest(result.digest);
@@ -2610,7 +1859,7 @@ function setupSessionUI() {
       if (message.state.status === "ended") {
         sessionUi.active = false;
         const status = document.getElementById("sessionStatus");
-        if (status) status.textContent = "Session ended 会话已结束";
+        if (status) status.textContent = "会话已结束";
       }
       sendResponse({ success: true });
       return false;

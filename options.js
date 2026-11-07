@@ -1,120 +1,9 @@
 const YTD_OPTIONS = (() => {
   const LANGUAGE_STORAGE_KEY = "ytd_options_language";
   const PREVIEW_STORAGE_PREFIX = "learningDigestPreview:";
-  const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN"]);
+  const SUPPORTED_LANGUAGES = new Set(["zh-CN"]);
 
   const COPY = {
-    en: {
-      pageTitle: "Learning Digest Settings",
-      languageGroupLabel: "Interface language",
-      heading: "Bring your own API keys",
-      lede:
-        "Keys stay in this Chrome profile and are sent only to OpenRouter. This open-source extension has no developer server or analytics.",
-      aiProvider: "AI provider",
-      providerSummaryLabel: "Supported AI provider",
-      providerBadge: "Supported in this version",
-      deepseekApiKeyLabel: "OpenRouter API key",
-      deepseekHelp:
-        "Learning Digest uses OpenRouter with the DeepSeek V4.1 Flash model for rolling summaries, the session digest, translation, and note polishing. ",
-      deepseekLink: "Create an OpenRouter API key",
-      deepseekHelpSuffix: ".",
-      aiBaseUrlLabel: "API base URL",
-      aiModelLabel: "Model",
-      customEndpointHelp:
-        "Leave both fields empty to keep the OpenRouter defaults. A custom endpoint must speak the OpenAI chat-completions API. If its host is not openrouter.ai, add that host to host_permissions in manifest.json and reload the extension.",
-      invalidBaseUrl:
-        "The API base URL is not a valid https URL (http is allowed only for localhost).",
-      privacyNote:
-        "When you use AI features, OpenRouter receives the transcript and relevant session context, and routes it to the configured model provider. Review OpenRouter's terms and pricing before saving.",
-      speechProvider: "Speech Provider",
-      speechProviderSummaryLabel: "Speech Provider",
-      speechProviderBadge: "Transcribes lesson audio into Transcript records",
-      speechProviderLabel: "Speech Provider",
-      speechProviderHelp:
-        "Transcribes each lesson Segment into Transcript records. Credentials are stored locally and sent only to the provider you pick. ",
-      speechProviderLink: "Create a Groq API key",
-      speechProviderHelpSuffix: ".",
-      speechProviderFieldApiKey: "API key",
-      speechProviderFieldBaseUrl: "API base URL",
-      speechProviderFieldModel: "Model",
-      speechProviderFieldSecretId: "SecretId",
-      speechProviderFieldSecretKey: "SecretKey",
-      speechProviderFieldRegion: "Region",
-      speechProviderFieldEngineModelType: "Engine model type (e.g. 16k_zh)",
-      speechProviderFieldAccessKeyId: "AccessKey ID",
-      speechProviderFieldAccessKeySecret: "AccessKey Secret",
-      speechProviderFieldAppKey: "AppKey",
-      speechProviderLinkTencent: "Create Tencent Cloud credentials",
-      speechProviderLinkAliyun: "Create Alibaba Cloud AccessKeys",
-      speechProviderCustomEndpointHelp:
-        "A custom base URL must speak the OpenAI audio transcriptions API; local faster-whisper servers work through the same slot. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension. Known limitation: this release declares no optional permissions, so Chrome cannot grant a custom host at runtime and the manual manifest edit is the only way to reach one.",
-      speechProviderInvalidBaseUrl:
-        "The Speech Provider base URL is not a valid https URL (http is allowed only for localhost).",
-      speechProviderKeyRequired:
-        "Add an API key for the selected Speech Provider.",
-      speechProviderPrivacyNote:
-        "When you transcribe, the Speech Provider receives the Segment's audio. Credentials stay in this Chrome profile and are sent only to the provider you configured.",
-      sessionSettings: "Session",
-      summaryIntervalLabel: "Rolling Summary interval (minutes)",
-      summaryIntervalHelp:
-        "While a Session is active, the AI Provider refreshes the Rolling Summary on this interval by merging it with the new Transcript. Lower values cost more; 30 minutes suits a typical lesson.",
-      saveSettings: "Save settings",
-      localRemix: "Local remix",
-      customizationTitle: "Want to use another AI model?",
-      customizationPurpose: "Edit and copy a safe prompt for your coding agent",
-      agentBadge: "Coding agent ready",
-      customizationIntro:
-        "You can edit the prompt directly. Complete these three steps before copying:",
-      customizationStepFolder:
-        "Open the extracted Learning Digest project folder in your coding agent.",
-      customizationStepReplace:
-        "Replace [PROVIDER] and [MODEL] with the service and model you want to use.",
-      customizationStepKeys:
-        "Never include API keys in the prompt or chat. Enter them yourself after the code is ready.",
-      customizationPromptLabel: "Editable customization prompt",
-      customizationReminderLabel: "Prompt reminder",
-      customizationReminder:
-        "Before copying, replace [PROVIDER] and [MODEL] with the provider and model you want to use.",
-      customizationPrompt:
-        "Customize this local Learning Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is Learning Digest. If verification fails, stop and ask me to open the extracted Learning Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and verify the change in the Learning Digest side panel.",
-      copyCustomizationPrompt: "Copy edited prompt",
-      localData: "Local data",
-      localDataHelp:
-        "Digests, translations, and notes are stored only in this Chrome profile. You can remove them at any time.",
-      clearCache: "Clear cached digests",
-      deleteNotes: "Delete all notes",
-      resetData: "Reset extension data",
-      footer:
-        'Read <a href="PRIVACY.md" target="_blank">PRIVACY.md</a> in the repository for the complete data-flow description.',
-      migrationWarning:
-        "Custom provider settings were removed safely. The AI key was cleared. Enter an OpenRouter API key to continue.",
-      saving: "Saving…",
-      verifying: "Saved. Verifying API connections…",
-      savedVerified:
-        "Saved and verified. Reopen Learning Digest to use these settings.",
-      verifyFailed: ({ detail }) =>
-        `Saved, but the connection check failed: ${detail}`,
-      aiKeyRejected: "the AI API key was rejected",
-      aiNotFound:
-        "the AI endpoint or model was not found (check the base URL and model name)",
-      aiHttpError: ({ status }) => `the AI endpoint returned HTTP ${status}`,
-      aiUnreachable:
-        "the AI endpoint could not be reached (check the base URL and manifest host_permissions)",
-      addDeepseekKey: "Add an OpenRouter API key.",
-      saveFailed: "Could not save settings. Please try again.",
-      copying: "Copying…",
-      promptCopied: "Edited prompt copied.",
-      copyFailed:
-        "Could not copy the prompt. Select the prompt text and copy it manually.",
-      clearedDigests: ({ count }) =>
-        `Cleared ${count} cached digest${count === 1 ? "" : "s"}.`,
-      notesDeleted: "Deleted all saved notes.",
-      resetConfirm:
-        "Delete API keys, cached digests, translations, and saved notes from this Chrome profile?",
-      allDataDeleted: "All Learning Digest data was deleted.",
-      settingsLoadFailed:
-        "Could not load saved settings. You can still preview this page.",
-    },
     "zh-CN": {
       pageTitle: "Learning Digest 设置",
       languageGroupLabel: "界面语言",
@@ -222,12 +111,12 @@ const YTD_OPTIONS = (() => {
   };
 
   function normalizeLanguage(language) {
-    return SUPPORTED_LANGUAGES.has(language) ? language : "en";
+    return SUPPORTED_LANGUAGES.has(language) ? language : "zh-CN";
   }
 
   function translate(language, key, params = {}) {
     const normalizedLanguage = normalizeLanguage(language);
-    const value = COPY[normalizedLanguage][key] ?? COPY.en[key] ?? "";
+    const value = COPY[normalizedLanguage][key] ?? "";
     return typeof value === "function" ? value(params) : value;
   }
 
@@ -380,7 +269,6 @@ const YTD_OPTIONS = (() => {
 
   function createPromptDrafts() {
     return {
-      en: translate("en", "customizationPrompt"),
       "zh-CN": translate("zh-CN", "customizationPrompt"),
     };
   }
@@ -486,7 +374,7 @@ const YTD_OPTIONS = (() => {
     const languageButtons = [...doc.querySelectorAll("[data-language]")];
     const statusStates = new Map();
     const promptDrafts = createPromptDrafts();
-    let currentLanguage = "en";
+    let currentLanguage = "zh-CN";
 
     function renderStatus(element) {
       const state = statusStates.get(element);
@@ -724,7 +612,7 @@ const YTD_OPTIONS = (() => {
       try {
         applyLanguage(await readPreferredLanguage(storage));
       } catch (_error) {
-        applyLanguage("en");
+        applyLanguage("zh-CN");
       }
       await loadSettings();
     }
@@ -852,13 +740,6 @@ const YTD_OPTIONS = (() => {
       .addEventListener("click", clearCachedDigests);
     doc.getElementById("clearNotesBtn").addEventListener("click", clearNotes);
     doc.getElementById("resetBtn").addEventListener("click", resetAllData);
-    for (const button of languageButtons) {
-      button.addEventListener("click", async () => {
-        const language = button.dataset.language;
-        applyLanguage(language);
-        await persistPreferredLanguage(storage, language);
-      });
-    }
 
     if (doc.readyState === "loading") {
       doc.addEventListener("DOMContentLoaded", loadOptions, { once: true });

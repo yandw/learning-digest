@@ -140,6 +140,9 @@ var YTD_SPEECH_PROVIDER_GROQ = (() => {
     formData.append("file", segmentAudio, fileName);
     formData.append("model", normalizeModel(credentials.model));
     formData.append("response_format", "verbose_json");
+    // Chinese-only product: force Whisper's output language so an
+    // English-heavy lesson cannot come back as English Transcript records.
+    formData.append("language", "zh");
 
     const response = await fetchImpl(
       `${normalizeBaseUrl(credentials.baseUrl)}/audio/transcriptions`,

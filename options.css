@@ -39,42 +39,6 @@ header {
   gap: 16px;
 }
 
-.language-switch {
-  display: inline-flex;
-  flex: 0 0 auto;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.language-switch .language-option {
-  min-width: 62px;
-  padding: 5px 10px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.language-switch .language-option:hover {
-  border-color: transparent;
-  color: var(--text);
-}
-
-.language-switch .language-option[aria-pressed="true"] {
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: 0 1px 4px rgba(46, 42, 36, 0.14);
-}
-
-.language-switch .language-option:focus-visible {
-  outline: 3px solid rgba(27, 114, 232, 0.28);
-  outline-offset: 1px;
-}
-
 .eyebrow {
   color: var(--accent);
   font-size: 12px;
@@ -376,11 +340,6 @@ footer {
 
   .settings-heading-row {
     align-items: flex-start;
-  }
-
-  .language-switch .language-option {
-    min-width: 56px;
-    padding-inline: 8px;
   }
 
   .customization-card {

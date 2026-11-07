@@ -120,7 +120,7 @@ var YTD_SESSION_SUMMARY = (() => {
   const ROLLING_SUMMARY_SYSTEM_PROMPT = [
     "You maintain the rolling summary of a long lesson.",
     "Merge the previous rolling summary with the new transcript excerpt into ONE updated rolling summary of everything covered so far.",
-    "Write in the same language as the transcript.",
+    "Always write in Simplified Chinese (简体中文), regardless of the transcript language.",
     "Keep it compact: concise paragraphs or bullets covering the key concepts, arguments, and examples, with [m:ss] timestamps where they help the learner jump back.",
     "If the excerpt contains a transcription-failure marker like [语音转录失败], note that a gap exists at that timestamp instead of inventing content.",
     "Output only the updated rolling summary, no preamble.",
@@ -129,7 +129,7 @@ var YTD_SESSION_SUMMARY = (() => {
   const DIGEST_SYSTEM_PROMPT = [
     "You write the final digest of a completed lesson.",
     "Combine the rolling summary so far with the remaining transcript excerpt into ONE complete session digest covering the whole lesson from start to finish.",
-    "Write in the same language as the transcript.",
+    "Always write in Simplified Chinese (简体中文), regardless of the transcript language.",
     "Structure it for review: an overview, then the main sections in lesson order with [m:ss] timestamps, then a short takeaways list.",
     "If the transcript contains transcription-failure markers like [语音转录失败], mention that those stretches could not be transcribed instead of inventing content.",
     "Output only the digest, no preamble.",

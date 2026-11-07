@@ -19,10 +19,10 @@ Learning Digest 是一个自带密钥（bring-your-own-key）、从 GitHub 本�
 这个仓库目前是一个早期概念验证。平台和服务的扩展接口已经就位：
 
 - Session 流水线状态机和按 Session 的持久化存储；
-- Speech Provider 注册表（已内置 Groq；腾讯云 ASR、阿里云 ASR 可以接入同一接口）；
+- Speech Provider 注册表，内置三个 Provider：Groq、腾讯云 ASR、阿里云 ASR；
 - 从种子项目继承的 AI 服务功能（分析、解释、翻译、笔记）。
 
-xiaoe-tech.com 的 Source Platform 采集将在后续工单落地。在此之前，安装扩展后可以使用侧边栏外壳、针对缓存 Transcript 的 AI 服务功能，以及完整的设置页面，但不会从课程页面启动新的采集。
+xiaoe-tech.com 的 Source Platform 采集和三个 Speech Provider（Groq、腾讯云 ASR、阿里云 ASR）均已实现。真实课程上的转写质量、延迟和成本尚未测量；PoC 评估报告（[docs/poc-evaluation.md](docs/poc-evaluation.md)）列出了代码已验证的内容和 go/no-go 决策所需的 TODO(manual) 测量项。
 
 ## 让你的编程 Agent 帮你安装
 
@@ -92,14 +92,14 @@ Base URL: https://api.groq.com/openai/v1
 Model: whisper-large-v3-turbo
 ```
 
-请在设置的 Speech Provider 区域填写 Groq API 密钥。腾讯云 ASR 和阿里云 ASR 可以作为新的 Speech Provider 接入同一注册表。
+请在设置的 Speech Provider 区域填写 Groq API 密钥。腾讯云 ASR 和阿里云 ASR 也已内置，可在同一区域直接选择；各 Provider 的限制和评估状态见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。
 
 密钥和设置保存在本机 Chrome 的本地扩展存储中。发布版本不包含也不使用 `config.js`。
 
 ## 使用 Learning Digest
 
-1. 在支持的课程平台（xiaoe-tech.com 支持将在后续工单落地）打开一节课。
-2. 平台采集可用后，从侧边栏开始一个 Session。
+1. 在支持的课程平台（目前为 xiaoe-tech.com）打开一节课。
+2. 从侧边栏开始一个 Session。
 3. 随着 Segment 转写完成阅读带时间戳的 Transcript，或选择 **Original**、**中文**、**双语**。
 4. 滚动摘要会随 Session 进度自动刷新。
 5. 打开 **Overview** 查看 AI 生成的章节和关键引文。
@@ -110,12 +110,12 @@ Model: whisper-large-v3-turbo
 
 - Google Chrome 116 或更高版本，使用 Side Panel API。
 - Session 流水线状态机，带按 Session 的持久化（课程中途关闭标签页后可以继续）。
-- Speech Provider 接口，已内置 Groq。
+- Speech Provider 注册表，内置 Groq、腾讯云 ASR、阿里云 ASR。
 - 针对缓存 Transcript 的 AI 概览、选中文本解释、翻译和本地笔记。
 - 本地笔记，以及近期 Transcript 和 Digest 结果的本地缓存。
 - 所有已发布的 AI 功能都使用 DeepSeek V4 Flash。其他服务需要你自行修改本地代码，发布版本不提供支持。
 
-xiaoe-tech.com 的 Source Platform 采集正在开发中，不包含在当前快照里。Firefox、Safari、移动端浏览器和其他 Chromium 浏览器目前未做测试和支持。
+xiaoe-tech.com 的 Source Platform 采集已实现；真实课程上的 Provider 评估见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。Firefox、Safari、移动端浏览器和其他 Chromium 浏览器目前未做测试和支持。
 
 ## DeepSeek V4 Flash 定价
 
@@ -141,7 +141,7 @@ Learning Digest 使用纯 HTML、CSS 和 JavaScript，没有构建步骤，很�
 - 为不同课程或主题定制摘要模板。
 - 把保存的笔记做成间隔重复的词汇笔记本。
 - 增加新的 Source Platform 适配器（注册表接口已经就绪）。
-- 增加新的 Speech Provider（腾讯云 ASR、阿里云 ASR）。
+- 按 Provider 调整 Segment 时长和摘要节奏（从 [docs/poc-evaluation.md](docs/poc-evaluation.md) 入手）。
 
 改造时，先在编程 Agent 中打开 Chrome 通过“加载已解压的扩展程序”使用的那个准确的 Learning Digest 项目文件夹。在猜测的或复制的文件夹上操作，不会改动 Chrome 实际运行的扩展。
 

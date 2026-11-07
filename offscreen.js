@@ -5,10 +5,14 @@
  * The service worker owns all timing decisions (the segment scheduler is
  * pure and lives there); this document is a deliberately dumb recorder:
  *
- * - captureStart {streamId, segmentLengthSeconds}: opens the tabCapture
- *   stream handed over from chrome.tabCapture.getMediaStreamId, starts a
- *   playback loopback (a consumed tab is muted for the user, which would
- *   mean a silent lesson), and starts a MediaRecorder.
+ * - captureStart {streamId, segmentLengthSeconds, mode}: opens the
+ *   tabCapture stream handed over from chrome.tabCapture.getMediaStreamId,
+ *   starts a playback loopback (a consumed tab is muted for the user, which
+ *   would mean a silent lesson), and starts a MediaRecorder. mode is
+ *   "wallclock" (live) or "video" (replay/course): wallclock Sessions cut
+ *   on a regular interval HERE, because the MV3 service worker is suspended
+ *   after ~30 s of inactivity and nothing wakes it on a live page; video
+ *   Sessions are cut by the worker following media position instead.
  * - captureCut {}: stops the current recorder (one decodable blob per
  *   recorder, the same pattern the pre-strip code used), immediately
  *   starts the next, and responds with the finished chunk as a data URL.
@@ -17,7 +21,8 @@
  * Chunks travel as base64 data URLs because chrome.runtime messages are
  * JSON-serialized (Blobs are not). A backstop self-cut every few segment
  * lengths bounds chunk size when the service worker is suspended, and is
- * pushed to the worker as an unsolicited captureChunk message.
+ * pushed to the worker as an unsolicited captureChunk message; the
+ * wallclock regular cut uses the same unsolicited channel.
  *
  * Browser-only: not unit-tested (spec Testing Decisions); verified
  * manually per the ticket's checklist.
@@ -28,6 +33,7 @@
   let playbackContext = null;
   let chunkStartedAtMs = 0;
   let backstopTimer = null;
+  let regularCutTimer = null;
   let segmentLengthMs = 120_000;
 
   const MIME_TYPE = "audio/webm;codecs=opus";
@@ -57,23 +63,41 @@
     playbackContext = null;
   }
 
+  // Cut a chunk now and push it to the service worker unsolicited. The
+  // worker wakes on the message, so the cut pipeline keeps running even
+  // while the worker's own timers are suspended.
+  function selfCutAndSend() {
+    void cutChunk().then((chunk) => {
+      if (!chunk) return;
+      try {
+        chrome.runtime.sendMessage(
+          { action: "captureChunk", ...chunk },
+          () => void chrome.runtime.lastError,
+        );
+      } catch (_error) {
+        // Worker gone; nothing useful to do with the chunk anyway.
+      }
+    });
+  }
+
   function armBackstop() {
     clearTimeout(backstopTimer);
     // Five segment lengths: far beyond normal cut latency, small enough to
     // stay well under the Speech Provider's upload size limit.
-    backstopTimer = setTimeout(() => {
-      void cutChunk().then((chunk) => {
-        if (!chunk) return;
-        try {
-          chrome.runtime.sendMessage(
-            { action: "captureChunk", ...chunk },
-            () => void chrome.runtime.lastError,
-          );
-        } catch (_error) {
-          // Worker gone; nothing useful to do with the chunk anyway.
-        }
-      });
-    }, segmentLengthMs * 5);
+    backstopTimer = setTimeout(selfCutAndSend, segmentLengthMs * 5);
+  }
+
+  // Live (wallclock) Sessions: the worker's live tick dies with the ~30 s
+  // service-worker suspension and no page message wakes it, so the regular
+  // segment cut must live here in the persistent offscreen document. Audio
+  // is being recorded AND played back, so this page is neither silent nor
+  // media-idle and its timers escape intensive throttling.
+  function armRegularCut(mode) {
+    clearInterval(regularCutTimer);
+    regularCutTimer = null;
+    if (mode === "wallclock") {
+      regularCutTimer = setInterval(selfCutAndSend, segmentLengthMs);
+    }
   }
 
   function startRecorder() {
@@ -121,6 +145,7 @@
       segmentLengthMs = Math.max(30_000, Number(message.segmentLengthSeconds) || 120) * 1000;
       startPlaybackLoop();
       startRecorder();
+      armRegularCut(message.mode);
       sendResponse({ success: true });
     } catch (error) {
       sendResponse({ success: false, error: error?.message || String(error) });
@@ -148,6 +173,8 @@
     }
     if (message.action === "captureStop") {
       clearTimeout(backstopTimer);
+      clearInterval(regularCutTimer);
+      regularCutTimer = null;
       stopPlaybackLoop();
       void stopRecorder().then(() => {
         if (stream) {

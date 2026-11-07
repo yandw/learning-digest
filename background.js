@@ -1049,6 +1049,7 @@ async function ensureCaptureResumed() {
         action: "captureStart",
         streamId,
         segmentLengthSeconds: context.segmentLengthSeconds,
+        mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
       });
       if (!started?.success) throw new Error(started?.error || "capture restart failed");
     } catch (error) {
@@ -1290,6 +1291,7 @@ async function handleStartLearning(message) {
       action: "captureStart",
       streamId,
       segmentLengthSeconds: context.segmentLengthSeconds,
+      mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
     });
     if (!started?.success) throw new Error(started?.error || "capture start failed");
   } catch (error) {

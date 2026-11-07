@@ -108,8 +108,10 @@ test("startLearning maps Chrome's not-invoked tabCapture error to a Chinese inst
 
 test("action click on a recognized learning page starts the Session", async () => {
   let streamRequested = false;
+  const sentMessages = [];
   const { handleActionClicked, handleGetSessionState } = loadBackgroundHelpers({
     settings: baseSettings(),
+    sentMessages,
     getMediaStreamId: async () => {
       streamRequested = true;
       return "test-stream-id";
@@ -121,6 +123,27 @@ test("action click on a recognized learning page starts the Session", async () =
   assert.equal(streamRequested, true);
   const state = await handleGetSessionState();
   assert.equal(state.active, true);
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.mode, "video");
+});
+
+test("action click on a live page arms the offscreen wallclock cut", async () => {
+  const sentMessages = [];
+  const LIVE_URL = "https://app12345.xiaoe-tech.com/live/l_abc123def456";
+  const { handleActionClicked, handleGetSessionState } = loadBackgroundHelpers({
+    settings: baseSettings(),
+    sentMessages,
+  });
+
+  await handleActionClicked({ id: 7, url: LIVE_URL, windowId: 1 });
+
+  const state = await handleGetSessionState();
+  assert.equal(state.active, true);
+  assert.equal(state.timestampKind, "wallclock");
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.mode, "wallclock");
 });
 
 test("action click on an unrecognized page only opens the panel", async () => {

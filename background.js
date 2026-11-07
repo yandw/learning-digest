@@ -883,6 +883,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleStartLearning,
   handleGetSessionState,
   handleActionClicked,
+  readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
 // ============================================================
@@ -1370,6 +1371,16 @@ async function handleStartLearning(message) {
     await clearContextPointer();
     const message = error?.message || String(error);
     console.error("[Learning Digest] startLearning failed:", message);
+    // Storage breadcrumb: the panel alert and this console.error are both
+    // easy to miss (stale panel context, stale DevTools attach), so the
+    // failure reason is persisted for a reliable one-read diagnosis.
+    await chrome.storage.local.set({
+      ytd_last_start_failure: {
+        at: Date.now(),
+        sessionId: context.sessionId,
+        error: message,
+      },
+    });
     // Chrome only allows tabCapture after the user has INVOKED the extension
     // on the target tab (a toolbar icon click); a side-panel button click
     // does not count. Turn the raw English API error into an actionable
@@ -1398,6 +1409,7 @@ async function handleStartLearning(message) {
       `mode=${context.timestampKind === "wallclock" ? "直播(墙钟)" : "录播(媒体位置)"} ` +
       `segment=${context.segmentLengthSeconds}s provider=${context.providerId}`,
   );
+  chrome.storage.local.remove("ytd_last_start_failure").catch(() => {});
   return {
     success: true,
     sessionId: context.sessionId,

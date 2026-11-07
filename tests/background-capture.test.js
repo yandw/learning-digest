@@ -88,7 +88,7 @@ test("startLearning proceeds to capture when the selected provider's credentials
 });
 
 test("startLearning maps Chrome's not-invoked tabCapture error to a Chinese instruction", async () => {
-  const { handleStartLearning } = loadBackgroundHelpers({
+  const { handleStartLearning, readLastStartFailure } = loadBackgroundHelpers({
     settings: baseSettings(),
     getMediaStreamId: async () => {
       throw new Error(
@@ -102,6 +102,11 @@ test("startLearning maps Chrome's not-invoked tabCapture error to a Chinese inst
   assert.equal(result.success, false);
   assert.match(result.error, /点击工具栏中的 Learning Digest 图标/);
   assert.doesNotMatch(result.error, /activeTab/);
+  // The failure is persisted: console and panel alert are easy to miss, the
+  // storage breadcrumb makes every failed start diagnosable after the fact.
+  const diag = await readLastStartFailure();
+  assert.match(diag.ytd_last_start_failure.error, /not been invoked/);
+  assert.equal(diag.ytd_last_start_failure.sessionId.startsWith("s_"), true);
 });
 
 // --- Toolbar icon click: the single capture entry point (invocation + start)

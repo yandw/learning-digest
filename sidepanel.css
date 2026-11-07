@@ -1475,3 +1475,75 @@ body {
   color: var(--accent);
   background: var(--accent-dim);
 }
+
+/* Session capture (xiaoe-tech Source Platform) */
+.session-bar {
+  align-items: center;
+  background: #f2f4f8;
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+}
+
+.session-status {
+  color: #5a6472;
+  font-size: 12px;
+}
+
+.session-btn {
+  background: #1a73e8;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 12px;
+}
+
+.session-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.session-btn-end {
+  background: #d93025;
+}
+
+.session-view {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.session-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 12px;
+  width: 100%;
+}
+
+.session-record {
+  display: flex;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.session-record-stamp {
+  color: #8a93a1;
+  flex-shrink: 0;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.session-record-text {
+  font-size: 13px;
+}
+
+.session-record-failed .session-record-text {
+  color: #d93025;
+}

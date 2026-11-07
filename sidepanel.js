@@ -317,6 +317,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   showState("welcome");
+  setupSessionUI();
 });
 
 // Listen for messages from the background script.
@@ -2378,3 +2379,195 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
 };
+
+// ============================================================
+// SESSION CAPTURE UX (xiaoe-tech Source Platform)
+// ============================================================
+//
+// The panel offers「开始学习 / Start learning」on recognized xiaoe-tech
+// pages and「结束学习 / End learning」during an active Session. Transcript
+// records render incrementally as the background pipeline broadcasts
+// sessionUpdate; reopening the panel re-syncs from the persisted Session
+// (resume), so finished Segments are never re-transcribed.
+
+const sessionUi = {
+  sessionId: null,
+  kind: null,
+  timestampKind: null,
+  renderedRecords: 0,
+  active: false,
+};
+
+const SESSION_KIND_LABELS = {
+  live: "直播 / Live",
+  replay: "回放 / Replay",
+  course: "课程 / Course",
+};
+
+function sessionTimestampLabel(startSeconds) {
+  const total = Math.floor(Number(startSeconds) || 0);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const mm = hours > 0 ? String(minutes).padStart(2, "0") : String(minutes);
+  return `${hours > 0 ? hours + ":" : ""}${mm}:${String(seconds).padStart(2, "0")}`;
+}
+
+function renderSessionStatus() {
+  const status = document.getElementById("sessionStatus");
+  if (!status) return;
+  const kindLabel = SESSION_KIND_LABELS[sessionUi.kind] || sessionUi.kind || "";
+  status.textContent = sessionUi.active
+    ? `${kindLabel} · Session active`
+    : kindLabel;
+}
+
+function renderSessionTranscript(state) {
+  const container = document.getElementById("sessionTranscript");
+  if (!container || !state) return;
+  const records = state.transcriptRecords || [];
+  for (const record of records.slice(sessionUi.renderedRecords)) {
+    const row = document.createElement("div");
+    row.className = record.failed
+      ? "session-record session-record-failed"
+      : "session-record";
+    const stamp = document.createElement("span");
+    stamp.className = "session-record-stamp";
+    stamp.textContent = `[${sessionTimestampLabel(record.start)}]`;
+    const text = document.createElement("span");
+    text.className = "session-record-text";
+    text.textContent = record.text;
+    row.append(stamp, text);
+    container.appendChild(row);
+  }
+  sessionUi.renderedRecords = records.length;
+  container.scrollTop = container.scrollHeight;
+}
+
+function showSessionMode({ active, kind, state }) {
+  const bar = document.getElementById("sessionBar");
+  const view = document.getElementById("sessionView");
+  const startBtn = document.getElementById("startLearningBtn");
+  const endBtn = document.getElementById("endLearningBtn");
+  const welcome = document.getElementById("welcomeState");
+  if (!bar) return;
+
+  if (active) {
+    sessionUi.active = true;
+    bar.style.display = "flex";
+    startBtn.style.display = "none";
+    endBtn.style.display = "";
+    view.style.display = "";
+    if (welcome) welcome.style.display = "none";
+    renderSessionStatus();
+    renderSessionTranscript(state);
+    return;
+  }
+
+  sessionUi.active = false;
+  sessionUi.sessionId = null;
+  sessionUi.renderedRecords = 0;
+  endBtn.style.display = "none";
+  view.style.display = "none";
+  const transcript = document.getElementById("sessionTranscript");
+  if (transcript) transcript.textContent = "";
+
+  if (kind && kind !== "none") {
+    bar.style.display = "flex";
+    startBtn.style.display = "";
+    sessionUi.kind = kind;
+    renderSessionStatus();
+    if (welcome && state === null) welcome.style.display = "none";
+  } else {
+    bar.style.display = "none";
+    startBtn.style.display = "none";
+    if (welcome) welcome.style.display = "flex";
+  }
+}
+
+async function refreshSessionUI() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const recognition = window.YTD_SOURCE_PLATFORMS.recognizePage(tab?.url);
+    const session = await chrome.runtime.sendMessage({ action: "getSessionState" });
+    if (session?.active) {
+      sessionUi.sessionId = session.sessionId;
+      sessionUi.kind = session.kind;
+      sessionUi.timestampKind = session.timestampKind;
+      showSessionMode({ active: true, kind: session.kind, state: session.state });
+    } else {
+      showSessionMode({ active: false, kind: recognition.kind, state: null });
+    }
+  } catch (_error) {
+    // Panel opened on a non-extension page (e.g. chrome://): no session UI.
+    showSessionMode({ active: false, kind: "none", state: null });
+  }
+}
+
+async function startLearning() {
+  const startBtn = document.getElementById("startLearningBtn");
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !tab.url) return;
+  startBtn.disabled = true;
+  try {
+    const result = await chrome.runtime.sendMessage({
+      action: "startLearning",
+      tabId: tab.id,
+      url: tab.url,
+    });
+    if (!result?.success) {
+      window.alert(result?.error || "Could not start the Session.");
+      return;
+    }
+    sessionUi.sessionId = result.sessionId;
+    sessionUi.kind = result.kind;
+    sessionUi.timestampKind = result.timestampKind;
+    sessionUi.renderedRecords = 0;
+    showSessionMode({ active: true, kind: result.kind, state: result.state });
+  } finally {
+    startBtn.disabled = false;
+  }
+}
+
+async function endLearning() {
+  const endBtn = document.getElementById("endLearningBtn");
+  endBtn.disabled = true;
+  try {
+    const result = await chrome.runtime.sendMessage({ action: "endLearning" });
+    if (result?.state) {
+      renderSessionTranscript(result.state);
+      const status = document.getElementById("sessionStatus");
+      if (status) status.textContent = "Session ended 会话已结束";
+    }
+    showSessionMode({ active: false, kind: sessionUi.kind, state: null });
+  } finally {
+    endBtn.disabled = false;
+  }
+}
+
+function setupSessionUI() {
+  document.getElementById("startLearningBtn")?.addEventListener("click", startLearning);
+  document.getElementById("endLearningBtn")?.addEventListener("click", endLearning);
+  chrome.tabs.onActivated.addListener(() => {
+    if (!sessionUi.active) void refreshSessionUI();
+  });
+  chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+    if (changeInfo.status === "complete" && !sessionUi.active) void refreshSessionUI();
+  });
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.action === "sessionUpdate" && message.state) {
+      if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
+      sessionUi.sessionId = message.sessionId;
+      renderSessionTranscript(message.state);
+      if (message.state.status === "ended") {
+        sessionUi.active = false;
+        const status = document.getElementById("sessionStatus");
+        if (status) status.textContent = "Session ended 会话已结束";
+      }
+      sendResponse({ success: true });
+      return false;
+    }
+    return false;
+  });
+  void refreshSessionUI();
+}

@@ -18,7 +18,7 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -336,6 +336,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "openOptions") {
     chrome.runtime.openOptionsPage();
     sendResponse({ success: true });
+    return false;
+  }
+
+  // --- Session capture (xiaoe-tech Source Platform, #16) ---
+
+  if (message.action === "startLearning") {
+    handleStartLearning(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "endLearning") {
+    handleEndLearning()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "getSessionState") {
+    handleGetSessionState()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ active: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "mediaPosition") {
+    // From the xiaoe page bridge: drives replay/course Segments and the
+    // media-end auto-stop. No response needed.
+    handleMediaPosition(message, sender).catch((error) =>
+      debugLog("[Learning Digest BG] mediaPosition error:", error),
+    );
+    return false;
+  }
+
+  if (message.action === "captureChunk") {
+    // Backstop self-cut from the offscreen recorder (worker was asleep).
+    handleBackstopChunk(message).catch((error) =>
+      debugLog("[Learning Digest BG] captureChunk error:", error),
+    );
     return false;
   }
 
@@ -988,3 +1028,362 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleSaveNote,
   handleTranslateContent,
 };
+
+// ============================================================
+// SESSION CAPTURE ORCHESTRATION (xiaoe-tech Source Platform)
+// ============================================================
+//
+// The thin browser layer in front of the pure pieces:
+// session-pipeline.js (state machine), session-segmenter.js (timing math),
+// source-platforms.js (URL recognition), speech-providers.js (transcription),
+// session-persistence.js (incremental snapshots). Everything timed or
+// browser-bound lives here so the core modules stay pure and unit-tested.
+//
+// Shape: one active capture at a time. The capture context lives in memory
+// and is mirrored to storage under ACTIVE_CAPTURE_KEY so a service-worker
+// restart (or browser restart) can rebuild mid-Session without
+// re-transcribing done Segments.
+
+const ACTIVE_CAPTURE_KEY = "ytd_active_capture";
+const LIVE_TICK_MS = 1000;
+
+/** @type {object|null} in-memory capture context, rebuilt from storage on wake. */
+let captureContext = null;
+
+function dataUrlToBlob(dataUrl, fallbackMime = "audio/webm") {
+  const [header, base64] = String(dataUrl).split(",");
+  const mime = /data:([^;]+)/.exec(header)?.[1] || fallbackMime;
+  const binary = atob(base64 || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+async function sendOffscreen(message) {
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch (error) {
+    return { error: error?.message || String(error) };
+  }
+}
+
+async function ensureOffscreen() {
+  if (await chrome.offscreen.hasDocument()) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["USER_MEDIA"],
+    justification: "Records the course tab's audio for segment transcription.",
+  });
+}
+
+function broadcastSession(state) {
+  try {
+    chrome.runtime
+      .sendMessage({ action: "sessionUpdate", sessionId: state.sessionId, state })
+      .catch(() => {});
+  } catch (_error) {
+    // Side panel closed; the snapshot in storage is the durable record.
+  }
+}
+
+async function persistContextPointer(context) {
+  // Session metadata only — Speech Provider credentials are re-read from
+  // settings on rebuild and are never duplicated here.
+  await chrome.storage.local.set({
+    [ACTIVE_CAPTURE_KEY]: {
+      sessionId: context.sessionId,
+      tabId: context.tabId,
+      platformId: context.platformId,
+      kind: context.kind,
+      timestampKind: context.timestampKind,
+      startedAtMs: context.startedAtMs,
+      segmentLengthSeconds: context.segmentLengthSeconds,
+    },
+  });
+}
+
+async function readContextPointer() {
+  const stored = await chrome.storage.local.get(ACTIVE_CAPTURE_KEY);
+  return stored[ACTIVE_CAPTURE_KEY] || null;
+}
+
+async function clearContextPointer() {
+  await chrome.storage.local.remove(ACTIVE_CAPTURE_KEY);
+}
+
+function segmentCursor(state) {
+  return state.segments.reduce(
+    (end, segment) => Math.max(end, segment.start + segment.duration),
+    0,
+  );
+}
+
+/**
+ * Rebuilds the in-memory capture context after a service-worker restart.
+ * Resume is exactly the #12 contract: load the snapshot, resumeFromSnapshot,
+ * keep feeding events — done Segments are never re-transcribed.
+ */
+async function ensureCaptureResumed() {
+  if (captureContext) return captureContext;
+  const pointer = await readContextPointer();
+  if (!pointer) return null;
+  const snapshot = await YTD_SESSION_PERSISTENCE.loadSessionSnapshot(
+    chrome.storage.local,
+    pointer.sessionId,
+  );
+  if (!snapshot) {
+    await clearContextPointer();
+    return null;
+  }
+  const state = YTD_SESSION_PIPELINE.resumeFromSnapshot(snapshot);
+  if (state.status !== "active") {
+    await clearContextPointer();
+    return null;
+  }
+
+  const settings = await getSettings();
+  const context = {
+    ...pointer,
+    state,
+    segmenter: YTD_SEGMENTER.createSegmenter({
+      segmentLengthSeconds: pointer.segmentLengthSeconds,
+      startAt: segmentCursor(state),
+      startIndex: state.segments.length,
+    }),
+    lastPosition: segmentCursor(state),
+    pendingChunks: [],
+    providerId: settings.speechProvider,
+    credentials: settings.speechProviders[settings.speechProvider] || {},
+    liveTimer: null,
+    ended: false,
+  };
+  captureContext = context;
+
+  // The offscreen recorder survives a worker restart but not a browser
+  // restart; only the latter needs a fresh capture stream.
+  if (!(await chrome.offscreen.hasDocument())) {
+    try {
+      const streamId = await chrome.tabCapture.getMediaStreamId({
+        targetTabId: context.tabId,
+      });
+      await ensureOffscreen();
+      const started = await sendOffscreen({
+        action: "captureStart",
+        streamId,
+        segmentLengthSeconds: context.segmentLengthSeconds,
+      });
+      if (!started?.success) throw new Error(started?.error || "capture restart failed");
+    } catch (error) {
+      // Without the tab (closed or navigated away) capture cannot restart;
+      // the Session stays resumable the moment the learner returns.
+      debugLog("[Learning Digest BG] capture restart failed:", error);
+    }
+  }
+  if (context.timestampKind === "wallclock") startLiveTimer(context);
+  return context;
+}
+
+function startLiveTimer(context) {
+  context.liveTimer = setInterval(() => {
+    feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
+  }, LIVE_TICK_MS);
+}
+
+/**
+ * Feeds the scheduler one position reading (video position for replay and
+ * course pages, wall-clock elapsed for live) and dispatches whatever
+ * Segments completed. Feeding is idempotent: the scheduler's cursor only
+ * moves forward.
+ */
+function feedPosition(context, positionSeconds) {
+  if (context.ended) return;
+  context.lastPosition = Math.max(context.lastPosition, positionSeconds);
+  for (const segment of context.segmenter.recordPosition(positionSeconds)) {
+    void dispatchSegment(context, segment);
+  }
+}
+
+/**
+ * One Segment end to end: append it to the Session, cut its audio from the
+ * recorder (consuming any backstop chunk first), transcribe exactly once,
+ * then feed the result back into the state machine. Every transition is
+ * persisted and broadcast so a close at any point loses at most the
+ * in-flight Segment.
+ */
+async function dispatchSegment(context, segment) {
+  const segmentId = `seg-${segment.index}`;
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "segmentCaptured",
+    segment: { id: segmentId, start: segment.start, duration: segment.duration },
+  });
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  broadcastSession(context.state);
+
+  try {
+    const queued = context.pendingChunks.shift();
+    const cut = queued || (await sendOffscreen({ action: "captureCut" }));
+    if (!cut || cut.error) throw new Error(cut?.error || "no audio chunk");
+    const blob = dataUrlToBlob(cut.dataUrl, cut.mimeType);
+    const records = await YTD_SPEECH_PROVIDERS.transcribeSegment(
+      context.providerId,
+      blob,
+      context.credentials,
+    );
+    // Provider records are Segment-relative; the Transcript needs absolute
+    // Session timestamps.
+    const absoluteRecords = records.map((record) => ({
+      ...record,
+      start: record.start + segment.start,
+    }));
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "transcribeOk",
+      segmentId,
+      records: absoluteRecords,
+    });
+  } catch (error) {
+    debugLog("[Learning Digest BG] Segment transcription failed:", error);
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "transcribeFailed",
+      segmentId,
+    });
+  }
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  broadcastSession(context.state);
+}
+
+async function handleStartLearning(message) {
+  const recognition = YTD_SOURCE_PLATFORMS.recognizePage(message.url);
+  if (recognition.kind === "none") {
+    return { success: false, error: "This page is not a recognized learning page." };
+  }
+  const existing = await ensureCaptureResumed();
+  if (existing) {
+    return { success: false, error: "A learning Session is already active.", sessionId: existing.sessionId };
+  }
+
+  const settings = await getSettings();
+  const providerId = settings.speechProvider;
+  const credentials = settings.speechProviders[providerId] || {};
+  if (!credentials.apiKey) {
+    return { success: false, error: "Add a Speech Provider API key in Settings first." };
+  }
+
+  const state = YTD_SESSION_PIPELINE.createSession({
+    sessionId: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+  });
+  const context = {
+    sessionId: state.sessionId,
+    tabId: message.tabId,
+    platformId: recognition.platformId,
+    kind: recognition.kind,
+    timestampKind: recognition.timestampKind,
+    startedAtMs: Date.now(),
+    segmentLengthSeconds: settings.segmentLengthSeconds,
+    state,
+    segmenter: YTD_SEGMENTER.createSegmenter({
+      segmentLengthSeconds: settings.segmentLengthSeconds,
+    }),
+    lastPosition: 0,
+    pendingChunks: [],
+    providerId,
+    credentials,
+    liveTimer: null,
+    ended: false,
+  };
+  captureContext = context;
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, state);
+  await persistContextPointer(context);
+
+  try {
+    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: context.tabId });
+    await ensureOffscreen();
+    const started = await sendOffscreen({
+      action: "captureStart",
+      streamId,
+      segmentLengthSeconds: context.segmentLengthSeconds,
+    });
+    if (!started?.success) throw new Error(started?.error || "capture start failed");
+  } catch (error) {
+    captureContext = null;
+    await clearContextPointer();
+    return {
+      success: false,
+      error: `Could not start audio capture: ${error?.message || error}`,
+    };
+  }
+
+  if (context.timestampKind === "wallclock") startLiveTimer(context);
+  broadcastSession(context.state);
+  return {
+    success: true,
+    sessionId: context.sessionId,
+    kind: context.kind,
+    timestampKind: context.timestampKind,
+    state: context.state,
+  };
+}
+
+async function handleMediaPosition(message, sender) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  if (context.timestampKind !== "video") return; // live runs on wall-clock
+  if (sender.tab?.id !== context.tabId) return;
+  feedPosition(context, Number(message.position) || 0);
+  // Media end auto-ends replay/course Sessions; live ends only via the
+  // explicit end action.
+  if (message.ended && (context.kind === "replay" || context.kind === "course")) {
+    await endActiveSession(context, { reason: "mediaEnded" });
+  }
+}
+
+async function handleBackstopChunk(message) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  context.pendingChunks.push({ dataUrl: message.dataUrl, durationSeconds: message.durationSeconds, mimeType: message.mimeType });
+  // Keep the position stream moving even if the live tick was suspended.
+  feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
+}
+
+async function endActiveSession(context, { reason } = {}) {
+  if (context.ended) return { success: true, reason, state: context.state };
+  context.ended = true;
+  if (context.liveTimer) clearInterval(context.liveTimer);
+
+  const finalPosition =
+    context.timestampKind === "wallclock"
+      ? (Date.now() - context.startedAtMs) / 1000
+      : context.lastPosition;
+  const tail = context.segmenter.flush(finalPosition);
+  if (tail) await dispatchSegment(context, tail);
+
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, { type: "sessionEnd" });
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  await clearContextPointer();
+  broadcastSession(context.state);
+
+  await sendOffscreen({ action: "captureStop" });
+  if (await chrome.offscreen.hasDocument()) {
+    await chrome.offscreen.closeDocument();
+  }
+  if (captureContext?.sessionId === context.sessionId) captureContext = null;
+  return { success: true, reason, state: context.state };
+}
+
+async function handleEndLearning() {
+  const context = await ensureCaptureResumed();
+  if (!context) return { success: false, error: "No active learning Session." };
+  return endActiveSession(context, { reason: "explicit" });
+}
+
+async function handleGetSessionState() {
+  const context = await ensureCaptureResumed();
+  if (!context) return { active: false, state: null };
+  return {
+    active: true,
+    sessionId: context.sessionId,
+    kind: context.kind,
+    timestampKind: context.timestampKind,
+    startedAtMs: context.startedAtMs,
+    state: context.state,
+  };
+}

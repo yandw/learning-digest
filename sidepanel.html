@@ -71,6 +71,20 @@
 
     <!-- MAIN CONTENT -->
     <div class="content" id="contentArea">
+      <!-- SESSION CAPTURE (xiaoe-tech Source Platform) -->
+      <div id="sessionBar" class="session-bar" style="display: none">
+        <div class="session-status" id="sessionStatus"></div>
+        <button class="session-btn" id="startLearningBtn" type="button" style="display: none">
+          开始学习 / Start learning
+        </button>
+        <button class="session-btn session-btn-end" id="endLearningBtn" type="button" style="display: none">
+          结束学习 / End learning
+        </button>
+      </div>
+      <div id="sessionView" class="session-view" style="display: none">
+        <div class="session-transcript" id="sessionTranscript"></div>
+      </div>
+
       <!-- WELCOME STATE -->
       <div id="welcomeState" class="welcome-container">
         <div class="welcome-icon" aria-hidden="true"></div>
@@ -256,6 +270,8 @@
     </div>
 
     <script src="settings.js"></script>
+    <script src="speech-transcription.js"></script>
+    <script src="source-platforms.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

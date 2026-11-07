@@ -1633,11 +1633,12 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
 // SESSION CAPTURE UX (xiaoe-tech Source Platform)
 // ============================================================
 //
-// The panel offers「开始学习 / Start learning」on recognized xiaoe-tech
-// pages and「结束学习 / End learning」during an active Session. Transcript
-// records render incrementally as the background pipeline broadcasts
-// sessionUpdate; reopening the panel re-syncs from the persisted Session
-// (resume), so finished Segments are never re-transcribed.
+// The panel reflects the Session started by the toolbar icon click
+// (Chrome's tabCapture invocation rule makes a panel-side start button
+// unusable, so there isn't one) and offers「结束学习」during an active
+// Session. Transcript records render incrementally as the background
+// pipeline broadcasts sessionUpdate; reopening the panel re-syncs from the
+// persisted Session (resume), so finished Segments are never re-transcribed.
 
 const sessionUi = {
   sessionId: null,
@@ -1752,9 +1753,9 @@ function showRecordingToast() {
   );
 }
 
-function showSessionMode({ active, kind, state }) {  const bar = document.getElementById("sessionBar");
+function showSessionMode({ active, kind, state }) {
+  const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
-  const startBtn = document.getElementById("startLearningBtn");
   const endBtn = document.getElementById("endLearningBtn");
   const welcome = document.getElementById("welcomeState");
   if (!bar) return;
@@ -1762,7 +1763,6 @@ function showSessionMode({ active, kind, state }) {  const bar = document.getEle
   if (active) {
     sessionUi.active = true;
     bar.style.display = "flex";
-    startBtn.style.display = "none";
     endBtn.style.display = "";
     view.style.display = "";
     if (welcome) welcome.style.display = "none";
@@ -1786,14 +1786,15 @@ function showSessionMode({ active, kind, state }) {  const bar = document.getEle
   if (transcript) transcript.textContent = "";
 
   if (kind && kind !== "none") {
+    // The toolbar icon is the only start entry point: a click inside the
+    // panel can never satisfy Chrome's tabCapture invocation rule, so no
+    // start button is offered here.
     bar.style.display = "flex";
-    startBtn.style.display = "";
     sessionUi.kind = kind;
     renderSessionStatus();
     if (welcome && state === null) welcome.style.display = "none";
   } else {
     bar.style.display = "none";
-    startBtn.style.display = "none";
     if (welcome) welcome.style.display = "flex";
   }
 }
@@ -1814,32 +1815,6 @@ async function refreshSessionUI() {
   } catch (_error) {
     // Panel opened on a non-extension page (e.g. chrome://): no session UI.
     showSessionMode({ active: false, kind: "none", state: null });
-  }
-}
-
-async function startLearning() {
-  const startBtn = document.getElementById("startLearningBtn");
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id || !tab.url) return;
-  startBtn.disabled = true;
-  try {
-    const result = await chrome.runtime.sendMessage({
-      action: "startLearning",
-      tabId: tab.id,
-      url: tab.url,
-    });
-    if (!result?.success) {
-      window.alert(result?.error || "无法开始学习，请稍后重试。");
-      return;
-    }
-    sessionUi.sessionId = result.sessionId;
-    sessionUi.kind = result.kind;
-    sessionUi.timestampKind = result.timestampKind;
-    sessionUi.renderedRecords = 0;
-    clearSessionSummaryViews();
-    showSessionMode({ active: true, kind: result.kind, state: result.state });
-  } finally {
-    startBtn.disabled = false;
   }
 }
 
@@ -1866,7 +1841,6 @@ async function endLearning() {
 }
 
 function setupSessionUI() {
-  document.getElementById("startLearningBtn")?.addEventListener("click", startLearning);
   document.getElementById("endLearningBtn")?.addEventListener("click", endLearning);
   chrome.tabs.onActivated.addListener(() => {
     if (!sessionUi.active) void refreshSessionUI();
@@ -1877,8 +1851,7 @@ function setupSessionUI() {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === "sessionUpdate" && message.startError) {
       // Auto-start from the toolbar icon failed (e.g. missing API key);
-      // surface the reason in the panel that click just opened. alert()
-      // matches the manual start path's failure surfacing.
+      // surface the reason in the panel that click just opened.
       window.alert(message.startError);
       sendResponse({ success: true });
       return false;

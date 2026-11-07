@@ -120,3 +120,56 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
   });
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
 });
+
+test("Speech Provider selection and per-provider credentials are preserved", () => {
+  const normalized = settings.normalize({
+    speechProvider: "groq",
+    speechProviders: {
+      groq: {
+        apiKey: "  gsk-test  ",
+        baseUrl: "https://api.example.com/v1/",
+        model: "  whisper-custom  ",
+      },
+    },
+  });
+
+  assert.equal(normalized.speechProvider, "groq");
+  assert.deepEqual(normalized.speechProviders.groq, {
+    apiKey: "gsk-test",
+    baseUrl: "https://api.example.com/v1/",
+    model: "whisper-custom",
+  });
+});
+
+test("Speech Provider settings default to Groq with empty credentials", () => {
+  const normalized = settings.normalize({});
+
+  assert.equal(normalized.speechProvider, "groq");
+  assert.deepEqual(normalized.speechProviders, {});
+});
+
+test("malformed Speech Provider credentials are dropped, not passed through", () => {
+  const normalized = settings.normalize({
+    speechProvider: 42,
+    speechProviders: {
+      groq: "not-an-object",
+      tencent: { apiKey: 7, secretId: "  id-1  " },
+    },
+  });
+
+  assert.equal(normalized.speechProvider, "groq");
+  assert.equal(normalized.speechProviders.groq, undefined);
+  assert.deepEqual(normalized.speechProviders.tencent, { secretId: "id-1" });
+});
+
+test("legacy custom AI migration does not clear Speech Provider credentials", () => {
+  const normalized = settings.normalize({
+    provider: "custom",
+    aiApiKey: "custom-secret",
+    speechProvider: "groq",
+    speechProviders: { groq: { apiKey: "gsk-keep" } },
+  });
+
+  assert.equal(normalized.aiApiKey, "");
+  assert.equal(normalized.speechProviders.groq.apiKey, "gsk-keep");
+});

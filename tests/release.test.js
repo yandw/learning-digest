@@ -374,6 +374,7 @@ test("core Learning Digest modules ship in the release and load in the service w
     "session-persistence.js",
     "source-platforms.js",
     "session-segmenter.js",
+    "session-summary.js",
     "page-bridge.js",
     "offscreen.js",
     "offscreen.html",
@@ -382,6 +383,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js"\)/,
   );
 });

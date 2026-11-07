@@ -197,3 +197,27 @@ test("malformed Segment length falls back to the default", () => {
     );
   }
 });
+
+test("Rolling Summary interval defaults to 30 minutes", () => {
+  const normalized = settings.normalize({});
+
+  assert.equal(normalized.summaryIntervalMinutes, 30);
+});
+
+test("Rolling Summary interval is clamped into the supported 5-180 range", () => {
+  assert.equal(settings.normalize({ summaryIntervalMinutes: 1 }).summaryIntervalMinutes, 5);
+  assert.equal(settings.normalize({ summaryIntervalMinutes: 5 }).summaryIntervalMinutes, 5);
+  assert.equal(settings.normalize({ summaryIntervalMinutes: 30 }).summaryIntervalMinutes, 30);
+  assert.equal(settings.normalize({ summaryIntervalMinutes: 180 }).summaryIntervalMinutes, 180);
+  assert.equal(settings.normalize({ summaryIntervalMinutes: 240 }).summaryIntervalMinutes, 180);
+});
+
+test("malformed Rolling Summary interval falls back to the default", () => {
+  for (const bad of ["abc", null, undefined, NaN, Infinity, {}]) {
+    assert.equal(
+      settings.normalize({ summaryIntervalMinutes: bad }).summaryIntervalMinutes,
+      30,
+      String(bad),
+    );
+  }
+});

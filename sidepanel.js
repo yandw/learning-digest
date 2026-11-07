@@ -2444,6 +2444,43 @@ function renderSessionTranscript(state) {
   container.scrollTop = container.scrollHeight;
 }
 
+function renderSessionSummary(state) {
+  const section = document.getElementById("sessionSummary");
+  const text = document.getElementById("sessionSummaryText");
+  if (!section || !text) return;
+  if (state?.rollingSummary?.text) {
+    text.textContent = state.rollingSummary.text;
+    section.style.display = "flex";
+  } else {
+    text.textContent = "";
+    section.style.display = "none";
+  }
+}
+
+function renderSessionDigest(digest) {
+  const section = document.getElementById("sessionDigest");
+  const text = document.getElementById("sessionDigestText");
+  if (!section || !text) return;
+  if (digest?.text) {
+    text.textContent = digest.text;
+    section.style.display = "flex";
+  } else if (digest && (digest.error || digest.skipped)) {
+    text.textContent =
+      digest.skipped === "noTranscript"
+        ? "No transcript was captured, so no Session Digest was generated. 未捕获到 Transcript，未生成会话摘要。"
+        : `Session Digest failed: ${digest.error}`;
+    section.style.display = "flex";
+  } else {
+    text.textContent = "";
+    section.style.display = "none";
+  }
+}
+
+function clearSessionSummaryViews() {
+  renderSessionSummary(null);
+  renderSessionDigest(null);
+}
+
 function showSessionMode({ active, kind, state }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
@@ -2460,6 +2497,7 @@ function showSessionMode({ active, kind, state }) {
     view.style.display = "";
     if (welcome) welcome.style.display = "none";
     renderSessionStatus();
+    renderSessionSummary(state);
     renderSessionTranscript(state);
     return;
   }
@@ -2469,6 +2507,7 @@ function showSessionMode({ active, kind, state }) {
   sessionUi.renderedRecords = 0;
   endBtn.style.display = "none";
   view.style.display = "none";
+  clearSessionSummaryViews();
   const transcript = document.getElementById("sessionTranscript");
   if (transcript) transcript.textContent = "";
 
@@ -2523,6 +2562,7 @@ async function startLearning() {
     sessionUi.kind = result.kind;
     sessionUi.timestampKind = result.timestampKind;
     sessionUi.renderedRecords = 0;
+    clearSessionSummaryViews();
     showSessionMode({ active: true, kind: result.kind, state: result.state });
   } finally {
     startBtn.disabled = false;
@@ -2536,8 +2576,14 @@ async function endLearning() {
     const result = await chrome.runtime.sendMessage({ action: "endLearning" });
     if (result?.state) {
       renderSessionTranscript(result.state);
+      renderSessionSummary(result.state);
       const status = document.getElementById("sessionStatus");
       if (status) status.textContent = "Session ended 会话已结束";
+      if (result.digest) {
+        // Keep the Session view open so the Session Digest stays readable.
+        renderSessionDigest(result.digest);
+        return;
+      }
     }
     showSessionMode({ active: false, kind: sessionUi.kind, state: null });
   } finally {
@@ -2559,6 +2605,8 @@ function setupSessionUI() {
       if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
       sessionUi.sessionId = message.sessionId;
       renderSessionTranscript(message.state);
+      renderSessionSummary(message.state);
+      if (message.digest) renderSessionDigest(message.digest);
       if (message.state.status === "ended") {
         sessionUi.active = false;
         const status = document.getElementById("sessionStatus");

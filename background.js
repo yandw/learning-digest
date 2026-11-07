@@ -4,7 +4,8 @@
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
  * 2. Calling the AI Provider to analyze transcripts, explain selections,
- *    translate content, and clean up saved notes
+ *    translate content, clean up saved notes, and refresh the Rolling
+ *    Summary / Session Digest of an active learning Session
  * 3. Note storage
  * 4. Sending results back to the side panel
  *
@@ -18,7 +19,7 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -1027,6 +1028,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   normalizeTranslatedSegmentBatch,
   handleSaveNote,
   handleTranslateContent,
+  generateSessionDigest,
 };
 
 // ============================================================
@@ -1076,10 +1078,10 @@ async function ensureOffscreen() {
   });
 }
 
-function broadcastSession(state) {
+function broadcastSession(state, extra = {}) {
   try {
     chrome.runtime
-      .sendMessage({ action: "sessionUpdate", sessionId: state.sessionId, state })
+      .sendMessage({ action: "sessionUpdate", sessionId: state.sessionId, state, ...extra })
       .catch(() => {});
   } catch (_error) {
     // Side panel closed; the snapshot in storage is the durable record.
@@ -1155,6 +1157,11 @@ async function ensureCaptureResumed() {
     providerId: settings.speechProvider,
     credentials: settings.speechProviders[settings.speechProvider] || {},
     liveTimer: null,
+    summaryTimer: null,
+    // Scheduling state is rebuilt conservatively on resume: wait one full
+    // interval after a worker restart before the next summary tick.
+    lastSummaryAtMs: Date.now(),
+    summaryInFlight: false,
     ended: false,
   };
   captureContext = context;
@@ -1180,6 +1187,7 @@ async function ensureCaptureResumed() {
     }
   }
   if (context.timestampKind === "wallclock") startLiveTimer(context);
+  startSummaryTimer(context, settings.summaryIntervalMinutes);
   return context;
 }
 
@@ -1188,6 +1196,109 @@ function startLiveTimer(context) {
     feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
   }, LIVE_TICK_MS);
 }
+
+// ============================================================
+// ROLLING SUMMARY + SESSION DIGEST (#18)
+// ============================================================
+//
+// The Rolling Summary runs on a configurable interval while a Session is
+// active. All assembly/scheduling decisions are pure functions in
+// session-summary.js; this layer only owns the timer, the AI call, and
+// feeding the result back as a summaryTick event. Scheduling state lives
+// in the capture context (not the persisted state): lastSummaryAtMs is the
+// last ATTEMPT time, so a failed summary waits one more interval instead of
+// retrying in a tight loop, and a resumed Session simply waits one interval
+// before its next tick.
+
+function startSummaryTimer(context, summaryIntervalMinutes) {
+  context.summaryTimer = setInterval(() => {
+    void maybeRunRollingSummary(context);
+  }, Math.max(60_000, Number(summaryIntervalMinutes) * 60 * 1000));
+}
+
+async function maybeRunRollingSummary(context) {
+  if (context.ended || context.summaryInFlight) return;
+  const settings = await getSettings();
+  const due = YTD_SESSION_SUMMARY.isSummaryDue({
+    nowMs: Date.now(),
+    lastSummaryAtMs: context.lastSummaryAtMs,
+    intervalMinutes: settings.summaryIntervalMinutes,
+    hasNewTranscript: YTD_SESSION_SUMMARY.hasNewTranscript(context.state),
+  });
+  if (!due) return;
+
+  context.summaryInFlight = true;
+  context.lastSummaryAtMs = Date.now();
+  try {
+    const input = YTD_SESSION_SUMMARY.assembleRollingSummaryInput(context.state);
+    const { text } = await requestAiCompletion({
+      maxTokens: 4096,
+      messages: YTD_SESSION_SUMMARY.buildRollingSummaryMessages({
+        previousSummary: input.previousSummary,
+        newTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
+          input.newTranscript,
+        ),
+      }),
+    });
+    // Sliding window: only the latest summary is kept (the state machine
+    // enforces that on summaryTick), and coveredUntil moves the next
+    // window past exactly the records this tick consumed.
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "summaryTick",
+      summary: {
+        text,
+        coveredUntil: YTD_SESSION_SUMMARY.coveredUntilFor(input.newTranscript),
+      },
+    });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+      chrome.storage.local,
+      context.state,
+    );
+    broadcastSession(context.state);
+  } catch (error) {
+    // A failed tick leaves the window untouched; the next interval retries.
+    debugLog("[Learning Digest BG] Rolling Summary failed:", error);
+  } finally {
+    context.summaryInFlight = false;
+  }
+}
+
+/**
+ * Builds the Session Digest when a Session ends. The input assembly is the
+ * pure `assembleSessionDigestInput` from session-pipeline.js; this function
+ * only adds the AI call and persistence. If the uncovered tail is empty and
+ * a Rolling Summary already covers the whole Session, its text is reused
+ * verbatim instead of paying for a redundant call.
+ *
+ * @returns {Promise<{text: string|null, error?: string, skipped?: string}>}
+ */
+async function generateSessionDigest(state) {
+  const records = state?.transcriptRecords || [];
+  if (records.length === 0 || YTD_SESSION_PIPELINE.allSegmentsFailed(state)) {
+    return { text: null, skipped: "noTranscript" };
+  }
+  try {
+    const { rollingSummary, uncoveredTranscript } =
+      YTD_SESSION_PIPELINE.assembleSessionDigestInput(state);
+    if (uncoveredTranscript.length === 0 && rollingSummary?.text) {
+      return { text: rollingSummary.text };
+    }
+    const { text } = await requestAiCompletion({
+      maxTokens: 8192,
+      messages: YTD_SESSION_SUMMARY.buildSessionDigestMessages({
+        rollingSummaryText: rollingSummary?.text ?? null,
+        uncoveredTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
+          uncoveredTranscript,
+        ),
+      }),
+    });
+    return { text };
+  } catch (error) {
+    debugLog("[Learning Digest BG] Session Digest failed:", error);
+    return { text: null, error: error?.message || String(error) };
+  }
+}
+
 
 /**
  * Feeds the scheduler one position reading (video position for replay and
@@ -1288,6 +1399,9 @@ async function handleStartLearning(message) {
     providerId,
     credentials,
     liveTimer: null,
+    summaryTimer: null,
+    lastSummaryAtMs: Date.now(),
+    summaryInFlight: false,
     ended: false,
   };
   captureContext = context;
@@ -1313,6 +1427,7 @@ async function handleStartLearning(message) {
   }
 
   if (context.timestampKind === "wallclock") startLiveTimer(context);
+  startSummaryTimer(context, settings.summaryIntervalMinutes);
   broadcastSession(context.state);
   return {
     success: true,
@@ -1348,6 +1463,7 @@ async function endActiveSession(context, { reason } = {}) {
   if (context.ended) return { success: true, reason, state: context.state };
   context.ended = true;
   if (context.liveTimer) clearInterval(context.liveTimer);
+  if (context.summaryTimer) clearInterval(context.summaryTimer);
 
   const finalPosition =
     context.timestampKind === "wallclock"
@@ -1359,14 +1475,27 @@ async function endActiveSession(context, { reason } = {}) {
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, { type: "sessionEnd" });
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
   await clearContextPointer();
-  broadcastSession(context.state);
+
+  // Both end paths (explicit action and media-end auto-stop) produce the
+  // Session Digest from the ended state. Digest failures never block ending.
+  const digest = await generateSessionDigest(context.state);
+  if (digest.text) {
+    await chrome.storage.local.set({
+      [`digest_${context.state.sessionId}`]: {
+        sessionId: context.state.sessionId,
+        text: digest.text,
+        generatedAtMs: Date.now(),
+      },
+    });
+  }
+  broadcastSession(context.state, { digest });
 
   await sendOffscreen({ action: "captureStop" });
   if (await chrome.offscreen.hasDocument()) {
     await chrome.offscreen.closeDocument();
   }
   if (captureContext?.sessionId === context.sessionId) captureContext = null;
-  return { success: true, reason, state: context.state };
+  return { success: true, reason, state: context.state, digest };
 }
 
 async function handleEndLearning() {

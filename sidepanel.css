@@ -1515,7 +1515,35 @@ body {
 .session-view {
   display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
+}
+
+.session-summary {
+  border-bottom: 1px solid #e5e7eb;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.session-summary-title {
+  color: #8a93a1;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.session-summary-text {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.session-digest {
+  border-bottom: none;
+  border-top: 1px solid #e5e7eb;
 }
 
 .session-transcript {

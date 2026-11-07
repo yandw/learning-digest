@@ -156,6 +156,27 @@
           </div>
         </section>
 
+        <section class="card">
+          <h2 data-i18n="sessionSettings">Session</h2>
+          <label for="summaryIntervalMinutes" data-i18n="summaryIntervalLabel"
+            >Rolling Summary interval (minutes)</label
+          >
+          <input
+            id="summaryIntervalMinutes"
+            name="summaryIntervalMinutes"
+            type="number"
+            min="5"
+            max="180"
+            step="5"
+            autocomplete="off"
+          />
+          <p class="help" data-i18n="summaryIntervalHelp">
+            While a Session is active, the AI Provider refreshes the Rolling
+            Summary on this interval by merging it with the new Transcript.
+            Lower values cost more; 30 minutes suits a typical lesson.
+          </p>
+        </section>
+
         <div class="form-actions">
           <button class="primary" type="submit" data-i18n="saveSettings">
             Save settings

@@ -50,6 +50,10 @@ const YTD_OPTIONS = (() => {
         "Add an API key for the selected Speech Provider.",
       speechProviderPrivacyNote:
         "When you transcribe, the Speech Provider receives the Segment's audio. Credentials stay in this Chrome profile and are sent only to the provider you configured.",
+      sessionSettings: "Session",
+      summaryIntervalLabel: "Rolling Summary interval (minutes)",
+      summaryIntervalHelp:
+        "While a Session is active, the AI Provider refreshes the Rolling Summary on this interval by merging it with the new Transcript. Lower values cost more; 30 minutes suits a typical lesson.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -152,6 +156,10 @@ const YTD_OPTIONS = (() => {
       speechProviderKeyRequired: "请为选中的语音转录服务填写 API 密钥。",
       speechProviderPrivacyNote:
         "进行转录时，语音转录服务会收到 Segment 的音频。凭证仅保存在当前 Chrome 个人资料中，只发送给你配置的服务。",
+      sessionSettings: "会话",
+      summaryIntervalLabel: "滚动摘要间隔（分钟）",
+      summaryIntervalHelp:
+        "会话进行中，AI 服务会按此间隔将滚动摘要与新产生的 Transcript 合并刷新。间隔越短费用越高；一般课程 30 分钟即可。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -451,6 +459,7 @@ const YTD_OPTIONS = (() => {
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
     const aiModelInput = doc.getElementById("aiModel");
+    const summaryIntervalInput = doc.getElementById("summaryIntervalMinutes");
     const speechProviderSelect = doc.getElementById("speechProvider");
     const speechProviderFields = doc.getElementById("speechProviderFields");
     const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
@@ -622,6 +631,9 @@ const YTD_OPTIONS = (() => {
         aiApiKeyInput.value = settings.aiApiKey;
         aiBaseUrlInput.value = settings.aiBaseUrl;
         aiModelInput.value = settings.aiModel;
+        if (summaryIntervalInput) {
+          summaryIntervalInput.value = settings.summaryIntervalMinutes;
+        }
 
         // Speech Provider: seed per-provider drafts from stored credentials,
         // pre-filling Groq from the legacy stt* fields when the new slot is
@@ -705,6 +717,7 @@ const YTD_OPTIONS = (() => {
         aiApiKey: aiApiKeyInput.value,
         aiBaseUrl: baseUrlValue,
         aiModel: aiModelInput.value,
+        summaryIntervalMinutes: summaryIntervalInput?.value,
         ...collectSpeechProviderSettings(),
       });
 

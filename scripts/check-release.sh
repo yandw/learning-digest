@@ -51,7 +51,6 @@ public_allowlist=(
   "icons/icon16.png"
   "icons/icon48.png"
   "icons/icon128.png"
-  "prompts/analysis.md"
   "prompts/explain.md"
   "README.md"
   "README.zh-CN.md"

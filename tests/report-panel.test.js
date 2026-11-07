@@ -1,9 +1,11 @@
 /**
- * Panel wiring for the 纪要 tab (#30): tab switching through the existing
- * data-tab/data-panel pattern, the tab's states (generating / failed with
- * 重试 / ready), the startup scan that surfaces the latest persisted report
- * (D7), and the open/download actions. Tested through the mock-document VM
- * seam in the spirit of tests/transcript-search.test.js.
+ * Panel wiring for the 纪要 tab (#30) and the 概览 Session Digest view (#31):
+ * tab switching through the existing data-tab/data-panel pattern, the tab's
+ * states (generating / failed with 重试 / ready), the startup scan that
+ * surfaces the latest persisted report (D7), the Overview's Topics + quotes
+ * rendering from the same artifact, the timestamp jumps into the Session
+ * transcript, and the open/download actions. Tested through the
+ * mock-document VM seam in the spirit of tests/transcript-search.test.js.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -80,9 +82,25 @@ function makeElement(id = "") {
     querySelectorAll() {
       return [];
     },
-    scrollIntoView() {},
+    scrollIntoView(...args) {
+      element.scrollIntoViewCalls = (element.scrollIntoViewCalls || 0) + 1;
+      element.scrollIntoViewArgs = args;
+    },
   };
   return element;
+}
+
+/**
+ * Finds descendants by class name. The mock elements do not implement
+ * querySelector, and textContent is a plain property (never derived from
+ * children), so assertions walk children recursively instead.
+ */
+function findDescendants(element, className, found = []) {
+  for (const child of element.children || []) {
+    if (child.classList.contains(className)) found.push(child);
+    findDescendants(child, className, found);
+  }
+  return found;
 }
 
 /**
@@ -195,6 +213,7 @@ function loadPanel({ stored = {} } = {}) {
   return {
     report: sandbox.__YTD_REPORT_TESTING__,
     transcript: sandbox.__YTD_TRANSCRIPT_TESTING__,
+    overview: sandbox.__YTD_OVERVIEW_TESTING__,
     elements,
     elementById,
     selectorResults,
@@ -433,6 +452,223 @@ test("an idle render never stacks the welcome state on a surfaced report", async
 
   assert.equal(elements.welcomeState.style.display, "none");
   assert.equal(elements.resultsState.style.display, "block");
+});
+
+// --- Overview tab (#31): the Session Digest view ------------------------------
+
+test("the 概览 tab renders Topics and quotes from an adopted report", async () => {
+  const { report, elements } = loadPanel({
+    stored: { report_s_1: readyArtifact("s_1") },
+  });
+
+  await report.applyReportPayloadToTab(REPORT_A, "s_1");
+
+  const topicRows = elements.overviewTopics.children;
+  assert.equal(topicRows.length, REPORT_A.topics.length);
+  const topicTimes = findDescendants(elements.overviewTopics, "overview-time");
+  assert.equal(topicTimes[0].textContent, "[0:00–15:00]");
+  const topicNames = findDescendants(elements.overviewTopics, "overview-topic-name");
+  assert.equal(topicNames[0].textContent, "课程导论");
+  const summaries = findDescendants(elements.overviewTopics, "overview-topic-summary");
+  assert.equal(summaries[0].textContent, "老师介绍了课程目标。");
+
+  const quoteRows = elements.overviewQuotes.children;
+  assert.equal(quoteRows.length, REPORT_A.quotes.length);
+  const quoteTimes = findDescendants(elements.overviewQuotes, "overview-time");
+  assert.equal(quoteTimes[0].textContent, "[0:30]");
+  const quoteTexts = findDescendants(elements.overviewQuotes, "overview-quote-body");
+  assert.equal(quoteTexts[0].textContent, "学习是一场旅程。");
+
+  assert.equal(elements.overviewEmpty.style.display, "none");
+  assert.equal(elements.overviewTopicsSection.style.display, "block");
+  assert.equal(elements.overviewQuotesSection.style.display, "block");
+});
+
+test("the startup scan also feeds the 概览 tab", async () => {
+  const { report, elements } = loadPanel({
+    stored: { report_s_1: readyArtifact("s_1") },
+  });
+
+  await report.adoptLatestStoredReport();
+
+  assert.equal(elements.overviewTopics.children.length, 1);
+  assert.equal(findDescendants(elements.overviewTopics, "overview-topic-name")[0].textContent, "课程导论");
+  assert.equal(elements.overviewEmpty.style.display, "none");
+});
+
+test("the 概览 tab shows guidance until a report exists", async () => {
+  const { report, elements } = loadPanel();
+
+  await report.adoptLatestStoredReport();
+
+  assert.match(elements.overviewEmpty.textContent, /结束一次学习会话后/);
+  assert.equal(elements.overviewEmpty.style.display, "block");
+  assert.equal(elements.overviewTopicsSection.style.display, "none");
+  assert.equal(elements.overviewQuotesSection.style.display, "none");
+});
+
+test("an active session with no report yet keeps the 概览 guidance", () => {
+  const { report, elements } = loadPanel();
+
+  report.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: { sessionId: "s_2", status: "active", segments: [], transcriptRecords: [], topics: [] },
+  });
+
+  assert.equal(elements.overviewEmpty.style.display, "block");
+  assert.equal(elements.overviewTopicsSection.style.display, "none");
+});
+
+test("a new active session retires the 概览 report back to guidance", async () => {
+  const { report, elements } = loadPanel({
+    stored: { report_s_1: readyArtifact("s_1") },
+  });
+
+  await report.applyReportPayloadToTab(REPORT_A, "s_1");
+  assert.equal(elements.overviewEmpty.style.display, "none");
+
+  report.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: { sessionId: "s_9", status: "active", segments: [], transcriptRecords: [], topics: [] },
+  });
+
+  assert.equal(elements.overviewEmpty.style.display, "block");
+  assert.equal(elements.overviewTopicsSection.style.display, "none");
+});
+
+// --- Timestamp jumps (#31) -----------------------------------------------------
+
+const JUMP_REPORT = {
+  topics: [{ start: 75, end: 200, title: "第二段话题", summary: "跳转目标。" }],
+  quotes: [{ start: 130, text: "落在 120 秒那条记录上。" }],
+  todos: [],
+};
+
+function showSessionWithRecords(panel, records) {
+  panel.report.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: { sessionId: "s_2", status: "active", segments: [], transcriptRecords: records, topics: [] },
+  });
+}
+
+test("clicking a Topic time range switches to 逐字稿 and jumps to the matching record", async () => {
+  const panel = loadPanel();
+  showSessionWithRecords(panel, [
+    { start: 0, text: "开场" },
+    { start: 75, text: "第二段" },
+    { start: 120, text: "第三段" },
+  ]);
+
+  await panel.report.applyReportPayloadToTab(JUMP_REPORT, "s_2");
+  const topicTime = findDescendants(panel.elements.overviewTopics, "overview-time")[0];
+  assert.equal(topicTime.textContent, "[1:15–3:20]");
+
+  topicTime.listeners.click();
+
+  const transcriptTab = panel.selectorResults[".tab"].find((tab) => tab.dataset.tab === "transcript");
+  const transcriptPanel = panel.selectorResults[".tab-panel"].find(
+    (item) => item.dataset.panel === "transcript",
+  );
+  assert.equal(transcriptTab.classList.contains("active"), true);
+  assert.equal(transcriptPanel.classList.contains("active"), true);
+
+  const target = panel.elements.sessionTranscript.children.find(
+    (row) => row.dataset.seconds === "75",
+  );
+  assert.equal(target.scrollIntoViewCalls, 1);
+  // Field-wise compare: the options object was created inside the VM sandbox.
+  assert.equal(target.scrollIntoViewArgs?.length, 1);
+  assert.equal(target.scrollIntoViewArgs[0]?.behavior, "smooth");
+  assert.equal(target.scrollIntoViewArgs[0]?.block, "center");
+  assert.equal(target.classList.contains("session-record-jump"), true);
+});
+
+test("clicking a quote timestamp jumps to the nearest record at or before it", async () => {
+  const panel = loadPanel();
+  showSessionWithRecords(panel, [
+    { start: 0, text: "开场" },
+    { start: 75, text: "第二段" },
+    { start: 120, text: "第三段" },
+  ]);
+
+  await panel.report.applyReportPayloadToTab(JUMP_REPORT, "s_2");
+  const quoteTime = findDescendants(panel.elements.overviewQuotes, "overview-time")[0];
+  assert.equal(quoteTime.textContent, "[2:10]");
+
+  quoteTime.listeners.click();
+
+  const target = panel.elements.sessionTranscript.children.find(
+    (row) => row.dataset.seconds === "120",
+  );
+  assert.equal(target.scrollIntoViewCalls, 1, "the 120s record is the nearest at or before 130s");
+  const earlier = panel.elements.sessionTranscript.children.find(
+    (row) => row.dataset.seconds === "75",
+  );
+  assert.equal(earlier.scrollIntoViewCalls || 0, 0);
+});
+
+test("the jump picks the nearest record at or before the timestamp", () => {
+  const panel = loadPanel();
+  const container = panel.elementById("sessionTranscript");
+  for (const start of [0, 75, 120]) {
+    const row = makeElement();
+    row.dataset.seconds = String(start);
+    container.appendChild(row);
+  }
+
+  assert.equal(panel.overview.findSessionRecordForSeconds(container, 0)?.dataset.seconds, "0");
+  assert.equal(panel.overview.findSessionRecordForSeconds(container, 75)?.dataset.seconds, "75");
+  assert.equal(panel.overview.findSessionRecordForSeconds(container, 130)?.dataset.seconds, "120");
+  assert.equal(panel.overview.findSessionRecordForSeconds(container, 1000)?.dataset.seconds, "120");
+  assert.equal(panel.overview.findSessionRecordForSeconds(container, -1), null);
+  assert.equal(
+    panel.overview.findSessionRecordForSeconds(panel.elementById("sessionDigest"), 10),
+    null,
+  );
+});
+
+test("a timestamp click with no transcript records still switches tabs without scrolling", async () => {
+  const panel = loadPanel();
+  await panel.report.applyReportPayloadToTab(JUMP_REPORT, "s_2");
+
+  const quoteTime = findDescendants(panel.elements.overviewQuotes, "overview-time")[0];
+  quoteTime.listeners.click();
+
+  const transcriptPanel = panel.selectorResults[".tab-panel"].find(
+    (item) => item.dataset.panel === "transcript",
+  );
+  assert.equal(transcriptPanel.classList.contains("active"), true);
+  assert.equal(panel.elements.sessionTranscript.children.length, 0);
+});
+
+// --- Static wiring -------------------------------------------------------------
+
+test("the 概览 tab is wired in sidepanel.html and sidepanel.js", () => {
+  const html = read("sidepanel.html");
+  const js = read("sidepanel.js");
+  const css = read("sidepanel.css");
+
+  assert.match(html, /<div class="tab-panel" data-panel="overview">/);
+  assert.match(html, /id="overviewEmpty"/);
+  assert.match(html, /id="overviewTopicsSection"/);
+  assert.match(html, /id="overviewTopics"/);
+  assert.match(html, /id="overviewQuotesSection"/);
+  assert.match(html, /id="overviewQuotes"/);
+  assert.doesNotMatch(html, /chapterList|quotesList/);
+  // The legacy analysis machinery is gone from the panel.
+  assert.doesNotMatch(
+    js,
+    /analyzeTranscript|isAnalysisLoading|triggerAnalysis|renderAnalysisResults|chapterList|quotesList/,
+  );
+  // The Overview lists render on the report-funnel re-render.
+  assert.match(js, /function renderOverviewTab\(/);
+  assert.match(js, /renderOverviewTab\(\);/);
+  // The timeline styling and the jump highlight exist.
+  assert.match(css, /\.overview-topic-step::after\s*\{/);
+  assert.match(css, /\.session-record-jump\s*\{/);
 });
 
 // --- Open + download actions --------------------------------------------------

@@ -172,42 +172,19 @@
           </div>
         </div>
 
-        <!-- TAB: Overview (chapters + key quotes) - requires LLM -->
+        <!-- TAB: Overview (Session Digest view, #31) - renders the end-of-session
+             report the 纪要 tab adopts; every timestamp jumps into the transcript -->
         <div class="tab-panel" data-panel="overview">
-          <!-- Chapters -->
-          <div class="section">
-            <div class="section-title">章节</div>
-            <ul class="chapter-list" id="chapterList">
-              <li
-                class="chapter-item"
-                style="
-                  color: var(--text-muted);
-                  cursor: default;
-                  border-color: var(--border);
-                "
-              >
-                章节会显示在这里
-              </li>
-            </ul>
+          <div class="overview-empty" id="overviewEmpty" style="display: block">
+            结束一次学习会话后，这里会显示话题与金句。
           </div>
-
-          <!-- Key Quotes -->
-          <div class="section">
+          <div class="section" id="overviewTopicsSection" style="display: none">
+            <div class="section-title">话题</div>
+            <div id="overviewTopics" class="overview-topics"></div>
+          </div>
+          <div class="section" id="overviewQuotesSection" style="display: none">
             <div class="section-title">金句</div>
-            <div id="quotesList">
-              <div
-                class="quote-item"
-                style="
-                  color: var(--text-muted);
-                  border-left-color: var(--border);
-                  cursor: default;
-                "
-              >
-                <div class="quote-text" style="font-style: normal">
-                  查看此标签页时会自动提取金句…
-                </div>
-              </div>
-            </div>
+            <div id="overviewQuotes" class="overview-quotes"></div>
           </div>
         </div>
 

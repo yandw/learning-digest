@@ -6,11 +6,32 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const { loadBackgroundHelpers } = require("./helpers/load-background.js");
 const sessionPipeline = require("../session-pipeline.js");
 
 const REPLAY_URL = "https://app12345.xiaoe-tech.com/replay/l_abc123def456";
+
+// --- Retired legacy analysis path (#31) ---------------------------------------
+
+test("the legacy analyzeTranscript action is fully removed", () => {
+  const root = path.resolve(__dirname, "..");
+  const background = fs.readFileSync(path.join(root, "background.js"), "utf8");
+  const sidepanel = fs.readFileSync(path.join(root, "sidepanel.js"), "utf8");
+
+  // No dead message action, handler, prompt load, or panel trigger remains.
+  assert.doesNotMatch(background, /analyzeTranscript/);
+  assert.doesNotMatch(background, /analysis\.md/);
+  assert.doesNotMatch(
+    sidepanel,
+    /analyzeTranscript|isAnalysisLoading|triggerAnalysis|renderAnalysisResults/,
+  );
+  // The prompt file itself is retired; explain.md is a different feature.
+  assert.equal(fs.existsSync(path.join(root, "prompts", "analysis.md")), false);
+  assert.equal(fs.existsSync(path.join(root, "prompts", "explain.md")), true);
+});
 
 function baseSettings(overrides = {}) {
   return {

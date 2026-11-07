@@ -1,10 +1,10 @@
 /**
  * SIDE PANEL LOGIC
  *
- * Handles the UI for Learning Digest: rendering transcripts, analysis,
- * and notes. Source Platform capture that feeds new Sessions
- * lands with the platform ticket; until then the panel shows its welcome
- * state and can render previously cached digests.
+ * Handles the UI for Learning Digest: rendering transcripts, the Session
+ * Digest surfaces (概览/纪要), and notes. Source Platform capture that feeds
+ * new Sessions lands with the platform ticket; until then the panel shows
+ * its welcome state and can render previously cached transcripts.
  */
 
 const DEBUG = false;
@@ -30,16 +30,11 @@ const reportRender =
 
 let currentVideoId = null;
 let currentVideoUrl = null;
-let currentAnalysis = null;
 let currentTranscript = null;
 let currentTranscriptText = null; // Plain text (for display/export)
-let currentTranscriptTimestamped = null; // With timestamps for AI analysis
 let currentTranscriptLanguage = null;
 let currentVideoTitle = "";
 let currentChannelName = "";
-let currentVideoDescription = "";
-let currentVideoDuration = 0;
-let isAnalysisLoading = false; // Track if analysis is in progress
 let errorAction = null;
 
 let currentNotes = [];
@@ -312,7 +307,7 @@ function setNotesFilter(showAll) {
  */
 async function startDigest(videoId, videoUrl) {
   // Check if we already have this video loaded in memory
-  if (videoId === currentVideoId && currentAnalysis) {
+  if (videoId === currentVideoId && currentTranscript) {
     showState("results");
     return;
   }
@@ -337,13 +332,9 @@ async function startDigest(videoId, videoUrl) {
     debugLog("Loading from cache:", videoId);
     currentVideoId = videoId;
     currentVideoUrl = videoUrl;
-    currentAnalysis = cached.analysis || null;
     currentTranscript = cached.transcript;
     currentTranscriptText = cached.transcriptText;
-    currentTranscriptTimestamped = cached.transcriptTimestamped;
     currentTranscriptLanguage = cached.transcriptLanguage || null;
-    isAnalysisLoading = false;
-
 
     if (currentVideoTitle || currentChannelName) {
       const videoInfo = document.getElementById("videoInfo");
@@ -354,11 +345,6 @@ async function startDigest(videoId, videoUrl) {
 
     // Always render transcript first
     renderTranscript();
-
-    // Render analysis if we have it cached
-    if (currentAnalysis) {
-      renderAnalysisResults(currentAnalysis);
-    }
 
     showState("results");
     document.getElementById("tabsNav").style.display = "flex";
@@ -374,12 +360,9 @@ async function startDigest(videoId, videoUrl) {
 
   currentVideoId = videoId;
   currentVideoUrl = videoUrl;
-  currentAnalysis = null;
   currentTranscript = null;
   currentTranscriptText = null;
-  currentTranscriptTimestamped = null;
   currentTranscriptLanguage = null;
-  isAnalysisLoading = false;
 
   // No transcript source is wired up yet (Source Platform capture lands
   // with the platform ticket), so a session without a cached digest has
@@ -390,134 +373,6 @@ async function startDigest(videoId, videoUrl) {
 // ============================================================
 // RENDERING
 // ============================================================
-
-/**
- * Renders the analysis results into the Overview tab.
- * Shows chapters and key quotes only.
- */
-function renderAnalysisResults(analysis) {
-  // Chapters
-  const chapterList = document.getElementById("chapterList");
-  chapterList.innerHTML = "";
-  (analysis.chapters || []).forEach((chapter, index) => {
-    const li = document.createElement("li");
-    li.className = "chapter-item";
-    li.dataset.seconds = chapter.timestampSeconds;
-    li.innerHTML = `
-      <span class="chapter-timestamp">${escapeHtml(chapter.timestamp)}</span>
-      <div class="chapter-content">
-        <span class="chapter-title">${escapeHtml(chapter.title)}</span>
-        <span class="chapter-summary">${escapeHtml(chapter.summary || "")}</span>
-      </div>
-    `;
-    chapterList.appendChild(li);
-  });
-
-  // Quotes - sort by timestamp (chronological order)
-  const quotesList = document.getElementById("quotesList");
-  quotesList.innerHTML = "";
-  const sortedQuotes = [...(analysis.keyQuotes || [])].sort(
-    (a, b) => (a.timestampSeconds || 0) - (b.timestampSeconds || 0),
-  );
-  sortedQuotes.forEach((quote, index) => {
-    const div = document.createElement("div");
-    div.className = "quote-item";
-    div.dataset.seconds = quote.timestampSeconds;
-    div.innerHTML = `
-      <div class="quote-text">${escapeHtml(quote.quote)}</div>
-      <div class="quote-meta">
-        <span class="quote-timestamp">${escapeHtml(quote.timestamp)}</span>
-        <div class="quote-actions">
-          <button class="quote-save-note-btn" title="把这条金句保存为笔记">笔记</button>
-          <button class="quote-copy-btn" title="复制这条金句">复制</button>
-        </div>
-      </div>
-    `;
-
-    const quoteCopyBtn = div.querySelector(".quote-copy-btn");
-    quoteCopyBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      try {
-        await navigator.clipboard.writeText(quote.quote);
-        quoteCopyBtn.textContent = "已复制";
-        setTimeout(() => {
-          quoteCopyBtn.textContent = "复制";
-        }, 1500);
-      } catch (err) {
-        console.error("Copy failed:", err);
-      }
-    });
-
-    const quoteSaveNoteBtn = div.querySelector(".quote-save-note-btn");
-    quoteSaveNoteBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await saveQuoteAsNote(quote, quoteSaveNoteBtn);
-    });
-
-    quotesList.appendChild(div);
-  });
-
-}
-
-/**
- * Saves a key quote as a timestamped note.
- */
-async function saveQuoteAsNote(quote, btn) {
-  if (!currentVideoId) return;
-
-  const originalText = btn.textContent;
-  btn.textContent = "保存中…";
-  btn.disabled = true;
-
-  try {
-    const result = await chrome.runtime.sendMessage({
-      action: "saveNote",
-      videoId: currentVideoId,
-      timestamp: quote.timestampSeconds,
-      videoTitle: currentVideoTitle,
-      channelName: currentChannelName,
-    });
-
-    if (result.success) {
-      btn.textContent = "已保存";
-      setTimeout(() => {
-        btn.textContent = originalText;
-        btn.disabled = false;
-      }, 1500);
-      // Refresh notes list if on Notes tab
-      loadNotes(currentVideoId);
-    } else {
-      console.error("[Learning Digest] Save quote as note failed:", result.error);
-      btn.textContent = "出错";
-      setTimeout(() => {
-        btn.textContent = originalText;
-        btn.disabled = false;
-      }, 1500);
-    }
-  } catch (error) {
-    console.error("[Learning Digest] Save quote as note error:", error);
-    btn.textContent = "出错";
-    setTimeout(() => {
-      btn.textContent = originalText;
-      btn.disabled = false;
-    }, 1500);
-  }
-}
-
-/**
- * Legacy function for backwards compatibility with cached data.
- * Renders both transcript and analysis.
- */
-function renderResults(analysis) {
-  renderAnalysisResults(analysis);
-
-  renderTranscript();
-
-  document.getElementById("tabsNav").style.display = "flex";
-
-  // Setup explain feature for text selection
-  setupExplainFeature();
-}
 
 function renderTranscript() {
   if (!currentTranscript) return;
@@ -894,62 +749,6 @@ function switchTab(tabName) {
       if (contentArea && notesPanelIsActive) contentArea.scrollTop = 0;
     });
   }
-
-  if (tabName === "overview" && !currentAnalysis && !isAnalysisLoading) {
-    triggerAnalysis();
-  }
-}
-
-/**
- * Triggers the LLM analysis (lazy-loaded when user clicks Overview or Quotes tab).
- * This saves tokens by not running analysis until needed.
- */
-async function triggerAnalysis() {
-  if (!currentTranscriptTimestamped || isAnalysisLoading || currentAnalysis)
-    return;
-
-  isAnalysisLoading = true;
-
-  // Show loading indicators in the Overview tab
-  const chapterList = document.getElementById("chapterList");
-  const quotesList = document.getElementById("quotesList");
-
-  if (chapterList)
-    chapterList.innerHTML =
-      '<li class="chapter-item" style="color: var(--text-muted); border: none;">正在加载章节…</li>';
-  if (quotesList)
-    quotesList.innerHTML =
-      '<div class="quote-item" style="color: var(--text-muted); border-left-color: var(--border);">正在加载金句…</div>';
-
-  try {
-    const analysisResult = await chrome.runtime.sendMessage({
-      action: "analyzeTranscript",
-      transcriptText: currentTranscriptTimestamped,
-      videoTitle: currentVideoTitle,
-      channelName: currentChannelName,
-      videoDescription: currentVideoDescription,
-      videoDuration: currentVideoDuration,
-    });
-
-    if (!analysisResult.success) {
-      if (chapterList)
-        chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">分析失败：${escapeHtml(analysisResult.error || "未知错误")}</li>`;
-      isAnalysisLoading = false;
-      return;
-    }
-
-    currentAnalysis = analysisResult.analysis;
-    renderAnalysisResults(currentAnalysis);
-
-    // Save to cache now that we have analysis
-    await saveToCache(currentVideoId);
-  } catch (error) {
-    console.error("[Learning Digest Panel] Analysis error:", error);
-    if (chapterList)
-      chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">错误：${escapeHtml(error.message)}</li>`;
-  }
-
-  isAnalysisLoading = false;
 }
 
 // ============================================================
@@ -1264,41 +1063,10 @@ function getTranscriptContext(selectedText) {
 // ============================================================
 // CACHING
 // ============================================================
-
-/**
- * Saves the current digest results to persistent local storage.
- * Results survive browser restarts — reopening the same video loads from cache
- * without consuming API tokens.
- * Cache expires after 30 days. Oldest entries evicted when > 20 videos cached.
- */
-async function saveToCache(videoId) {
-  if (!videoId || !currentTranscript) return;
-
-  try {
-    const cacheData = {
-      analysis: currentAnalysis, // May be null if not yet analyzed
-      transcript: currentTranscript,
-      transcriptText: currentTranscriptText,
-      transcriptTimestamped: currentTranscriptTimestamped,
-      transcriptLanguage: currentTranscriptLanguage,
-      videoTitle: currentVideoTitle,
-      channelName: currentChannelName,
-      timestamp: Date.now(),
-    };
-
-    await chrome.storage.local.set({ [`digest_${videoId}`]: cacheData });
-    debugLog(
-      "Saved to cache:",
-      videoId,
-      currentAnalysis ? "(with analysis)" : "(transcript only)",
-    );
-
-    // Evict old entries if we have more than 20 videos cached
-    await evictOldCacheEntries(20);
-  } catch (error) {
-    console.error("Cache save error:", error);
-  }
-}
+// The digest_<videoId> cache is read-only legacy data now: the analysis pass
+// that wrote it was removed with the legacy Overview (#31), so pre-0.1.31
+// cached transcripts still render but nothing writes new entries. Eviction
+// and the 30-day expiry keep old entries from piling up.
 
 /**
  * Keeps the cache from growing unbounded.
@@ -1366,15 +1134,6 @@ async function loadFromCache(videoId) {
   } catch (error) {
     console.error("Cache load error:", error);
     return null;
-  }
-}
-
-/**
- * Updates the cache after enhance operations.
- */
-async function updateCache() {
-  if (currentVideoId) {
-    await saveToCache(currentVideoId);
   }
 }
 
@@ -1660,6 +1419,14 @@ globalThis.__YTD_REPORT_TESTING__ = {
   resetReportTabForTesting,
 };
 
+// Overview tab helpers for the repository's Node tests (#31). The extension
+// does not read this object at runtime.
+globalThis.__YTD_OVERVIEW_TESTING__ = {
+  renderOverviewTab,
+  jumpToTranscriptTimestamp,
+  findSessionRecordForSeconds,
+};
+
 // ============================================================
 // SESSION CAPTURE UX (xiaoe-tech Source Platform)
 // ============================================================
@@ -1700,6 +1467,11 @@ function sessionTimestampLabel(startSeconds) {
   return `${hours > 0 ? hours + ":" : ""}${mm}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** A record's start second, clamped to a plain non-negative integer. */
+function recordStartSeconds(startSeconds) {
+  return Math.max(0, Math.floor(Number(startSeconds) || 0));
+}
+
 function renderSessionStatus() {
   const status = document.getElementById("sessionStatus");
   if (!status) return;
@@ -1718,6 +1490,8 @@ function renderSessionTranscript(state) {
     row.className = record.failed
       ? "session-record session-record-failed"
       : "session-record";
+    // The Overview's timestamp jumps target rows by start second (#31).
+    row.dataset.seconds = String(recordStartSeconds(record.start));
     const stamp = document.createElement("span");
     stamp.className = "session-record-stamp";
     stamp.textContent = `[${sessionTimestampLabel(record.start)}]`;
@@ -1754,6 +1528,7 @@ function renderPendingSegments(container, state) {
 function appendPendingRow(container, startSeconds, text) {
   const row = document.createElement("div");
   row.className = "session-record session-pending";
+  row.dataset.seconds = String(recordStartSeconds(startSeconds));
   const stamp = document.createElement("span");
   stamp.className = "session-record-stamp";
   stamp.textContent = `[${sessionTimestampLabel(startSeconds)}]`;
@@ -1967,9 +1742,11 @@ function reportTabElements() {
 
 /**
  * Renders the current report-tab state. Idempotent: every state change
- * re-renders the whole tab from reportTabUi.
+ * re-renders the whole tab from reportTabUi. The 概览 tab renders from the
+ * same artifact, so this is also its refresh point (#31).
  */
 function renderReportTab() {
+  renderOverviewTab();
   const els = reportTabElements();
   if (!els.hint || !els.actions || !els.errorBox || !els.errorText || !els.body) {
     return;
@@ -2122,7 +1899,7 @@ async function adoptLatestStoredReport() {
  * Surfaces the deliverable (#30): shows the results view with the 纪要 tab
  * active. In session mode the Session view (live transcript, end-time card)
  * stays visible above it; a loaded legacy video digest keeps its own tab
- * choice (ticket #31 reworks the legacy path).
+ * choice.
  */
 function surfaceReportTab() {
   if (currentVideoId) return;
@@ -2207,6 +1984,170 @@ function resetReportTabForTesting() {
   reportTabUi.error = null;
   reportTabUi.skipped = false;
   reportTabUi.regenerating = false;
+}
+
+// ============================================================
+// OVERVIEW TAB (#31): the Session Digest view
+// ============================================================
+//
+// The 概览 tab renders Topics and key quotes from the same report artifact
+// the 纪要 funnel holds — no second AI pass, no lazy self-analysis. Every
+// timestamp is a jump control: clicking it opens the 逐字稿 tab at the
+// matching Session transcript record. Until a report exists the tab shows
+// guidance instead.
+
+const OVERVIEW_EMPTY_TEXT = "结束一次学习会话后，这里会显示话题与金句。";
+
+function overviewElements() {
+  return {
+    empty: document.getElementById("overviewEmpty"),
+    topicsSection: document.getElementById("overviewTopicsSection"),
+    topics: document.getElementById("overviewTopics"),
+    quotesSection: document.getElementById("overviewQuotesSection"),
+    quotes: document.getElementById("overviewQuotes"),
+  };
+}
+
+/**
+ * Renders the Overview tab from the report artifact the 纪要 funnel adopts.
+ * Idempotent: every render rebuilds both lists; a state without renderable
+ * report content (no report, failed or skipped pass) shows the guidance line.
+ */
+function renderOverviewTab() {
+  const els = overviewElements();
+  if (!els.empty || !els.topics || !els.quotes) return;
+  const artifact = reportTabUi.artifact;
+  const report =
+    artifact && !artifact.report.error && !artifact.report.skipped
+      ? artifact.report
+      : null;
+  const topics = Array.isArray(report?.topics) ? report.topics : [];
+  const quotes = Array.isArray(report?.quotes) ? report.quotes : [];
+  const hasContent = topics.length > 0 || quotes.length > 0;
+
+  els.empty.textContent = OVERVIEW_EMPTY_TEXT;
+  els.empty.style.display = hasContent ? "none" : "block";
+  els.topicsSection.style.display = topics.length ? "block" : "none";
+  els.quotesSection.style.display = quotes.length ? "block" : "none";
+
+  els.topics.textContent = "";
+  topics.forEach((topic, index) => {
+    els.topics.appendChild(buildOverviewTopic(topic, index));
+  });
+
+  els.quotes.textContent = "";
+  for (const quote of quotes) {
+    els.quotes.appendChild(buildOverviewQuote(quote));
+  }
+}
+
+/** One stop on the Overview timeline: numbered dot, time range, title, summary. */
+function buildOverviewTopic(topic, index) {
+  const row = document.createElement("div");
+  row.classList.add("overview-topic");
+  const step = document.createElement("div");
+  step.classList.add("overview-topic-step");
+  const dot = document.createElement("span");
+  dot.classList.add("overview-topic-dot");
+  dot.textContent = String(index + 1);
+  step.appendChild(dot);
+  const content = document.createElement("div");
+  content.classList.add("overview-topic-content");
+  const title = document.createElement("div");
+  title.classList.add("overview-topic-title");
+  title.appendChild(
+    overviewJumpButton(
+      `[${sessionTimestampLabel(topic?.start)}–${sessionTimestampLabel(topic?.end)}]`,
+      recordStartSeconds(topic?.start),
+    ),
+  );
+  const name = document.createElement("span");
+  name.classList.add("overview-topic-name");
+  name.textContent = topic?.title ?? "";
+  title.appendChild(name);
+  const summary = document.createElement("div");
+  summary.classList.add("overview-topic-summary");
+  summary.textContent = topic?.summary ?? "";
+  content.append(title, summary);
+  row.append(step, content);
+  return row;
+}
+
+/** One timestamped key quote on the Overview. */
+function buildOverviewQuote(quote) {
+  const row = document.createElement("div");
+  row.classList.add("overview-quote");
+  const text = document.createElement("div");
+  text.classList.add("overview-quote-text");
+  text.appendChild(
+    overviewJumpButton(
+      `[${sessionTimestampLabel(quote?.start)}]`,
+      recordStartSeconds(quote?.start),
+    ),
+  );
+  const body = document.createElement("span");
+  body.classList.add("overview-quote-body");
+  body.textContent = quote?.text ?? "";
+  text.appendChild(body);
+  row.appendChild(text);
+  return row;
+}
+
+/** The clickable [m:ss] control that opens the 逐字稿 at that position. */
+function overviewJumpButton(label, seconds) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.classList.add("overview-time");
+  button.textContent = label;
+  button.addEventListener("click", () => jumpToTranscriptTimestamp(seconds));
+  return button;
+}
+
+/**
+ * Jumps to a transcript position from an Overview timestamp: switches to the
+ * 逐字稿 tab, then scrolls the Session transcript to the record at or before
+ * that second and highlights it briefly — the same affordance the transcript
+ * search uses for its current match.
+ */
+function jumpToTranscriptTimestamp(seconds) {
+  switchTab("transcript");
+  // Queue behind switchTab's reading-position restore so the jump scroll is
+  // not overwritten by it (requestAnimationFrame callbacks run in order).
+  requestAnimationFrame(() => {
+    revealSessionRecordAt(seconds);
+  });
+}
+
+/**
+ * Scrolls the Session transcript to the nearest record at or before
+ * `seconds` and flashes the jump highlight on it. With no matching record
+ * (nothing transcribed that early) only the tab switch happened.
+ */
+function revealSessionRecordAt(seconds) {
+  const container = document.getElementById("sessionTranscript");
+  if (!container) return;
+  const row = findSessionRecordForSeconds(container, seconds);
+  if (!row) return;
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.add("session-record-jump");
+  setTimeout(() => row.classList.remove("session-record-jump"), 1600);
+}
+
+/**
+ * The nearest transcript record at or before `seconds`: rows carry their
+ * start second in dataset.seconds, and records render in session order, so
+ * the last matching row is the nearest one.
+ */
+function findSessionRecordForSeconds(container, seconds) {
+  const target = Number(seconds);
+  if (!Number.isFinite(target)) return null;
+  let match = null;
+  for (const row of container.children || []) {
+    const start = Number(row.dataset?.seconds);
+    if (!Number.isFinite(start) || start > target) continue;
+    if (!match || start >= Number(match.dataset.seconds)) match = row;
+  }
+  return match;
 }
 
 function clearSessionSummaryViews() {

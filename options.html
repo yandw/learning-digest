@@ -5,6 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Learning Digest Settings</title>
     <link rel="stylesheet" href="options.css" />
+    <script>
+      // Fail-loud collector: captures script errors from the shared modules
+      // loaded below (settings.js / speech-transcription.js /
+      // speech-providers.js). options.js surfaces these when the Speech
+      // Provider list comes up empty, instead of leaving a silently
+      // disabled dropdown. Must run before the module scripts.
+      window.__ytdScriptErrors = [];
+      window.addEventListener("error", function (event) {
+        window.__ytdScriptErrors.push(
+          (event.message || "Script load error") +
+            (event.filename
+              ? " @ " + event.filename.split("/").pop() + ":" + event.lineno
+              : ""),
+        );
+      });
+    </script>
   </head>
   <body>
     <main class="settings-shell">
@@ -129,6 +145,7 @@
             >Speech Provider</label
           >
           <select id="speechProvider" name="speechProvider"></select>
+          <p id="speechProviderLoadError" class="help" hidden></p>
 
           <div id="speechProviderFields"></div>
 

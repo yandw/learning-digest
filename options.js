@@ -471,6 +471,7 @@ const YTD_OPTIONS = (() => {
     const speechProviderSelect = doc.getElementById("speechProvider");
     const speechProviderFields = doc.getElementById("speechProviderFields");
     const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
+    const speechProviderLoadError = doc.getElementById("speechProviderLoadError");
     const providersApi = root.YTD_SPEECH_PROVIDERS;
     // Per-provider credential drafts, keyed by Speech Provider id, so
     // switching providers never loses what the user already typed.
@@ -564,9 +565,35 @@ const YTD_OPTIONS = (() => {
         speechProviderSelect.append(option);
       }
       speechProviderSelect.disabled = providers.length === 0;
+      showSpeechProviderLoadError(providers.length);
       if (providers[0] && !providers.some((p) => p.id === speechProviderSelect.value)) {
         speechProviderSelect.value = providers[0].id;
       }
+    }
+
+    // Fail-loud: an empty provider list means one of the shared module
+    // scripts (speech-transcription.js / speech-providers.js) failed during
+    // page load. Surface the captured error and the running extension
+    // version instead of leaving a silently disabled dropdown.
+    function showSpeechProviderLoadError(providerCount) {
+      if (!speechProviderLoadError) return;
+      if (providerCount > 0 || providersApi) {
+        speechProviderLoadError.hidden = true;
+        return;
+      }
+      const errors = Array.isArray(root.__ytdScriptErrors)
+        ? root.__ytdScriptErrors
+        : [];
+      const version = root.chrome?.runtime?.getManifest?.().version || "?";
+      speechProviderLoadError.textContent =
+        "Speech Provider 模块加载失败（服务商列表为空），下拉框不可用。" +
+        "当前扩展版本 " + version + "。" +
+        (errors.length
+          ? " 捕获的脚本错误：" + errors.join("；") + "。"
+          : " 未捕获到脚本错误。") +
+        " 请尝试：在 chrome://extensions 重新加载扩展，然后完全关闭本页再重新打开。" +
+        " 若版本号不是 0.1.0，说明扩展加载的不是最新代码。";
+      speechProviderLoadError.hidden = false;
     }
 
     function fieldLabelKey(providerId, fieldKey) {

@@ -1605,6 +1605,202 @@ body {
   padding-top: 8px;
 }
 
+/* 纪要 tab (#30): the compact report fragment, the tab's hint/error states
+   and the open/download actions. The fragment reuses the full report's class
+   names, restyled here for the narrow panel column. */
+.report-tab-hint {
+  color: var(--text-muted);
+  display: flex;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 0;
+}
+
+.report-tab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0 10px;
+}
+
+.report-tab-error {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--highlight);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 10px 12px;
+}
+
+.report-tab-error-text {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.report-compact-host {
+  overflow-y: auto;
+}
+
+.report-compact {
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 4px 0 12px;
+}
+
+.report-compact .report-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.report-compact .report-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.report-compact .report-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.report-compact .report-section-title {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+/* The compact step bar mirrors the full report's timeline: numbered dots on
+   a shared vertical line, one stop per Topic. */
+.report-compact .topic-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .report-topic {
+  display: flex;
+  gap: 10px;
+  position: relative;
+}
+
+.report-compact .report-topic + .report-topic {
+  padding-top: 12px;
+}
+
+.report-compact .topic-step {
+  align-items: flex-start;
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  position: relative;
+  width: 22px;
+}
+
+.report-compact .topic-step::after {
+  background: var(--border);
+  bottom: -12px;
+  content: "";
+  left: 50%;
+  position: absolute;
+  top: 20px;
+  transform: translateX(-50%);
+  width: 2px;
+}
+
+.report-compact .report-topic:last-child .topic-step::after {
+  display: none;
+}
+
+.report-compact .topic-step-dot {
+  background: var(--accent);
+  border-radius: 50%;
+  color: #ffffff;
+  flex: 0 0 auto;
+  font-size: 11px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  width: 18px;
+  z-index: 1;
+}
+
+.report-compact .topic-content {
+  min-width: 0;
+}
+
+.report-compact .topic-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+
+.report-compact .topic-time {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.report-compact .topic-summary {
+  color: var(--text-secondary);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.report-compact .quote-item {
+  background: var(--accent-dim);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+}
+
+.report-compact .quote-item:last-child {
+  margin-bottom: 0;
+}
+
+.report-compact .quote-time {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.report-compact .todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .todo-item {
+  padding: 2px 0;
+}
+
+.report-compact .todo-item label {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+
+.report-compact .todo-item input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.report-compact .todo-text {
+  color: var(--text);
+}
+
+.report-compact .report-empty {
+  color: var(--text-muted);
+  margin: 0;
+}
+
 .session-transcript {
   display: flex;
   flex-direction: column;

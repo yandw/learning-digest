@@ -47,7 +47,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.29");
+  assert.equal(manifest.version, "0.1.30");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -380,6 +380,11 @@ test("core Learning Digest modules ship in the release and load in the service w
     "page-bridge.js",
     "offscreen.js",
     "offscreen.html",
+    // The report surfaces (#30): the pure renderer, the full report page and
+    // its controller.
+    "report-render.js",
+    "report.html",
+    "report.js",
   ]) {
     assert.match(checkRelease, new RegExp(`"${module}"`), module);
   }

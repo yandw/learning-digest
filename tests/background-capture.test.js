@@ -556,12 +556,13 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
   const requests = [];
   const sentMessages = [];
   const sessionId = "s_report";
+  const pointer = capturePointer(sessionId);
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
     fetchImpl: reportAiFetch(requests, REPORT_BODY),
     sentMessages,
     stored: {
-      ytd_active_capture: capturePointer(sessionId),
+      ytd_active_capture: pointer,
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
   });
@@ -580,6 +581,13 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
   assert.equal(stored.sessionId, sessionId);
   assert.deepEqual(stored.report, REPORT_BODY);
   assert.equal(typeof stored.generatedAtMs, "number");
+  // Artifact meta (#30): captured from the ending capture context. The
+  // pointer carries the same startedAtMs the resumed context was built
+  // from; endedAtMs is the wall-clock end.
+  assert.equal(stored.meta.startedAtMs, pointer.startedAtMs);
+  assert.equal(typeof stored.meta.endedAtMs, "number");
+  assert.equal(stored.meta.kind, "replay");
+  assert.equal(stored.meta.platformId, "xiaoe-tech");
   assert.equal(
     helpers.readStored(`digest_${sessionId}`),
     undefined,
@@ -674,6 +682,59 @@ test("regenerateReport re-runs the pass for the ended Session, persists and broa
   );
   assert.equal(updates.length, 2, "the retried report is broadcast again");
   assert.deepEqual(updates[1].report, REPORT_BODY);
+});
+
+test("a retried pass reconstructs artifact meta from the Session id and Transcript", async () => {
+  const requests = [];
+  // A real-format Session id: s_<base36 start ms>_<random>.
+  const startMs = new Date(2026, 9, 1, 9, 0).getTime();
+  const sessionId = `s_${startMs.toString(36)}_retrymeta`;
+  let attempts = 0;
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      attempts += 1;
+      if (attempts === 1) {
+        // First end: the provider truncates mid-JSON, nothing is persisted.
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              { message: { content: '{"topics": [' }, finish_reason: "length" },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            { message: { content: JSON.stringify(REPORT_BODY) }, finish_reason: "stop" },
+          ],
+        }),
+      };
+    },
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await resumeAndEnd(helpers);
+  assert.equal(helpers.readStored(`report_${sessionId}`), undefined);
+
+  const retried = await helpers.handleRegenerateReport({});
+  assert.equal(retried.success, true);
+  const stored = helpers.readStored(`report_${sessionId}`);
+  assert.ok(stored, "the retried pass persists the artifact");
+  // The Session id decodes back to the wall-clock start.
+  assert.equal(stored.meta.startedAtMs, startMs);
+  // The Transcript covers 15 minutes; the end is estimated from its last record.
+  assert.equal(stored.meta.endedAtMs, startMs + 900_000);
+  // kind/platform are not stored with the snapshot: the renderers omit them.
+  assert.equal(stored.meta.kind, undefined);
+  assert.equal(stored.meta.platformId, undefined);
 });
 
 test("regenerateReport finds the most recent ended Session in storage after a worker restart", async () => {

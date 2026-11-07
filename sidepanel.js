@@ -12,6 +12,18 @@ const debugLog = (...args) => {
   if (DEBUG) console.log(...args);
 };
 
+// The pure report renderers (#30): the 纪要 tab and the downloads share one
+// data source. In the browser the global arrives via
+// <script src="report-render.js">; Node tests that inject the sandbox get it
+// from YTD_REPORT_RENDER, and a Node require() is only used when both are
+// absent (plain Node) so minimal test sandboxes never crash on load.
+const reportRender =
+  typeof YTD_REPORT_RENDER !== "undefined"
+    ? YTD_REPORT_RENDER
+    : typeof require === "function"
+      ? require("./report-render.js")
+      : null;
+
 // ============================================================
 // STATE
 // ============================================================
@@ -206,6 +218,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   showState("welcome");
   setupSessionUI();
+  // D7 (#30): reopening the panel shows the most recent persisted report
+  // even with no active Session.
+  void adoptLatestStoredReport();
 });
 
 // Listen for messages from the background script.
@@ -254,6 +269,7 @@ function setupEventListeners() {
     .getElementById("exportTranscriptBtn")
     ?.addEventListener("click", exportTranscript);
   setupTranscriptSearch();
+  setupReportTab();
 
   // pagehide also covers closing the side panel without a tab change.
   window.addEventListener("pagehide", () => {
@@ -1627,6 +1643,21 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   loadTranscriptViewState,
   saveTranscriptViewState,
   renderSubtitleInlineMarkup,
+  switchTab,
+};
+
+// Report tab helpers for the repository's Node tests (#30). The extension
+// does not read this object at runtime.
+globalThis.__YTD_REPORT_TESTING__ = {
+  renderReportTab,
+  applyReportPayloadToTab,
+  adoptLatestStoredReport,
+  reportTabSetActiveSession,
+  showSessionMode,
+  retryReportFromTab,
+  openReportInTab,
+  downloadReportFile,
+  resetReportTabForTesting,
 };
 
 // ============================================================
@@ -1771,6 +1802,21 @@ function renderSessionSummary(state) {
   section.style.display = "flex";
 }
 
+// True when a report payload carries anything renderable at all (error,
+// skipped marker, or at least one Topic/quote/todo). Shared by the end-time
+// card and the 纪要 tab funnel.
+function reportHasContent(report) {
+  return Boolean(
+    report &&
+      typeof report === "object" &&
+      (report.error ||
+        report.skipped ||
+        (Array.isArray(report.topics) && report.topics.length > 0) ||
+        (Array.isArray(report.quotes) && report.quotes.length > 0) ||
+        (Array.isArray(report.todos) && report.todos.length > 0)),
+  );
+}
+
 // The end-time Session Digest (#29): the compact report rendered from the
 // global pass JSON — Topics with time ranges and summaries, timestamped
 // quotes, and action items. A truncated or failed pass renders the retry
@@ -1782,14 +1828,7 @@ function renderSessionReport(report, sessionId = null) {
   if (!section || !container) return;
   sessionUi.reportShown = false;
   if (sessionId) sessionUi.reportSessionId = sessionId;
-  const hasContent =
-    report &&
-    typeof report === "object" &&
-    (report.error ||
-      report.skipped ||
-      (Array.isArray(report.topics) && report.topics.length > 0) ||
-      (Array.isArray(report.quotes) && report.quotes.length > 0) ||
-      (Array.isArray(report.todos) && report.todos.length > 0));
+  const hasContent = reportHasContent(report);
   container.textContent = "";
   if (!hasContent) {
     section.style.display = "none";
@@ -1797,6 +1836,8 @@ function renderSessionReport(report, sessionId = null) {
   }
   sessionUi.reportShown = true;
   sessionUi.lastReport = report;
+  // Every report arrival also feeds the 纪要 tab (#30).
+  void applyReportPayloadToTab(report, sessionId);
   if (report.error) {
     renderReportError(container, report.error);
   } else if (report.skipped === "noTranscript") {
@@ -1889,6 +1930,285 @@ function appendReportHeading(container, text) {
   container.appendChild(heading);
 }
 
+// ============================================================
+// REPORT TAB (#30): the 纪要 tab's report surface
+// ============================================================
+//
+// One tab state at a time, derived from what the panel knows: a failed pass
+// (report.error) shows the retry affordance; a persisted artifact renders
+// compactly; an active Session shows the generating hint; anything else is
+// the idle line. The startup scan (D7) surfaces the most recent persisted
+// report so reopening the panel is never a dead end. The end-time card in
+// the Session view (#29) stays as-is; this tab mirrors every report arrival
+// through the same funnel.
+
+const reportTabUi = {
+  // The Session the tab is about; a new active Session retires the artifact.
+  sessionId: null,
+  // The latest report artifact {sessionId, report, meta, generatedAtMs}.
+  artifact: null,
+  // A retryable failure from the end-time pass: { message, sessionId }.
+  error: null,
+  // The end-time pass found no Transcript: informational, not retryable.
+  skipped: false,
+  // True while a regenerateReport request is in flight.
+  regenerating: false,
+};
+
+function reportTabElements() {
+  return {
+    hint: document.getElementById("reportTabHint"),
+    actions: document.getElementById("reportTabActions"),
+    errorBox: document.getElementById("reportTabError"),
+    errorText: document.getElementById("reportTabErrorText"),
+    body: document.getElementById("reportTabBody"),
+  };
+}
+
+/**
+ * Renders the current report-tab state. Idempotent: every state change
+ * re-renders the whole tab from reportTabUi.
+ */
+function renderReportTab() {
+  const els = reportTabElements();
+  if (!els.hint || !els.actions || !els.errorBox || !els.errorText || !els.body) {
+    return;
+  }
+  els.errorBox.style.display = "none";
+  els.actions.style.display = "none";
+  els.body.style.display = "none";
+  // The body is a pure function of the current state: stale compact markup
+  // never survives a state change.
+  els.body.innerHTML = "";
+  els.hint.style.display = "none";
+
+  const artifact = reportTabUi.artifact;
+  const report = artifact?.report;
+  if (report && !report.error && !report.skipped) {
+    els.body.innerHTML = reportRender.renderReportCompact(
+      report,
+      artifact.meta || null,
+    );
+    els.body.style.display = "block";
+    els.actions.style.display = "flex";
+    return;
+  }
+  if (reportTabUi.error) {
+    els.errorText.textContent = reportTabUi.error.message;
+    els.errorBox.style.display = "flex";
+    return;
+  }
+  if (reportTabUi.skipped) {
+    els.hint.textContent = "未捕获到逐字稿，未生成会话纪要。";
+    els.hint.style.display = "flex";
+    return;
+  }
+  if (reportTabUi.regenerating) {
+    els.hint.textContent = "正在重新生成会话纪要…";
+    els.hint.style.display = "flex";
+    return;
+  }
+  if (sessionUi.active) {
+    els.hint.textContent = "报告生成中…";
+    els.hint.style.display = "flex";
+    return;
+  }
+  els.hint.textContent = "结束学习后，会话纪要会显示在这里。";
+  els.hint.style.display = "flex";
+}
+
+/**
+ * A new active Session (or the same one re-observed after resume): only an
+ * id change retires the previous state, so the 5s poll cannot wipe a report
+ * that just arrived.
+ */
+function reportTabSetActiveSession(sessionId) {
+  if (reportTabUi.sessionId === sessionId) return;
+  reportTabUi.sessionId = sessionId;
+  reportTabUi.artifact = null;
+  reportTabUi.error = null;
+  reportTabUi.skipped = false;
+  reportTabUi.regenerating = false;
+  renderReportTab();
+}
+
+/**
+ * The one funnel for report arrivals (broadcast, endLearning, retry
+ * response): failed passes show the error, skipped passes show the hint,
+ * and successful ones prefer the persisted artifact — it carries meta and
+ * generatedAtMs that the broadcast payload lacks. A stale arrival for an
+ * older Session never supersedes the current one.
+ *
+ * @param {object} report - the report payload
+ * @param {string|null} sessionId - the Session it belongs to
+ */
+async function applyReportPayloadToTab(report, sessionId) {
+  if (!report || typeof report !== "object" || !reportHasContent(report)) return;
+  if (
+    sessionId &&
+    reportTabUi.sessionId &&
+    sessionId !== reportTabUi.sessionId
+  ) {
+    return;
+  }
+  if (sessionId) reportTabUi.sessionId = sessionId;
+  reportTabUi.regenerating = false;
+  if (report.error) {
+    reportTabUi.error = { message: report.error, sessionId: sessionId || null };
+    reportTabUi.artifact = null;
+    reportTabUi.skipped = false;
+    renderReportTab();
+    return;
+  }
+  if (report.skipped) {
+    reportTabUi.skipped = true;
+    reportTabUi.error = null;
+    reportTabUi.artifact = null;
+    renderReportTab();
+    return;
+  }
+  reportTabUi.error = null;
+  reportTabUi.skipped = false;
+  let artifact = null;
+  if (sessionId) {
+    try {
+      const stored = await chrome.storage.local.get(`report_${sessionId}`);
+      artifact = stored?.[`report_${sessionId}`] || null;
+    } catch (_error) {
+      // Storage unreachable; the payload itself is the fallback below.
+    }
+  }
+  if (artifact?.report && !artifact.report.error && !artifact.report.skipped) {
+    reportTabUi.artifact = artifact;
+  } else {
+    reportTabUi.artifact = { sessionId: sessionId || null, report, meta: null };
+  }
+  renderReportTab();
+}
+
+/**
+ * The startup scan (D7): the most recent report_<sessionId> in storage
+ * wins (latest generatedAtMs), shown even with no active Session. Skipped
+ * while a Session is active — the tab then belongs to the running Session.
+ */
+async function adoptLatestStoredReport() {
+  if (sessionUi.active) return;
+  let best = null;
+  try {
+    const all = await chrome.storage.local.get(null);
+    for (const [key, value] of Object.entries(all || {})) {
+      if (!key.startsWith("report_")) continue;
+      if (!value || typeof value !== "object") continue;
+      if (!value.report || typeof value.report !== "object") continue;
+      if (value.report.error || value.report.skipped) continue;
+      const at = Number(value.generatedAtMs) || 0;
+      if (!best || at > (Number(best.generatedAtMs) || 0)) best = value;
+    }
+  } catch (_error) {
+    best = null; // Storage unavailable; the tab renders its idle state.
+  }
+  if (best) {
+    reportTabUi.sessionId = best.sessionId || reportTabUi.sessionId;
+    reportTabUi.artifact = best;
+    // D7: the deliverable exists with no active Session — surface it.
+    surfaceReportTab();
+  }
+  // Render even when nothing was found: this is the tab's first paint, and
+  // the idle line must be visible before any session activity.
+  renderReportTab();
+}
+
+/**
+ * Surfaces the deliverable (#30): shows the results view with the 纪要 tab
+ * active. In session mode the Session view (live transcript, end-time card)
+ * stays visible above it; a loaded legacy video digest keeps its own tab
+ * choice (ticket #31 reworks the legacy path).
+ */
+function surfaceReportTab() {
+  if (currentVideoId) return;
+  showState("results");
+  switchTab("report");
+}
+
+/**
+ * The 重试 action: re-runs the end-of-session global pass for the failed
+ * Session. While it runs the tab shows the regenerating hint; the direct
+ * response re-lands the result (the background also broadcasts).
+ */
+async function retryReportFromTab() {
+  const sessionId = reportTabUi.error?.sessionId || reportTabUi.sessionId;
+  reportTabUi.regenerating = true;
+  renderReportTab();
+  try {
+    const result = await chrome.runtime.sendMessage({
+      action: "regenerateReport",
+      sessionId: sessionId || undefined,
+    });
+    if (result?.report) {
+      await applyReportPayloadToTab(result.report, result.sessionId || sessionId);
+      return;
+    }
+  } catch (_error) {
+    // Background unreachable; restore the failed state below.
+  }
+  reportTabUi.regenerating = false;
+  renderReportTab();
+}
+
+/** Opens the shown session's report page in a browser tab. */
+function openReportInTab() {
+  const sessionId =
+    reportTabUi.artifact?.sessionId ||
+    reportTabUi.error?.sessionId ||
+    reportTabUi.sessionId;
+  if (!sessionId) return;
+  chrome.tabs.create({
+    url: `${chrome.runtime.getURL("report.html")}?session=${encodeURIComponent(sessionId)}`,
+  });
+}
+
+/** Downloads the shown report as .html or .md, named after the Session. */
+function downloadReportFile(format) {
+  const artifact = reportTabUi.artifact;
+  const report = artifact?.report;
+  if (!report) return;
+  const sessionId = artifact.sessionId || "session";
+  if (format === "markdown") {
+    downloadTextFile(
+      reportRender.renderReportMarkdown(report, artifact.meta || null),
+      `learning-digest-report-${sessionId}.md`,
+    );
+    return;
+  }
+  downloadTextFile(
+    reportRender.renderReportHtml(report, artifact.meta || null),
+    `learning-digest-report-${sessionId}.html`,
+  );
+}
+
+function setupReportTab() {
+  document
+    .getElementById("reportOpenBtn")
+    ?.addEventListener("click", openReportInTab);
+  document
+    .getElementById("reportDownloadHtmlBtn")
+    ?.addEventListener("click", () => downloadReportFile("html"));
+  document
+    .getElementById("reportDownloadMdBtn")
+    ?.addEventListener("click", () => downloadReportFile("markdown"));
+  document
+    .getElementById("reportRetryBtn")
+    ?.addEventListener("click", retryReportFromTab);
+}
+
+function resetReportTabForTesting() {
+  reportTabUi.sessionId = null;
+  reportTabUi.artifact = null;
+  reportTabUi.error = null;
+  reportTabUi.skipped = false;
+  reportTabUi.regenerating = false;
+}
+
 function clearSessionSummaryViews() {
   renderSessionSummary(null);
   renderSessionReport(null);
@@ -1929,6 +2249,16 @@ function showSessionMode({ active, kind, state }) {
     sessionUi.reportSessionId = null;
     sessionUi.lastReport = null;
     renderSessionReport(null);
+    // ...and the 纪要 tab shows the generating hint until the new report
+    // lands (#30); only an id change retires it, so the poll is safe.
+    const reportSessionBefore = reportTabUi.sessionId;
+    reportTabSetActiveSession(state?.sessionId ?? sessionUi.sessionId ?? null);
+    // A fresh Session surfaces the deliverable's tab (story 7): the 纪要 tab
+    // reads 报告生成中… until the end-time pass lands. Later polls never
+    // yank the learner off the tab they picked.
+    if (reportTabUi.sessionId && reportTabUi.sessionId !== reportSessionBefore) {
+      surfaceReportTab();
+    }
     bar.style.display = "flex";
     endBtn.style.display = "";
     view.style.display = "";
@@ -1968,7 +2298,12 @@ function showSessionMode({ active, kind, state }) {
     if (welcome && state === null) welcome.style.display = "none";
   } else {
     bar.style.display = "none";
-    if (welcome) welcome.style.display = "flex";
+    // D7 (#30): a surfaced report owns the panel — the welcome state must
+    // not stack on top of it when the startup scan and this idle render race.
+    if (welcome) {
+      welcome.style.display =
+        reportTabUi.artifact && !currentVideoId ? "none" : "flex";
+    }
   }
 }
 

@@ -1287,25 +1287,29 @@ const REPORT_LENGTH_LIMIT_MESSAGE = "报告长度受限，生成未完成，请�
 
 /**
  * Runs the global pass for an ended Session and lands the result. A
- * successful pass persists `report_<sessionId>` and returns the artifact; a
- * truncated/failed pass persists nothing and returns the error payload the
- * panel renders (with the retry action). Never throws — every failure mode
- * becomes a renderable payload.
+ * successful pass persists `report_<sessionId>` (with the artifact meta when
+ * the caller captured it, #30) and returns the artifact; a truncated/failed
+ * pass persists nothing and returns the error payload the panel renders
+ * (with the retry action). Never throws — every failure mode becomes a
+ * renderable payload.
  *
  * @param {object} state - ended Session state
+ * @param {object|null} [meta] - { startedAtMs, endedAtMs, kind, platformId? }
  * @returns {Promise<{report: object, persisted: boolean}>}
  */
-async function produceSessionReport(state) {
+async function produceSessionReport(state, meta = null) {
   try {
     const outcome = await generateSessionReport(state);
     if (outcome.report) {
-      await chrome.storage.local.set({
-        [`report_${state.sessionId}`]: {
-          sessionId: state.sessionId,
-          report: outcome.report,
-          generatedAtMs: Date.now(),
-        },
-      });
+      const artifact = {
+        sessionId: state.sessionId,
+        report: outcome.report,
+        generatedAtMs: Date.now(),
+      };
+      // Meta rides along when known (#30): the report header needs it. A
+      // failed pass persists nothing, so a retry reconstructs instead.
+      if (meta) artifact.meta = meta;
+      await chrome.storage.local.set({ [`report_${state.sessionId}`]: artifact });
       return { report: outcome.report, persisted: true };
     }
     if (outcome.skipped === "noTranscript") {
@@ -1567,7 +1571,15 @@ async function endActiveSession(context, { reason } = {}) {
   // Both end paths (explicit action and media-end auto-stop) run the global
   // pass from the ended state. A failed or truncated pass never blocks
   // ending: the panel gets the retry error instead of the artifact.
-  const { report } = await produceSessionReport(context.state);
+  // Artifact meta (#30): the ending capture context is the only place kind,
+  // platform and the wall-clock range are all known at once.
+  const reportMeta = {
+    startedAtMs: context.startedAtMs,
+    endedAtMs: Date.now(),
+    kind: context.kind,
+    platformId: context.platformId,
+  };
+  const { report } = await produceSessionReport(context.state, reportMeta);
   broadcastSession(context.state, { report });
 
   await sendOffscreen({ action: "captureStop" });
@@ -1625,6 +1637,43 @@ async function resolveReportTargetSessionId(message) {
 }
 
 /**
+ * Rebuilds artifact meta for a retry that has no prior artifact to copy it
+ * from: the Session id encodes the start (s_<base36 start ms>_<random>, the
+ * same encoding resolveReportTargetSessionId relies on) and the Transcript's
+ * last record estimates the wall-clock end. kind/platformId are not stored
+ * with the snapshot, so they stay absent and the renderers omit those parts
+ * of the meta line.
+ *
+ * @param {string} sessionId
+ * @param {object} state - Session state rebuilt from the snapshot
+ * @returns {{startedAtMs: number, endedAtMs: number}}
+ */
+function reconstructReportMeta(sessionId, state) {
+  const parsed = parseInt(
+    String(sessionId).replace(/^s_/, "").split("_")[0],
+    36,
+  );
+  // Session ids carry a real start timestamp; anything else (test doubles,
+  // hand-made ids) parses to an implausible value and falls back to now.
+  const startedAtMs =
+    Number.isFinite(parsed) && parsed > 0 && parsed <= Date.now()
+      ? parsed
+      : Date.now();
+  const contentEndSeconds = (state?.transcriptRecords || []).reduce(
+    (end, record) =>
+      Math.max(
+        end,
+        (Number(record?.start) || 0) + (Number(record?.duration) || 0),
+      ),
+    0,
+  );
+  return {
+    startedAtMs,
+    endedAtMs: startedAtMs + Math.round(contentEndSeconds * 1000),
+  };
+}
+
+/**
  * The regenerateReport message action: re-runs the end-of-session global
  * pass for the most recent ended Session (or the one the panel names),
  * persists a successful artifact and broadcasts it again. Used when the
@@ -1646,7 +1695,13 @@ async function handleRegenerateReport(message) {
     return { success: false, error: "找不到该会话的逐字稿，无法重新生成。" };
   }
   const state = YTD_SESSION_PIPELINE.resumeFromSnapshot(snapshot);
-  const { report } = await produceSessionReport(state);
+  // Meta (#30): a prior artifact's meta is the true one; a retry after a
+  // failed pass (nothing persisted) reconstructs the best available.
+  const stored = await chrome.storage.local.get(`report_${sessionId}`);
+  const meta =
+    stored?.[`report_${sessionId}`]?.meta ||
+    reconstructReportMeta(sessionId, state);
+  const { report } = await produceSessionReport(state, meta);
   broadcastSession(state, { report });
   return { success: true, sessionId, report };
 }

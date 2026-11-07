@@ -34,6 +34,7 @@
       <div class="tabs" id="tabsNav" style="display: none">
         <button class="tab active" data-tab="transcript">逐字稿</button>
         <button class="tab" data-tab="overview">概览</button>
+        <button class="tab" data-tab="report">纪要</button>
         <button class="tab" data-tab="notes">笔记</button>
       </div>
     </div>
@@ -238,12 +239,39 @@
             <div id="notesList"></div>
           </div>
         </div>
+
+        <!-- TAB: Report (纪要, #30) - the end-of-session Session Digest -->
+        <div class="tab-panel" data-panel="report">
+          <div class="section">
+            <div class="section-header">
+              <div class="section-title">会话纪要</div>
+            </div>
+            <div class="report-tab-hint" id="reportTabHint" style="display: none"></div>
+            <div class="report-tab-actions" id="reportTabActions" style="display: none">
+              <button class="enhance-btn" id="reportOpenBtn" type="button">
+                在新标签页打开
+              </button>
+              <button class="enhance-btn" id="reportDownloadHtmlBtn" type="button">
+                下载 HTML
+              </button>
+              <button class="enhance-btn" id="reportDownloadMdBtn" type="button">
+                下载 Markdown
+              </button>
+            </div>
+            <div class="report-tab-error" id="reportTabError" style="display: none">
+              <div class="report-tab-error-text" id="reportTabErrorText"></div>
+              <button class="session-btn" id="reportRetryBtn" type="button">重试</button>
+            </div>
+            <div id="reportTabBody" class="report-compact-host" style="display: none"></div>
+          </div>
+        </div>
       </div>
     </div>
 
     <script src="settings.js"></script>
     <script src="speech-transcription.js"></script>
     <script src="source-platforms.js"></script>
+    <script src="report-render.js"></script>
     <script src="sidepanel.js"></script>
   </body>
 </html>

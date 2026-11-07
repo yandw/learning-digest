@@ -307,6 +307,7 @@ mistake for a bug or a regression.
 | D12 | Side panel gates its startup on the AI Provider key (pre-#16 behavior): a speech-key-only user sees a config error even though capture itself needs only the Speech Provider key. | #16 | UX follow-up if AI-key-less capture matters. |
 | D13 | Rolling-summary tick does not run early at session end even if due; the digest covers the uncovered tail anyway. | #18 | No transcript loss; only timing of the last summary. |
 | D14 | Stale `captions.js` references remain in comments of speech-providers.js / session-pipeline.js / session-persistence.js (file retired in #13). | #13 | Cosmetic. |
+| D15 | US13 partial, local/OpenAI-compatible endpoints: reaching a non-Groq Speech Provider host requires hand-editing `host_permissions` in manifest.json. A runtime "Request access" flow via `chrome.permissions.request` is not implemented because the release test pins the manifest shape with no `optional_permissions`/`optional_host_permissions` (`tests/release.test.js`), which Chrome requires before any runtime grant. Documented in the options page copy as a known limitation. | #21 (review of US13) | Conscious defer; unblocking it means relaxing the release manifest pin deliberately, not as a side effect. |
 
 ## 6. Appendix — reference links
 

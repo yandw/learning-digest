@@ -321,3 +321,61 @@ test("applyEvent rejects unknown event types and unknown Segments", () => {
     /Unknown Segment/,
   );
 });
+
+test("settleInterruptedSegments fails orphan pending Segments left by an interrupted worker", () => {
+  // A Segment captured but never transcribed when the service worker died
+  // mid-flight: resume must settle it as failed (the [语音转录失败] marker
+  // record) instead of leaving a pending hole the new segmenter cursor
+  // already skipped past.
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-0", start: 0, duration: 120 },
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcribeOk",
+    segmentId: "seg-0",
+    records: [{ text: "第一段", start: 0, duration: 5 }],
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-1", start: 120, duration: 120 },
+  });
+
+  const snapshot = JSON.parse(JSON.stringify(state));
+  const resumed = sessionPipeline.resumeFromSnapshot(snapshot);
+  const settled = sessionPipeline.settleInterruptedSegments(resumed);
+
+  assert.ok(
+    settled.segments.every((segment) => segment.status !== "pending"),
+    "a resumed Session has no orphan pending Segments",
+  );
+  const failed = settled.segments.find((segment) => segment.id === "seg-1");
+  assert.equal(failed.status, "failed");
+  const marker = settled.transcriptRecords.find(
+    (record) => record.failed === true && record.start === 120,
+  );
+  assert.ok(marker, "the gap carries the visible failure annotation");
+  assert.equal(marker.text, "[语音转录失败]");
+  assert.equal(marker.duration, 120);
+  // The done Segment is untouched: resume never re-settles finished work.
+  assert.equal(settled.segments.find((s) => s.id === "seg-0").status, "done");
+  assert.equal(settled.transcriptRecords.length, 2);
+});
+
+test("settleInterruptedSegments is a no-op when nothing is pending", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-0", start: 0, duration: 120 },
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcribeOk",
+    segmentId: "seg-0",
+    records: [{ text: "第一段", start: 0, duration: 5 }],
+  });
+
+  const settled = sessionPipeline.settleInterruptedSegments(state);
+  assert.equal(settled, state);
+  assert.equal(settled.transcriptRecords.length, 1);
+});

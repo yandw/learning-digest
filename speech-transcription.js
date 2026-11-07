@@ -63,10 +63,89 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
     };
   }
 
+  /**
+   * Formats whole seconds as `[m:ss]` (minutes unpadded, seconds
+   * zero-padded). The single [m:ss] formatter for the extension:
+   * speech-transcription stitching, transcript-for-prompt rendering, and
+   * the background analysis layer all share it. Non-numeric or negative
+   * input renders as 0:00.
+   */
   function formatTimestamp(startSeconds) {
-    const minutes = Math.floor(startSeconds / 60);
-    const seconds = startSeconds % 60;
+    const total = Math.max(0, Math.floor(Number(startSeconds) || 0));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  // --- shared Speech Provider cloud helpers ----------------------------------
+  //
+  // Used by the multi-request cloud Speech Providers (Tencent Cloud ASR,
+  // Aliyun ASR). Each provider used to carry its own copy of these; they now
+  // live here once, next to the other shared pure helpers this module
+  // already provides to every Speech Provider.
+
+  /**
+   * node:crypto when running under Node (tests), otherwise null. The
+   * service worker has no require(), so providers fall through to Web
+   * Crypto there.
+   */
+  function loadNodeCrypto() {
+    if (typeof require !== "function") return null;
+    try {
+      return require("node:crypto");
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Base64-encodes a byte array on both platforms: Buffer in Node, chunked
+   * btoa in the service worker.
+   */
+  function bytesToBase64(bytes) {
+    if (typeof Buffer !== "undefined") {
+      return Buffer.from(bytes).toString("base64");
+    }
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+  }
+
+  /**
+   * Region string with fallback: the provider's declared default region is
+   * used when the configured value is missing or blank.
+   */
+  function normalizeRegion(region, fallback) {
+    const trimmed = typeof region === "string" ? region.trim() : "";
+    return trimmed || fallback;
+  }
+
+  /**
+   * Maps the Segment audio's MIME type / file name to a cloud ASR format
+   * value, one cascade shared by the Tencent Cloud and Aliyun Speech
+   * Providers. The two providers document nearly identical format lists;
+   * the only real differences are the label they accept for the optimistic
+   * webm/opus mapping (EBML is in neither documented list) and the fallback
+   * value, both passed in here. Providers keep thin wrappers so their
+   * provider-specific names and docs stay in place.
+   */
+  function detectCloudAudioFormat(segmentAudio, { opusFormat, fallback }) {
+    const type = `${segmentAudio?.type || ""} ${segmentAudio?.name || ""}`.toLowerCase();
+    if (type.includes("wav")) return "wav";
+    if (type.includes("pcm")) return "pcm";
+    if (type.includes("mp3") || type.includes("mpeg")) return "mp3";
+    if (type.includes("m4a") || type.includes("mp4")) return "m4a";
+    if (type.includes("aac")) return "aac";
+    if (type.includes("amr")) return "amr";
+    if (type.includes("silk")) return "silk";
+    if (type.includes("speex")) return "speex";
+    if (type.includes("ogg") || type.includes("opus") || type.includes("webm")) {
+      return opusFormat;
+    }
+    return fallback;
   }
 
   /**
@@ -142,6 +221,11 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
     failedChunkRecord,
     stitchChunks,
     allChunksFailed,
+    formatTimestamp,
+    loadNodeCrypto,
+    bytesToBase64,
+    normalizeRegion,
+    detectCloudAudioFormat,
   };
 })();
 

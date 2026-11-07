@@ -35,17 +35,41 @@ var YTD_SPEECH_PROVIDERS = (() => {
 
   /**
    * Transcribes one Segment through the registered Speech Provider matching
-   * providerId. Extra arguments are passed through to the provider, so
-   * tests can inject a mocked fetch as the third argument.
+   * providerId.
    *
    * @returns {Promise<Array<{text: string, start: number, duration: number, language?: string}>>}
    */
-  async function transcribeSegment(providerId, segmentAudio, credentials, ...rest) {
+  async function transcribeSegment(providerId, segmentAudio, credentials) {
     const provider = getSpeechProvider(providerId);
     if (!provider) {
       throw new Error(`Unknown Speech Provider: ${providerId}`);
     }
-    return provider.transcribe(segmentAudio, credentials, ...rest);
+    return provider.transcribe(segmentAudio, credentials);
+  }
+
+  /**
+   * The credential fields a Speech Provider requires before it can run:
+   * every field declared with type "password" (the same rule the options
+   * page enforces at save time). Returns the keys whose trimmed value is
+   * missing from the given credentials.
+   *
+   * @param {string} providerId
+   * @param {object} [credentials]
+   * @returns {string[]} missing field keys, in declaration order
+   */
+  function missingProviderCredentials(providerId, credentials = {}) {
+    const provider = getSpeechProvider(providerId);
+    if (!provider) {
+      throw new Error(`Unknown Speech Provider: ${providerId}`);
+    }
+    return (provider.credentialFields || [])
+      .filter((field) => field.type === "password")
+      .filter(
+        (field) =>
+          typeof credentials?.[field.key] !== "string" ||
+          !credentials[field.key].trim(),
+      )
+      .map((field) => field.key);
   }
 
   return {
@@ -53,6 +77,7 @@ var YTD_SPEECH_PROVIDERS = (() => {
     getSpeechProvider,
     listSpeechProviders,
     transcribeSegment,
+    missingProviderCredentials,
   };
 })();
 
@@ -159,6 +184,14 @@ YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_GROQ);
 // runs on both node:crypto (tests, Node) and Web Crypto (service worker).
 
 var YTD_SPEECH_PROVIDER_TENCENT = (() => {
+  // Shared pure helpers (crypto loader, base64, region, audio-format
+  // cascade) live in speech-transcription.js; in Node tests we require
+  // them, in the service worker both globals arrive via importScripts.
+  const speechTranscription =
+    typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
+      ? YTD_SPEECH_TRANSCRIPTION
+      : require("./speech-transcription.js");
+
   const ID = "tencent";
   const LABEL = "Tencent Cloud ASR";
 
@@ -186,14 +219,7 @@ var YTD_SPEECH_PROVIDER_TENCENT = (() => {
 
   // --- crypto seam ---------------------------------------------------------
 
-  const nodeCrypto = (() => {
-    if (typeof require !== "function") return null;
-    try {
-      return require("node:crypto");
-    } catch (_error) {
-      return null;
-    }
-  })();
+  const nodeCrypto = speechTranscription.loadNodeCrypto();
 
   function bytesToHex(bytes) {
     let hex = "";
@@ -398,8 +424,7 @@ var YTD_SPEECH_PROVIDER_TENCENT = (() => {
   // --- audio helpers -------------------------------------------------------
 
   function normalizeRegion(region) {
-    const trimmed = typeof region === "string" ? region.trim() : "";
-    return trimmed || DEFAULTS.region;
+    return speechTranscription.normalizeRegion(region, DEFAULTS.region);
   }
 
   function normalizeEngineModelType(engineModelType) {
@@ -416,31 +441,14 @@ var YTD_SPEECH_PROVIDER_TENCENT = (() => {
    * container for real calls (needs validation against the live API).
    */
   function detectVoiceFormat(segmentAudio) {
-    const type = `${segmentAudio?.type || ""} ${segmentAudio?.name || ""}`.toLowerCase();
-    if (type.includes("wav")) return "wav";
-    if (type.includes("pcm")) return "pcm";
-    if (type.includes("mp3") || type.includes("mpeg")) return "mp3";
-    if (type.includes("m4a") || type.includes("mp4")) return "m4a";
-    if (type.includes("aac")) return "aac";
-    if (type.includes("amr")) return "amr";
-    if (type.includes("silk")) return "silk";
-    if (type.includes("speex")) return "speex";
-    if (type.includes("ogg") || type.includes("opus") || type.includes("webm")) {
-      return "ogg-opus";
-    }
-    return "wav";
+    return speechTranscription.detectCloudAudioFormat(segmentAudio, {
+      opusFormat: "ogg-opus",
+      fallback: "wav",
+    });
   }
 
   async function bytesToBase64(bytes) {
-    if (typeof Buffer !== "undefined") {
-      return Buffer.from(bytes).toString("base64");
-    }
-    let binary = "";
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-    }
-    return btoa(binary);
+    return speechTranscription.bytesToBase64(bytes);
   }
 
   /**
@@ -566,6 +574,14 @@ YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_TENCENT);
 // example is pinned in tests/aliyun-asr.test.js.
 
 var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
+  // Shared pure helpers (crypto loader, base64, region, audio-format
+  // cascade) live in speech-transcription.js; in Node tests we require
+  // them, in the service worker both globals arrive via importScripts.
+  const speechTranscription =
+    typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
+      ? YTD_SPEECH_TRANSCRIPTION
+      : require("./speech-transcription.js");
+
   const ID = "aliyun";
   const LABEL = "Aliyun ASR (NLS)";
 
@@ -595,14 +611,7 @@ var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
 
   // --- crypto seam ---------------------------------------------------------
 
-  const nodeCrypto = (() => {
-    if (typeof require !== "function") return null;
-    try {
-      return require("node:crypto");
-    } catch (_error) {
-      return null;
-    }
-  })();
+  const nodeCrypto = speechTranscription.loadNodeCrypto();
 
   /**
    * Platform HMAC-SHA1 primitive. hmacSha1Bytes(key, message) — key
@@ -660,15 +669,7 @@ var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
   }
 
   function bytesToBase64(bytes) {
-    if (typeof Buffer !== "undefined") {
-      return Buffer.from(bytes).toString("base64");
-    }
-    let binary = "";
-    const CHUNK = 0x8000;
-    for (let i = 0; i < bytes.length; i += CHUNK) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-    }
-    return btoa(binary);
+    return speechTranscription.bytesToBase64(bytes);
   }
 
   function isoTimestamp(date) {
@@ -759,8 +760,7 @@ var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
   // --- audio + region helpers ----------------------------------------------
 
   function normalizeRegion(region) {
-    const trimmed = typeof region === "string" ? region.trim() : "";
-    return trimmed || DEFAULTS.region;
+    return speechTranscription.normalizeRegion(region, DEFAULTS.region);
   }
 
   /**
@@ -773,17 +773,10 @@ var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
    * the live API).
    */
   function detectAudioFormat(segmentAudio) {
-    const type = `${segmentAudio?.type || ""} ${segmentAudio?.name || ""}`.toLowerCase();
-    if (type.includes("wav")) return "wav";
-    if (type.includes("pcm")) return "pcm";
-    if (type.includes("mp3") || type.includes("mpeg")) return "mp3";
-    if (type.includes("aac")) return "aac";
-    if (type.includes("amr")) return "amr";
-    if (type.includes("speex")) return "speex";
-    if (type.includes("ogg") || type.includes("opus") || type.includes("webm")) {
-      return "opus";
-    }
-    return "pcm";
+    return speechTranscription.detectCloudAudioFormat(segmentAudio, {
+      opusFormat: "opus",
+      fallback: "pcm",
+    });
   }
 
   // --- token handling ------------------------------------------------------

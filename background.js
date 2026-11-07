@@ -315,14 +315,13 @@ async function handleActionClicked(tab) {
     return;
   }
 
-  // First async act on the capture path, before ANY other await: Chrome
-  // grants tabCapture its activeTab-style "invoked" state on this click and
-  // only honors a getMediaStreamId call made while the click's gesture is
-  // still fresh. Everything that used to run first (sidePanel.open, storage
-  // reads/writes) let the gesture unwind, and the late fetch then always
-  // failed with "Extension has not been invoked" — every Session start died
-  // there. The streamId itself expires after a few seconds, but the panel
-  // open and the remaining setup before consumption are millisecond-scale.
+  // Both privileged calls are issued in the click's task, before ANY await:
+  // the panel open needs the live gesture (sidePanel.open validates the
+  // gesture when CALLED), and the streamId fetch needs the fresh invocation
+  // (0.1.22). The 0.1.22 ordering awaited the fetch first, which let the
+  // gesture unwind — the panel then silently failed to open whenever the
+  // fetch threw (e.g. an already-active capture on this tab).
+  const panelOpening = openPanelQuietly(tab);
   let streamId = null;
   try {
     streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
@@ -334,8 +333,7 @@ async function handleActionClicked(tab) {
       error?.message || error,
     );
   }
-
-  await openPanelQuietly(tab);
+  await panelOpening;
 
   const existing = await ensureCaptureResumed();
   if (existing) {

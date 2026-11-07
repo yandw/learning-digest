@@ -191,7 +191,7 @@ test("action click on an unrecognized page only opens the panel", async () => {
 // "Extension has not been invoked" (observed live as orphaned active
 // snapshots with zero segments). The stream fetch must come first.
 
-test("action click fetches the streamId before opening the panel", async () => {
+test("action click issues the panel open and the streamId fetch before any await", async () => {
   const order = [];
   const { handleActionClicked } = loadBackgroundHelpers({
     settings: baseSettings(),
@@ -211,7 +211,9 @@ test("action click fetches the streamId before opening the panel", async () => {
 
   await handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
 
-  assert.deepEqual(order, ["getMediaStreamId", "sidePanel.open"]);
+  // Both privileged calls happen in the click's task; nothing async runs
+  // between the click and either call, or the gesture/invocation expires.
+  assert.deepEqual(order, ["sidePanel.open", "getMediaStreamId"]);
 });
 
 test("handleStartLearning consumes a pre-fetched streamId without fetching again", async () => {

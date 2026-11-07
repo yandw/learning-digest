@@ -250,6 +250,33 @@ async function readBoundedAiResponse(response, onActivity) {
  * programmatically, so one click does both: open the panel, and when the
  * active tab is a recognized learning page, start the Session immediately.
  */
+// The icon click MUST reach chrome.action.onClicked: it is the single
+// capture entry, opening the panel AND starting the Session. Chrome
+// persists the open-panel-on-action-click behavior per extension, and the
+// seed-era code (≤0.1.11) set it true — with the pref stuck, clicks open
+// the panel natively instead of firing onClicked, so no Session ever
+// starts. Reset it on every worker start; the handler opens the panel
+// itself via chrome.sidePanel.open().
+try {
+  const behaviorSet = chrome.sidePanel.setPanelBehavior({
+    openPanelOnActionClick: false,
+  });
+  // Chrome returns a promise; test stubs may return undefined.
+  if (behaviorSet && typeof behaviorSet.catch === "function") {
+    behaviorSet.catch((error) =>
+      console.error(
+        "[Learning Digest] setPanelBehavior failed:",
+        error?.message || error,
+      ),
+    );
+  }
+} catch (error) {
+  console.error(
+    "[Learning Digest] setPanelBehavior failed:",
+    error?.message || error,
+  );
+}
+
 chrome.action.onClicked.addListener((tab) => {
   // Log BEFORE any await: if this line never appears, the click never
   // reached the extension and the problem is outside this code path.

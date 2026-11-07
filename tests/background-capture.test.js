@@ -55,6 +55,23 @@ test("startLearning gate names the missing field for Tencent", async () => {
   assert.match(result.error, /secretKey/);
 });
 
+test("background start forces openPanelOnActionClick off so icon clicks fire onClicked", () => {
+  const calls = [];
+  loadBackgroundHelpers({
+    settings: baseSettings(),
+    sidePanel: {
+      setPanelBehavior: (behavior) => {
+        calls.push(behavior);
+      },
+      setOptions: () => Promise.resolve(),
+      open: () => Promise.resolve(),
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].openPanelOnActionClick, false);
+});
+
 test("startLearning gate names the missing field for Qwen", async () => {
   const { handleStartLearning } = loadBackgroundHelpers({
     settings: baseSettings({

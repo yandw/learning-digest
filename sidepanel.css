@@ -1512,6 +1512,22 @@ body {
   background: #d93025;
 }
 
+.session-hint {
+  background: #e8f0fe;
+  border: 1px dashed #1a73e8;
+  border-radius: 6px;
+  color: #1a73e8;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.session-hint:hover {
+  background: #d2e3fc;
+}
+
 .session-view {
   display: flex;
   flex: 1;

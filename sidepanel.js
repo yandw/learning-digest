@@ -1756,6 +1756,7 @@ function showRecordingToast() {
 function showSessionMode({ active, kind, state }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
+  const hintBtn = document.getElementById("startHintBtn");
   const endBtn = document.getElementById("endLearningBtn");
   const welcome = document.getElementById("welcomeState");
   if (!bar) return;
@@ -1763,6 +1764,7 @@ function showSessionMode({ active, kind, state }) {
   if (active) {
     sessionUi.active = true;
     bar.style.display = "flex";
+    if (hintBtn) hintBtn.style.display = "none";
     endBtn.style.display = "";
     view.style.display = "";
     if (welcome) welcome.style.display = "none";
@@ -1787,14 +1789,16 @@ function showSessionMode({ active, kind, state }) {
 
   if (kind && kind !== "none") {
     // The toolbar icon is the only start entry point: a click inside the
-    // panel can never satisfy Chrome's tabCapture invocation rule, so no
-    // start button is offered here.
+    // panel can never satisfy Chrome's tabCapture invocation rule, so the
+    // panel offers a hint instead of a (doomed) start button.
     bar.style.display = "flex";
+    if (hintBtn) hintBtn.style.display = "";
     sessionUi.kind = kind;
     renderSessionStatus();
     if (welcome && state === null) welcome.style.display = "none";
   } else {
     bar.style.display = "none";
+    if (hintBtn) hintBtn.style.display = "none";
     if (welcome) welcome.style.display = "flex";
   }
 }
@@ -1841,6 +1845,12 @@ async function endLearning() {
 }
 
 function setupSessionUI() {
+  document.getElementById("startHintBtn")?.addEventListener("click", () => {
+    window.alert(
+      "请点击浏览器工具栏上的 Learning Digest 图标（地址栏右侧的扩展图标）来开始录制：" +
+        "图标点击本身就是 Chrome 认可的调用，点击后会自动打开此面板并开始录制。",
+    );
+  });
   document.getElementById("endLearningBtn")?.addEventListener("click", endLearning);
   chrome.tabs.onActivated.addListener(() => {
     if (!sessionUi.active) void refreshSessionUI();

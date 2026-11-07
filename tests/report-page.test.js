@@ -122,6 +122,23 @@ test("the report page shows a Chinese dead end when nothing is persisted", async
   assert.match(html, /还没有生成报告/);
 });
 
+test("the missing-report dead end styles itself from the report's brand tokens", async () => {
+  const page = loadReportPage({ search: "?session=s_missing", stored: {} });
+  await page.openPersistedReport();
+  const deadEnd = page.lastDocument();
+
+  // Source of truth: the palette the full report inlines via REPORT_STYLE.
+  const fullReport = require("../report-render.js").renderReportHtml(REPORT, META);
+  const brandPalette = ["#f2f6fc", "#ffffff", "#dce5f0", "#1f2733", "#5b6b80"];
+  for (const token of brandPalette) {
+    assert.ok(fullReport.includes(token), `the report style carries ${token}`);
+    assert.ok(deadEnd.includes(token), `the dead end reuses ${token}`);
+  }
+  // The tokens are declared once in report.js; renderMissingReport references
+  // them instead of re-inlining the literals per CSS rule.
+  assert.match(read("report.js"), /const [A-Z_]*TOKENS = \{/);
+});
+
 test("report.html wires the renderer and controller as external scripts", () => {
   const html = read("report.html");
   const js = read("report.js");
@@ -135,7 +152,9 @@ test("report.html wires the renderer and controller as external scripts", () => 
   );
   assert.doesNotMatch(html, /<script(?![^>]*src=)/i, "no inline script");
   assert.match(js, /location\.search/);
-  assert.match(js, /report_\$\{sessionId\}/);
+  // The artifact key is built from the shared REPORT_STORAGE_KEY_PREFIX, not
+  // a re-inlined literal.
+  assert.match(js, /REPORT_STORAGE_KEY_PREFIX\}\$\{sessionId\}/);
   assert.match(js, /renderReportHtml/);
   assert.match(js, /没有找到报告/);
 });

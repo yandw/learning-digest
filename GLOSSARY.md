@@ -26,6 +26,7 @@ _Avoid_: Interim summary, merged running summary, periodic digest, running notes
 
 **Session Digest**:
 The final deliverable generated when a Session ends, built by one global pass over the full Transcript: Topic segmentation with per-Topic summaries, key quotes, and action items. It does not depend on the Rolling Summary.
+_UI_: the panel's 纪要 tab is the Session Digest surface.
 _Avoid_: Final summary, complete overview
 
 **Source Platform**:

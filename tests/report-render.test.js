@@ -216,3 +216,15 @@ test("the captured course title is the leading header line in all three renderer
   assert.match(bareHtml, /<h1 class="report-title">学习纪要<\/h1>/);
   assert.doesNotMatch(bareHtml, /第十四讲/);
 });
+
+// --- Shared storage-key prefix ----------------------------------------------
+
+// The persisted artifact key `report_<sessionId>` is built in three contexts
+// (background persistence, panel lookup, report page). They all read the one
+// constant from this module, so the on-disk format stays byte-identical.
+test("the module exports the report storage-key prefix the artifact is persisted under", () => {
+  assert.equal(renderer.REPORT_STORAGE_KEY_PREFIX, "report_");
+  // The keys the report-page and panel tests seed storage with are exactly
+  // prefix + sessionId.
+  assert.equal(`${renderer.REPORT_STORAGE_KEY_PREFIX}s_abc123`, "report_s_abc123");
+});

@@ -7,7 +7,7 @@
  * - Topic tick input: the Transcript records since the coverage cursor (the
  *   end of the last Topic, or 0) plus a context-only overlap tail before it
  *   and the existing Topics' titles. The background layer loads the prompt
- *   copy from prompts/topic-tick.md, injects it into buildTopicBlockMessages
+ *   copy from prompts/topic-tick.md, injects it into buildTopicTickMessages
  *   and sends the result to the AI Provider when the content-driven trigger
  *   fires, feeding the parsed result back as a `topicsAppended` event; the
  *   state machine appends to the timeline without rewriting earlier Topics
@@ -52,7 +52,7 @@ var YTD_SESSION_SUMMARY = (() => {
     return end;
   }
 
-  // --- Topic timeline (ADR 0002): content-driven tick trigger and block
+  // --- Topic timeline (ADR 0002): content-driven tick trigger and input
   // assembly. The coverage cursor derives from the appended Topics, so it
   // survives a service-worker restart for free (it is persisted state, not
   // timer state).
@@ -113,13 +113,13 @@ var YTD_SESSION_SUMMARY = (() => {
   }
 
   /**
-   * Assembles one Topic tick's block input from Session state:
+   * Assembles one Topic tick's input from Session state:
    *
    * - newTranscript: the Transcript records at or after the Topic cursor
    *   (the only records that may be summarized into new Topics);
    * - overlapTail: the records covering the last TOPIC_OVERLAP_SECONDS
    *   before the cursor, carried along as context-only input so a Topic
-   *   spanning the block boundary is not summarized as unrelated fragments
+   *   spanning the tick boundary is not summarized as unrelated fragments
    *   (they are never summarized into new Topics);
    * - existingTopicTitles: the appended Topics' titles in timeline order, so
    *   the model can mark the first output Topic as a continuation.
@@ -127,7 +127,7 @@ var YTD_SESSION_SUMMARY = (() => {
    * @param {object} state
    * @returns {{cursor: number, newTranscript: object[], overlapTail: object[], existingTopicTitles: string[]}}
    */
-  function assembleTopicBlockInput(state) {
+  function assembleTopicTickInput(state) {
     const cursor = topicCursor(state);
     const records = state?.transcriptRecords || [];
     const newTranscript = transcriptSince(state, cursor);
@@ -198,15 +198,20 @@ var YTD_SESSION_SUMMARY = (() => {
   const TOPIC_TEXT_MAX_LENGTH = 1500;
 
   /**
-   * Maps one raw model entry to a Topic shape, or null when the entry is
-   * not a usable Topic (missing title/text, non-numeric or inverted time
-   * range). Numbers become non-negative integer seconds; strings are
-   * trimmed and length-capped; continuation survives only as a true flag.
+   * The shared Topic-entry validation both parsers apply: a usable entry is
+   * an object carrying a finite numeric time range (clamped to non-negative
+   * integer seconds, end never before start) plus a non-empty title and body
+   * string (trimmed, length-capped). Returns the clamped fields with the
+   * body under `bodyKey`, or null when the entry is not usable — the callers
+   * keep only their distinct entry shape on top (tick `text` with the
+   * continuation flag, report `summary`).
    *
    * @param {*} entry
+   * @param {string} bodyKey - "text" (tick) or "summary" (report)
+   * @param {number} bodyMaxLength - cap for the body string
    * @returns {object|null}
    */
-  function sanitizeTopicEntry(entry) {
+  function sanitizeTopicFields(entry, bodyKey, bodyMaxLength) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
     const start = Number(entry.start);
     const end = Number(entry.end);
@@ -216,10 +221,32 @@ var YTD_SESSION_SUMMARY = (() => {
     if (safeEnd < safeStart) return null;
     const title =
       typeof entry.title === "string" ? entry.title.trim().slice(0, TOPIC_TITLE_MAX_LENGTH) : "";
-    const text =
-      typeof entry.text === "string" ? entry.text.trim().slice(0, TOPIC_TEXT_MAX_LENGTH) : "";
-    if (!title || !text) return null;
-    const topic = { start: safeStart, end: safeEnd, title, text };
+    const body =
+      typeof entry[bodyKey] === "string"
+        ? entry[bodyKey].trim().slice(0, bodyMaxLength)
+        : "";
+    if (!title || !body) return null;
+    return { start: safeStart, end: safeEnd, title, [bodyKey]: body };
+  }
+
+  /**
+   * Maps one raw model entry to a Topic shape, or null when the entry is
+   * not a usable Topic (missing title/text, non-numeric or inverted time
+   * range). Numbers become non-negative integer seconds; strings are
+   * trimmed and length-capped; continuation survives only as a true flag.
+   *
+   * @param {*} entry
+   * @returns {object|null}
+   */
+  function sanitizeTopicEntry(entry) {
+    const fields = sanitizeTopicFields(entry, "text", TOPIC_TEXT_MAX_LENGTH);
+    if (!fields) return null;
+    const topic = {
+      start: fields.start,
+      end: fields.end,
+      title: fields.title,
+      text: fields.text,
+    };
     if (entry.continuation === true) topic.continuation = true;
     return topic;
   }
@@ -234,7 +261,7 @@ var YTD_SESSION_SUMMARY = (() => {
    * @param {string} text - raw text from the model
    * @returns {object[]} sanitized Topic entries
    */
-  function parseTopicBlock(text) {
+  function parseTopicTick(text) {
     let parsed;
     try {
       parsed = parseLooseJson(text);
@@ -300,7 +327,7 @@ var YTD_SESSION_SUMMARY = (() => {
    * @param {{existingTopicTitles: string[], contextTranscriptText: string, newTranscriptText: string}} input
    * @returns {Array<{role: string, content: string}>}
    */
-  function buildTopicBlockMessages(
+  function buildTopicTickMessages(
     template,
     { existingTopicTitles, contextTranscriptText, newTranscriptText },
   ) {
@@ -385,28 +412,23 @@ var YTD_SESSION_SUMMARY = (() => {
   /**
    * Maps one raw model entry to a report Topic ({start, end, title,
    * summary}), or null when the entry is not usable (missing title/summary,
-   * non-numeric or inverted time range). Numbers become non-negative integer
-   * seconds; strings are trimmed and length-capped.
+   * non-numeric or inverted time range) — the same shared validation as the
+   * tick parser's sanitizeTopicEntry, with the body under `summary`.
+   * Numbers become non-negative integer seconds; strings are trimmed and
+   * length-capped.
    *
    * @param {*} entry
    * @returns {object|null}
    */
   function sanitizeReportTopic(entry) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-    const start = Number(entry.start);
-    const end = Number(entry.end);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-    const safeStart = Math.max(0, Math.floor(start));
-    const safeEnd = Math.max(0, Math.floor(end));
-    if (safeEnd < safeStart) return null;
-    const title =
-      typeof entry.title === "string" ? entry.title.trim().slice(0, TOPIC_TITLE_MAX_LENGTH) : "";
-    const summary =
-      typeof entry.summary === "string"
-        ? entry.summary.trim().slice(0, TOPIC_TEXT_MAX_LENGTH)
-        : "";
-    if (!title || !summary) return null;
-    return { start: safeStart, end: safeEnd, title, summary };
+    const fields = sanitizeTopicFields(entry, "summary", TOPIC_TEXT_MAX_LENGTH);
+    if (!fields) return null;
+    return {
+      start: fields.start,
+      end: fields.end,
+      title: fields.title,
+      summary: fields.summary,
+    };
   }
 
   /**
@@ -475,11 +497,11 @@ var YTD_SESSION_SUMMARY = (() => {
     TOPIC_OVERLAP_SECONDS,
     topicCursor,
     isTopicTickDue,
-    assembleTopicBlockInput,
+    assembleTopicTickInput,
     fillPromptTemplate,
-    buildTopicBlockMessages,
+    buildTopicTickMessages,
     parseLooseJson,
-    parseTopicBlock,
+    parseTopicTick,
     formatTranscriptForPrompt,
     assembleGlobalPassInput,
     buildGlobalPassMessages,

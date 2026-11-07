@@ -18,6 +18,14 @@ var YTD_REPORT_RENDER = (() => {
   const DEFAULT_TITLE = "学习纪要";
 
   /**
+   * The storage key the Session Digest artifact is persisted under:
+   * `report_<sessionId>`. Built in three contexts (background persistence,
+   * panel lookup, report page), so the format lives here as the one constant
+   * they all read — the persisted format must stay byte-identical.
+   */
+  const REPORT_STORAGE_KEY_PREFIX = "report_";
+
+  /**
    * The [m:ss] timestamp formatter, mirroring speech-transcription.js so
    * report citations read exactly like the transcript prompt's stamps
    * (minutes may exceed 59 for hour-plus Sessions).
@@ -452,6 +460,7 @@ var YTD_REPORT_RENDER = (() => {
 
   return {
     formatTimestamp,
+    REPORT_STORAGE_KEY_PREFIX,
     renderReportHtml,
     renderReportMarkdown,
     renderReportCompact,

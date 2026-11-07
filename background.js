@@ -19,7 +19,9 @@
 
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js");
+// report-render.js is the one pure module shared by all three contexts: the
+// worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -967,7 +969,7 @@ async function ensureCaptureResumed() {
     }
   }
   if (context.timestampKind === "wallclock") startLiveTimer(context);
-  startSummaryTimer(context, settings.summaryIntervalMinutes);
+  startSummaryTimer(context);
   console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
 }
@@ -982,26 +984,30 @@ function startLiveTimer(context) {
 // TOPIC TICK + SESSION DIGEST (#18 / #28, ADR 0002)
 // ============================================================
 //
-// While a Session is active, a summary timer fires on the configured
-// interval; whether a tick is actually due is a content-driven decision
+// While a Session is active, a summary CHECK fires on a fixed 60-second
+// cadence; whether a tick is actually due is a content-driven decision
 // (isTopicTickDue): the Transcript coverage since the last Topic must have
-// reached the interval AND at least 10 new records must exist. All
-// assembly/trigger/parsing decisions are pure functions in
-// session-summary.js; this layer only owns the timer, the AI call, and
-// feeding the parsed Topics back as a topicsAppended event.
+// reached the configured interval — the CONTENT threshold, not the timer
+// period — AND at least 10 new records must exist. All assembly/trigger/
+// parsing decisions are pure functions in session-summary.js; this layer
+// only owns the check timer, the AI call, and feeding the parsed Topics
+// back as a topicsAppended event.
 //
 // The coverage cursor derives from the persisted Topics (not timer state),
 // so a resumed Session continues appending from exactly where the snapshot
-// left off. A failed tick leaves the Topics untouched, so the next timer
-// fire retries; summaryInFlight keeps one tick at a time.
+// left off. A failed tick leaves the Topics untouched, so the next check
+// retries; summaryInFlight keeps one tick at a time.
 
-function startSummaryTimer(context, summaryIntervalMinutes) {
+/** The fixed cadence at which the content-driven tick decision is re-run. */
+const SUMMARY_CHECK_INTERVAL_MS = 60_000;
+
+function startSummaryTimer(context) {
   // The callback returns the tick promise: setInterval ignores it, and the
   // tick body catches its own errors, so nothing can turn unhandled — but
-  // tests can await one tick through the captured callback.
+  // tests can await one check through the captured callback.
   context.summaryTimer = setInterval(() => {
     return maybeRunTopicTick(context);
-  }, Math.max(60_000, Number(summaryIntervalMinutes) * 60 * 1000));
+  }, SUMMARY_CHECK_INTERVAL_MS);
 }
 
 async function maybeRunTopicTick(context) {
@@ -1015,7 +1021,7 @@ async function maybeRunTopicTick(context) {
 
   context.summaryInFlight = true;
   try {
-    const input = YTD_SESSION_SUMMARY.assembleTopicBlockInput(context.state);
+    const input = YTD_SESSION_SUMMARY.assembleTopicTickInput(context.state);
     // The prompt copy lives in prompts/topic-tick.md (#33); a load failure
     // throws before any AI call and lands in the quiet retry path below.
     const template = await loadPromptTemplate("topic-tick.md", {
@@ -1025,7 +1031,7 @@ async function maybeRunTopicTick(context) {
     });
     const { text } = await requestAiCompletion({
       maxTokens: 4096,
-      messages: YTD_SESSION_SUMMARY.buildTopicBlockMessages(template, {
+      messages: YTD_SESSION_SUMMARY.buildTopicTickMessages(template, {
         existingTopicTitles: input.existingTopicTitles,
         contextTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
           input.overlapTail,
@@ -1037,7 +1043,7 @@ async function maybeRunTopicTick(context) {
     });
     // Tolerant parse: malformed output yields an empty list, which the state
     // machine ignores — the state and its cursor stay untouched.
-    const topics = YTD_SESSION_SUMMARY.parseTopicBlock(text);
+    const topics = YTD_SESSION_SUMMARY.parseTopicTick(text);
     if (topics.length > 0) {
       context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
         type: "topicsAppended",
@@ -1050,7 +1056,7 @@ async function maybeRunTopicTick(context) {
       broadcastSession(context.state);
     }
   } catch (error) {
-    // A failed tick leaves the timeline untouched; the next interval retries.
+    // A failed tick leaves the timeline untouched; the next check retries.
     debugLog("[Learning Digest BG] Topic tick failed:", error);
   } finally {
     context.summaryInFlight = false;
@@ -1141,7 +1147,8 @@ async function produceSessionReport(state, meta = null) {
       // Meta rides along when known (#30): the report header needs it. A
       // failed pass persists nothing, so a retry reconstructs instead.
       if (meta) artifact.meta = meta;
-      await chrome.storage.local.set({ [`report_${state.sessionId}`]: artifact });
+      const storageKey = `${YTD_REPORT_RENDER.REPORT_STORAGE_KEY_PREFIX}${state.sessionId}`;
+      await chrome.storage.local.set({ [storageKey]: artifact });
       return { report: outcome.report, persisted: true };
     }
     if (outcome.skipped === "noTranscript") {
@@ -1237,12 +1244,15 @@ async function dispatchSegment(context, segment) {
  * Persisted breadcrumb for every reason a click did not produce a running
  * capture: ignored clicks, already-active, and start failures all land in
  * ytd_last_start_failure, so one storage read reconstructs the outcome even
- * when the console and panel are attached to dead contexts.
+ * when the console and panel are attached to dead contexts. The first
+ * parameter is `reason` because it carries non-error outcomes too (an
+ * already-active Session is not a failure); the persisted field stays
+ * `error` for the diagnostics shape.
  */
-async function recordStartAttempt(error, sessionId = null) {
+async function recordStartAttempt(reason, sessionId = null) {
   try {
     await chrome.storage.local.set({
-      ytd_last_start_failure: { at: Date.now(), sessionId, error },
+      ytd_last_start_failure: { at: Date.now(), sessionId, error: reason },
     });
   } catch (_error) {
     // Storage unavailable (context invalidated); nothing to do.
@@ -1339,7 +1349,7 @@ async function handleStartLearning(message) {
   }
 
   if (context.timestampKind === "wallclock") startLiveTimer(context);
-  startSummaryTimer(context, settings.summaryIntervalMinutes);
+  startSummaryTimer(context);
   broadcastSession(context.state);
   // The one-line "capture is live" marker: when this is absent after an
   // icon click, the Session never started and the reason is in the
@@ -1461,6 +1471,21 @@ async function handleEndLearning() {
 }
 
 /**
+ * The start wall-clock ms encoded in a Session id (`s_<base36 start
+ * ms>_<random>`), or 0 when the id carries none (test doubles, hand-made
+ * ids). Both resolveReportTargetSessionId (largest start = most recent end)
+ * and reconstructReportMeta (the retry's meta timestamps) read this.
+ *
+ * @param {string} sessionId
+ * @returns {number}
+ */
+function parseSessionId(sessionId) {
+  return (
+    parseInt(String(sessionId || "").replace(/^s_/, "").split("_")[0], 36) || 0
+  );
+}
+
+/**
  * Resolves which ended Session the retry action should re-run. Priority:
  * an explicit sessionId from the panel, then the last Session this worker
  * ended, then the most recent ended snapshot in storage (the durable path
@@ -1490,8 +1515,7 @@ async function resolveReportTargetSessionId(message) {
   let bestStart = -1;
   for (const [key, value] of Object.entries(all || {})) {
     if (!key.startsWith("ytd_session_") || value?.status !== "ended") continue;
-    const start =
-      parseInt(String(value.sessionId || "").replace(/^s_/, "").split("_")[0], 36) || 0;
+    const start = parseSessionId(value.sessionId);
     if (start > bestStart) {
       bestStart = start;
       best = value.sessionId;
@@ -1513,10 +1537,7 @@ async function resolveReportTargetSessionId(message) {
  * @returns {{startedAtMs: number, endedAtMs: number}}
  */
 function reconstructReportMeta(sessionId, state) {
-  const parsed = parseInt(
-    String(sessionId).replace(/^s_/, "").split("_")[0],
-    36,
-  );
+  const parsed = parseSessionId(sessionId);
   // Session ids carry a real start timestamp; anything else (test doubles,
   // hand-made ids) parses to an implausible value and falls back to now.
   const startedAtMs =
@@ -1564,9 +1585,10 @@ async function handleRegenerateReport(message) {
   const state = YTD_SESSION_PIPELINE.resumeFromSnapshot(snapshot);
   // Meta (#30): a prior artifact's meta is the true one; a retry after a
   // failed pass (nothing persisted) reconstructs the best available.
-  const stored = await chrome.storage.local.get(`report_${sessionId}`);
+  const storageKey = `${YTD_REPORT_RENDER.REPORT_STORAGE_KEY_PREFIX}${sessionId}`;
+  const stored = await chrome.storage.local.get(storageKey);
   const meta =
-    stored?.[`report_${sessionId}`]?.meta ||
+    stored?.[storageKey]?.meta ||
     reconstructReportMeta(sessionId, state);
   const { report } = await produceSessionReport(state, meta);
   broadcastSession(state, { report });

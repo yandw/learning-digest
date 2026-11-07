@@ -544,6 +544,62 @@ test("malformed model output appends nothing and leaves the snapshot untouched",
   );
 });
 
+// The tick CHECK runs on a fixed 60-second cadence; the configured interval
+// is the CONTENT threshold (isTopicTickDue), so a threshold crossed
+// mid-interval ticks at the next check instead of waiting for the boundary.
+test("the summary check cadence is fixed and ticks once content crosses the threshold", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const checkDelays = [];
+  let fireSummaryCheck = null;
+  const sessionId = "s_midinterval";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: topicAiFetch(requests),
+    setIntervalImpl: (cb, delayMs) => {
+      fireSummaryCheck = cb;
+      checkDelays.push(delayMs);
+      return 0;
+    },
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      // Six records cover 9 minutes: below both the 15-minute content
+      // threshold and the 10-record debounce.
+      [`ytd_session_${sessionId}`]: seededCapture(
+        sessionId,
+        tenCoverageRecords().slice(0, 6),
+      ),
+    },
+  });
+
+  // Resuming arms the summary timer: one interval, always the fixed 60-second
+  // check cadence — never the configured content interval.
+  await helpers.handleGetSessionState();
+  assert.deepEqual(checkDelays, [60_000]);
+
+  // Heartbeat 1: the content threshold is not met yet, so nothing happens.
+  await fireSummaryCheck();
+  assert.equal(requests.length, 0, "quiet stretches produce no AI calls");
+
+  // The threshold is crossed MID-INTERVAL: the Session's transcript grows
+  // past 15 minutes with 10 records. The state reference here is the one the
+  // background itself reports to the panel (handleGetSessionState); in
+  // production the pipeline appends records to it as Segments transcribe.
+  const resumed = await helpers.handleGetSessionState();
+  resumed.state.transcriptRecords = tenCoverageRecords();
+
+  // Heartbeat 2 (the next 60-second check, not an interval boundary): the
+  // content-driven decision now fires the tick.
+  await fireSummaryCheck();
+  assert.equal(requests.length, 1, "the next check ticks once content is due");
+  assert.equal(
+    helpers.readStored(`ytd_session_${sessionId}`).topics.length,
+    1,
+    "the tick appends the Topic",
+  );
+});
+
 // --- Prompt templates load from prompts/*.md through the fetch seam (#33)
 
 // Swallows the loud console output a broken template must produce, so the

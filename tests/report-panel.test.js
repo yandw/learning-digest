@@ -336,10 +336,8 @@ test("an active session shows the generating hint until a report arrives", async
   // surfaced and reads 报告生成中… until the end-time pass lands.
   assert.equal(elements.resultsState.style.display, "block");
   assert.equal(elements.tabsNav.style.display, "flex");
-  assert.equal(
-    selectorResults[".tab"].find((tab) => tab.dataset.tab === "report").classList.contains("active"),
-    true,
-  );
+  const reportTab = selectorResults[".tab"].find((tab) => tab.dataset.tab === "report");
+  assert.equal(reportTab.classList.contains("active"), true);
   assert.equal(
     selectorResults[".tab-panel"].find((panel) => panel.dataset.panel === "report").classList.contains("active"),
     true,
@@ -347,10 +345,44 @@ test("an active session shows the generating hint until a report arrives", async
   assert.match(elements.reportTabHint.textContent, /报告生成中/);
   assert.equal(elements.reportTabActions.style.display, "none");
   assert.equal(elements.reportTabBody.style.display, "none");
+  // While the deliverable is generating, the tab itself is disabled with a
+  // tooltip: there is nothing to open yet.
+  assert.equal(reportTab.disabled, true, "the 纪要 tab is disabled while generating");
+  assert.equal(reportTab.title, "报告生成中…");
 
   await report.applyReportPayloadToTab(REPORT_A, "s_2");
   assert.match(elements.reportTabBody.innerHTML, /课程导论/);
   assert.equal(elements.reportTabHint.style.display, "none");
+  // The report arrival re-enables the tab.
+  assert.equal(reportTab.disabled, false, "the report arrival enables the tab");
+  assert.equal(reportTab.title, "");
+});
+
+test("a failed-with-retry report keeps the 纪要 tab enabled", async () => {
+  const { report, selectorResults } = loadPanel();
+
+  await report.applyReportPayloadToTab(
+    { error: "报告长度受限，生成未完成，请重试。" },
+    "s_1",
+  );
+
+  const reportTab = selectorResults[".tab"].find((tab) => tab.dataset.tab === "report");
+  assert.equal(
+    reportTab.disabled,
+    false,
+    "a retryable failure is a finished pass: the tab stays openable",
+  );
+  assert.equal(reportTab.title, "");
+});
+
+test("without an active Session the 纪要 tab stays enabled", async () => {
+  const { report, selectorResults } = loadPanel();
+
+  await report.adoptLatestStoredReport();
+
+  const reportTab = selectorResults[".tab"].find((tab) => tab.dataset.tab === "report");
+  assert.equal(reportTab.disabled, false);
+  assert.equal(reportTab.title, "");
 });
 
 test("a repeated active-session poll never yanks the learner off their tab", async () => {
@@ -705,6 +737,15 @@ test("downloads use Blob object URLs and session-named files", async () => {
 });
 
 // --- Static wiring ------------------------------------------------------------
+
+test("the report UI copy names the deliverable 会话纪要 everywhere", () => {
+  // The old 会话总结 wording is unified to the 纪要 surface's name in every
+  // user-facing string: the end-time card, the welcome line, the settings
+  // blurb and the store description.
+  for (const file of ["sidepanel.html", "sidepanel.js", "options.js", "manifest.json"]) {
+    assert.doesNotMatch(read(file), /会话总结/, `${file} still says 会话总结`);
+  }
+});
 
 test("the 纪要 tab is wired in sidepanel.html and sidepanel.js", () => {
   const html = read("sidepanel.html");

@@ -127,6 +127,7 @@ function loadBackgroundHelpers({
     YTD_SEGMENTER: require("../../session-segmenter.js"),
     YTD_SOURCE_PLATFORMS: require("../../source-platforms.js"),
     YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
+    YTD_REPORT_RENDER: require("../../report-render.js"),
     YTD_SETTINGS: {
       STORAGE_KEY: "ytd_settings",
       normalize: (value) => value,

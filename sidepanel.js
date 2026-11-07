@@ -1616,7 +1616,7 @@ function renderSessionReport(report, sessionId = null) {
   if (report.error) {
     renderReportError(container, report.error);
   } else if (report.skipped === "noTranscript") {
-    appendReportLine(container, "未捕获到逐字稿，未生成会话总结。");
+    appendReportLine(container, "未捕获到逐字稿，未生成会话纪要。");
   } else {
     renderReportTopics(container, report.topics);
     renderReportQuotes(container, report.quotes);
@@ -1741,6 +1741,20 @@ function reportTabElements() {
 }
 
 /**
+ * The 纪要 tab button. renderReportTab owns its enabled/disabled state:
+ * while the Session is still generating the deliverable there is nothing to
+ * open, so the tab is disabled with a tooltip; the report arriving (ready
+ * or failed-with-retry) re-enables it.
+ */
+function reportTabButton() {
+  return (
+    Array.from(document.querySelectorAll(".tab")).find(
+      (tab) => tab.dataset.tab === "report",
+    ) || null
+  );
+}
+
+/**
  * Renders the current report-tab state. Idempotent: every state change
  * re-renders the whole tab from reportTabUi. The 概览 tab renders from the
  * same artifact, so this is also its refresh point (#31).
@@ -1750,6 +1764,12 @@ function renderReportTab() {
   const els = reportTabElements();
   if (!els.hint || !els.actions || !els.errorBox || !els.errorText || !els.body) {
     return;
+  }
+  const tabButton = reportTabButton();
+  if (tabButton) {
+    // Default: openable. The generating branch below disables it again.
+    tabButton.disabled = false;
+    tabButton.title = "";
   }
   els.errorBox.style.display = "none";
   els.actions.style.display = "none";
@@ -1788,6 +1808,10 @@ function renderReportTab() {
   if (sessionUi.active) {
     els.hint.textContent = "报告生成中…";
     els.hint.style.display = "flex";
+    if (tabButton) {
+      tabButton.disabled = true;
+      tabButton.title = "报告生成中…";
+    }
     return;
   }
   els.hint.textContent = "结束学习后，会话纪要会显示在这里。";
@@ -1849,8 +1873,9 @@ async function applyReportPayloadToTab(report, sessionId) {
   let artifact = null;
   if (sessionId) {
     try {
-      const stored = await chrome.storage.local.get(`report_${sessionId}`);
-      artifact = stored?.[`report_${sessionId}`] || null;
+      const storageKey = `${reportRender.REPORT_STORAGE_KEY_PREFIX}${sessionId}`;
+      const stored = await chrome.storage.local.get(storageKey);
+      artifact = stored?.[storageKey] || null;
     } catch (_error) {
       // Storage unreachable; the payload itself is the fallback below.
     }
@@ -1874,7 +1899,7 @@ async function adoptLatestStoredReport() {
   try {
     const all = await chrome.storage.local.get(null);
     for (const [key, value] of Object.entries(all || {})) {
-      if (!key.startsWith("report_")) continue;
+      if (!key.startsWith(reportRender.REPORT_STORAGE_KEY_PREFIX)) continue;
       if (!value || typeof value !== "object") continue;
       if (!value.report || typeof value.report !== "object") continue;
       if (value.report.error || value.report.skipped) continue;

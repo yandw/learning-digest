@@ -172,7 +172,7 @@ test("records before the Topic cursor never count toward the trigger", () => {
   );
 });
 
-// --- Block input assembly: new Transcript + overlap tail + existing titles
+// --- Tick input assembly: new Transcript + overlap tail + existing titles
 
 test("with no Topics, every Transcript record is new input and the overlap tail is empty", () => {
   const state = activeSessionWithRecords([
@@ -180,7 +180,7 @@ test("with no Topics, every Transcript record is new input and the overlap tail 
     { text: "second", start: 60, duration: 60 },
   ]);
 
-  const input = summary.assembleTopicBlockInput(state);
+  const input = summary.assembleTopicTickInput(state);
 
   assert.equal(input.cursor, 0);
   assert.deepEqual(
@@ -191,7 +191,7 @@ test("with no Topics, every Transcript record is new input and the overlap tail 
   assert.deepEqual(input.existingTopicTitles, []);
 });
 
-test("block input keeps records at or after the Topic cursor and adds a 2-minute context tail", () => {
+test("tick input keeps records at or after the Topic cursor and adds a 2-minute context tail", () => {
   const state = activeSessionWithRecords(
     [
       { text: "way before", start: 100, duration: 60 }, // ends 160: outside tail
@@ -203,7 +203,7 @@ test("block input keeps records at or after the Topic cursor and adds a 2-minute
     [{ start: 0, end: 600, title: "导论", text: "课程开场。" }],
   );
 
-  const input = summary.assembleTopicBlockInput(state);
+  const input = summary.assembleTopicTickInput(state);
 
   assert.equal(input.cursor, 600);
   assert.deepEqual(
@@ -227,7 +227,7 @@ test("the overlap tail covers only the last two minutes before the cursor", () =
     [{ start: 0, end: 600, title: "导论", text: "课程开场。" }],
   );
 
-  const input = summary.assembleTopicBlockInput(state);
+  const input = summary.assembleTopicTickInput(state);
 
   assert.deepEqual(
     input.overlapTail.map((r) => r.text),
@@ -244,12 +244,12 @@ test("existing Topic titles arrive in timeline order for continuation detection"
     ],
   );
 
-  const input = summary.assembleTopicBlockInput(state);
+  const input = summary.assembleTopicTickInput(state);
 
   assert.deepEqual(input.existingTopicTitles, ["导论", "二次函数"]);
 });
 
-test("failure-marker records inside the new window stay in the block input", () => {
+test("failure-marker records inside the new window stay in the tick input", () => {
   let state = pipeline.createSession({ sessionId: "s_markers" });
   state = pipeline.applyEvent(state, {
     type: "segmentCaptured",
@@ -266,17 +266,17 @@ test("failure-marker records inside the new window stay in the block input", () 
     records: [{ text: "after the gap", start: 120, duration: 120 }],
   });
 
-  const input = summary.assembleTopicBlockInput(state);
+  const input = summary.assembleTopicTickInput(state);
 
   assert.equal(input.newTranscript.length, 2);
   assert.equal(input.newTranscript[0].failed, true);
   assert.equal(input.newTranscript[1].text, "after the gap");
 });
 
-// --- Topic block prompt: the JSON Topic contract in Chinese
+// --- Topic tick prompt: the JSON Topic contract in Chinese
 
 test("the Topic prompt demands a JSON array of Topics with seconds and a continuation flag", () => {
-  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
+  const messages = summary.buildTopicTickMessages(TICK_TEMPLATE, {
     existingTopicTitles: [],
     contextTranscriptText: "",
     newTranscriptText: "[0:00] 课程开场",
@@ -293,7 +293,7 @@ test("the Topic prompt demands a JSON array of Topics with seconds and a continu
 });
 
 test("the Topic prompt marks the overlap tail as context-only", () => {
-  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
+  const messages = summary.buildTopicTickMessages(TICK_TEMPLATE, {
     existingTopicTitles: ["导论"],
     contextTranscriptText: "[9:50] 上一段的结尾回顾",
     newTranscriptText: "[10:00] 新的内容",
@@ -307,7 +307,7 @@ test("the Topic prompt marks the overlap tail as context-only", () => {
 });
 
 test("the Topic prompt anchors continuation detection on the last existing Topic", () => {
-  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
+  const messages = summary.buildTopicTickMessages(TICK_TEMPLATE, {
     existingTopicTitles: ["导论", "二次函数"],
     contextTranscriptText: "[14:30] 承接上文",
     newTranscriptText: "[15:00] 继续讲解二次函数",
@@ -318,7 +318,7 @@ test("the Topic prompt anchors continuation detection on the last existing Topic
 });
 
 test("the first Topic tick states there are no previous Topics", () => {
-  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
+  const messages = summary.buildTopicTickMessages(TICK_TEMPLATE, {
     existingTopicTitles: [],
     contextTranscriptText: "",
     newTranscriptText: "[0:00] 课程开场",
@@ -339,8 +339,8 @@ const INLINE_TICK_TEMPLATE = {
   firstBatchUserPrompt: "第一批；回顾：{contextTranscriptText}；新稿：{newTranscriptText}",
 };
 
-test("the Topic builder fills the injected template's placeholders with the block input", () => {
-  const messages = summary.buildTopicBlockMessages(INLINE_TICK_TEMPLATE, {
+test("the Topic builder fills the injected template's placeholders with the tick input", () => {
+  const messages = summary.buildTopicTickMessages(INLINE_TICK_TEMPLATE, {
     existingTopicTitles: ["导论", "二次函数"],
     contextTranscriptText: "[9:50] 回顾",
     newTranscriptText: "[10:00] 新的内容",
@@ -354,7 +354,7 @@ test("the Topic builder fills the injected template's placeholders with the bloc
 });
 
 test("the Topic builder picks the first-batch template when no Topics exist", () => {
-  const messages = summary.buildTopicBlockMessages(INLINE_TICK_TEMPLATE, {
+  const messages = summary.buildTopicTickMessages(INLINE_TICK_TEMPLATE, {
     existingTopicTitles: [],
     contextTranscriptText: "（无）",
     newTranscriptText: "[0:00] 开场",
@@ -364,7 +364,7 @@ test("the Topic builder picks the first-batch template when no Topics exist", ()
 });
 
 test("an empty context falls back to （无） in the injected template", () => {
-  const messages = summary.buildTopicBlockMessages(INLINE_TICK_TEMPLATE, {
+  const messages = summary.buildTopicTickMessages(INLINE_TICK_TEMPLATE, {
     existingTopicTitles: [],
     contextTranscriptText: "",
     newTranscriptText: "[0:00] 开场",
@@ -374,7 +374,7 @@ test("an empty context falls back to （无） in the injected template", () => 
 });
 
 test("placeholders without a matching variable stay untouched in the filled prompt", () => {
-  const messages = summary.buildTopicBlockMessages(
+  const messages = summary.buildTopicTickMessages(
     { ...INLINE_TICK_TEMPLATE, userPrompt: "未知 {unknownPlaceholder} 新稿：{newTranscriptText}" },
     { existingTopicTitles: ["导论"], contextTranscriptText: "", newTranscriptText: "X" },
   );
@@ -397,13 +397,13 @@ const GOOD_TOPIC_LINE =
   '[{"start": 0, "end": 900, "title": "导论", "text": "老师介绍了课程目标。"}]';
 
 test("the parser maps a plain JSON array to Topics", () => {
-  assert.deepEqual(summary.parseTopicBlock(GOOD_TOPIC_LINE), [
+  assert.deepEqual(summary.parseTopicTick(GOOD_TOPIC_LINE), [
     { start: 0, end: 900, title: "导论", text: "老师介绍了课程目标。" },
   ]);
 });
 
 test("the parser keeps an explicit continuation flag and drops it otherwise", () => {
-  const topics = summary.parseTopicBlock(
+  const topics = summary.parseTopicTick(
     '[{"start": 0, "end": 90, "title": "开场", "text": "第一句。", "continuation": true},' +
       '{"start": 90, "end": 180, "title": "正题", "text": "第二句。"}]',
   );
@@ -416,14 +416,14 @@ test("the parser keeps an explicit continuation flag and drops it otherwise", ()
 
 test("the parser tolerates JSON wrapped in prose or code fences", () => {
   assert.deepEqual(
-    summary.parseTopicBlock(`好的，以下是话题段：\n\`\`\`json\n${GOOD_TOPIC_LINE}\n\`\`\`\n请查收。`),
+    summary.parseTopicTick(`好的，以下是话题段：\n\`\`\`json\n${GOOD_TOPIC_LINE}\n\`\`\`\n请查收。`),
     [{ start: 0, end: 900, title: "导论", text: "老师介绍了课程目标。" }],
   );
 });
 
 test("the parser repairs the trailing-comma LLM slip", () => {
   assert.deepEqual(
-    summary.parseTopicBlock(
+    summary.parseTopicTick(
       '[{"start": 0, "end": 90, "title": "开场", "text": "第一句。",},]',
     ),
     [{ start: 0, end: 90, title: "开场", text: "第一句。" }],
@@ -432,20 +432,20 @@ test("the parser repairs the trailing-comma LLM slip", () => {
 
 test("the parser accepts an object wrapping a topics array", () => {
   assert.deepEqual(
-    summary.parseTopicBlock('{"topics": [{"start": 0, "end": 90, "title": "开场", "text": "第一句。"}]}'),
+    summary.parseTopicTick('{"topics": [{"start": 0, "end": 90, "title": "开场", "text": "第一句。"}]}'),
     [{ start: 0, end: 90, title: "开场", text: "第一句。" }],
   );
 });
 
 test("malformed model output parses to an empty list", () => {
-  assert.deepEqual(summary.parseTopicBlock("这一段没有可总结的话题。"), []);
-  assert.deepEqual(summary.parseTopicBlock('{"chapters": []}'), []);
-  assert.deepEqual(summary.parseTopicBlock("[{"), []);
-  assert.deepEqual(summary.parseTopicBlock(""), []);
+  assert.deepEqual(summary.parseTopicTick("这一段没有可总结的话题。"), []);
+  assert.deepEqual(summary.parseTopicTick('{"chapters": []}'), []);
+  assert.deepEqual(summary.parseTopicTick("[{"), []);
+  assert.deepEqual(summary.parseTopicTick(""), []);
 });
 
 test("the parser drops entries that are not valid Topics and keeps the valid ones", () => {
-  const topics = summary.parseTopicBlock(
+  const topics = summary.parseTopicTick(
     "[" +
       '{"start": 0, "end": 90, "title": "开场", "text": "第一句。"},' +
       '{"start": 90, "end": 60, "title": "倒置", "text": "end 在 start 之前。"},' +
@@ -461,7 +461,7 @@ test("the parser drops entries that are not valid Topics and keeps the valid one
 });
 
 test("the parser normalizes seconds to non-negative integers and trims strings", () => {
-  const topics = summary.parseTopicBlock(
+  const topics = summary.parseTopicTick(
     '[{"start": 10.9, "end": 75.4, "title": " 导论 ", "text": " 开场总结 "}]',
   );
 

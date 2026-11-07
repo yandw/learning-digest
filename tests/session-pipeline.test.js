@@ -354,40 +354,6 @@ test("allSegmentsFailed is true only when every Segment failed, and means no Tra
   assert.equal(sessionPipeline.allSegmentsFailed(state), false);
 });
 
-test("assembleSessionDigestInput hands the full Transcript to the global pass (ADR 0002)", () => {
-  // The Session Digest does not consume the Rolling Summary/Topic timeline:
-  // it is one global pass over everything the Session captured.
-  let state = sessionPipeline.createSession({ sessionId: "s1" });
-  state = sessionPipeline.applyEvent(state, {
-    type: "segmentCaptured",
-    segment: { id: "seg-1", start: 0, duration: 120 },
-  });
-  state = sessionPipeline.applyEvent(state, {
-    type: "transcribeOk",
-    segmentId: "seg-1",
-    records: [{ text: "第一段", start: 0, duration: 5 }],
-  });
-  state = sessionPipeline.applyEvent(state, {
-    type: "topicsAppended",
-    topics: [{ start: 0, end: 120, title: "导论", text: "第一段的总结。" }],
-  });
-  state = sessionPipeline.applyEvent(state, {
-    type: "segmentCaptured",
-    segment: { id: "seg-2", start: 120, duration: 120 },
-  });
-  state = sessionPipeline.applyEvent(state, {
-    type: "transcribeOk",
-    segmentId: "seg-2",
-    records: [{ text: "第二段", start: 120, duration: 5 }],
-  });
-
-  const input = sessionPipeline.assembleSessionDigestInput(state);
-  assert.deepEqual(input.uncoveredTranscript, [
-    { text: "第一段", start: 0, duration: 5 },
-    { text: "第二段", start: 120, duration: 5 },
-  ]);
-});
-
 test("applyEvent rejects unknown event types and unknown Segments", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   assert.throws(

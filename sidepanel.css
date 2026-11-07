@@ -1592,6 +1592,19 @@ body {
   border-top: 1px solid #e5e7eb;
 }
 
+/* End-time report (#29): small section headings inside the digest card and
+   the retry action shown when the pass was truncated or failed. */
+.session-report-heading {
+  color: #8a93a1;
+  font-size: 12px;
+  font-weight: 600;
+  padding-top: 6px;
+}
+
+.session-report-actions {
+  padding-top: 8px;
+}
+
 .session-transcript {
   display: flex;
   flex-direction: column;

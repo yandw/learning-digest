@@ -3,8 +3,9 @@
  * chrome API and injectable fetch/timers, exposing the pure-ish helpers
  * background.js exports for tests (__YTD_TRANSLATION_TESTING__).
  *
- * Used by translation.test.js (which introduced it) and
- * session-summary.test.js (Session Digest glue, #18).
+ * Used by translation.test.js (which introduced it),
+ * session-summary.test.js (Topic tick + global pass glue, #18/#29) and
+ * background-capture.test.js (capture orchestration).
  */
 const fs = require("node:fs");
 const path = require("node:path");

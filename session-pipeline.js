@@ -259,29 +259,12 @@ var YTD_SESSION_PIPELINE = (() => {
     return records.every((record) => record.failed === true);
   }
 
-  /**
-   * Assembles the Session Digest input per ADR 0002: one global pass over
-   * the full Transcript, independent of the Topic timeline. The AI Provider
-   * call itself lives outside this pure module; this only computes what the
-   * digest prompt is built from. Failed-marker records are kept so the
-   * digest can mention the gap.
-   *
-   * @param {object} state
-   * @returns {{uncoveredTranscript: object[]}}
-   */
-  function assembleSessionDigestInput(state) {
-    return {
-      uncoveredTranscript: [...(state?.transcriptRecords || [])],
-    };
-  }
-
   return {
     createSession,
     applyEvent,
     resumeFromSnapshot,
     settleInterruptedSegments,
     allSegmentsFailed,
-    assembleSessionDigestInput,
   };
 })();
 

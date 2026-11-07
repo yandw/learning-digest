@@ -386,21 +386,185 @@ test("Transcript formatting stamps records as [m:ss] lines", () => {
   assert.equal(text, "[0:00] welcome\n[1:05] middle\n[61:01] late");
 });
 
-test("Session Digest prompt covers the full Transcript in one global pass", () => {
-  const messages = summary.buildSessionDigestMessages({
-    uncoveredTranscriptText: "[0:00] The whole lesson\n[120:00] Final wrap-up and Q&A",
+// --- End-of-session global pass (#29, ADR 0002): input, prompt, parser
+
+test("global pass input assembles the full Transcript and the live Topic timeline", () => {
+  const state = activeSessionWithRecords(
+    [
+      { text: "opening", start: 0, duration: 60 },
+      { text: "closing", start: 60, duration: 60 },
+    ],
+    [
+      { start: 0, end: 60, title: "导论", text: "开场总结。" },
+      { start: 60, end: 120, title: "导论", text: "延续总结。", continuation: true },
+    ],
+  );
+
+  const input = summary.assembleGlobalPassInput(state);
+
+  assert.deepEqual(
+    input.transcriptRecords.map((record) => record.text),
+    ["opening", "closing"],
+  );
+  // The live timeline rides along as a merge hint: ranges and titles only.
+  assert.deepEqual(input.liveTopics, [
+    { start: 0, end: 60, title: "导论" },
+    { start: 60, end: 120, title: "导论" },
+  ]);
+});
+
+test("global pass input tolerates Sessions without records or Topics", () => {
+  const input = summary.assembleGlobalPassInput({ sessionId: "s_empty" });
+  assert.deepEqual(input.transcriptRecords, []);
+  assert.deepEqual(input.liveTopics, []);
+});
+
+test("the global pass prompt demands one JSON object with topics, quotes and todos", () => {
+  const messages = summary.buildGlobalPassMessages({
+    transcriptText: "[0:00] 课程开场\n[1:00] 正式内容",
+    liveTopics: [{ start: 0, end: 30, title: "导论" }],
   });
 
   assert.equal(messages.length, 2);
   assert.equal(messages[0].role, "system");
-  assert.match(messages[1].content, /\[0:00\] The whole lesson/);
-  assert.match(messages[1].content, /\[120:00\] Final wrap-up and Q&A/);
+  assert.equal(messages[1].role, "user");
+  assert.match(messages[0].content, /JSON/);
+  assert.match(messages[0].content, /topics/);
+  assert.match(messages[0].content, /quotes/);
+  assert.match(messages[0].content, /todos/);
+  assert.match(messages[0].content, /summary/);
+  assert.match(messages[0].content, /秒/);
+});
+
+test("the global pass prompt orders continuation sections merged into whole Topics", () => {
+  const messages = summary.buildGlobalPassMessages({
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /合并/);
+  assert.match(messages[0].content, /延续/);
+});
+
+test("the global pass prompt instructs the model to stitch recording-cut artifacts", () => {
+  const messages = summary.buildGlobalPassMessages({
+    transcriptText: "",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /截断|切片/);
+});
+
+test("the global pass prompt keeps todos conditional on real action items", () => {
+  const messages = summary.buildGlobalPassMessages({
+    transcriptText: "",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /行动项/);
+  assert.match(messages[0].content, /空数组/);
+});
+
+test("the global pass user message carries the full Transcript and the live Topic hint", () => {
+  const messages = summary.buildGlobalPassMessages({
+    transcriptText: "[0:00] 课程开场\n[61:01] 收尾",
+    liveTopics: [
+      { start: 0, end: 60, title: "导论" },
+      { start: 60, end: 120, title: "二次函数" },
+    ],
+  });
+
+  assert.match(messages[1].content, /课中已识别的话题段/);
+  assert.match(messages[1].content, /导论/);
+  assert.match(messages[1].content, /\[0:00\] 课程开场/);
+  assert.match(messages[1].content, /\[61:01\] 收尾/);
+});
+
+test("the global pass user message omits the Topic hint when the timeline is empty", () => {
+  const messages = summary.buildGlobalPassMessages({
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.doesNotMatch(messages[1].content, /课中已识别的话题段/);
+});
+
+const GOOD_REPORT = JSON.stringify({
+  topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
+  quotes: [{ start: 120, text: "学习是一场旅程。" }],
+  todos: ["完成课后练习"],
+});
+
+test("the global pass parser maps a valid JSON object to the report shape", () => {
+  assert.deepEqual(summary.parseGlobalPass(GOOD_REPORT), {
+    topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
+    quotes: [{ start: 120, text: "学习是一场旅程。" }],
+    todos: ["完成课后练习"],
+  });
+});
+
+test("the global pass parser tolerates prose or code fences around the JSON", () => {
+  assert.deepEqual(
+    summary.parseGlobalPass(`好的，以下是纪要：\n\`\`\`json\n${GOOD_REPORT}\n\`\`\`\n请查收。`),
+    {
+      topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
+      quotes: [{ start: 120, text: "学习是一场旅程。" }],
+      todos: ["完成课后练习"],
+    },
+  );
+});
+
+test("the global pass parser returns null on malformed output", () => {
+  assert.equal(summary.parseGlobalPass("这段没有可整理的内容。"), null);
+  assert.equal(summary.parseGlobalPass('[{"start": 0}]'), null);
+  assert.equal(summary.parseGlobalPass("[{"), null);
+  assert.equal(summary.parseGlobalPass(""), null);
+});
+
+test("the global pass parser drops malformed entries and clamps numbers", () => {
+  const report = summary.parseGlobalPass(
+    JSON.stringify({
+      topics: [
+        { start: 0, end: 90, title: " 开场 ", summary: " 第一段。 " },
+        { start: 90, end: 60, title: "倒置", summary: "end 在 start 之前。" },
+        { start: "零", end: 200, title: "非数字", summary: "start 不是数字。" },
+        { start: 200, end: 300, title: "", summary: "标题为空。" },
+        { start: 300, end: 400, title: "无总结" },
+      ],
+      quotes: [
+        { start: 30.7, text: " 原话一 " },
+        { start: "早", text: "非数字时间戳。" },
+        { text: "缺时间戳。" },
+      ],
+      todos: [" 完成练习 ", "", 42, null],
+    }),
+  );
+
+  assert.deepEqual(report.topics, [
+    { start: 0, end: 90, title: "开场", summary: "第一段。" },
+  ]);
+  assert.deepEqual(report.quotes, [{ start: 30, text: "原话一" }]);
+  assert.deepEqual(report.todos, ["完成练习"]);
+});
+
+test("the global pass parser accepts missing quotes and todos as empty lists", () => {
+  assert.deepEqual(
+    summary.parseGlobalPass(
+      '{"topics": [{"start": 0, "end": 90, "title": "开场", "summary": "第一段。"}]}',
+    ),
+    {
+      topics: [{ start: 0, end: 90, title: "开场", summary: "第一段。" }],
+      quotes: [],
+      todos: [],
+    },
+  );
 });
 
 
-// Background glue for the Session Digest, exercised through the same VM seam
-// translation.test.js uses for requestAiCompletion, with fetch mocked at the
-// boundary and the real state machine + assembly module injected.
+// Background glue for the end-of-session global pass, exercised through the
+// same VM seam translation.test.js uses for requestAiCompletion, with fetch
+// mocked at the boundary and the real state machine + assembly module
+// injected.
 const { loadBackgroundHelpers } = require("./helpers/load-background.js");
 
 function endedSession({ records }) {
@@ -413,19 +577,29 @@ function endedSession({ records }) {
   return pipeline.applyEvent(state, { type: "sessionEnd" });
 }
 
-function mockedAiFetch(capturedRequests, content = "DIGEST-TEXT") {
+function mockedAiFetch(capturedRequests, content = "{}", finishReason = "stop") {
   return async (_url, options) => {
     capturedRequests.push(JSON.parse(options.body));
     return {
       ok: true,
-      json: async () => ({ choices: [{ message: { content } }] }),
+      json: async () => ({
+        choices: [{ message: { content }, finish_reason: finishReason }],
+      }),
     };
   };
 }
 
-test("background Session Digest calls the AI Provider with the full Transcript", async () => {
+const REPORT_JSON = JSON.stringify({
+  topics: [{ start: 0, end: 120, title: "导论", summary: "老师介绍了课程目标。" }],
+  quotes: [{ start: 30, text: "学习是一场旅程。" }],
+  todos: ["完成课后练习"],
+});
+
+test("background global pass calls the AI Provider once with the full Transcript and parses the report", async () => {
   const requests = [];
-  const helpers = loadBackgroundHelpers({ fetchImpl: mockedAiFetch(requests) });
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: mockedAiFetch(requests, REPORT_JSON),
+  });
   const state = endedSession({
     records: [
       { text: "opening part", start: 0, duration: 60 },
@@ -433,16 +607,50 @@ test("background Session Digest calls the AI Provider with the full Transcript",
     ],
   });
 
-  const digest = await helpers.generateSessionDigest(state);
+  const outcome = await helpers.generateSessionReport(state);
 
-  assert.equal(digest.text, "DIGEST-TEXT");
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 1, "one global pass, no Rolling Summary input");
   // One global pass over everything the Session captured (ADR 0002).
   assert.match(requests[0].messages[1].content, /\[0:00\] opening part/);
   assert.match(requests[0].messages[1].content, /\[1:00\] closing part/);
+  assert.deepEqual(outcome.report, {
+    topics: [{ start: 0, end: 120, title: "导论", summary: "老师介绍了课程目标。" }],
+    quotes: [{ start: 30, text: "学习是一场旅程。" }],
+    todos: ["完成课后练习"],
+  });
 });
 
-test("background Session Digest is skipped when the Session has no Transcript", async () => {
+test("background global pass flags a truncated response instead of parsing a broken artifact", async () => {
+  const requests = [];
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: mockedAiFetch(requests, '{"topics": [', "length"),
+  });
+  const state = endedSession({
+    records: [{ text: "opening part", start: 0, duration: 60 }],
+  });
+
+  const outcome = await helpers.generateSessionReport(state);
+
+  assert.equal(outcome.report, null);
+  assert.equal(outcome.truncated, true);
+});
+
+test("background global pass flags unparseable output as a retryable failure", async () => {
+  const requests = [];
+  const helpers = loadBackgroundHelpers({
+    fetchImpl: mockedAiFetch(requests, "这段没有可整理的内容。"),
+  });
+  const state = endedSession({
+    records: [{ text: "opening part", start: 0, duration: 60 }],
+  });
+
+  const outcome = await helpers.generateSessionReport(state);
+
+  assert.equal(outcome.report, null);
+  assert.equal(outcome.truncated, true);
+});
+
+test("background global pass is skipped when the Session has no Transcript", async () => {
   const requests = [];
   const helpers = loadBackgroundHelpers({ fetchImpl: mockedAiFetch(requests) });
   let state = pipeline.createSession({ sessionId: "s_empty" });
@@ -453,9 +661,9 @@ test("background Session Digest is skipped when the Session has no Transcript", 
   state = pipeline.applyEvent(state, { type: "transcribeFailed", segmentId: "seg-0" });
   state = pipeline.applyEvent(state, { type: "sessionEnd" });
 
-  const digest = await helpers.generateSessionDigest(state);
+  const outcome = await helpers.generateSessionReport(state);
 
-  assert.equal(digest.text, null);
-  assert.equal(digest.skipped, "noTranscript");
+  assert.equal(outcome.report, null);
+  assert.equal(outcome.skipped, "noTranscript");
   assert.equal(requests.length, 0);
 });

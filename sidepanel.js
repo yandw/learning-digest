@@ -1646,6 +1646,12 @@ const sessionUi = {
   timestampKind: null,
   renderedRecords: 0,
   active: false,
+  // End-time report state (#29): what is on screen and which Session it
+  // belongs to, so the 重试 button can target the right report and the 5s
+  // poll does not wipe it the moment the capture context goes away.
+  reportShown: false,
+  reportSessionId: null,
+  lastReport: null,
 };
 
 const SESSION_KIND_LABELS = {
@@ -1765,28 +1771,127 @@ function renderSessionSummary(state) {
   section.style.display = "flex";
 }
 
-function renderSessionDigest(digest) {
+// The end-time Session Digest (#29): the compact report rendered from the
+// global pass JSON — Topics with time ranges and summaries, timestamped
+// quotes, and action items. A truncated or failed pass renders the retry
+// error with a 重试 button that asks the background to re-run the pass.
+// (The tab-based report view is ticket #30; this stays the end-time view.)
+function renderSessionReport(report, sessionId = null) {
   const section = document.getElementById("sessionDigest");
-  const text = document.getElementById("sessionDigestText");
-  if (!section || !text) return;
-  if (digest?.text) {
-    text.textContent = digest.text;
-    section.style.display = "flex";
-  } else if (digest && (digest.error || digest.skipped)) {
-    text.textContent =
-      digest.skipped === "noTranscript"
-        ? "未捕获到逐字稿，未生成会话总结。"
-        : `会话总结生成失败：${digest.error}`;
-    section.style.display = "flex";
-  } else {
-    text.textContent = "";
+  const container = document.getElementById("sessionDigestText");
+  if (!section || !container) return;
+  sessionUi.reportShown = false;
+  if (sessionId) sessionUi.reportSessionId = sessionId;
+  const hasContent =
+    report &&
+    typeof report === "object" &&
+    (report.error ||
+      report.skipped ||
+      (Array.isArray(report.topics) && report.topics.length > 0) ||
+      (Array.isArray(report.quotes) && report.quotes.length > 0) ||
+      (Array.isArray(report.todos) && report.todos.length > 0));
+  container.textContent = "";
+  if (!hasContent) {
     section.style.display = "none";
+    return;
   }
+  sessionUi.reportShown = true;
+  sessionUi.lastReport = report;
+  if (report.error) {
+    renderReportError(container, report.error);
+  } else if (report.skipped === "noTranscript") {
+    appendReportLine(container, "未捕获到逐字稿，未生成会话总结。");
+  } else {
+    renderReportTopics(container, report.topics);
+    renderReportQuotes(container, report.quotes);
+    renderReportTodos(container, report.todos);
+  }
+  section.style.display = "flex";
+}
+
+function appendReportLine(container, text) {
+  const row = document.createElement("div");
+  row.className = "session-topic-text";
+  row.textContent = text;
+  container.appendChild(row);
+  return row;
+}
+
+function renderReportError(container, error) {
+  const message = appendReportLine(container, error);
+  const actions = document.createElement("div");
+  actions.className = "session-report-actions";
+  const retry = document.createElement("button");
+  retry.className = "session-btn";
+  retry.type = "button";
+  retry.textContent = "重试";
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    message.textContent = "正在重新生成会话纪要…";
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: "regenerateReport",
+        sessionId: sessionUi.reportSessionId || undefined,
+      });
+      if (result?.report) {
+        // The background also broadcasts the report; rendering the direct
+        // response covers a broadcast the panel missed.
+        renderSessionReport(result.report, result.sessionId || sessionUi.reportSessionId);
+        return;
+      }
+    } catch (_error) {
+      // Background unreachable; restore the error below so retry stays
+      // available.
+    }
+    renderSessionReport(sessionUi.lastReport, sessionUi.reportSessionId);
+  });
+  actions.appendChild(retry);
+  container.appendChild(actions);
+}
+
+function renderReportTopics(container, topics) {
+  for (const topic of Array.isArray(topics) ? topics : []) {
+    const entry = document.createElement("div");
+    entry.className = "session-topic";
+    const title = document.createElement("div");
+    title.className = "session-topic-title";
+    title.textContent = `[${sessionTimestampLabel(topic.start)}–${sessionTimestampLabel(topic.end)}] ${topic.title}`;
+    const body = document.createElement("div");
+    body.className = "session-topic-text";
+    body.textContent = topic.summary;
+    entry.append(title, body);
+    container.appendChild(entry);
+  }
+}
+
+function renderReportQuotes(container, quotes) {
+  const list = Array.isArray(quotes) ? quotes : [];
+  if (list.length === 0) return;
+  appendReportHeading(container, "关键原话");
+  for (const quote of list) {
+    appendReportLine(container, `[${sessionTimestampLabel(quote.start)}] ${quote.text}`);
+  }
+}
+
+function renderReportTodos(container, todos) {
+  const list = Array.isArray(todos) ? todos : [];
+  if (list.length === 0) return;
+  appendReportHeading(container, "行动项");
+  for (const todo of list) {
+    appendReportLine(container, `· ${todo}`);
+  }
+}
+
+function appendReportHeading(container, text) {
+  const heading = document.createElement("div");
+  heading.className = "session-report-heading";
+  heading.textContent = text;
+  container.appendChild(heading);
 }
 
 function clearSessionSummaryViews() {
   renderSessionSummary(null);
-  renderSessionDigest(null);
+  renderSessionReport(null);
 }
 
 // One-shot-per-Session toast: every path that surfaces an active Session
@@ -1820,6 +1925,10 @@ function showSessionMode({ active, kind, state }) {
 
   if (active) {
     sessionUi.active = true;
+    // A new Session retires any previous Session's report card.
+    sessionUi.reportSessionId = null;
+    sessionUi.lastReport = null;
+    renderSessionReport(null);
     bar.style.display = "flex";
     endBtn.style.display = "";
     view.style.display = "";
@@ -1838,10 +1947,16 @@ function showSessionMode({ active, kind, state }) {
   sessionUi.sessionId = null;
   sessionUi.renderedRecords = 0;
   endBtn.style.display = "none";
-  view.style.display = "none";
-  clearSessionSummaryViews();
-  const transcript = document.getElementById("sessionTranscript");
-  if (transcript) transcript.textContent = "";
+  if (sessionUi.reportShown) {
+    // An end-time report (artifact or retry error) is on screen: keep the
+    // Session view open so the 5s poll does not wipe it right after ending.
+    view.style.display = "";
+  } else {
+    view.style.display = "none";
+    clearSessionSummaryViews();
+    const transcript = document.getElementById("sessionTranscript");
+    if (transcript) transcript.textContent = "";
+  }
 
   if (kind && kind !== "none") {
     // The toolbar icon is the only start entry point: a click inside the
@@ -1886,9 +2001,9 @@ async function endLearning() {
       renderSessionSummary(result.state);
       const status = document.getElementById("sessionStatus");
       if (status) status.textContent = "会话已结束";
-      if (result.digest) {
-        // Keep the Session view open so the Session Digest stays readable.
-        renderSessionDigest(result.digest);
+      if (result.report) {
+        // Keep the Session view open so the end-time report stays readable.
+        renderSessionReport(result.report, result.state.sessionId);
         return;
       }
     }
@@ -1924,7 +2039,7 @@ function setupSessionUI() {
       sessionUi.sessionId = message.sessionId;
       renderSessionTranscript(message.state);
       renderSessionSummary(message.state);
-      if (message.digest) renderSessionDigest(message.digest);
+      if (message.report) renderSessionReport(message.report, message.sessionId);
       if (message.state.status === "ended") {
         sessionUi.active = false;
         const status = document.getElementById("sessionStatus");

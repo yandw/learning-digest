@@ -522,3 +522,201 @@ test("malformed model output appends nothing and leaves the snapshot untouched",
     0,
   );
 });
+
+// --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>
+
+const REPORT_BODY = {
+  topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
+  quotes: [{ start: 30, text: "学习是一场旅程。" }],
+  todos: ["完成课后练习"],
+};
+
+function reportAiFetch(capturedRequests, body, finishReason = "stop") {
+  return async (_url, options) => {
+    capturedRequests.push(JSON.parse(options.body));
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: JSON.stringify(body) }, finish_reason: finishReason },
+        ],
+      }),
+    };
+  };
+}
+
+// Ends the seeded capture through the real resume path, like a learner
+// pressing 结束学习.
+async function resumeAndEnd(helpers) {
+  await helpers.handleGetSessionState();
+  return helpers.handleEndLearning();
+}
+
+test("ending a Session runs exactly one global pass, persists report_<sessionId> and broadcasts it", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_report";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  const result = await resumeAndEnd(helpers);
+
+  assert.equal(result.success, true);
+  assert.equal(requests.length, 1, "exactly one global-pass AI call");
+  assert.equal(requests[0].max_tokens, 8192);
+  // The full Transcript went out, stamped for citation.
+  assert.match(requests[0].messages[1].content, /\[0:00\] 第 1 段/);
+  assert.match(requests[0].messages[1].content, /\[13:30\] 第 10 段/);
+
+  const stored = helpers.readStored(`report_${sessionId}`);
+  assert.ok(stored, "the report artifact is persisted under report_<sessionId>");
+  assert.equal(stored.sessionId, sessionId);
+  assert.deepEqual(stored.report, REPORT_BODY);
+  assert.equal(typeof stored.generatedAtMs, "number");
+  assert.equal(
+    helpers.readStored(`digest_${sessionId}`),
+    undefined,
+    "the legacy digest key is never written",
+  );
+
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.report,
+  );
+  assert.ok(update, "the end broadcast carries the report");
+  assert.deepEqual(update.report, REPORT_BODY);
+  assert.equal(update.state.status, "ended");
+});
+
+test("a truncated global pass persists nothing and broadcasts the retry error", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_truncated";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY, "length"),
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  const result = await resumeAndEnd(helpers);
+
+  assert.equal(requests.length, 1);
+  assert.equal(
+    helpers.readStored(`report_${sessionId}`),
+    undefined,
+    "a truncated artifact is never persisted",
+  );
+  assert.equal(result.report.error, "报告长度受限，生成未完成，请重试。");
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.report,
+  );
+  assert.equal(update.report.error, "报告长度受限，生成未完成，请重试。");
+});
+
+test("regenerateReport re-runs the pass for the ended Session, persists and broadcasts again", async () => {
+  const sentMessages = [];
+  const sessionId = "s_retry";
+  let attempts = 0;
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: async (_url, options) => {
+      attempts += 1;
+      if (attempts === 1) {
+        // First end: the provider truncates mid-JSON.
+        return {
+          ok: true,
+          json: async () => ({
+            choices: [
+              { message: { content: '{"topics": [' }, finish_reason: "length" },
+            ],
+          }),
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [
+            { message: { content: JSON.stringify(REPORT_BODY) }, finish_reason: "stop" },
+          ],
+        }),
+      };
+    },
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await resumeAndEnd(helpers);
+  assert.equal(helpers.readStored(`report_${sessionId}`), undefined);
+
+  const retried = await helpers.handleRegenerateReport({});
+
+  assert.equal(retried.success, true);
+  assert.equal(retried.sessionId, sessionId);
+  assert.deepEqual(retried.report, REPORT_BODY);
+  const stored = helpers.readStored(`report_${sessionId}`);
+  assert.ok(stored, "the retried pass persists the artifact");
+  assert.deepEqual(stored.report, REPORT_BODY);
+  const updates = sentMessages.filter(
+    (message) => message.action === "sessionUpdate" && message.report,
+  );
+  assert.equal(updates.length, 2, "the retried report is broadcast again");
+  assert.deepEqual(updates[1].report, REPORT_BODY);
+});
+
+test("regenerateReport finds the most recent ended Session in storage after a worker restart", async () => {
+  const requests = [];
+  const sessionId = "s_restarted";
+  let endedState = sessionPipeline.createSession({ sessionId });
+  endedState = sessionPipeline.applyEvent(endedState, {
+    type: "segmentCaptured",
+    segment: { id: "seg-0", start: 0, duration: 120 },
+  });
+  endedState = sessionPipeline.applyEvent(endedState, {
+    type: "transcribeOk",
+    segmentId: "seg-0",
+    records: [{ text: "第一段", start: 0, duration: 60 }],
+  });
+  endedState = sessionPipeline.applyEvent(endedState, { type: "sessionEnd" });
+
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    // No pointer, no in-memory context: the worker restarted after the end.
+    stored: {
+      [`ytd_session_${sessionId}`]: JSON.parse(JSON.stringify(endedState)),
+    },
+  });
+
+  const retried = await helpers.handleRegenerateReport({});
+
+  assert.equal(retried.success, true);
+  assert.equal(retried.sessionId, sessionId);
+  assert.deepEqual(helpers.readStored(`report_${sessionId}`).report, REPORT_BODY);
+});
+
+test("regenerateReport with no ended Session anywhere reports the dead end", async () => {
+  const requests = [];
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+  });
+
+  const retried = await helpers.handleRegenerateReport({});
+
+  assert.equal(retried.success, false);
+  assert.ok(retried.error);
+  assert.equal(requests.length, 0, "no AI call without a Session to re-run");
+});

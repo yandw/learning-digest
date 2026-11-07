@@ -161,14 +161,18 @@ async function requestAiCompletion({
       throw error;
     }
 
-    const text = data.choices?.[0]?.message?.content;
+    const choice = data.choices?.[0];
+    const text = choice?.message?.content;
     if (typeof text !== "string" || !text.trim()) {
       const error = new Error("The AI provider returned an empty response.");
       error.code = "EMPTY_AI_RESPONSE";
       throw error;
     }
 
-    return { text, settings };
+    // OpenAI-compatible finish reason ("stop", "length", ...). Callers that
+    // need to distinguish a truncated completion (the report pass) read it
+    // from here; existing callers ignore the extra field.
+    return { text, finishReason: choice?.finish_reason ?? null, settings };
   } catch (error) {
     if (timeoutKind === "idle") {
       const timeoutError = new Error(
@@ -463,6 +467,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "endLearning") {
     handleEndLearning()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "regenerateReport") {
+    // Retry path for a truncated or failed end-of-session global pass (#29).
+    handleRegenerateReport(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -889,10 +901,13 @@ async function handleDeleteNote(noteId) {
 globalThis.__YTD_TRANSLATION_TESTING__ = {
   requestAiCompletion,
   handleSaveNote,
-  generateSessionDigest,
+  generateSessionReport,
+  produceSessionReport,
+  handleRegenerateReport,
   // Session capture orchestration (provider-aware start gate, resume
   // settlement of interrupted Segments) — see tests/background-capture.test.js.
   handleStartLearning,
+  handleEndLearning,
   handleGetSessionState,
   handleActionClicked,
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
@@ -918,6 +933,13 @@ const LIVE_TICK_MS = 1000;
 
 /** @type {object|null} in-memory capture context, rebuilt from storage on wake. */
 let captureContext = null;
+
+/**
+ * The Session that ended last, kept for the regenerateReport fast path. A
+ * service-worker restart loses it; the storage scan in
+ * resolveReportTargetSessionId is the durable fallback.
+ */
+let lastEndedSessionId = null;
 
 function dataUrlToBlob(dataUrl, fallbackMime = "audio/webm") {
   const [header, base64] = String(dataUrl).split(",");
@@ -1211,33 +1233,97 @@ async function maybeRunTopicTick(context) {
 }
 
 /**
- * Builds the Session Digest when a Session ends: one global pass over the
- * full Transcript (ADR 0002). The input assembly is the pure
- * `assembleSessionDigestInput` from session-pipeline.js; this function only
- * adds the AI call. Digest failures never block ending the Session.
+ * Runs the end-of-session global pass (ADR 0002, #29): one AI request over
+ * the full Transcript producing the report JSON (Topics with summaries,
+ * quotes, todos). Input assembly and parsing live in session-summary.js;
+ * this function only adds the AI call and normalizes the outcome:
  *
- * @returns {Promise<{text: string|null, error?: string, skipped?: string}>}
+ * - { report }                 parsed report artifact
+ * - { report: null, truncated: true }  finish reason "length" or null parse
+ * - { report: null, skipped: "noTranscript" }
+ * - { report: null, error }    AI provider failure
+ *
+ * Failures never throw: the caller decides persistence and the payload the
+ * panel renders.
+ *
+ * @returns {Promise<{report: object|null, truncated?: boolean, skipped?: string, error?: string}>}
  */
-async function generateSessionDigest(state) {
+async function generateSessionReport(state) {
   const records = state?.transcriptRecords || [];
   if (records.length === 0 || YTD_SESSION_PIPELINE.allSegmentsFailed(state)) {
-    return { text: null, skipped: "noTranscript" };
+    return { report: null, skipped: "noTranscript" };
   }
   try {
-    const { uncoveredTranscript } =
-      YTD_SESSION_PIPELINE.assembleSessionDigestInput(state);
-    const { text } = await requestAiCompletion({
+    const { transcriptRecords, liveTopics } =
+      YTD_SESSION_SUMMARY.assembleGlobalPassInput(state);
+    const { text, finishReason } = await requestAiCompletion({
       maxTokens: 8192,
-      messages: YTD_SESSION_SUMMARY.buildSessionDigestMessages({
-        uncoveredTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
-          uncoveredTranscript,
+      messages: YTD_SESSION_SUMMARY.buildGlobalPassMessages({
+        transcriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
+          transcriptRecords,
         ),
+        liveTopics,
       }),
     });
-    return { text };
+    const report = YTD_SESSION_SUMMARY.parseGlobalPass(text);
+    if (!report || finishReason === "length") {
+      // A truncated or unparseable output must never land as the artifact:
+      // the caller persists nothing and offers the retry action instead.
+      return { report: null, truncated: true };
+    }
+    return { report };
   } catch (error) {
-    debugLog("[Learning Digest BG] Session Digest failed:", error);
-    return { text: null, error: error?.message || String(error) };
+    debugLog("[Learning Digest BG] global pass failed:", error);
+    return { report: null, error: error?.message || String(error) };
+  }
+}
+
+/**
+ * Panel copy for the one failure mode the learner can fix by re-running:
+ * the model hit the output limit (or produced nothing parseable) and the
+ * artifact was therefore not persisted.
+ */
+const REPORT_LENGTH_LIMIT_MESSAGE = "报告长度受限，生成未完成，请重试。";
+
+/**
+ * Runs the global pass for an ended Session and lands the result. A
+ * successful pass persists `report_<sessionId>` and returns the artifact; a
+ * truncated/failed pass persists nothing and returns the error payload the
+ * panel renders (with the retry action). Never throws — every failure mode
+ * becomes a renderable payload.
+ *
+ * @param {object} state - ended Session state
+ * @returns {Promise<{report: object, persisted: boolean}>}
+ */
+async function produceSessionReport(state) {
+  try {
+    const outcome = await generateSessionReport(state);
+    if (outcome.report) {
+      await chrome.storage.local.set({
+        [`report_${state.sessionId}`]: {
+          sessionId: state.sessionId,
+          report: outcome.report,
+          generatedAtMs: Date.now(),
+        },
+      });
+      return { report: outcome.report, persisted: true };
+    }
+    if (outcome.skipped === "noTranscript") {
+      return { report: { skipped: "noTranscript" }, persisted: false };
+    }
+    return {
+      report: {
+        error: outcome.truncated
+          ? REPORT_LENGTH_LIMIT_MESSAGE
+          : outcome.error || REPORT_LENGTH_LIMIT_MESSAGE,
+      },
+      persisted: false,
+    };
+  } catch (error) {
+    // Persistence or an unexpected failure must never break the end flow:
+    // the panel still gets a renderable payload.
+    console.error("[Learning Digest] landing the report failed:", error?.message || error);
+    return { report: { error: error?.message || String(error) }, persisted: false };
   }
 }
 
@@ -1474,33 +1560,95 @@ async function endActiveSession(context, { reason } = {}) {
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, { type: "sessionEnd" });
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
   await clearContextPointer();
+  // The retry action targets "the most recent ended Session"; remember it
+  // for the live-worker fast path (storage scan is the durable fallback).
+  lastEndedSessionId = context.state.sessionId;
 
-  // Both end paths (explicit action and media-end auto-stop) produce the
-  // Session Digest from the ended state. Digest failures never block ending.
-  const digest = await generateSessionDigest(context.state);
-  if (digest.text) {
-    await chrome.storage.local.set({
-      [`digest_${context.state.sessionId}`]: {
-        sessionId: context.state.sessionId,
-        text: digest.text,
-        generatedAtMs: Date.now(),
-      },
-    });
-  }
-  broadcastSession(context.state, { digest });
+  // Both end paths (explicit action and media-end auto-stop) run the global
+  // pass from the ended state. A failed or truncated pass never blocks
+  // ending: the panel gets the retry error instead of the artifact.
+  const { report } = await produceSessionReport(context.state);
+  broadcastSession(context.state, { report });
 
   await sendOffscreen({ action: "captureStop" });
   if (await chrome.offscreen.hasDocument()) {
     await chrome.offscreen.closeDocument();
   }
   if (captureContext?.sessionId === context.sessionId) captureContext = null;
-  return { success: true, reason, state: context.state, digest };
+  return { success: true, reason, state: context.state, report };
 }
 
 async function handleEndLearning() {
   const context = await ensureCaptureResumed();
   if (!context) return { success: false, error: "No active learning Session." };
   return endActiveSession(context, { reason: "explicit" });
+}
+
+/**
+ * Resolves which ended Session the retry action should re-run. Priority:
+ * an explicit sessionId from the panel, then the last Session this worker
+ * ended, then the most recent ended snapshot in storage (the durable path
+ * that survives a service-worker restart between end and retry).
+ *
+ * @param {{sessionId?: string}} message
+ * @returns {Promise<string|null>}
+ */
+async function resolveReportTargetSessionId(message) {
+  const candidates = [];
+  if (typeof message?.sessionId === "string" && message.sessionId) {
+    candidates.push(message.sessionId);
+  }
+  if (lastEndedSessionId) candidates.push(lastEndedSessionId);
+  for (const sessionId of candidates) {
+    const snapshot = await YTD_SESSION_PERSISTENCE.loadSessionSnapshot(
+      chrome.storage.local,
+      sessionId,
+    );
+    if (snapshot) return sessionId;
+  }
+  // Scan every persisted snapshot for the ended Session that started last.
+  // Session ids are `s_<base36 start ms>_<random>`, and only one capture
+  // runs at a time, so the largest start timestamp is the most recent end.
+  const all = await chrome.storage.local.get(null);
+  let best = null;
+  let bestStart = -1;
+  for (const [key, value] of Object.entries(all || {})) {
+    if (!key.startsWith("ytd_session_") || value?.status !== "ended") continue;
+    const start =
+      parseInt(String(value.sessionId || "").replace(/^s_/, "").split("_")[0], 36) || 0;
+    if (start > bestStart) {
+      bestStart = start;
+      best = value.sessionId;
+    }
+  }
+  return best;
+}
+
+/**
+ * The regenerateReport message action: re-runs the end-of-session global
+ * pass for the most recent ended Session (or the one the panel names),
+ * persists a successful artifact and broadcasts it again. Used when the
+ * original pass was truncated or failed.
+ *
+ * @param {{sessionId?: string}} [message]
+ * @returns {Promise<{success: boolean, sessionId?: string, report?: object, error?: string}>}
+ */
+async function handleRegenerateReport(message) {
+  const sessionId = await resolveReportTargetSessionId(message);
+  if (!sessionId) {
+    return { success: false, error: "没有可重新生成的已结束会话。" };
+  }
+  const snapshot = await YTD_SESSION_PERSISTENCE.loadSessionSnapshot(
+    chrome.storage.local,
+    sessionId,
+  );
+  if (!snapshot) {
+    return { success: false, error: "找不到该会话的逐字稿，无法重新生成。" };
+  }
+  const state = YTD_SESSION_PIPELINE.resumeFromSnapshot(snapshot);
+  const { report } = await produceSessionReport(state);
+  broadcastSession(state, { report });
+  return { success: true, sessionId, report };
 }
 
 async function handleGetSessionState() {

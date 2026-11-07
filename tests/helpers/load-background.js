@@ -83,6 +83,7 @@ function loadBackgroundHelpers({
         onMessage: listeners,
         onConnect: listeners,
         openOptionsPage() {},
+        getManifest: () => ({ version: "0.1.20" }),
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
         sendMessage: (msg) => {
           if (sentMessages) sentMessages.push(msg);

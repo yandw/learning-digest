@@ -22,6 +22,13 @@
 importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js");
 
 const DEBUG = false;
+// Startup marker: opening the service worker console must show this line
+// immediately. If it is absent after a reload, the DevTools window is
+// attached to a stale worker and every later "no logs" reading is bogus.
+console.log(
+  "[Learning Digest] background started, version:",
+  chrome.runtime.getManifest().version,
+);
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
 const AI_PROVIDER_HARD_TIMEOUT_MS = 120_000;
 const AI_PROVIDER_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -244,6 +251,9 @@ async function readBoundedAiResponse(response, onActivity) {
  * active tab is a recognized learning page, start the Session immediately.
  */
 chrome.action.onClicked.addListener((tab) => {
+  // Log BEFORE any await: if this line never appears, the click never
+  // reached the extension and the problem is outside this code path.
+  console.log("[Learning Digest] icon clicked:", tab?.url || "(no url)");
   void handleActionClicked(tab);
 });
 

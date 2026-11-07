@@ -177,6 +177,43 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
+   * Settles the resume gap left by an interrupted service worker. A Segment
+   * still `pending` after resumeFromSnapshot was in flight when the worker
+   * died; the rebuilt segmenter starts at the end of the persisted Segments
+   * (its cursor already lies at or past such a Segment's time range), so it
+   * would never be dispatched again. Failing it here emits the normal
+   * `transcribeFailed` marker record: the gap stays visible in the Transcript
+   * instead of silently disappearing. Settled Segments are never re-touched,
+   * and the state is returned unchanged (same reference) when nothing was
+   * pending.
+   *
+   * @param {object} state - Session state from resumeFromSnapshot
+   * @returns {object} the next Session state
+   */
+  function settleInterruptedSegments(state) {
+    if (!state || typeof state !== "object") {
+      throw new Error("Session state is required");
+    }
+    // The segmenter cursor on resume is the end of the last persisted
+    // Segment, i.e. the max end over all Segments (pending ones included).
+    const segmenterCursor = state.segments.reduce(
+      (end, segment) => Math.max(end, segment.start + segment.duration),
+      0,
+    );
+    let next = state;
+    for (const segment of state.segments) {
+      if (segment.status !== "pending") continue;
+      if (segment.start + segment.duration > segmenterCursor) continue;
+      const settled = applyEvent(next, {
+        type: "transcribeFailed",
+        segmentId: segment.id,
+      });
+      if (settled !== next) next = settled;
+    }
+    return next;
+  }
+
+  /**
    * True when every captured Segment failed (or none produced any usable
    * text), meaning the Session has no Transcript at all. Callers use this to
    * surface "no transcript" instead of a Transcript made entirely of failure
@@ -216,6 +253,7 @@ var YTD_SESSION_PIPELINE = (() => {
     createSession,
     applyEvent,
     resumeFromSnapshot,
+    settleInterruptedSegments,
     allSegmentsFailed,
     assembleSessionDigestInput,
   };

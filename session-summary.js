@@ -21,6 +21,14 @@
  * it.
  */
 var YTD_SESSION_SUMMARY = (() => {
+  // The [m:ss] timestamp formatter is shared with speech-transcription.js;
+  // in Node tests we require it, in the service worker both globals arrive
+  // via importScripts.
+  const speechTranscription =
+    typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
+      ? YTD_SPEECH_TRANSCRIPTION
+      : require("./speech-transcription.js");
+
   /**
    * Assembles the Rolling Summary prompt input from Session state.
    *
@@ -90,12 +98,7 @@ var YTD_SESSION_SUMMARY = (() => {
     return Number(nowMs) - Number(lastSummaryAtMs) >= intervalMs;
   }
 
-  function formatTimestamp(totalSeconds) {
-    const total = Math.max(0, Math.floor(Number(totalSeconds) || 0));
-    const minutes = Math.floor(total / 60);
-    const seconds = total % 60;
-    return `${minutes}:${String(seconds).padStart(2, "0")}`;
-  }
+  const formatTimestamp = speechTranscription.formatTimestamp;
 
   /**
    * Renders Transcript records as `[m:ss] text` lines — the same stamp

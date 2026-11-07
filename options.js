@@ -47,7 +47,7 @@ const YTD_OPTIONS = (() => {
       speechProviderLinkTencent: "Create Tencent Cloud credentials",
       speechProviderLinkAliyun: "Create Alibaba Cloud AccessKeys",
       speechProviderCustomEndpointHelp:
-        "A custom base URL must speak the OpenAI audio transcriptions API; local faster-whisper servers work through the same slot. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension.",
+        "A custom base URL must speak the OpenAI audio transcriptions API; local faster-whisper servers work through the same slot. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension. Known limitation: this release declares no optional permissions, so Chrome cannot grant a custom host at runtime and the manual manifest edit is the only way to reach one.",
       speechProviderInvalidBaseUrl:
         "The Speech Provider base URL is not a valid https URL (http is allowed only for localhost).",
       speechProviderKeyRequired:
@@ -158,7 +158,7 @@ const YTD_OPTIONS = (() => {
       speechProviderLinkTencent: "创建腾讯云凭证",
       speechProviderLinkAliyun: "创建阿里云 AccessKey",
       speechProviderCustomEndpointHelp:
-        "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+        "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。已知限制：本版本未声明可选权限，Chrome 无法在运行时授予自定义域名，手动修改 manifest 目前是唯一方式。",
       speechProviderInvalidBaseUrl:
         "语音转录服务的基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       speechProviderKeyRequired: "请为选中的语音转录服务填写 API 密钥。",

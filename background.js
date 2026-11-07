@@ -475,18 +475,16 @@ async function handleAnalyzeTranscript(
       Math.floor(videoDuration || 0),
       lastTranscriptSeconds,
     );
-    const durationMinutes = Math.floor(effectiveSeconds / 60);
-    const durationSeconds = Math.floor(effectiveSeconds % 60);
-    const durationFormatted = `${durationMinutes}:${String(durationSeconds).padStart(2, "0")}`;
+    const durationFormatted =
+      YTD_SPEECH_TRANSCRIPTION.formatTimestamp(effectiveSeconds);
     const maxTimestampSeconds = effectiveSeconds;
 
     // The "last chapter must be after" threshold (75% in) forces the model to
     // cover the WHOLE session instead of front-loading chapters near the start.
     // We do NOT prescribe a chapter count — the model picks the natural splits.
     const lateThresholdSeconds = Math.floor(effectiveSeconds * 0.75);
-    const lateThreshold = `${Math.floor(lateThresholdSeconds / 60)}:${String(
-      lateThresholdSeconds % 60,
-    ).padStart(2, "0")}`;
+    const lateThreshold =
+      YTD_SPEECH_TRANSCRIPTION.formatTimestamp(lateThresholdSeconds);
 
     const promptVariables = {
       durationFormatted,
@@ -566,15 +564,12 @@ function validateAndFixTimestamps(analysis, maxSeconds) {
       ? Number(maxSeconds)
       : Number.MAX_SAFE_INTEGER;
 
-  // Helper to format seconds as MM:SS
-  const formatTimestamp = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${String(secs).padStart(2, "0")}`;
-  };
-
   const safeString = (value, maxLength) =>
     typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+  // [m:ss] formatting is the shared speech-transcription helper; keep this
+  // validator free of its own copy.
+  const formatTimestamp = (seconds) =>
+    YTD_SPEECH_TRANSCRIPTION.formatTimestamp(seconds);
   const safeSeconds = (value) => {
     const seconds = Number(value);
     if (!Number.isFinite(seconds) || seconds < 0 || seconds > safeMax) {
@@ -725,8 +720,6 @@ async function handleSaveNote(
       };
     }
 
-    const minutes = Math.floor(safeTimestamp / 60);
-    const seconds = safeTimestamp % 60;
     const note = {
       id: `note_${Date.now()}`,
       videoId,
@@ -736,7 +729,7 @@ async function handleSaveNote(
           : "Untitled Session",
       channelName:
         typeof channelName === "string" ? channelName.slice(0, 300) : "",
-      timestamp: `${minutes}:${String(seconds).padStart(2, "0")}`,
+      timestamp: YTD_SPEECH_TRANSCRIPTION.formatTimestamp(safeTimestamp),
       timestampSeconds: safeTimestamp,
       text: exactSelectedText,
       rawText: exactSelectedText,
@@ -1029,6 +1022,10 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleSaveNote,
   handleTranslateContent,
   generateSessionDigest,
+  // Session capture orchestration (provider-aware start gate, resume
+  // settlement of interrupted Segments) — see tests/background-capture.test.js.
+  handleStartLearning,
+  handleGetSessionState,
 };
 
 // ============================================================
@@ -1113,11 +1110,73 @@ async function clearContextPointer() {
   await chrome.storage.local.remove(ACTIVE_CAPTURE_KEY);
 }
 
-function segmentCursor(state) {
+/**
+ * The Session timeline position (seconds from Session start) that capture
+ * has reached: the end of the last persisted Segment. This is where a
+ * rebuilt segmenter resumes, so a Segment still pending whose range ends at
+ * or before this cursor can never be dispatched again.
+ */
+function segmentsEndSeconds(state) {
   return state.segments.reduce(
     (end, segment) => Math.max(end, segment.start + segment.duration),
     0,
   );
+}
+
+/**
+ * The in-memory capture context, one shape for both creation sites. The
+ * factory owns every field's default so handleStartLearning (fresh Session)
+ * and ensureCaptureResumed (rebuilt from storage) cannot drift apart.
+ *
+ * @param {object} parts - the per-site values
+ * @param {string} parts.sessionId
+ * @param {number} parts.tabId
+ * @param {string} parts.platformId
+ * @param {string} parts.kind
+ * @param {string} parts.timestampKind
+ * @param {number} parts.startedAtMs - wall-clock Session start
+ * @param {number} parts.segmentLengthSeconds
+ * @param {object} parts.state - Session state from session-pipeline.js
+ * @param {object} parts.segmenter - scheduler from session-segmenter.js
+ * @param {string} parts.providerId - selected Speech Provider id
+ * @param {object} parts.credentials - that provider's credentials
+ */
+function createCaptureContext({
+  sessionId,
+  tabId,
+  platformId,
+  kind,
+  timestampKind,
+  startedAtMs,
+  segmentLengthSeconds,
+  state,
+  segmenter,
+  providerId,
+  credentials,
+}) {
+  return {
+    sessionId,
+    tabId,
+    platformId,
+    kind,
+    timestampKind,
+    startedAtMs,
+    segmentLengthSeconds,
+    state,
+    segmenter,
+    lastPosition: segmentsEndSeconds(state),
+    pendingChunks: [],
+    providerId,
+    credentials,
+    liveTimer: null,
+    summaryTimer: null,
+    // Scheduling state starts conservative: a fresh Session has nothing to
+    // summarize yet, and a resumed one waits one full interval after the
+    // (re)start before its next summary tick either way.
+    lastSummaryAtMs: Date.now(),
+    summaryInFlight: false,
+    ended: false,
+  };
 }
 
 /**
@@ -1143,27 +1202,30 @@ async function ensureCaptureResumed() {
     return null;
   }
 
+  // Segments captured but never transcribed when the previous worker died
+  // were in flight; the rebuilt segmenter starts past them, so settle them
+  // as failed here. Each one emits its [语音转录失败] marker record, closing
+  // the transcript hole with a visible annotation instead of a silent gap.
+  let resumedState = YTD_SESSION_PIPELINE.settleInterruptedSegments(state);
+  if (resumedState !== state) {
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+      chrome.storage.local,
+      resumedState,
+    );
+  }
+
   const settings = await getSettings();
-  const context = {
+  const context = createCaptureContext({
     ...pointer,
-    state,
+    state: resumedState,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: pointer.segmentLengthSeconds,
-      startAt: segmentCursor(state),
-      startIndex: state.segments.length,
+      startAt: segmentsEndSeconds(resumedState),
+      startIndex: resumedState.segments.length,
     }),
-    lastPosition: segmentCursor(state),
-    pendingChunks: [],
     providerId: settings.speechProvider,
     credentials: settings.speechProviders[settings.speechProvider] || {},
-    liveTimer: null,
-    summaryTimer: null,
-    // Scheduling state is rebuilt conservatively on resume: wait one full
-    // interval after a worker restart before the next summary tick.
-    lastSummaryAtMs: Date.now(),
-    summaryInFlight: false,
-    ended: false,
-  };
+  });
   captureContext = context;
 
   // The offscreen recorder survives a worker restart but not a browser
@@ -1375,14 +1437,25 @@ async function handleStartLearning(message) {
   const settings = await getSettings();
   const providerId = settings.speechProvider;
   const credentials = settings.speechProviders[providerId] || {};
-  if (!credentials.apiKey) {
-    return { success: false, error: "Add a Speech Provider API key in Settings first." };
+  // The gate follows the SELECTED Speech Provider's declared credential
+  // fields (the password-typed ones, same rule the options page enforces on
+  // save), not a hard-coded apiKey check: Tencent and Aliyun have no apiKey.
+  const missingFields =
+    YTD_SPEECH_PROVIDERS.missingProviderCredentials(providerId, credentials);
+  if (missingFields.length) {
+    const provider = YTD_SPEECH_PROVIDERS.getSpeechProvider(providerId);
+    return {
+      success: false,
+      error:
+        `Add ${missingFields.join(", ")} for ${provider?.label || providerId} ` +
+        "in Settings first.",
+    };
   }
 
   const state = YTD_SESSION_PIPELINE.createSession({
     sessionId: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
   });
-  const context = {
+  const context = createCaptureContext({
     sessionId: state.sessionId,
     tabId: message.tabId,
     platformId: recognition.platformId,
@@ -1394,16 +1467,9 @@ async function handleStartLearning(message) {
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
     }),
-    lastPosition: 0,
-    pendingChunks: [],
     providerId,
     credentials,
-    liveTimer: null,
-    summaryTimer: null,
-    lastSummaryAtMs: Date.now(),
-    summaryInFlight: false,
-    ended: false,
-  };
+  });
   captureContext = context;
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, state);
   await persistContextPointer(context);

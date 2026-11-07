@@ -85,18 +85,50 @@ var YTD_SETTINGS = (() => {
   }
 
   /**
+   * Integer clamp shared by every ranged setting: finite numbers are floored
+   * and clamped to [min, max]; anything else (null/undefined/"" and
+   * non-numeric input alike) falls back to the default, so a corrupted
+   * setting can never break capture or hammer the AI Provider.
+   *
+   * @param {*} value
+   * @param {number} min
+   * @param {number} max
+   * @param {number} fallback
+   * @returns {number}
+   */
+  function clampIntegerSetting(value, min, max, fallback) {
+    // null/undefined/"" mean "not set" (Number(null) would be 0), not zero.
+    if (value === null || value === undefined || value === "") return fallback;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(parsed)));
+  }
+
+  /**
+   * The Segment-length bounds, read from session-segmenter.js (the single
+   * source of truth) at call time: settings.js loads first in the service
+   * worker's importScripts order, so the segmenter global only exists by
+   * the time normalize() actually runs. In Node tests we require it.
+   */
+  function segmentLengthBounds() {
+    const segmenter =
+      typeof YTD_SEGMENTER !== "undefined"
+        ? YTD_SEGMENTER
+        : require("./session-segmenter.js");
+    return {
+      min: segmenter.MIN_ALLOWED_SEGMENT_LENGTH,
+      max: segmenter.MAX_ALLOWED_SEGMENT_LENGTH,
+    };
+  }
+
+  /**
    * Segment length in seconds: finite numbers are clamped to the range
    * session-segmenter.js supports ([30, 600]); anything else falls back to
    * the default so a corrupted setting can never break capture.
    */
   function normalizeSegmentLengthSeconds(value) {
-    // null/undefined/"" mean "not set" (Number(null) would be 0), not zero.
-    if (value === null || value === undefined || value === "") {
-      return DEFAULTS.segmentLengthSeconds;
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return DEFAULTS.segmentLengthSeconds;
-    return Math.min(600, Math.max(30, Math.floor(parsed)));
+    const { min, max } = segmentLengthBounds();
+    return clampIntegerSetting(value, min, max, DEFAULTS.segmentLengthSeconds);
   }
 
   /**
@@ -105,13 +137,7 @@ var YTD_SETTINGS = (() => {
    * silently disable summaries.
    */
   function normalizeSummaryIntervalMinutes(value) {
-    // null/undefined/"" mean "not set" (Number(null) would be 0), not zero.
-    if (value === null || value === undefined || value === "") {
-      return DEFAULTS.summaryIntervalMinutes;
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return DEFAULTS.summaryIntervalMinutes;
-    return Math.min(180, Math.max(5, Math.floor(parsed)));
+    return clampIntegerSetting(value, 5, 180, DEFAULTS.summaryIntervalMinutes);
   }
 
   function normalize(input = {}) {

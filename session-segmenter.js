@@ -101,6 +101,11 @@ var YTD_SEGMENTER = (() => {
   return {
     DEFAULT_SEGMENT_LENGTH_SECONDS,
     DEFAULT_MIN_SEGMENT_SECONDS,
+    // The single source of truth for the Segment-length bounds. The
+    // segmenter clamps to these; settings.js reads them when normalizing
+    // the user's configured Segment length so the two can never drift.
+    MIN_ALLOWED_SEGMENT_LENGTH,
+    MAX_ALLOWED_SEGMENT_LENGTH,
     createSegmenter,
   };
 })();

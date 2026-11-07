@@ -147,7 +147,10 @@
             A custom base URL must speak the OpenAI audio transcriptions API;
             local faster-whisper servers work through the same slot. If its
             host is not api.groq.com, add that host to host_permissions in
-            manifest.json and reload the extension.
+            manifest.json and reload the extension. Known limitation: this
+            release declares no optional permissions, so Chrome cannot grant
+            a custom host at runtime and the manual manifest edit is the only
+            way to reach one.
           </p>
           <div class="privacy-note" data-i18n="speechProviderPrivacyNote">
             When you transcribe, the Speech Provider receives the Segment's

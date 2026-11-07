@@ -23,13 +23,17 @@ function loadBackgroundHelpers({
   fetchImpl = fetch,
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
+  setIntervalImpl = () => 0,
+  clearIntervalImpl = () => {},
+  offscreenDocument = true,
   sidePanel = {
     setPanelBehavior() {},
     setOptions: () => Promise.resolve(),
   },
+  stored = {},
 } = {}) {
   const listeners = { addListener() {} };
-  const localStorage = { ytd_settings: settings };
+  const localStorage = { ytd_settings: settings, ...stored };
   const sandbox = {
     console,
     URL,
@@ -39,6 +43,8 @@ function loadBackgroundHelpers({
     AbortController,
     setTimeout: setTimeoutImpl,
     clearTimeout: clearTimeoutImpl,
+    setInterval: setIntervalImpl,
+    clearInterval: clearIntervalImpl,
     importScripts() {},
     chrome: {
       storage: {
@@ -61,6 +67,14 @@ function loadBackgroundHelpers({
       },
       action: { onClicked: listeners },
       sidePanel,
+      offscreen: {
+        hasDocument: async () => offscreenDocument,
+        createDocument: async () => {},
+        closeDocument: async () => {},
+      },
+      tabCapture: {
+        getMediaStreamId: async () => "test-stream-id",
+      },
       runtime: {
         onInstalled: listeners,
         onMessage: listeners,
@@ -71,9 +85,13 @@ function loadBackgroundHelpers({
       },
       tabs: { onUpdated: listeners, onActivated: listeners },
     },
-    YTD_SPEECH_TRANSCRIPTION: {},
+    YTD_SPEECH_TRANSCRIPTION: require("../../speech-transcription.js"),
     YTD_SESSION_PIPELINE: require("../../session-pipeline.js"),
     YTD_SESSION_SUMMARY: require("../../session-summary.js"),
+    YTD_SESSION_PERSISTENCE: require("../../session-persistence.js"),
+    YTD_SEGMENTER: require("../../session-segmenter.js"),
+    YTD_SOURCE_PLATFORMS: require("../../source-platforms.js"),
+    YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
     YTD_SETTINGS: {
       STORAGE_KEY: "ytd_settings",
       normalize: (value) => value,

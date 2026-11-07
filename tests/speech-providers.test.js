@@ -38,9 +38,6 @@ test("transcribeSegment dispatches to the provider matching the id", async () =>
     "fake-provider",
     "audio-bytes",
     { language: "zh" },
-    async () => {
-      throw new Error("fake provider must not fetch");
-    },
   );
 
   assert.deepEqual(records, [
@@ -51,6 +48,60 @@ test("transcribeSegment dispatches to the provider matching the id", async () =>
 test("transcribeSegment rejects an unknown Speech Provider id", async () => {
   await assert.rejects(
     speechProviders.transcribeSegment("no-such-provider", "audio", {}),
+    /Unknown Speech Provider: no-such-provider/,
+  );
+});
+
+test("missingProviderCredentials requires Groq's apiKey only", () => {
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("groq", { apiKey: "" }),
+    ["apiKey"],
+  );
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("groq", { apiKey: "k", baseUrl: "" }),
+    [],
+  );
+});
+
+test("missingProviderCredentials requires both halves of Tencent's key pair", () => {
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("tencent", {}),
+    ["secretId", "secretKey"],
+  );
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("tencent", {
+      secretId: "id",
+      secretKey: "  ",
+    }),
+    ["secretKey"],
+  );
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("tencent", {
+      secretId: "id",
+      secretKey: "key",
+    }),
+    [],
+  );
+});
+
+test("missingProviderCredentials requires Aliyun's AccessKey pair and AppKey", () => {
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("aliyun", { accessKeyId: "id" }),
+    ["accessKeySecret", "appKey"],
+  );
+  assert.deepEqual(
+    speechProviders.missingProviderCredentials("aliyun", {
+      accessKeyId: "id",
+      accessKeySecret: "secret",
+      appKey: "app",
+    }),
+    [],
+  );
+});
+
+test("missingProviderCredentials rejects an unknown Speech Provider id", () => {
+  assert.throws(
+    () => speechProviders.missingProviderCredentials("no-such-provider", {}),
     /Unknown Speech Provider: no-such-provider/,
   );
 });

@@ -577,7 +577,10 @@ const YTD_OPTIONS = (() => {
     // version instead of leaving a silently disabled dropdown.
     function showSpeechProviderLoadError(providerCount) {
       if (!speechProviderLoadError) return;
-      if (providerCount > 0 || providersApi) {
+      // Only a non-empty provider list is healthy. When the list is empty
+      // the registry global may still exist (a provider module can throw
+      // mid-file after the registry IIFE ran), so never hide on providersApi.
+      if (providerCount > 0) {
         speechProviderLoadError.hidden = true;
         return;
       }
@@ -588,11 +591,13 @@ const YTD_OPTIONS = (() => {
       speechProviderLoadError.textContent =
         "Speech Provider 模块加载失败（服务商列表为空），下拉框不可用。" +
         "当前扩展版本 " + version + "。" +
+        (providersApi
+          ? " providersApi 存在但注册表为空：某个服务商模块加载时抛错。"
+          : " providersApi 不存在：speech-providers.js 整体未加载。") +
         (errors.length
           ? " 捕获的脚本错误：" + errors.join("；") + "。"
           : " 未捕获到脚本错误。") +
-        " 请尝试：在 chrome://extensions 重新加载扩展，然后完全关闭本页再重新打开。" +
-        " 若版本号不是 0.1.0，说明扩展加载的不是最新代码。";
+        " 请把这段文字反馈给开发者。";
       speechProviderLoadError.hidden = false;
     }
 
@@ -700,8 +705,18 @@ const YTD_OPTIONS = (() => {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
         }
-      } catch (_error) {
+      } catch (error) {
         setStatus(saveStatus, "settingsLoadFailed");
+        // Fail-loud: loadSettings is the only place that populates the
+        // Speech Provider dropdown, so a swallowed throw here leaves a
+        // silently empty select. Surface the real message on the page.
+        if (speechProviderLoadError) {
+          speechProviderLoadError.textContent =
+            "设置加载失败：" +
+            (error && error.message ? error.message : String(error)) +
+            "（语音转录服务下拉框因此未初始化，请把这段文字反馈给开发者。）";
+          speechProviderLoadError.hidden = false;
+        }
       }
     }
 

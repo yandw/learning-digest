@@ -17,3 +17,11 @@ window.addEventListener("error", function (event) {
         : ""),
   );
 });
+window.addEventListener("unhandledrejection", function (event) {
+  window.__ytdScriptErrors.push(
+    "Unhandled rejection: " +
+      (event.reason && event.reason.message
+        ? event.reason.message
+        : String(event.reason)),
+  );
+});

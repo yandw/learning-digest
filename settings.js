@@ -26,6 +26,9 @@ var YTD_SETTINGS = (() => {
     // Session capture: target Segment length in seconds. The browser layer
     // hands this to session-segmenter.js, which clamps to the same range.
     segmentLengthSeconds: 120,
+    // Rolling Summary cadence: how often the AI Provider refreshes the
+    // summary while a Session is active (minutes, clamped to [5, 180]).
+    summaryIntervalMinutes: 30,
   });
 
   function isLegacyCustom(input) {
@@ -96,6 +99,21 @@ var YTD_SETTINGS = (() => {
     return Math.min(600, Math.max(30, Math.floor(parsed)));
   }
 
+  /**
+   * Rolling Summary cadence in minutes: finite numbers are clamped to
+   * [5, 180] so a corrupted setting can never hammer the AI Provider or
+   * silently disable summaries.
+   */
+  function normalizeSummaryIntervalMinutes(value) {
+    // null/undefined/"" mean "not set" (Number(null) would be 0), not zero.
+    if (value === null || value === undefined || value === "") {
+      return DEFAULTS.summaryIntervalMinutes;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULTS.summaryIntervalMinutes;
+    return Math.min(180, Math.max(5, Math.floor(parsed)));
+  }
+
   function normalize(input = {}) {
     return {
       provider: DEFAULTS.provider,
@@ -124,6 +142,9 @@ var YTD_SETTINGS = (() => {
           : DEFAULTS.speechProvider,
       speechProviders: normalizeSpeechProviders(input.speechProviders),
       segmentLengthSeconds: normalizeSegmentLengthSeconds(input.segmentLengthSeconds),
+      summaryIntervalMinutes: normalizeSummaryIntervalMinutes(
+        input.summaryIntervalMinutes,
+      ),
     };
   }
 

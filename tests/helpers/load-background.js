@@ -1,0 +1,89 @@
+/**
+ * Shared test seam: runs background.js inside a Node VM with a stubbed
+ * chrome API and injectable fetch/timers, exposing the pure-ish helpers
+ * background.js exports for tests (__YTD_TRANSLATION_TESTING__).
+ *
+ * Used by translation.test.js (which introduced it) and
+ * session-summary.test.js (Session Digest glue, #18).
+ */
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const root = path.resolve(__dirname, "..", "..");
+const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
+
+function loadBackgroundHelpers({
+  settings = {
+    provider: "deepseek",
+    aiApiKey: "test-key",
+    aiBaseUrl: "https://api.deepseek.com",
+    aiModel: "deepseek-v4-flash",
+  },
+  fetchImpl = fetch,
+  setTimeoutImpl = () => 0,
+  clearTimeoutImpl = () => {},
+  sidePanel = {
+    setPanelBehavior() {},
+    setOptions: () => Promise.resolve(),
+  },
+} = {}) {
+  const listeners = { addListener() {} };
+  const localStorage = { ytd_settings: settings };
+  const sandbox = {
+    console,
+    URL,
+    TextDecoder,
+    TextEncoder,
+    fetch: fetchImpl,
+    AbortController,
+    setTimeout: setTimeoutImpl,
+    clearTimeout: clearTimeoutImpl,
+    importScripts() {},
+    chrome: {
+      storage: {
+        local: {
+          setAccessLevel: () => Promise.resolve(),
+          get: async (key) => {
+            if (key === null) return { ...localStorage };
+            if (Array.isArray(key)) {
+              return Object.fromEntries(key.map((item) => [item, localStorage[item]]));
+            }
+            return { [key]: localStorage[key] };
+          },
+          set: async (values) => Object.assign(localStorage, values),
+          remove: async (keys) => {
+            for (const key of Array.isArray(keys) ? keys : [keys]) {
+              delete localStorage[key];
+            }
+          },
+        },
+      },
+      action: { onClicked: listeners },
+      sidePanel,
+      runtime: {
+        onInstalled: listeners,
+        onMessage: listeners,
+        onConnect: listeners,
+        openOptionsPage() {},
+        getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
+        sendMessage: () => Promise.resolve({ success: true }),
+      },
+      tabs: { onUpdated: listeners, onActivated: listeners },
+    },
+    YTD_SPEECH_TRANSCRIPTION: {},
+    YTD_SESSION_PIPELINE: require("../../session-pipeline.js"),
+    YTD_SESSION_SUMMARY: require("../../session-summary.js"),
+    YTD_SETTINGS: {
+      STORAGE_KEY: "ytd_settings",
+      normalize: (value) => value,
+      chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
+      sttTranscriptionsUrl: (baseUrl) => `${baseUrl}/audio/transcriptions`,
+    },
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(read("background.js"), sandbox);
+  return sandbox.__YTD_TRANSLATION_TESTING__;
+}
+
+module.exports = { loadBackgroundHelpers };

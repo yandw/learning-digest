@@ -4,6 +4,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
+const { loadBackgroundHelpers } = require("./helpers/load-background.js");
+
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
@@ -68,77 +70,6 @@ function loadSidepanelHelpers({
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("sidepanel.js"), sandbox);
   return sandbox.__YTD_TRANSCRIPT_TESTING__;
-}
-
-function loadBackgroundHelpers({
-  settings = {
-    provider: "deepseek",
-    aiApiKey: "test-key",
-    aiBaseUrl: "https://api.deepseek.com",
-    aiModel: "deepseek-v4-flash",
-  },
-  fetchImpl = fetch,
-  setTimeoutImpl = () => 0,
-  clearTimeoutImpl = () => {},
-  sidePanel = {
-    setPanelBehavior() {},
-    setOptions: () => Promise.resolve(),
-  },
-} = {}) {
-  const listeners = { addListener() {} };
-  const localStorage = { ytd_settings: settings };
-  const sandbox = {
-    console,
-    URL,
-    TextDecoder,
-    TextEncoder,
-    fetch: fetchImpl,
-    AbortController,
-    setTimeout: setTimeoutImpl,
-    clearTimeout: clearTimeoutImpl,
-    importScripts() {},
-    chrome: {
-      storage: {
-        local: {
-          setAccessLevel: () => Promise.resolve(),
-          get: async (key) => {
-            if (key === null) return { ...localStorage };
-            if (Array.isArray(key)) {
-              return Object.fromEntries(key.map((item) => [item, localStorage[item]]));
-            }
-            return { [key]: localStorage[key] };
-          },
-          set: async (values) => Object.assign(localStorage, values),
-          remove: async (keys) => {
-            for (const key of Array.isArray(keys) ? keys : [keys]) {
-              delete localStorage[key];
-            }
-          },
-        },
-      },
-      action: { onClicked: listeners },
-      sidePanel,
-      runtime: {
-        onInstalled: listeners,
-        onMessage: listeners,
-        onConnect: listeners,
-        openOptionsPage() {},
-        getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
-        sendMessage: () => Promise.resolve({ success: true }),
-      },
-      tabs: { onUpdated: listeners, onActivated: listeners },
-    },
-    YTD_SPEECH_TRANSCRIPTION: {},
-    YTD_SETTINGS: {
-      STORAGE_KEY: "ytd_settings",
-      normalize: (value) => value,
-      chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
-      sttTranscriptionsUrl: (baseUrl) => `${baseUrl}/audio/transcriptions`,
-    },
-  };
-  sandbox.globalThis = sandbox;
-  vm.runInNewContext(read("background.js"), sandbox);
-  return sandbox.__YTD_TRANSLATION_TESTING__;
 }
 
 function createFakeTimers() {
@@ -482,13 +413,15 @@ test("all AI product requests use DeepSeek non-thinking and JSON behavior", asyn
   const backgroundSource = read("background.js");
   assert.equal(
     (backgroundSource.match(/await requestAiCompletion\(\{/g) || []).length,
-    3,
+    5,
   );
   assert.doesNotMatch(backgroundSource, /disableThinking/);
   for (const callPath of [
     "handleAnalyzeTranscript",
     "handleExplainSelection",
     "callAiTranslation",
+    "maybeRunRollingSummary",
+    "generateSessionDigest",
   ]) {
     assert.match(
       backgroundSource,
@@ -753,3 +686,4 @@ test("Chinese prompt preserves natural bilingual-learning style rules", () => {
   assert.match(prompt, /spaces between Chinese and adjacent English words or digits/);
   assert.match(prompt, /source-language `text`/);
 });
+

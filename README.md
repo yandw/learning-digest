@@ -19,10 +19,10 @@ Learning Digest is a bring-your-own-key project installed locally from GitHub. I
 This repository is an early proof of concept. The platform and provider seams are in place:
 
 - the Session pipeline state machine and per-session persistence;
-- the Speech Provider registry (Groq provider included; Tencent Cloud ASR and Aliyun ASR plug into the same seam);
+- the Speech Provider registry with three providers: Groq, Tencent Cloud ASR, and Aliyun ASR;
 - the AI Provider features (analysis, explanation, translation, notes) inherited from the seed project.
 
-Source Platform capture for xiaoe-tech.com lands in a follow-up ticket. Until then, installing the extension gives you the side panel shell, working AI Provider features against cached transcripts, and full Settings, with no new capture started from course pages.
+Source Platform capture for xiaoe-tech.com and all three Speech Providers (Groq, Tencent Cloud ASR, Aliyun ASR) are implemented. Transcription quality, latency, and cost on real lessons are not measured yet; the PoC evaluation report ([docs/poc-evaluation.md](docs/poc-evaluation.md)) records what is verified in code and the manual measurements needed for the go/no-go decision.
 
 ## Install with your coding agent
 
@@ -92,14 +92,14 @@ Base URL: https://api.groq.com/openai/v1
 Model: whisper-large-v3-turbo
 ```
 
-Add a Groq API key in the Speech Provider section of Settings. Tencent Cloud ASR and Aliyun ASR can be added to the same registry seam in a local copy.
+Add a Groq API key in the Speech Provider section of Settings. Tencent Cloud ASR and Aliyun ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
 
 Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 
 ## Use Learning Digest
 
-1. Open a lesson page on a supported course platform (xiaoe-tech.com support lands in a follow-up ticket).
-2. Start a Session from the side panel when platform capture is available.
+1. Open a lesson page on a supported course platform (xiaoe-tech.com today).
+2. Start a Session from the side panel.
 3. Read the timestamped Transcript as Segments are transcribed, or choose **Original**, **中文**, or **双语**.
 4. Watch the Rolling Summary refresh as the Session progresses.
 5. Open **Overview** for AI-generated chapters and key quotes.
@@ -110,12 +110,12 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 
 - Google Chrome 116 or newer, using the Side Panel API.
 - The Session pipeline state machine with per-session persistence (resume after closing the tab mid-lesson).
-- The Speech Provider seam with the Groq provider.
+- The Speech Provider registry with Groq, Tencent Cloud ASR, and Aliyun ASR.
 - AI overviews, selected-text explanations, translation, and local notes against transcripts already in the cache.
 - Local notes and a local cache for recent transcript and digest results.
 - DeepSeek V4 Flash for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
 
-Source Platform capture for xiaoe-tech.com is under active development and is not part of this snapshot. Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
+Source Platform capture for xiaoe-tech.com is implemented; real-lesson provider evaluation is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 
 ## DeepSeek V4 Flash pricing
 
@@ -141,7 +141,7 @@ Learning Digest uses plain HTML, CSS, and JavaScript with no build step, so it i
 - Build customized summary templates per course or topic.
 - Turn saved notes into a spaced-repetition vocabulary notebook.
 - Add another Source Platform adapter (the registry seam is ready).
-- Add another Speech Provider (Tencent Cloud ASR, Aliyun ASR).
+- Tune Segment length and summary cadence per provider (start from [docs/poc-evaluation.md](docs/poc-evaluation.md)).
 
 When you remix, first open the exact Learning Digest project folder that Chrome loaded through **Load unpacked** in your coding agent. Working on a guessed or copied folder silently changes nothing in the extension Chrome actually runs.
 

@@ -1730,8 +1730,29 @@ function clearSessionSummaryViews() {
   renderSessionDigest(null);
 }
 
-function showSessionMode({ active, kind, state }) {
-  const bar = document.getElementById("sessionBar");
+// One-shot-per-Session toast: every path that surfaces an active Session
+// (icon auto-start, panel button, panel reopen) funnels through
+// showSessionMode, so it is the single place to confirm "recording started".
+const toastedSessions = new Set();
+
+function showRecordingToast() {
+  let toast = document.getElementById("recordingToast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "recordingToast";
+    toast.className = "recording-toast";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = "已开始录制 · 逐字稿将在约 2 分钟后出现";
+  toast.classList.add("recording-toast-visible");
+  clearTimeout(showRecordingToast.timer);
+  showRecordingToast.timer = setTimeout(
+    () => toast.classList.remove("recording-toast-visible"),
+    4000,
+  );
+}
+
+function showSessionMode({ active, kind, state }) {  const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
   const startBtn = document.getElementById("startLearningBtn");
   const endBtn = document.getElementById("endLearningBtn");
@@ -1745,6 +1766,10 @@ function showSessionMode({ active, kind, state }) {
     endBtn.style.display = "";
     view.style.display = "";
     if (welcome) welcome.style.display = "none";
+    if (state?.sessionId && !toastedSessions.has(state.sessionId)) {
+      toastedSessions.add(state.sessionId);
+      showRecordingToast();
+    }
     renderSessionStatus();
     renderSessionSummary(state);
     renderSessionTranscript(state);

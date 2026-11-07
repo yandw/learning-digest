@@ -1575,3 +1575,26 @@ body {
 .session-record-failed .session-record-text {
   color: #d93025;
 }
+
+
+.recording-toast {
+  background: #1d4ed8;
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(29, 78, 216, 0.35);
+  color: #fff;
+  font-size: 13px;
+  left: 50%;
+  opacity: 0;
+  padding: 8px 16px;
+  pointer-events: none;
+  position: fixed;
+  top: 12px;
+  transform: translateX(-50%) translateY(-8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 100;
+}
+
+.recording-toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

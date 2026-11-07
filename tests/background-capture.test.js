@@ -87,6 +87,23 @@ test("startLearning proceeds to capture when the selected provider's credentials
   assert.equal(result.sessionId.startsWith("s_"), true);
 });
 
+test("startLearning maps Chrome's not-invoked tabCapture error to a Chinese instruction", async () => {
+  const { handleStartLearning } = loadBackgroundHelpers({
+    settings: baseSettings(),
+    getMediaStreamId: async () => {
+      throw new Error(
+        "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured.",
+      );
+    },
+  });
+
+  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /点击工具栏中的 Learning Digest 图标/);
+  assert.doesNotMatch(result.error, /activeTab/);
+});
+
 // --- Resume: an in-flight Segment at worker death leaves no orphan pending
 
 test("getSessionState after resume settles the interrupted Segment as failed with its annotation", async () => {

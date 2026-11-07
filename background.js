@@ -835,8 +835,11 @@ async function ensureOffscreen() {
   if (await chrome.offscreen.hasDocument()) return;
   await chrome.offscreen.createDocument({
     url: "offscreen.html",
-    reasons: ["USER_MEDIA"],
-    justification: "Records the course tab's audio for segment transcription.",
+    // USER_MEDIA for the getUserMedia recorder; AUDIO_PLAYBACK so the
+    // offscreen loopback that keeps the captured lesson audible is allowed
+    // without a user gesture (autoplay policy exemption for offscreen docs).
+    reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
+    justification: "Records the course tab's audio and plays it back so the learner can still hear the lesson while it is being captured.",
   });
 }
 
@@ -1251,9 +1254,21 @@ async function handleStartLearning(message) {
   } catch (error) {
     captureContext = null;
     await clearContextPointer();
+    const message = error?.message || String(error);
+    // Chrome only allows tabCapture after the user has INVOKED the extension
+    // on the target tab (a toolbar icon click); a side-panel button click
+    // does not count. Turn the raw English API error into an actionable
+    // instruction instead of leaving the learner stranded.
+    if (/not been invoked/i.test(message)) {
+      return {
+        success: false,
+        error:
+          "Chrome 要求在采集前先调用一次扩展：请在小鹅通课程标签页上点击工具栏中的 Learning Digest 图标（点击即打开侧边栏并算作一次调用），然后再点「开始学习」。如果刚刷新或跳转过课程页面，需要重新点一次图标。",
+      };
+    }
     return {
       success: false,
-      error: `Could not start audio capture: ${error?.message || error}`,
+      error: `无法开始音频采集：${message}`,
     };
   }
 

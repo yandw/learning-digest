@@ -6,8 +6,9 @@
  * pure and lives there); this document is a deliberately dumb recorder:
  *
  * - captureStart {streamId, segmentLengthSeconds}: opens the tabCapture
- *   stream handed over from chrome.tabCapture.getMediaStreamId and starts
- *   a MediaRecorder.
+ *   stream handed over from chrome.tabCapture.getMediaStreamId, starts a
+ *   playback loopback (a consumed tab is muted for the user, which would
+ *   mean a silent lesson), and starts a MediaRecorder.
  * - captureCut {}: stops the current recorder (one decodable blob per
  *   recorder, the same pattern the pre-strip code used), immediately
  *   starts the next, and responds with the finished chunk as a data URL.
@@ -24,11 +25,37 @@
 (() => {
   let stream = null;
   let recorder = null;
+  let playbackContext = null;
   let chunkStartedAtMs = 0;
   let backstopTimer = null;
   let segmentLengthMs = 120_000;
 
   const MIME_TYPE = "audio/webm;codecs=opus";
+
+  // While a tab's stream is being consumed its audio no longer plays for
+  // the user (same rule as getDisplayMedia's suppressLocalAudioPlayback).
+  // For a learning tool that means a silent lesson, so route the captured
+  // audio back to the speakers. Requires the AUDIO_PLAYBACK offscreen
+  // reason (declared by the service worker) to pass autoplay policy.
+  function startPlaybackLoop() {
+    try {
+      playbackContext = new AudioContext();
+      const source = playbackContext.createMediaStreamSource(stream);
+      source.connect(playbackContext.destination);
+    } catch (_error) {
+      playbackContext = null;
+    }
+  }
+
+  function stopPlaybackLoop() {
+    if (!playbackContext) return;
+    try {
+      playbackContext.close();
+    } catch (_error) {
+      // Already closed; nothing to release.
+    }
+    playbackContext = null;
+  }
 
   function armBackstop() {
     clearTimeout(backstopTimer);
@@ -92,6 +119,7 @@
         video: false,
       });
       segmentLengthMs = Math.max(30_000, Number(message.segmentLengthSeconds) || 120) * 1000;
+      startPlaybackLoop();
       startRecorder();
       sendResponse({ success: true });
     } catch (error) {
@@ -120,6 +148,7 @@
     }
     if (message.action === "captureStop") {
       clearTimeout(backstopTimer);
+      stopPlaybackLoop();
       void stopRecorder().then(() => {
         if (stream) {
           for (const track of stream.getTracks()) track.stop();

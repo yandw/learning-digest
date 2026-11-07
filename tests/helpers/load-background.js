@@ -26,6 +26,7 @@ function loadBackgroundHelpers({
   setIntervalImpl = () => 0,
   clearIntervalImpl = () => {},
   offscreenDocument = true,
+  getMediaStreamId = async () => "test-stream-id",
   sidePanel = {
     setPanelBehavior() {},
     setOptions: () => Promise.resolve(),
@@ -73,7 +74,7 @@ function loadBackgroundHelpers({
         closeDocument: async () => {},
       },
       tabCapture: {
-        getMediaStreamId: async () => "test-stream-id",
+        getMediaStreamId,
       },
       runtime: {
         onInstalled: listeners,

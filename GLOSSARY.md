@@ -16,12 +16,16 @@ _Avoid_: Chunk, clip, fragment
 The timestamped text of what is said in a Session, assembled Segment by Segment. The single input for every AI feature (rolling summary, digest, notes).
 _Avoid_: Subtitles text, script, 逐字稿 (in English docs)
 
+**Topic**:
+A semantically coherent stretch of the Session's Transcript, identified on the text layer and allowed to span Segment boundaries (fixed-length recording cuts may split one Topic across Segments). Carries a Transcript time range; the organizational unit for the Rolling Summary, Session Digest, Overview, and the report.
+_Avoid_: Block, chunk, chapter, 主题
+
 **Rolling Summary**:
-The periodically refreshed running summary of the Session so far, produced by merging the previous Rolling Summary with the current period's new Transcript. Only the latest one is kept.
-_Avoid_: Interim summary, periodic digest, running notes
+The live, append-only Topic timeline produced during a Session: each tick summarizes the Transcript since the last tick plus a short overlap tail of the previous tick, and appends new Topics without rewriting earlier ones. It serves only the in-session view; it is not an input to the Session Digest.
+_Avoid_: Interim summary, merged running summary, periodic digest, running notes
 
 **Session Digest**:
-The final full-length output generated when a Session ends, built from the latest Rolling Summary plus any Transcript not yet covered by it.
+The final deliverable generated when a Session ends, built by one global pass over the full Transcript: Topic segmentation with per-Topic summaries, key quotes, and action items. It does not depend on the Rolling Summary.
 _Avoid_: Final summary, complete overview
 
 **Source Platform**:

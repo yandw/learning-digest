@@ -11,7 +11,7 @@ test("createSession starts an active Session with empty state", () => {
     status: "active",
     segments: [],
     transcriptRecords: [],
-    rollingSummary: null,
+    topics: [],
   });
 });
 
@@ -92,21 +92,64 @@ test("transcribeFailed marks the Segment failed and annotates the Transcript wit
   assert.equal(state.segments[2].status, "done");
 });
 
-test("summaryTick keeps only the latest Rolling Summary", () => {
+// --- topicsAppended: the append-only Topic timeline (ADR 0002)
+
+test("topicsAppended appends Topics to the timeline without rewriting earlier ones", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   state = sessionPipeline.applyEvent(state, {
-    type: "summaryTick",
-    summary: { text: "前三十分钟讲了导论。", coveredUntil: 1800 },
+    type: "topicsAppended",
+    topics: [{ start: 0, end: 600, title: "导论", text: "课程开场。" }],
   });
   state = sessionPipeline.applyEvent(state, {
-    type: "summaryTick",
-    summary: { text: "前六十分钟讲了导论和第一章。", coveredUntil: 3600 },
+    type: "topicsAppended",
+    topics: [
+      { start: 600, end: 1200, title: "二次函数", text: "讲解了二次函数。" },
+      { start: 1200, end: 1500, title: "习题课", text: "做了三道例题。", continuation: true },
+    ],
   });
 
-  assert.deepEqual(state.rollingSummary, {
-    text: "前六十分钟讲了导论和第一章。",
-    coveredUntil: 3600,
+  assert.deepEqual(state.topics, [
+    { start: 0, end: 600, title: "导论", text: "课程开场。" },
+    { start: 600, end: 1200, title: "二次函数", text: "讲解了二次函数。" },
+    { start: 1200, end: 1500, title: "习题课", text: "做了三道例题。", continuation: true },
+  ]);
+  assert.equal(state.status, "active");
+});
+
+test("an empty topicsAppended leaves the state untouched", () => {
+  const before = sessionPipeline.createSession({ sessionId: "s1" });
+  const after = sessionPipeline.applyEvent(before, {
+    type: "topicsAppended",
+    topics: [],
   });
+
+  assert.equal(after, before);
+  assert.deepEqual(after.topics, []);
+});
+
+test("topicsAppended rejects malformed payloads instead of corrupting the timeline", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "topicsAppended", topics: "导论" }),
+    /topicsAppended requires/,
+  );
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "topicsAppended", topics: [{ start: 0, end: 10 }] }),
+    /topicsAppended requires/,
+  );
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(state, {
+        type: "topicsAppended",
+        topics: [{ start: 100, end: 50, title: "倒置", text: "end 在 start 之前。" }],
+      }),
+    /topicsAppended requires/,
+  );
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "topicsAppended" }),
+    /topicsAppended requires/,
+  );
+  assert.deepEqual(state.topics, []);
 });
 
 test("sessionEnd ends the Session and preserves everything captured", () => {
@@ -175,8 +218,8 @@ test("snapshot round-trips through JSON and resume continues from it", () => {
     records: [{ text: "第一段", start: 0, duration: 5 }],
   });
   state = sessionPipeline.applyEvent(state, {
-    type: "summaryTick",
-    summary: { text: "导论。", coveredUntil: 120 },
+    type: "topicsAppended",
+    topics: [{ start: 0, end: 120, title: "导论", text: "第一段的总结。" }],
   });
 
   // Serialize as chrome.storage.local would (JSON-plain), then resume.
@@ -191,12 +234,50 @@ test("snapshot round-trips through JSON and resume continues from it", () => {
     segmentId: "seg-2",
     records: [{ text: "第二段", start: 120, duration: 5 }],
   });
+  resumed = sessionPipeline.applyEvent(resumed, {
+    type: "topicsAppended",
+    topics: [
+      { start: 120, end: 240, title: "第二章", text: "第二段的总结。", continuation: true },
+    ],
+  });
 
   assert.equal(resumed.segments[0].status, "done");
-  assert.deepEqual(resumed.rollingSummary, { text: "导论。", coveredUntil: 120 });
+  // Appending continues from the persisted timeline: nothing rewritten.
+  assert.deepEqual(resumed.topics, [
+    { start: 0, end: 120, title: "导论", text: "第一段的总结。" },
+    { start: 120, end: 240, title: "第二章", text: "第二段的总结。", continuation: true },
+  ]);
   assert.deepEqual(resumed.transcriptRecords, [
     { text: "第一段", start: 0, duration: 5 },
     { text: "第二段", start: 120, duration: 5 },
+  ]);
+});
+
+test("an old snapshot without Topics resumes with an empty timeline", () => {
+  // Snapshots persisted before the Topic timeline carry rollingSummary
+  // instead of topics; resume must ignore the retired field and start the
+  // timeline empty.
+  const oldSnapshot = {
+    sessionId: "s_old",
+    status: "active",
+    segments: [{ id: "seg-1", start: 0, duration: 120, status: "done" }],
+    transcriptRecords: [{ text: "第一段", start: 0, duration: 5 }],
+    rollingSummary: { text: "旧的滚动摘要。", coveredUntil: 120 },
+  };
+
+  const resumed = sessionPipeline.resumeFromSnapshot(
+    JSON.parse(JSON.stringify(oldSnapshot)),
+  );
+
+  assert.deepEqual(resumed.topics, []);
+  assert.equal(resumed.rollingSummary, undefined);
+  // And the resumed state accepts new Topics right away.
+  const appended = sessionPipeline.applyEvent(resumed, {
+    type: "topicsAppended",
+    topics: [{ start: 0, end: 120, title: "导论", text: "新时间轴的第一段。" }],
+  });
+  assert.deepEqual(appended.topics, [
+    { start: 0, end: 120, title: "导论", text: "新时间轴的第一段。" },
   ]);
 });
 
@@ -208,7 +289,7 @@ test("a Session run straight through equals one interrupted and resumed from a s
     { type: "transcribeFailed", segmentId: "seg-2" },
     { type: "segmentCaptured", segment: { id: "seg-3", start: 240, duration: 120 } },
     { type: "transcribeOk", segmentId: "seg-3", records: [{ text: "第三段", start: 240, duration: 5 }] },
-    { type: "summaryTick", summary: { text: "导论与第一章。", coveredUntil: 360 } },
+    { type: "topicsAppended", topics: [{ start: 0, end: 360, title: "导论与第一章", text: "总结了前三段。" }] },
     { type: "sessionEnd" },
   ];
 
@@ -273,7 +354,9 @@ test("allSegmentsFailed is true only when every Segment failed, and means no Tra
   assert.equal(sessionPipeline.allSegmentsFailed(state), false);
 });
 
-test("assembleSessionDigestInput combines the latest Rolling Summary with the uncovered Transcript tail", () => {
+test("assembleSessionDigestInput hands the full Transcript to the global pass (ADR 0002)", () => {
+  // The Session Digest does not consume the Rolling Summary/Topic timeline:
+  // it is one global pass over everything the Session captured.
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   state = sessionPipeline.applyEvent(state, {
     type: "segmentCaptured",
@@ -285,8 +368,8 @@ test("assembleSessionDigestInput combines the latest Rolling Summary with the un
     records: [{ text: "第一段", start: 0, duration: 5 }],
   });
   state = sessionPipeline.applyEvent(state, {
-    type: "summaryTick",
-    summary: { text: "导论。", coveredUntil: 120 },
+    type: "topicsAppended",
+    topics: [{ start: 0, end: 120, title: "导论", text: "第一段的总结。" }],
   });
   state = sessionPipeline.applyEvent(state, {
     type: "segmentCaptured",
@@ -299,8 +382,8 @@ test("assembleSessionDigestInput combines the latest Rolling Summary with the un
   });
 
   const input = sessionPipeline.assembleSessionDigestInput(state);
-  assert.deepEqual(input.rollingSummary, { text: "导论。", coveredUntil: 120 });
   assert.deepEqual(input.uncoveredTranscript, [
+    { text: "第一段", start: 0, duration: 5 },
     { text: "第二段", start: 120, duration: 5 },
   ]);
 });

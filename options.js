@@ -15,7 +15,7 @@ const YTD_OPTIONS = (() => {
       providerBadge: "当前版本支持",
       deepseekApiKeyLabel: "OpenRouter API 密钥",
       deepseekHelp:
-        "Learning Digest 通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型，生成滚动总结、完整稿、翻译和润色笔记。",
+        "Learning Digest 通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型，生成话题时间轴、会话总结、翻译和润色笔记。",
       deepseekLink: "创建 OpenRouter API 密钥",
       deepseekHelpSuffix: "。",
       aiBaseUrlLabel: "API 基础 URL",
@@ -51,9 +51,9 @@ const YTD_OPTIONS = (() => {
       speechProviderPrivacyNote:
         "进行转录时，语音转录服务会收到 Segment 的音频。凭证仅保存在当前 Chrome 个人资料中，只发送给你配置的服务。",
       sessionSettings: "会话",
-      summaryIntervalLabel: "滚动摘要间隔（分钟）",
+      summaryIntervalLabel: "话题段时间轴的触发间隔（分钟）",
       summaryIntervalHelp:
-        "会话进行中，AI 服务会按此间隔将滚动摘要与新产生的 Transcript 合并刷新。间隔越短费用越高；一般课程 30 分钟即可。",
+        "会话进行中，每当新产生的 Transcript 达到该时长（且至少 10 条记录），AI 服务就会总结出新的话题段并追加到时间轴。间隔越短费用越高；一般课程 15 分钟即可。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",

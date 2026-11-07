@@ -26,9 +26,10 @@ var YTD_SETTINGS = (() => {
     // Session capture: target Segment length in seconds. The browser layer
     // hands this to session-segmenter.js, which clamps to the same range.
     segmentLengthSeconds: 120,
-    // Rolling Summary cadence: how often the AI Provider refreshes the
-    // summary while a Session is active (minutes, clamped to [5, 180]).
-    summaryIntervalMinutes: 30,
+    // Topic timeline cadence (#28): a Topic tick fires when the Transcript
+    // coverage since the last Topic reaches this length (minutes, clamped
+    // to [5, 180]) and at least 10 new records exist.
+    summaryIntervalMinutes: 15,
   });
 
   function isLegacyCustom(input) {
@@ -133,9 +134,9 @@ var YTD_SETTINGS = (() => {
   }
 
   /**
-   * Rolling Summary cadence in minutes: finite numbers are clamped to
+   * Topic timeline cadence in minutes: finite numbers are clamped to
    * [5, 180] so a corrupted setting can never hammer the AI Provider or
-   * silently disable summaries.
+   * silently disable ticks.
    */
   function normalizeSummaryIntervalMinutes(value) {
     return clampIntegerSetting(value, 5, 180, DEFAULTS.summaryIntervalMinutes);

@@ -305,3 +305,220 @@ test("getSessionState after resume settles the interrupted Segment as failed wit
   );
   assert.ok(marker, "the gap carries the visible [语音转录失败] annotation");
 });
+
+// --- Topic tick flow: timer fires -> prompt -> topicsAppended -> persist + broadcast
+
+const TOPIC_JSON = JSON.stringify([
+  { start: 0, end: 900, title: "导论", text: "老师介绍了课程目标。" },
+]);
+
+// Ten 90-second records: exactly 15 minutes of coverage, at the trigger
+// boundary for the default interval.
+function tenCoverageRecords() {
+  const records = [];
+  for (let i = 0; i < 10; i++) {
+    records.push({ text: `第 ${i + 1} 段`, start: i * 90, duration: 90 });
+  }
+  return records;
+}
+
+// A resumed Session whose Segments are all settled, so the tick flow is the
+// only thing under test.
+function seededCapture(sessionId, records) {
+  let state = sessionPipeline.createSession({ sessionId });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-0", start: 0, duration: 120 },
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcribeOk",
+    segmentId: "seg-0",
+    records,
+  });
+  return JSON.parse(JSON.stringify(state));
+}
+
+function capturePointer(sessionId) {
+  return {
+    sessionId,
+    tabId: 7,
+    platformId: "xiaoe-tech",
+    kind: "replay",
+    timestampKind: "video",
+    startedAtMs: Date.now() - 300_000,
+    segmentLengthSeconds: 120,
+  };
+}
+
+function topicAiFetch(capturedRequests) {
+  return async (_url, options) => {
+    capturedRequests.push(JSON.parse(options.body));
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: TOPIC_JSON } }] }),
+    };
+  };
+}
+
+test("a summary tick sends the block prompt, appends Topics, persists and broadcasts", async () => {
+  const requests = [];
+  const sentMessages = [];
+  let fireSummaryTick = null;
+  const sessionId = "s_tick";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: topicAiFetch(requests),
+    setIntervalImpl: (cb) => {
+      fireSummaryTick = cb;
+      return 0;
+    },
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  // Resume arms the summary timer; the captured callback is one tick.
+  await helpers.handleGetSessionState();
+  assert.ok(fireSummaryTick, "resuming a Session arms the summary timer");
+  await fireSummaryTick();
+
+  // The block prompt went to the AI Provider: system contract + the new
+  // Transcript records stamped as [m:ss] lines.
+  assert.equal(requests.length, 1);
+  assert.match(requests[0].messages[0].content, /JSON/);
+  assert.match(requests[0].messages[1].content, /\[0:00\] 第 1 段/);
+  assert.match(requests[0].messages[1].content, /\[13:30\] 第 10 段/);
+
+  // The parsed Topics were appended, persisted and broadcast.
+  const persisted = helpers.readStored(`ytd_session_${sessionId}`);
+  assert.equal(persisted.topics.length, 1);
+  assert.equal(persisted.topics[0].title, "导论");
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.state?.topics?.length,
+  );
+  assert.ok(update, "the panel receives a sessionUpdate carrying the new Topic");
+  assert.equal(update.state.topics[0].start, 0);
+});
+
+test("a tick below the trigger threshold never calls the AI Provider", async () => {
+  const requests = [];
+  let fireSummaryTick = null;
+  const sessionId = "s_quiet";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: topicAiFetch(requests),
+    setIntervalImpl: (cb) => {
+      fireSummaryTick = cb;
+      return 0;
+    },
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      // Only two records: far below both the coverage and debounce bars.
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, [
+        { text: "第一段", start: 0, duration: 60 },
+        { text: "第二段", start: 60, duration: 60 },
+      ]),
+    },
+  });
+
+  await helpers.handleGetSessionState();
+  await fireSummaryTick();
+
+  assert.equal(requests.length, 0, "quiet stretches produce no AI calls");
+  assert.deepEqual(helpers.readStored(`ytd_session_${sessionId}`).topics, []);
+});
+
+test("a failed tick leaves the state intact and retries on the next interval", async () => {
+  const requests = [];
+  const sentMessages = [];
+  let fireSummaryTick = null;
+  let attempts = 0;
+  const sessionId = "s_retry";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: async (_url, options) => {
+      attempts += 1;
+      if (attempts === 1) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: { message: "provider boom" } }),
+        };
+      }
+      return topicAiFetch(requests)(_url, options);
+    },
+    setIntervalImpl: (cb) => {
+      fireSummaryTick = cb;
+      return 0;
+    },
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await helpers.handleGetSessionState();
+
+  // First interval: the AI Provider fails; nothing may change.
+  await fireSummaryTick();
+  assert.deepEqual(
+    helpers.readStored(`ytd_session_${sessionId}`).topics,
+    [],
+    "a failed tick appends nothing",
+  );
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    0,
+    "a failed tick broadcasts nothing",
+  );
+
+  // Next interval: the same tick retries and succeeds.
+  await fireSummaryTick();
+  assert.equal(requests.length, 1);
+  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).topics.length, 1);
+});
+
+test("malformed model output appends nothing and leaves the snapshot untouched", async () => {
+  const requests = [];
+  const sentMessages = [];
+  let fireSummaryTick = null;
+  const sessionId = "s_garbage";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "这段没有可总结的话题。" } }],
+        }),
+      };
+    },
+    setIntervalImpl: (cb) => {
+      fireSummaryTick = cb;
+      return 0;
+    },
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await helpers.handleGetSessionState();
+  await fireSummaryTick();
+
+  assert.equal(requests.length, 1, "the tick did ask the AI Provider");
+  assert.deepEqual(
+    helpers.readStored(`ytd_session_${sessionId}`).topics,
+    [],
+    "malformed output appends nothing",
+  );
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    0,
+  );
+});

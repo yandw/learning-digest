@@ -4,8 +4,8 @@
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
  * 2. Calling the AI Provider to analyze transcripts, explain selections,
- *    translate content, clean up saved notes, and refresh the Rolling
- *    Summary / Session Digest of an active learning Session
+ *    translate content, clean up saved notes, and run the Topic timeline
+ *    ticks / Session Digest of an active learning Session
  * 3. Note storage
  * 4. Sending results back to the side panel
  *
@@ -504,39 +504,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================
 
 /**
- * Parses JSON returned by an LLM, tolerating the small mistakes they sometimes
- * make. Some models occasionally emit a trailing
- * comma before a ] or }, or wraps the JSON in prose / code fences. Plain
- * JSON.parse throws on those, which is what caused the "Unexpected token ']'"
- * error on the Overview tab. This function strips fences, isolates the outer
- * JSON object, removes trailing commas, and only then parses.
+ * Parses JSON returned by an LLM, tolerating the small mistakes they
+ * sometimes make (trailing commas, prose or code fences around the payload).
+ * The implementation lives in session-summary.js so the Topic tick parser
+ * shares exactly the same tolerance; see it for the details.
  *
  * @param {string} text - The raw text from the model
  * @returns {Object} - The parsed object (throws if still unparseable)
  */
 function parseLooseJson(text) {
-  let cleaned = (text || "").trim();
-
-  // Strip ```json ... ``` style code fences
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
-  }
-
-  // Isolate the outermost { ... } in case the model added a sentence around it
-  const firstBrace = cleaned.indexOf("{");
-  const lastBrace = cleaned.lastIndexOf("}");
-  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-  }
-
-  try {
-    return JSON.parse(cleaned);
-  } catch (firstError) {
-    // Most common LLM slip: a trailing comma right before a } or ].
-    // e.g. ["a", "b", ]  ->  ["a", "b" ]
-    const repaired = cleaned.replace(/,(\s*[}\]])/g, "$1");
-    return JSON.parse(repaired);
-  }
+  return YTD_SESSION_SUMMARY.parseLooseJson(text);
 }
 
 // ============================================================
@@ -1066,10 +1043,8 @@ function createCaptureContext({
     credentials,
     liveTimer: null,
     summaryTimer: null,
-    // Scheduling state starts conservative: a fresh Session has nothing to
-    // summarize yet, and a resumed one waits one full interval after the
-    // (re)start before its next summary tick either way.
-    lastSummaryAtMs: Date.now(),
+    // One Topic tick at a time; a fresh or resumed Session simply waits for
+    // the first timer fire, where the content-driven trigger decides.
     summaryInFlight: false,
     ended: false,
   };
@@ -1164,77 +1139,82 @@ function startLiveTimer(context) {
 }
 
 // ============================================================
-// ROLLING SUMMARY + SESSION DIGEST (#18)
+// TOPIC TICK + SESSION DIGEST (#18 / #28, ADR 0002)
 // ============================================================
 //
-// The Rolling Summary runs on a configurable interval while a Session is
-// active. All assembly/scheduling decisions are pure functions in
+// While a Session is active, a summary timer fires on the configured
+// interval; whether a tick is actually due is a content-driven decision
+// (isTopicTickDue): the Transcript coverage since the last Topic must have
+// reached the interval AND at least 10 new records must exist. All
+// assembly/trigger/parsing decisions are pure functions in
 // session-summary.js; this layer only owns the timer, the AI call, and
-// feeding the result back as a summaryTick event. Scheduling state lives
-// in the capture context (not the persisted state): lastSummaryAtMs is the
-// last ATTEMPT time, so a failed summary waits one more interval instead of
-// retrying in a tight loop, and a resumed Session simply waits one interval
-// before its next tick.
+// feeding the parsed Topics back as a topicsAppended event.
+//
+// The coverage cursor derives from the persisted Topics (not timer state),
+// so a resumed Session continues appending from exactly where the snapshot
+// left off. A failed tick leaves the Topics untouched, so the next timer
+// fire retries; summaryInFlight keeps one tick at a time.
 
 function startSummaryTimer(context, summaryIntervalMinutes) {
+  // The callback returns the tick promise: setInterval ignores it, and the
+  // tick body catches its own errors, so nothing can turn unhandled — but
+  // tests can await one tick through the captured callback.
   context.summaryTimer = setInterval(() => {
-    void maybeRunRollingSummary(context);
+    return maybeRunTopicTick(context);
   }, Math.max(60_000, Number(summaryIntervalMinutes) * 60 * 1000));
 }
 
-async function maybeRunRollingSummary(context) {
+async function maybeRunTopicTick(context) {
   if (context.ended || context.summaryInFlight) return;
   const settings = await getSettings();
-  const due = YTD_SESSION_SUMMARY.isSummaryDue({
-    nowMs: Date.now(),
-    lastSummaryAtMs: context.lastSummaryAtMs,
+  const due = YTD_SESSION_SUMMARY.isTopicTickDue({
+    state: context.state,
     intervalMinutes: settings.summaryIntervalMinutes,
-    hasNewTranscript: YTD_SESSION_SUMMARY.hasNewTranscript(context.state),
   });
   if (!due) return;
 
   context.summaryInFlight = true;
-  context.lastSummaryAtMs = Date.now();
   try {
-    const input = YTD_SESSION_SUMMARY.assembleRollingSummaryInput(context.state);
+    const input = YTD_SESSION_SUMMARY.assembleTopicBlockInput(context.state);
     const { text } = await requestAiCompletion({
       maxTokens: 4096,
-      messages: YTD_SESSION_SUMMARY.buildRollingSummaryMessages({
-        previousSummary: input.previousSummary,
+      messages: YTD_SESSION_SUMMARY.buildTopicBlockMessages({
+        existingTopicTitles: input.existingTopicTitles,
+        contextTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
+          input.overlapTail,
+        ),
         newTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
           input.newTranscript,
         ),
       }),
     });
-    // Sliding window: only the latest summary is kept (the state machine
-    // enforces that on summaryTick), and coveredUntil moves the next
-    // window past exactly the records this tick consumed.
-    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-      type: "summaryTick",
-      summary: {
-        text,
-        coveredUntil: YTD_SESSION_SUMMARY.coveredUntilFor(input.newTranscript),
-      },
-    });
-    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
-      chrome.storage.local,
-      context.state,
-    );
-    broadcastSession(context.state);
+    // Tolerant parse: malformed output yields an empty list, which the state
+    // machine ignores — the state and its cursor stay untouched.
+    const topics = YTD_SESSION_SUMMARY.parseTopicBlock(text);
+    if (topics.length > 0) {
+      context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+        type: "topicsAppended",
+        topics,
+      });
+      await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+        chrome.storage.local,
+        context.state,
+      );
+      broadcastSession(context.state);
+    }
   } catch (error) {
-    // A failed tick leaves the window untouched; the next interval retries.
-    debugLog("[Learning Digest BG] Rolling Summary failed:", error);
+    // A failed tick leaves the timeline untouched; the next interval retries.
+    debugLog("[Learning Digest BG] Topic tick failed:", error);
   } finally {
     context.summaryInFlight = false;
   }
 }
 
 /**
- * Builds the Session Digest when a Session ends. The input assembly is the
- * pure `assembleSessionDigestInput` from session-pipeline.js; this function
- * only adds the AI call and persistence. If the uncovered tail is empty and
- * a Rolling Summary already covers the whole Session, its text is reused
- * verbatim instead of paying for a redundant call.
+ * Builds the Session Digest when a Session ends: one global pass over the
+ * full Transcript (ADR 0002). The input assembly is the pure
+ * `assembleSessionDigestInput` from session-pipeline.js; this function only
+ * adds the AI call. Digest failures never block ending the Session.
  *
  * @returns {Promise<{text: string|null, error?: string, skipped?: string}>}
  */
@@ -1244,15 +1224,11 @@ async function generateSessionDigest(state) {
     return { text: null, skipped: "noTranscript" };
   }
   try {
-    const { rollingSummary, uncoveredTranscript } =
+    const { uncoveredTranscript } =
       YTD_SESSION_PIPELINE.assembleSessionDigestInput(state);
-    if (uncoveredTranscript.length === 0 && rollingSummary?.text) {
-      return { text: rollingSummary.text };
-    }
     const { text } = await requestAiCompletion({
       maxTokens: 8192,
       messages: YTD_SESSION_SUMMARY.buildSessionDigestMessages({
-        rollingSummaryText: rollingSummary?.text ?? null,
         uncoveredTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
           uncoveredTranscript,
         ),

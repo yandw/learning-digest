@@ -108,7 +108,11 @@ function loadBackgroundHelpers({
   };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("background.js"), sandbox);
-  return sandbox.__YTD_TRANSLATION_TESTING__;
+  return {
+    ...sandbox.__YTD_TRANSLATION_TESTING__,
+    // Direct view of the storage backing, for asserting what was persisted.
+    readStored: (key) => localStorage[key],
+  };
 }
 
 module.exports = { loadBackgroundHelpers };

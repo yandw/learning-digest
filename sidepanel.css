@@ -1562,6 +1562,31 @@ body {
   white-space: pre-wrap;
 }
 
+/* Topic timeline entries (#28): one block per Topic; a continuation of the
+   previous tick's last Topic is indented under its parent. */
+.session-topic {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.session-topic + .session-topic {
+  border-top: 1px solid #f1f3f5;
+}
+
+.session-topic-title {
+  font-weight: 600;
+}
+
+.session-topic-continuation {
+  margin-left: 14px;
+}
+
+.session-topic-text {
+  color: #4b5563;
+}
+
 .session-digest {
   border-bottom: none;
   border-top: 1px solid #e5e7eb;

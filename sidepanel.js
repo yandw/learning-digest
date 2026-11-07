@@ -1729,17 +1729,40 @@ function appendPendingRow(container, startSeconds, text) {
   container.appendChild(row);
 }
 
+// The Rolling Summary is an append-only Topic timeline (#28): one entry per
+// Topic with its Transcript time range, title and summary. A Topic that
+// continues the previous tick's last one carries a 续 marker and renders
+// indented; appended Topics are never rewritten, so re-renders just redraw
+// the same list.
 function renderSessionSummary(state) {
   const section = document.getElementById("sessionSummary");
   const text = document.getElementById("sessionSummaryText");
   if (!section || !text) return;
-  if (state?.rollingSummary?.text) {
-    text.textContent = state.rollingSummary.text;
-    section.style.display = "flex";
-  } else {
+  const topics = Array.isArray(state?.topics) ? state.topics : [];
+  if (topics.length === 0) {
     text.textContent = "";
     section.style.display = "none";
+    return;
   }
+  text.textContent = "";
+  for (const topic of topics) {
+    const entry = document.createElement("div");
+    entry.className = topic.continuation
+      ? "session-topic session-topic-continuation"
+      : "session-topic";
+    const title = document.createElement("div");
+    title.className = "session-topic-title";
+    const range = `[${sessionTimestampLabel(topic.start)}–${sessionTimestampLabel(topic.end)}]`;
+    title.textContent = topic.continuation
+      ? `续 ${range} ${topic.title}`
+      : `${range} ${topic.title}`;
+    const body = document.createElement("div");
+    body.className = "session-topic-text";
+    body.textContent = topic.text;
+    entry.append(title, body);
+    text.appendChild(entry);
+  }
+  section.style.display = "flex";
 }
 
 function renderSessionDigest(digest) {

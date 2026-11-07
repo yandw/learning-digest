@@ -144,7 +144,7 @@
         <section class="card">
           <h2 data-i18n="sessionSettings">Session</h2>
           <label for="summaryIntervalMinutes" data-i18n="summaryIntervalLabel"
-            >Rolling Summary interval (minutes)</label
+            >Topic timeline interval (minutes)</label
           >
           <input
             id="summaryIntervalMinutes"
@@ -156,9 +156,10 @@
             autocomplete="off"
           />
           <p class="help" data-i18n="summaryIntervalHelp">
-            While a Session is active, the AI Provider refreshes the Rolling
-            Summary on this interval by merging it with the new Transcript.
-            Lower values cost more; 30 minutes suits a typical lesson.
+            While a Session is active, the AI Provider appends new Topics to
+            the timeline whenever new Transcript reaches this length (and at
+            least 10 records). Lower values cost more; 15 minutes suits a
+            typical lesson.
           </p>
         </section>
 

@@ -1,9 +1,9 @@
 /**
  * Session pipeline: a pure, event-driven state machine over Session state.
  *
- * Events (segmentCaptured, transcribeOk, transcribeFailed, summaryTick,
+ * Events (segmentCaptured, transcribeOk, transcribeFailed, topicsAppended,
  * sessionEnd) drive transitions over state
- * { sessionId, segments, transcriptRecords, rollingSummary, status }.
+ * { sessionId, segments, transcriptRecords, topics, status }.
  * Segments carry their own lifecycle (pending → done / failed).
  *
  * Pure logic with no browser dependencies, so it can be tested in Node and
@@ -39,7 +39,7 @@ var YTD_SESSION_PIPELINE = (() => {
    * Creates an active Session.
    *
    * @param {{sessionId: string}} options
-   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], rollingSummary: object|null}}
+   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], topics: object[]}}
    */
   function createSession({ sessionId }) {
     return {
@@ -47,8 +47,31 @@ var YTD_SESSION_PIPELINE = (() => {
       status: "active",
       segments: [],
       transcriptRecords: [],
-      rollingSummary: null,
+      topics: [],
     };
+  }
+
+  /**
+   * Validates one raw Topic entry for the append-only timeline: numeric
+   * time range with end at or after start, non-empty title and text. The
+   * tolerant parser (session-summary.js) produces this shape; the state
+   * machine re-checks so a malformed append can never corrupt the timeline.
+   *
+   * @param {*} topic
+   * @returns {boolean}
+   */
+  function isValidTopic(topic) {
+    if (!topic || typeof topic !== "object" || Array.isArray(topic)) return false;
+    const start = Number(topic.start);
+    const end = Number(topic.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (Math.max(0, Math.floor(end)) < Math.max(0, Math.floor(start))) return false;
+    return (
+      typeof topic.title === "string" &&
+      topic.title.trim().length > 0 &&
+      typeof topic.text === "string" &&
+      topic.text.trim().length > 0
+    );
   }
 
   /**
@@ -63,7 +86,7 @@ var YTD_SESSION_PIPELINE = (() => {
    * - {type: "segmentCaptured", segment: {id, start, duration}}
    * - {type: "transcribeOk", segmentId, records: [{text, start, duration, language?}]}
    * - {type: "transcribeFailed", segmentId}
-   * - {type: "summaryTick", summary: {text, coveredUntil}}
+   * - {type: "topicsAppended", topics: [{start, end, title, text, continuation?}]}
    * - {type: "sessionEnd"}
    *
    * @param {object} state
@@ -81,8 +104,8 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTranscribeOk(state, event);
       case "transcribeFailed":
         return onTranscribeFailed(state, event);
-      case "summaryTick":
-        return onSummaryTick(state, event);
+      case "topicsAppended":
+        return onTopicsAppended(state, event);
       case "sessionEnd":
         return { ...state, status: "ended" };
       default:
@@ -146,17 +169,25 @@ var YTD_SESSION_PIPELINE = (() => {
     return settleSegment(state, event.segmentId, "failed", [marker]);
   }
 
-  function onSummaryTick(state, event) {
-    if (!event.summary || typeof event.summary.text !== "string") {
-      throw new Error("summaryTick requires a summary with text");
+  function onTopicsAppended(state, event) {
+    const topics = Array.isArray(event.topics) ? event.topics : null;
+    if (!topics || topics.some((topic) => !isValidTopic(topic))) {
+      throw new Error(
+        "topicsAppended requires Topic entries with {start, end, title, text}",
+      );
     }
-    // Only the latest Rolling Summary is kept.
-    return { ...state, rollingSummary: event.summary };
+    // Append-only (ADR 0002): new Topics never rewrite earlier ones, and an
+    // empty append (e.g. the parser found nothing to summarize) is a no-op.
+    if (topics.length === 0) return state;
+    return { ...state, topics: [...state.topics, ...topics] };
   }
 
   /**
    * Restores Session state from a persisted snapshot so the caller can keep
-   * feeding events exactly where the Session left off.
+   * feeding events exactly where the Session left off. Snapshots from
+   * before the Topic timeline carry the retired rollingSummary field and no
+   * topics at all; the retired field is simply ignored and the timeline
+   * starts empty (old summaries are never migrated, per #27).
    *
    * @param {object} snapshot - a state object previously saved to storage
    * @returns {object} Session state
@@ -172,7 +203,7 @@ var YTD_SESSION_PIPELINE = (() => {
       transcriptRecords: Array.isArray(snapshot.transcriptRecords)
         ? snapshot.transcriptRecords
         : [],
-      rollingSummary: snapshot.rollingSummary ?? null,
+      topics: Array.isArray(snapshot.topics) ? snapshot.topics : [],
     };
   }
 
@@ -229,23 +260,18 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
-   * Assembles the Session Digest input per the spec: the latest Rolling
-   * Summary plus the Transcript tail not yet covered by it. The AI Provider
+   * Assembles the Session Digest input per ADR 0002: one global pass over
+   * the full Transcript, independent of the Topic timeline. The AI Provider
    * call itself lives outside this pure module; this only computes what the
-   * digest prompt is built from. Failed-marker records inside the uncovered
-   * tail are kept so the digest can mention the gap.
+   * digest prompt is built from. Failed-marker records are kept so the
+   * digest can mention the gap.
    *
    * @param {object} state
-   * @returns {{rollingSummary: object|null, uncoveredTranscript: object[]}}
+   * @returns {{uncoveredTranscript: object[]}}
    */
   function assembleSessionDigestInput(state) {
-    const coveredUntil = Number(state?.rollingSummary?.coveredUntil) || 0;
-    const uncoveredTranscript = (state?.transcriptRecords || []).filter(
-      (record) => (Number(record.start) || 0) >= coveredUntil,
-    );
     return {
-      rollingSummary: state?.rollingSummary ?? null,
-      uncoveredTranscript,
+      uncoveredTranscript: [...(state?.transcriptRecords || [])],
     };
   }
 

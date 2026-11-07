@@ -1883,6 +1883,11 @@ function setupSessionUI() {
   chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
     if (changeInfo.status === "complete" && !sessionUi.active) void refreshSessionUI();
   });
+  // The panel can miss sessionUpdate broadcasts (it may still be loading
+  // when the Session starts after an icon click), which used to leave a
+  // freshly started Session looking idle. Poll cheaply to converge on the
+  // true state; rendering is idempotent.
+  setInterval(() => void refreshSessionUI(), 5000);
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === "sessionUpdate" && message.startError) {
       // Auto-start from the toolbar icon failed (e.g. missing API key);

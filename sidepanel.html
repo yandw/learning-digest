@@ -3,12 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YouTube Digest</title>
+    <title>Learning Digest</title>
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
     <!-- HEADER -->
-    <!-- Note: the panel's own "YouTube Digest" title is shown by Chrome's side-panel
+    <!-- Note: the panel's own "Learning Digest" title is shown by Chrome's side-panel
          title bar, so we don't repeat a logo here. -->
     <div class="header">
       <div class="header-top">
@@ -22,8 +22,8 @@
             class="settings-btn"
             id="settingsBtn"
             type="button"
-            title="Open YouTube Digest settings"
-            aria-label="Open YouTube Digest settings"
+            title="Open Learning Digest settings"
+            aria-label="Open Learning Digest settings"
           >
             Settings
           </button>
@@ -74,10 +74,12 @@
       <!-- WELCOME STATE -->
       <div id="welcomeState" class="welcome-container">
         <div class="welcome-icon" aria-hidden="true"></div>
-        <div class="welcome-title">Ready to Digest</div>
+        <div class="welcome-title">Learning Digest</div>
         <div class="welcome-desc">
-          Navigate to a YouTube video and click the extension icon to get an
-          AI-powered digest.
+          Open a lesson on a supported course platform to start a Session:
+          segment-by-segment transcription, rolling summaries, and a
+          full-session digest. Platform capture is rolling out first for
+          xiaoe-tech.com.
         </div>
       </div>
 
@@ -87,10 +89,8 @@
           <div class="loading-bar" id="loadingBar">
             <div class="loading-bar-fill" id="loadingBarFill"></div>
           </div>
-          <div class="loading-text" id="loadingText">Fetching transcript</div>
-          <div class="loading-subtext" id="loadingSubtext">
-            Extracting captions from video...
-          </div>
+          <div class="loading-text" id="loadingText">Working</div>
+          <div class="loading-subtext" id="loadingSubtext"></div>
         </div>
       </div>
 
@@ -246,23 +246,14 @@
               </div>
             </div>
             <p class="notes-intro" id="notesIntro">
-              Move your mouse over the video and click Note to save a
-              timestamped note, or press the "n" key while the video is focused.
+              Select transcript text and click Note to save it with its
+              timestamp.
             </p>
             <div id="notesList"></div>
           </div>
         </div>
       </div>
     </div>
-
-    <!-- Auto-scroll follow button — appears when user scrolls away from playback position -->
-    <button
-      class="follow-playback-btn"
-      id="followPlaybackBtn"
-      style="display: none"
-    >
-      Follow playback
-    </button>
 
     <script src="settings.js"></script>
     <script src="sidepanel.js"></script>

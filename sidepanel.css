@@ -878,42 +878,7 @@ body {
 }
 
 /* Active playback highlight */
-.transcript-entry.active-playback {
-  background: var(--accent-dim);
-  border-left: 3px solid var(--accent);
-}
-
-.transcript-entry.active-playback .transcript-time {
-  color: var(--accent);
-  font-weight: 600;
-}
-
 /* Follow playback button — floating pill */
-.follow-playback-btn {
-  position: fixed;
-  bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
-  background: var(--accent);
-  color: white;
-  border: none;
-  padding: 10px 22px;
-  border-radius: var(--r-pill);
-  font-family: var(--font-body);
-  font-weight: 600;
-  font-size: 12px;
-  letter-spacing: 0.3px;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  box-shadow: 0 6px 18px rgba(200, 103, 79, 0.4);
-}
-
-.follow-playback-btn:hover {
-  background: var(--accent-hover);
-  transform: translateX(-50%) translateY(-1px);
-}
-
 /* ============================================================
    LOADING STATE
    ============================================================ */
@@ -954,12 +919,6 @@ body {
   100% {
     left: 100%;
   }
-}
-
-/* Speech Transcription reports real progress, so it swaps the ::after
-   indeterminate sweep for a real percentage fill driven by JS. */
-.loading-bar--determinate::after {
-  content: none;
 }
 
 .loading-bar-fill {

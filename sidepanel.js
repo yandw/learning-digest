@@ -1,8 +1,10 @@
 /**
  * SIDE PANEL LOGIC
  *
- * Handles the UI for YouTube Digest: video detection, transcript analysis,
- * rendering results, and export features.
+ * Handles the UI for Learning Digest: rendering transcripts, analysis,
+ * translation, and notes. Source Platform capture that feeds new Sessions
+ * lands with the platform ticket; until then the panel shows its welcome
+ * state and can render previously cached digests.
  */
 
 const DEBUG = false;
@@ -26,7 +28,6 @@ let currentChannelName = "";
 let currentVideoDescription = "";
 let currentVideoDuration = 0;
 let isAnalysisLoading = false; // Track if analysis is in progress
-let youtubeTabId = null; // Store the YouTube tab ID for reliable messaging
 let errorAction = null;
 
 // --- Translation state ---
@@ -147,11 +148,6 @@ async function sendTranslationWithRetry(message, isStale) {
   if (!lastResult && lastError) throw lastError;
   return lastResult;
 }
-
-// --- Auto-scroll state (follow video playback in transcript) ---
-let autoScrollEnabled = true; // True = scroll transcript to follow video playback
-let autoScrollInterval = null; // setInterval ID for polling video time
-let lastAutoScrollTime = 0; // Timestamp of last programmatic scroll (ignores scroll events within 1s)
 
 // --- Transcript reading position state ---
 // Session storage survives a side panel close but clears when Chrome closes.
@@ -320,55 +316,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
 
-  await checkCurrentTab();
+  showState("welcome");
 });
 
-// Kept open only so background.js can detect the panel closing via
-// port.onDisconnect — chrome.runtime.sendMessage gives background no such
-// signal. Needed to stop a Speech Transcription recording (MediaRecorder +
-// chunk uploads running in the YouTube tab) when the user closes the panel
-// mid-video instead of letting it run unattended until the video ends.
-let sidePanelLifecyclePort = null;
-
-// The port name carries this window's ID so background.js can track one
-// port per window (a user can have the side panel open in more than one
-// browser window at once, each transcribing a different video) instead of
-// one shared port that the second window's connect would silently steal.
-// Awaits chrome.windows.getCurrent() directly rather than relying on the
-// module-level panelWindowId variable, since that's set asynchronously at
-// load and could still be null if this runs before it resolves.
-async function openSidePanelLifecyclePort() {
-  if (sidePanelLifecyclePort) return sidePanelLifecyclePort.windowId;
-  const { id: windowId } = await chrome.windows.getCurrent();
-  sidePanelLifecyclePort = Object.assign(
-    chrome.runtime.connect({ name: `sidePanelLifecycle:${windowId}` }),
-    { windowId },
-  );
-  return windowId;
-}
-
-// Listen for messages from the Digest button on YouTube page
+// Listen for messages from the background script.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === "startDigestFromButton") {
-    // Load the digest for the current video. Served from cache when we've
-    // seen this video before (no API calls); fetched fresh otherwise.
-    // (This used to force-clear the cache on every click, which silently
-    // burned a transcript credit + analysis tokens per click.)
-    checkCurrentTab();
-    sendResponse({ success: true });
-  }
-  if (message.action === "transcriptProgress") {
-    // Background is telling us the transcript fetch status changed.
-    // secondsTranscribed only accompanies Speech Transcription progress;
-    // every other caller of pushTranscriptProgress omits it, so the
-    // existing indeterminate bar still plays for those (percent undefined).
-    const percent =
-      typeof message.secondsTranscribed === "number" && currentVideoDuration > 0
-        ? (message.secondsTranscribed / currentVideoDuration) * 100
-        : undefined;
-    updateLoading(message.title, message.subtitle, percent);
-    sendResponse({ success: true });
-  }
   if (message.action === "noteSaved") {
     // Refresh notes list when a new note is saved
     const filterAll = document
@@ -381,102 +333,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // ============================================================
-// FOLLOW THE ACTIVE TAB
+// EVENT LISTENERS
 // ============================================================
-// The panel watches which tab is in front of it and reacts:
-//   - Front tab is NOT YouTube  -> the panel closes itself (window.close()).
-//     We do this OURSELVES rather than relying only on the background
-//     script's per-tab enable/disable, because Chrome doesn't reliably
-//     apply per-tab panel state to tabs spawned in unusual ways (e.g. a
-//     link opened from another app) — which let the panel linger on
-//     non-YouTube pages.
-//   - Front tab IS YouTube but on a different video -> refresh the digest.
-//     YouTube is a single-page app (clicking a video swaps content without
-//     a reload), so we track URL changes; startDigest() caches per video,
-//     making re-checks instant and free for already-digested videos.
-//
-// Everything is scoped to the window this panel lives in: tab switches in
-// OTHER browser windows must not close this panel or hijack its content.
-
-let navigationRefreshTimer = null;
-let panelWindowId = null;
-chrome.windows.getCurrent().then((w) => {
-  panelWindowId = w.id;
-});
-
-function scheduleDigestRefresh() {
-  // Small delay lets YouTube finish rendering the new video's title and
-  // description before we read them. Also collapses rapid-fire URL events
-  // into a single refresh.
-  clearTimeout(navigationRefreshTimer);
-  navigationRefreshTimer = setTimeout(() => {
-    checkCurrentTab();
-  }, 600);
-}
-
-function panelIsShowingResults() {
-  const results = document.getElementById("resultsState");
-  return results && results.style.display !== "none";
-}
-
-/**
- * Reacts to the URL now in front of the panel: close on non-YouTube,
- * refresh the digest when the video changed.
- */
-function handleFrontTabUrl(url) {
-  if (!(url || "").startsWith("https://www.youtube.com")) {
-    // Start the position save, then close in this same event callback. Chrome
-    // does not reliably honor window.close() after an asynchronous wait.
-    void saveCurrentTranscriptViewState();
-    window.close();
-    return;
-  }
-
-  const newVideoId = extractVideoId(url);
-  // Refresh when the video changed, or when we're not currently showing
-  // results (e.g. user went home, then clicked back into the same video).
-  if (newVideoId !== currentVideoId || !panelIsShowingResults()) {
-    scheduleDigestRefresh();
-  }
-}
-
-/**
- * Gets the best URL from a tab update that can change the visible page.
- * The status events repeat the close request after Chrome commits the first
- * non-YouTube navigation, when an early URL event alone can be lost.
- */
-function getNavigationUrl(changeInfo, tab) {
-  if (changeInfo.url) return changeInfo.url;
-  if (changeInfo.status !== "loading" && changeInfo.status !== "complete") {
-    return "";
-  }
-  return tab.pendingUrl || tab.url || "";
-}
-
-// Fires when a tab starts or completes navigation, including YouTube's
-// no-reload navigation. The completion event is a deliberate second close
-// attempt for the first non-YouTube page.
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!tab.active) return;
-  if (panelWindowId !== null && tab.windowId !== panelWindowId) return;
-  const url = getNavigationUrl(changeInfo, tab);
-  if (!url) return;
-  handleFrontTabUrl(url);
-});
-
-// Fires when a different tab comes to the front — switching tabs, or a new
-// tab being opened (including ones opened by clicking links in other apps).
-chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
-  if (panelWindowId !== null && windowId !== panelWindowId) return;
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    // Brand-new tabs may not have committed their URL yet — fall back to
-    // the pending one so we judge where the tab is actually going.
-    handleFrontTabUrl(tab.url || tab.pendingUrl || "");
-  } catch (e) {
-    // Tab closed before we could read it — nothing to do.
-  }
-});
 
 function setupEventListeners() {
   // Tab switching
@@ -518,22 +376,12 @@ function setupEventListeners() {
     void saveCurrentTranscriptViewState();
   });
 
-  // Follow playback button — re-enables auto-scroll after user scrolled away
-  document
-    .getElementById("followPlaybackBtn")
-    ?.addEventListener("click", () => {
-      autoScrollEnabled = true;
-      document.getElementById("followPlaybackBtn").style.display = "none";
-      // Jump straight back to the line currently being spoken. We scroll
-      // directly (not via playbackTrackingTick) because the tick skips
-      // entries that are already highlighted — and the current line almost
-      // always IS highlighted, which made this button appear to do nothing.
-      if (!scrollToActiveEntry()) {
-        playbackTrackingTick(); // No highlight yet — let a tick establish one
-      }
-    });
+  // Remember the transcript reading position as the user scrolls.
+  document.getElementById("contentArea")?.addEventListener(
+    "scroll",
+    scheduleTranscriptViewStateSave,
+  );
 
-  // Notes filter buttons
   document.getElementById("notesFilterThis")?.addEventListener("click", () => {
     setNotesFilter(false);
     loadNotes(currentVideoId);
@@ -554,100 +402,14 @@ function setNotesFilter(showAll) {
 }
 
 // ============================================================
-// VIDEO DETECTION
-// ============================================================
-
-async function checkCurrentTab() {
-  try {
-    // The panel belongs only to the active tab. Looking for another open
-    // YouTube tab here can keep an old transcript visible on a non-YouTube
-    // page, so never fall back to background tabs.
-    const tabs = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
-    });
-    const tab = tabs[0] || null;
-
-    debugLog("[YouTube Digest Panel] Found tab:", tab?.id, tab?.url);
-
-    if (!tab?.url) {
-      showState("welcome");
-      return;
-    }
-
-    if (!tab.url.startsWith("https://www.youtube.com")) {
-      handleFrontTabUrl(tab.url);
-      return;
-    }
-
-    // Store the tab ID for reliable messaging later
-    youtubeTabId = tab.id;
-
-    const videoId = extractVideoId(tab.url);
-
-    if (videoId) {
-      currentVideoUrl = tab.url;
-
-      try {
-        // Route through background script for reliable message passing
-        const result = await chrome.runtime.sendMessage({
-          action: "relayToContent",
-          payload: { action: "getVideoInfo" },
-        });
-        debugLog("[YouTube Digest Panel] getVideoInfo result:", result);
-        if (result.success && result.response) {
-          currentVideoTitle = result.response.title || "";
-          currentChannelName = result.response.channelName || "";
-          currentVideoDescription = result.response.description || "";
-          currentVideoDuration = result.response.duration || 0;
-        }
-      } catch (e) {
-        console.error("[YouTube Digest Panel] getVideoInfo error:", e);
-        currentVideoTitle = "";
-        currentChannelName = "";
-        currentVideoDescription = "";
-        currentVideoDuration = 0;
-      }
-
-      startDigest(videoId, tab.url);
-    } else {
-      showState("welcome");
-    }
-  } catch (error) {
-    console.error("Tab check error:", error);
-    showState("welcome");
-  }
-}
-
-function extractVideoId(url) {
-  try {
-    const urlObj = new URL(url);
-
-    if (
-      urlObj.hostname.includes("youtube.com") &&
-      urlObj.searchParams.has("v")
-    ) {
-      return urlObj.searchParams.get("v");
-    }
-
-    if (urlObj.hostname === "youtu.be") {
-      return urlObj.pathname.slice(1);
-    }
-
-    if (urlObj.pathname.startsWith("/embed/")) {
-      return urlObj.pathname.split("/")[2];
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================
 // DIGEST PIPELINE
 // ============================================================
 
+/**
+ * Loads a previously cached digest for a session. Source Platform capture
+ * that produces new transcripts lands with the platform ticket; until then
+ * a session with no cached digest has nothing to show.
+ */
 async function startDigest(videoId, videoUrl) {
   // Check if we already have this video loaded in memory
   if (videoId === currentVideoId && currentAnalysis) {
@@ -714,7 +476,6 @@ async function startDigest(videoId, videoUrl) {
     // Render analysis if we have it cached
     if (currentAnalysis) {
       renderAnalysisResults(currentAnalysis);
-      highlightMomentsOnPage(currentAnalysis.keyMoments);
     }
 
     showState("results");
@@ -739,53 +500,10 @@ async function startDigest(videoId, videoUrl) {
   currentTranscriptLanguage = null;
   isAnalysisLoading = false;
 
-  if (currentVideoTitle || currentChannelName) {
-    const videoInfo = document.getElementById("videoInfo");
-    document.getElementById("videoTitle").textContent = currentVideoTitle;
-    document.getElementById("videoChannel").textContent = currentChannelName;
-    videoInfo.style.display = "block";
-  }
-
-  showState("loading");
-  await openSidePanelLifecyclePort();
-  updateLoading("Fetching transcript", "");
-
-  const transcriptResult = await chrome.runtime.sendMessage({
-    action: "fetchTranscript",
-    videoId: videoId,
-  });
-
-  if (!transcriptResult.success) {
-    showError(
-      "No transcript found",
-      transcriptResult.message || transcriptResult.error,
-    );
-    return;
-  }
-
-  currentTranscript = transcriptResult.transcript;
-  currentTranscriptText = transcriptResult.transcriptText;
-  currentTranscriptTimestamped = transcriptResult.transcriptTextTimestamped;
-  currentTranscriptLanguage = transcriptResult.language || null;
-
-  // Render transcript immediately (no LLM needed)
-  renderTranscript();
-  showState("results");
-  document.getElementById("tabsNav").style.display = "flex";
-  restorePendingTranscriptViewState(videoId);
-
-  // Load notes for this video
-  loadNotes(videoId);
-
-  // Setup explain feature for text selection
-  setupExplainFeature();
-  if (currentTranscriptMode !== "original") translateTranscript();
-
-  // Save transcript to cache (without analysis)
-  await saveToCache(videoId);
-
-  // DON'T run LLM analysis automatically - wait for user to click Overview tab
-  // This saves tokens when user just wants to see the transcript
+  // No transcript source is wired up yet (Source Platform capture lands
+  // with the platform ticket), so a session without a cached digest has
+  // nothing to show.
+  showState("welcome");
 }
 
 // ============================================================
@@ -873,7 +591,7 @@ async function translateInterfaceSegments(surface, segments, rerender) {
           videoTitle: currentVideoTitle,
         });
       } catch (error) {
-        console.error("[YouTube Digest] Interface batch error:", error);
+        console.error("[Learning Digest] Interface batch error:", error);
         result = { success: false, error: error.message };
       }
       if (
@@ -900,7 +618,7 @@ async function translateInterfaceSegments(surface, segments, rerender) {
       await updateCache();
     }
   } catch (error) {
-    console.error("[YouTube Digest] Interface translation error:", error);
+    console.error("[Learning Digest] Interface translation error:", error);
     missing.forEach((segment) =>
       interfaceTranslationFailures.add(segment.cacheKey),
     );
@@ -981,14 +699,6 @@ function renderAnalysisResults(analysis) {
         <span class="chapter-summary">${renderLocalizedContent(chapter.summary || "", "overview", `chapter-${index}-summary`)}</span>
       </div>
     `;
-    li.addEventListener("click", () => {
-      debugLog(
-        "[YouTube Digest Panel] Chapter clicked:",
-        chapter.timestamp,
-        chapter.timestampSeconds,
-      );
-      seekTo(chapter.timestampSeconds);
-    });
     chapterList.appendChild(li);
   });
 
@@ -1012,14 +722,6 @@ function renderAnalysisResults(analysis) {
         </div>
       </div>
     `;
-    div.addEventListener("click", () => {
-      debugLog(
-        "[YouTube Digest Panel] Quote clicked:",
-        quote.timestamp,
-        quote.timestampSeconds,
-      );
-      seekTo(quote.timestampSeconds);
-    });
 
     const quoteCopyBtn = div.querySelector(".quote-copy-btn");
     quoteCopyBtn.addEventListener("click", async (e) => {
@@ -1082,7 +784,7 @@ async function saveQuoteAsNote(quote, btn) {
       // Refresh notes list if on Notes tab
       loadNotes(currentVideoId);
     } else {
-      console.error("[YouTube Digest] Save quote as note failed:", result.error);
+      console.error("[Learning Digest] Save quote as note failed:", result.error);
       btn.textContent = "Error";
       setTimeout(() => {
         btn.textContent = originalText;
@@ -1090,7 +792,7 @@ async function saveQuoteAsNote(quote, btn) {
       }, 1500);
     }
   } catch (error) {
-    console.error("[YouTube Digest] Save quote as note error:", error);
+    console.error("[Learning Digest] Save quote as note error:", error);
     btn.textContent = "Error";
     setTimeout(() => {
       btn.textContent = originalText;
@@ -1112,31 +814,6 @@ function renderResults(analysis) {
 
   // Setup explain feature for text selection
   setupExplainFeature();
-}
-
-/**
- * Returns true while the user has a range of text selected.
- * Transcript row clicks must not seek in that state: the click emitted after
- * selection mouseup belongs to the selection/explain interaction, not playback.
- */
-function hasNonCollapsedTextSelection() {
-  const selection = window.getSelection();
-  return Boolean(
-    selection && selection.rangeCount > 0 && !selection.isCollapsed,
-  );
-}
-
-/**
- * Preserves normal row-click seeking while keeping text selection inert.
- */
-function seekFromTranscriptEntryClick(event, seconds) {
-  if (hasNonCollapsedTextSelection()) {
-    event.preventDefault();
-    event.stopPropagation();
-    return;
-  }
-
-  seekTo(seconds);
 }
 
 function renderTranscript() {
@@ -1165,17 +842,11 @@ function renderTranscript() {
       <span class="transcript-text">${renderSubtitleInlineMarkup(group.text)}</span>
     `;
 
-    div.addEventListener("click", (event) =>
-      seekFromTranscriptEntryClick(event, group.start),
-    );
     transcriptList.appendChild(div);
   });
 
   // Reapply an active query after a language mode rerenders the transcript.
   refreshTranscriptSearch({ preserveIndex: false, scroll: false });
-
-  // Start tracking video playback for auto-scroll
-  startPlaybackTracking();
 }
 
 // ============================================================
@@ -1279,8 +950,7 @@ function updateTranscriptSearchControls(query) {
 }
 
 /**
- * Shows which match is current. Search navigation pauses automatic transcript
- * following, so playback cannot pull the user away from the result they found.
+ * Shows which match is current.
  */
 function revealCurrentTranscriptSearchMatch({ scroll = true } = {}) {
   transcriptSearchMatches.forEach((mark) => mark.classList.remove("current"));
@@ -1295,10 +965,6 @@ function revealCurrentTranscriptSearchMatch({ scroll = true } = {}) {
   mark.closest(".transcript-entry")?.classList.add("search-current");
 
   if (!scroll) return;
-  if (autoScrollInterval) {
-    autoScrollEnabled = false;
-    document.getElementById("followPlaybackBtn").style.display = "block";
-  }
   mark.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
@@ -1370,9 +1036,7 @@ function moveTranscriptSearch(direction) {
   updateTranscriptSearchControls(
     document.getElementById("transcriptSearchInput")?.value.trim(),
   );
-}
-
-/**
+}/**
  * Clears search when the user opens a different video. A query for the old
  * video is unlikely to help and can make the next transcript look empty.
  */
@@ -1430,24 +1094,17 @@ function copyTranscript() {
 
 function exportTranscript() {
   const transcriptContent = getDisplayedTranscriptText();
-  const videoUrl = `https://youtube.com/watch?v=${currentVideoId}`;
 
   let exportText = "";
   exportText += `TRANSCRIPT\n`;
   exportText += `${"=".repeat(60)}\n\n`;
   exportText += `Title: ${currentVideoTitle || "Unknown"}\n`;
-  exportText += `Channel: ${currentChannelName || "Unknown"}\n`;
-  exportText += `URL: ${videoUrl}\n`;
-  exportText += `\n${"—".repeat(60)}\n\n`;
-
-  if (currentVideoDescription) {
-    exportText += `DESCRIPTION:\n${currentVideoDescription}\n`;
-    exportText += `\n${"—".repeat(60)}\n\n`;
-  }
+  exportText += `Course: ${currentChannelName || "Unknown"}\n`;
+  exportText += `\n${"=".repeat(60)}\n\n`;
 
   exportText += `TRANSCRIPT:\n\n${transcriptContent}\n`;
-  exportText += `\n${"—".repeat(60)}\n`;
-  exportText += `Exported by YouTube Digest\n`;
+  exportText += `\n${"=".repeat(60)}\n`;
+  exportText += `Exported by Learning Digest\n`;
 
   const filename = `${sanitizeFilename(currentVideoTitle)}-transcript.txt`;
   downloadTextFile(exportText, filename);
@@ -1477,28 +1134,11 @@ function showState(state) {
     state === "results" ? "flex" : "none";
   document.getElementById("transcriptModeControl").style.display =
     state === "results" ? "inline-flex" : "none";
-
-  if (state !== "results") {
-    stopPlaybackTracking();
-  }
 }
 
-function updateLoading(title, subtitle, percent) {
+function updateLoading(title, subtitle) {
   document.getElementById("loadingText").textContent = title;
   document.getElementById("loadingSubtext").textContent = subtitle;
-
-  // Speech Transcription reports real progress (percent is a number);
-  // every other loading state (caption fetch, AI calls) keeps the
-  // existing indeterminate animated bar by leaving percent undefined.
-  const bar = document.getElementById("loadingBar");
-  const fill = document.getElementById("loadingBarFill");
-  if (typeof percent === "number") {
-    bar.classList.add("loading-bar--determinate");
-    fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
-  } else {
-    bar.classList.remove("loading-bar--determinate");
-    fill.style.width = "";
-  }
 }
 
 function showError(title, message) {
@@ -1516,7 +1156,7 @@ function showConfigError(configStatus) {
   showState("error");
   document.getElementById("errorTitle").textContent = "API Keys Missing";
   document.getElementById("errorMessage").textContent =
-    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in YouTube Digest Settings.`;
+    `Add your ${missingKeys.join(" and ")} API key${missingKeys.length === 1 ? "" : "s"} in Learning Digest Settings.`;
   document.getElementById("errorBtn").textContent = "Open Settings";
   errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
 }
@@ -1541,19 +1181,14 @@ function switchTab(tabName) {
     panel.classList.toggle("active", panel.dataset.panel === tabName);
   });
 
-  // Start/stop playback tracking based on which tab is active
+  // Restore the independent transcript reading position when the user
+  // returns here (Notes always opens at the top instead).
   if (tabName === "transcript") {
-    // Notes always opens at the top, so restore the independent transcript
-    // reading position when the user returns here.
     requestAnimationFrame(() => {
       const contentArea = document.getElementById("contentArea");
       if (!contentArea || !transcriptTabIsActive()) return;
-      lastAutoScrollTime = Date.now();
       contentArea.scrollTop = lastTranscriptScrollTop;
     });
-    startPlaybackTracking();
-  } else {
-    stopPlaybackTracking();
   }
 
   // Saved notes are stored newest first. Open Notes at the top so the note the
@@ -1630,93 +1265,16 @@ async function triggerAnalysis() {
 
     currentAnalysis = analysisResult.analysis;
     renderAnalysisResults(currentAnalysis);
-    highlightMomentsOnPage(currentAnalysis.keyMoments);
 
     // Save to cache now that we have analysis
     await saveToCache(currentVideoId);
   } catch (error) {
-    console.error("[YouTube Digest Panel] Analysis error:", error);
+    console.error("[Learning Digest Panel] Analysis error:", error);
     if (chapterList)
       chapterList.innerHTML = `<li class="chapter-item" style="color: var(--accent); border: none;">Error: ${escapeHtml(error.message)}</li>`;
   }
 
   isAnalysisLoading = false;
-}
-
-// ============================================================
-// TIMESTAMP / SEEK
-// ============================================================
-
-async function seekTo(seconds) {
-  debugLog("[YouTube Digest Panel] seekTo called with:", seconds);
-  if (seconds === undefined || seconds === null) {
-    debugLog("[YouTube Digest Panel] seekTo aborted - no seconds value");
-    return;
-  }
-
-  const payload = {
-    action: "seekTo",
-    seconds: Number(seconds),
-  };
-
-  try {
-    // Try direct messaging to the stored YouTube tab first (fastest/reliable)
-    if (youtubeTabId) {
-      try {
-        await chrome.tabs.sendMessage(youtubeTabId, payload);
-        debugLog("[YouTube Digest Panel] seekTo direct success");
-        return;
-      } catch (directErr) {
-        debugLog(
-          "[YouTube Digest Panel] Direct seekTo failed, falling back to relay:",
-          directErr.message,
-        );
-      }
-    }
-
-    // Fallback: route through background script
-    const result = await chrome.runtime.sendMessage({
-      action: "relayToContent",
-      payload,
-    });
-    debugLog("[YouTube Digest Panel] seekTo relay result:", result);
-  } catch (error) {
-    console.error("[YouTube Digest Panel] seekTo error:", error);
-  }
-}
-
-/**
- * Plays a saved note at its timestamp.
- * - If the note belongs to the video currently open, we seek the player in place.
- * - If it belongs to a DIFFERENT video (e.g. viewing "All Notes"), seeking the
- *   current player would jump to the wrong content, so we open that video in a
- *   new tab at the right timestamp instead.
- */
-function playNote(note) {
-  if (note.videoId && note.videoId === currentVideoId) {
-    seekTo(note.timestampSeconds);
-  } else {
-    // note.timestampedUrl already includes the &t=<seconds>s anchor
-    chrome.tabs.create({ url: note.timestampedUrl });
-  }
-}
-
-async function highlightMomentsOnPage(moments) {
-  if (!moments || !moments.length) return;
-
-  try {
-    // Route through background script for reliable message passing
-    await chrome.runtime.sendMessage({
-      action: "relayToContent",
-      payload: {
-        action: "highlightMoments",
-        moments: moments,
-        videoDuration: currentVideoDuration,
-      },
-    });
-  } catch (error) {
-    console.error("Highlight error:", error);
-  }
 }
 
 // ============================================================
@@ -1944,7 +1502,7 @@ function setupExplainFeature() {
           button.disabled = false;
         }, 900);
       } catch (error) {
-        console.error("[YouTube Digest] Save selected note error:", error);
+        console.error("[Learning Digest] Save selected note error:", error);
         button.textContent = "Error";
         setTimeout(() => {
           button.textContent = originalText;
@@ -2118,7 +1676,7 @@ async function evictOldCacheEntries(maxEntries) {
       .map((e) => e.key);
     if (toRemove.length > 0) {
       await chrome.storage.local.remove(toRemove);
-      debugLog(`[YouTube Digest] Evicted ${toRemove.length} old cache entries`);
+      debugLog(`[Learning Digest] Evicted ${toRemove.length} old cache entries`);
     }
   } catch (error) {
     console.error("Cache eviction error:", error);
@@ -2182,7 +1740,7 @@ async function loadNotes(videoId) {
       renderNotes(result.notes, videoId);
     }
   } catch (error) {
-    console.error("[YouTube Digest Panel] Load notes error:", error);
+    console.error("[Learning Digest Panel] Load notes error:", error);
   }
 }
 
@@ -2200,8 +1758,8 @@ function renderNotes(notes, filteredVideoId) {
   if (!notes || notes.length === 0) {
     notesIntro.style.display = "block";
     notesIntro.textContent = filteredVideoId
-      ? "No notes for this video yet. Hover over the video and click Note to save."
-      : "No notes saved yet. Hover over a video and click Note to save.";
+      ? "No notes for this session yet. Select transcript text and click Note to save."
+      : "No notes saved yet. Select transcript text and click Note to save.";
     return;
   }
 
@@ -2213,14 +1771,12 @@ function renderNotes(notes, filteredVideoId) {
     noteEl.className = "note-item";
     noteEl.innerHTML = `
       <div class="note-header">
-        <span class="note-timestamp" data-url="${escapeHtml(note.timestampedUrl)}" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>
+        <span class="note-timestamp" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>
         ${!filteredVideoId ? `<span class="note-video-title">${escapeHtml(note.videoTitle)}</span>` : ""}
       </div>
       <div class="note-text">${renderLocalizedContent(note.text, "notes", translationId)}</div>
       <div class="note-actions">
         <button class="note-action-btn note-copy-text">Copy text</button>
-        <button class="note-action-btn note-copy-link" data-url="${escapeHtml(note.timestampedUrl)}">Copy timestamp</button>
-        <button class="note-action-btn note-play" data-seconds="${Number(note.timestampSeconds) || 0}">Play</button>
         <button class="note-delete" data-id="${escapeHtml(note.id)}" type="button" aria-label="Delete note" title="Delete note">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 6h18"></path>
@@ -2232,11 +1788,6 @@ function renderNotes(notes, filteredVideoId) {
         </button>
       </div>
     `;
-
-    // Timestamp click - play from this point (in this tab or a new one)
-    noteEl.querySelector(".note-timestamp").addEventListener("click", () => {
-      playNote(note);
-    });
 
     // Delete button
     noteEl
@@ -2265,27 +1816,6 @@ function renderNotes(notes, filteredVideoId) {
         }
       });
 
-    // Copy timestamp button — copies the timestamped YouTube link
-    noteEl
-      .querySelector(".note-copy-link")
-      .addEventListener("click", async () => {
-        try {
-          await navigator.clipboard.writeText(note.timestampedUrl);
-          const btn = noteEl.querySelector(".note-copy-link");
-          btn.textContent = "Copied";
-          setTimeout(() => {
-            btn.textContent = "Copy timestamp";
-          }, 2000);
-        } catch (err) {
-          console.error("Copy failed:", err);
-        }
-      });
-
-    // Play button (in this tab if it's the current video, else a new tab)
-    noteEl.querySelector(".note-play").addEventListener("click", () => {
-      playNote(note);
-    });
-
     notesList.appendChild(noteEl);
   });
 
@@ -2304,163 +1834,15 @@ async function deleteNote(noteId) {
       noteId: noteId,
     });
   } catch (error) {
-    console.error("[YouTube Digest Panel] Delete note error:", error);
+    console.error("[Learning Digest Panel] Delete note error:", error);
   }
 }
 
 // ============================================================
-// AUTO-SCROLL — Follow video playback in transcript
+// TRANSCRIPT READING POSITION
 // ============================================================
-// While a video plays, the transcript automatically scrolls to show which
-// 30-second chunk is currently being spoken. If the user manually scrolls
-// (e.g., to read ahead), auto-scroll pauses and a "Follow playback" button
-// appears so they can resume it. Highlight always stays active regardless.
-
-/**
- * Starts polling the video's current time and highlighting/scrolling
- * to the matching transcript entry.
- */
-function startPlaybackTracking() {
-  if (!currentTranscript || !currentTranscript.length) return;
-
-  // Don't restart if already tracking (preserves user's auto-scroll state)
-  if (autoScrollInterval) return;
-
-  const willRestoreReadingPosition =
-    pendingTranscriptViewState?.videoId === currentVideoId;
-  autoScrollEnabled = !willRestoreReadingPosition;
-  document.getElementById("followPlaybackBtn").style.display =
-    willRestoreReadingPosition ? "block" : "none";
-
-  // Poll video time every 500ms
-  autoScrollInterval = setInterval(() => playbackTrackingTick(), 500);
-
-  // Listen for manual scrolls on the content area
-  const contentArea = document.getElementById("contentArea");
-  contentArea.removeEventListener("scroll", onContentAreaScroll);
-  contentArea.addEventListener("scroll", onContentAreaScroll);
-}
-
-/**
- * Stops playback tracking entirely. Called when leaving transcript tab,
- * starting a new digest, or leaving results state.
- */
-function stopPlaybackTracking() {
-  if (autoScrollInterval) {
-    clearInterval(autoScrollInterval);
-    autoScrollInterval = null;
-  }
-  autoScrollEnabled = true; // Reset for next time
-  lastAutoScrollTime = 0;
-  document.getElementById("followPlaybackBtn").style.display = "none";
-
-  // Remove active highlights
-  document
-    .querySelectorAll(".transcript-entry.active-playback")
-    .forEach((el) => {
-      el.classList.remove("active-playback");
-    });
-}
-
-/**
- * One tick of the playback tracker. Gets current video time from the
- * YouTube tab and highlights + scrolls to the matching transcript entry.
- */
-async function playbackTrackingTick() {
-  try {
-    const result = await chrome.runtime.sendMessage({
-      action: "relayToContent",
-      payload: { action: "getCurrentTime" },
-    });
-
-    if (!result.success || !result.response) return;
-
-    const currentTime = result.response.currentTime || 0;
-    highlightActiveEntry(currentTime);
-  } catch (error) {
-    // Silently ignore — YouTube tab might be closed or navigated away
-  }
-}
-
-/**
- * Scrolls the transcript to the entry currently being spoken (the one
- * carrying the active-playback highlight). Returns false if nothing is
- * highlighted yet. Stamps lastAutoScrollTime BEFORE scrolling so the scroll
- * events from our own smooth animation aren't mistaken for the user
- * scrolling away (which would re-disable auto-scroll immediately).
- */
-function scrollToActiveEntry() {
-  const activeEntry = document.querySelector(
-    "#transcriptList .transcript-entry.active-playback",
-  );
-  if (!activeEntry) return false;
-
-  lastAutoScrollTime = Date.now();
-  activeEntry.scrollIntoView({ behavior: "smooth", block: "center" });
-  return true;
-}
-
-/**
- * Finds the transcript entry matching the current playback time,
- * highlights it, and scrolls to it (if auto-scroll is enabled).
- *
- * @param {number} currentSeconds - Current video playback time in seconds
- */
-function highlightActiveEntry(currentSeconds) {
-  const transcriptList = document.getElementById("transcriptList");
-  if (!transcriptList) return;
-
-  const entries = transcriptList.querySelectorAll(".transcript-entry");
-  if (entries.length === 0) return;
-
-  // Find the entry whose time range contains the current playback time
-  let activeEntry = null;
-  entries.forEach((entry, index) => {
-    const entrySeconds = parseInt(entry.dataset.seconds);
-    const nextEntry = entries[index + 1];
-    const nextSeconds = nextEntry
-      ? parseInt(nextEntry.dataset.seconds)
-      : Infinity;
-
-    if (currentSeconds >= entrySeconds && currentSeconds < nextSeconds) {
-      activeEntry = entry;
-    }
-  });
-
-  if (!activeEntry) return;
-
-  // Skip if this entry is already highlighted (no DOM thrashing)
-  if (activeEntry.classList.contains("active-playback")) return;
-
-  // Remove old highlight, add new one
-  entries.forEach((e) => e.classList.remove("active-playback"));
-  activeEntry.classList.add("active-playback");
-
-  // Only scroll if auto-scroll is enabled
-  if (autoScrollEnabled) {
-    lastAutoScrollTime = Date.now();
-    activeEntry.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-}
-
-/**
- * Scroll event handler for the content area.
- * Detects manual scrolling and disables auto-scroll so the user
- * can read at their own pace without being yanked back.
- */
-function onContentAreaScroll() {
-  scheduleTranscriptViewStateSave();
-
-  // Ignore scroll events within 1 second of a programmatic scroll
-  // (smooth scroll animations can last longer than a simple boolean flag)
-  if (Date.now() - lastAutoScrollTime < 1000) return;
-
-  // User scrolled manually — disable auto-scroll and show the button
-  if (autoScrollEnabled && autoScrollInterval) {
-    autoScrollEnabled = false;
-    document.getElementById("followPlaybackBtn").style.display = "block";
-  }
-}
+// The panel remembers each session's last visible transcript position so a
+// reopen lands where the user stopped reading.
 
 /**
  * Uses session storage when it is available. Local storage is a safe fallback
@@ -2471,7 +1853,7 @@ function getTranscriptViewStateStorage() {
 }
 
 /**
- * Reads one video's last visible transcript position.
+ * Reads one session's last visible transcript position.
  */
 async function loadTranscriptViewState(videoId) {
   if (!videoId) return null;
@@ -2484,13 +1866,13 @@ async function loadTranscriptViewState(videoId) {
     if (!Number.isFinite(scrollTop) || scrollTop < 0) return null;
     return { videoId, scrollTop };
   } catch (error) {
-    console.error("[YouTube Digest] Reading position load error:", error);
+    console.error("[Learning Digest] Reading position load error:", error);
     return null;
   }
 }
 
 /**
- * Stores positions for a small recent set of videos. This prevents one value
+ * Stores positions for a small recent set of sessions. This prevents one value
  * from growing without a limit during a long Chrome session.
  */
 async function saveTranscriptViewState(videoId, scrollTop) {
@@ -2508,13 +1890,13 @@ async function saveTranscriptViewState(videoId, scrollTop) {
     );
     await storage.set({ [TRANSCRIPT_VIEW_STATE_KEY]: recentStates });
   } catch (error) {
-    console.error("[YouTube Digest] Reading position save error:", error);
+    console.error("[Learning Digest] Reading position save error:", error);
   }
 }
 
 /**
- * Saves the visible position after scrolling stops. Capturing the video ID and
- * position now prevents a later video change from writing the wrong state.
+ * Saves the visible position after scrolling stops. Capturing the session ID
+ * and position now prevents a later session change from writing the wrong state.
  */
 function scheduleTranscriptViewStateSave() {
   if (
@@ -2571,8 +1953,7 @@ function captureCurrentTranscriptScrollTop() {
 }
 
 /**
- * Restores the saved position after the transcript becomes visible. Follow
- * Playback stays paused, so the next timer tick cannot move the panel again.
+ * Restores the saved position after the transcript becomes visible.
  */
 function restorePendingTranscriptViewState(videoId) {
   const state = pendingTranscriptViewState;
@@ -2590,11 +1971,8 @@ function restorePendingTranscriptViewState(videoId) {
     }
 
     isRestoringTranscriptView = true;
-    lastAutoScrollTime = Date.now();
-    autoScrollEnabled = false;
     contentArea.scrollTop = state.scrollTop;
     lastTranscriptScrollTop = state.scrollTop;
-    document.getElementById("followPlaybackBtn").style.display = "block";
     contentArea.classList.remove("restoring-transcript-view");
     requestAnimationFrame(() => {
       isRestoringTranscriptView = false;
@@ -2997,7 +2375,6 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   saveTranscriptViewState,
   loadDisplayLanguageMode,
   saveDisplayLanguageMode,
-  getNavigationUrl,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
 };

@@ -134,54 +134,12 @@ function loadBackgroundHelpers({
       normalize: (value) => value,
       chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
       sttTranscriptionsUrl: (baseUrl) => `${baseUrl}/audio/transcriptions`,
-      canonicalYouTubeUrl: (videoId) =>
-        `https://www.youtube.com/watch?v=${videoId}`,
     },
   };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("background.js"), sandbox);
   return sandbox.__YTD_TRANSLATION_TESTING__;
 }
-
-test("non-YouTube tabs explicitly close before their panel is disabled", async () => {
-  const calls = [];
-  const background = loadBackgroundHelpers({
-    sidePanel: {
-      setPanelBehavior() {},
-      close: async (options) => calls.push(["close", options]),
-      setOptions: async (options) => calls.push(["setOptions", options]),
-    },
-  });
-
-  await background.updatePanelForTab(17, "https://example.com/page", 4);
-
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
-    ["close", { tabId: 17 }],
-    ["setOptions", { tabId: 17, enabled: false }],
-  ]);
-});
-
-test("a global panel closes by window when the tab close is rejected", async () => {
-  const calls = [];
-  const background = loadBackgroundHelpers({
-    sidePanel: {
-      setPanelBehavior() {},
-      close: async (options) => {
-        calls.push(["close", options]);
-        if (options.tabId) throw new Error("Global panel");
-      },
-      setOptions: async (options) => calls.push(["setOptions", options]),
-    },
-  });
-
-  await background.updatePanelForTab(17, "https://example.com/page", 4);
-
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
-    ["close", { tabId: 17 }],
-    ["close", { windowId: 4 }],
-    ["setOptions", { tabId: 17, enabled: false }],
-  ]);
-});
 
 function createFakeTimers() {
   let nextId = 1;
@@ -324,10 +282,22 @@ test("selected transcript notes keep exact text and row timestamp", async () => 
   assert.equal(result.note.rawText, "The selected words stay exact.");
   assert.equal(result.note.timestamp, "1:32");
   assert.equal(result.note.timestampSeconds, 92);
-  assert.equal(
-    result.note.timestampedUrl,
-    "https://www.youtube.com/watch?v=video123&t=92s",
-  );
+  // No platform URL is attached until a Source Platform adapter lands.
+  assert.equal("timestampedUrl" in result.note, false);
+});
+
+test("notes without selected text are rejected without calling a provider", async () => {
+  const providerMustNotRun = async () => {
+    throw new Error("Note without selection must not call a provider");
+  };
+  const { handleSaveNote } = loadBackgroundHelpers({
+    fetchImpl: providerMustNotRun,
+  });
+
+  const result = await handleSaveNote("video123", 92.9, "Test video", "Test channel", "");
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, "NO_SELECTED_TEXT");
 });
 
 test("semantic segmentation rebuilds sentences across caption boundaries", () => {
@@ -512,12 +482,11 @@ test("all AI product requests use DeepSeek non-thinking and JSON behavior", asyn
   const backgroundSource = read("background.js");
   assert.equal(
     (backgroundSource.match(/await requestAiCompletion\(\{/g) || []).length,
-    4,
+    3,
   );
   assert.doesNotMatch(backgroundSource, /disableThinking/);
   for (const callPath of [
     "handleAnalyzeTranscript",
-    "cleanupNoteText",
     "handleExplainSelection",
     "callAiTranslation",
   ]) {

@@ -1691,7 +1691,42 @@ function renderSessionTranscript(state) {
     container.appendChild(row);
   }
   sessionUi.renderedRecords = records.length;
+  renderPendingSegments(container, state);
   container.scrollTop = container.scrollHeight;
+}
+
+// Pending Segments (and the wait before the very first one) render as
+// spinner rows — the same loading affordance the original digest
+// transcript had: the learner sees activity at 0:00 instead of an empty
+// pane while the first Segment is still being recorded and transcribed.
+function renderPendingSegments(container, state) {
+  container.querySelectorAll(".session-pending").forEach((row) => row.remove());
+  const segments = state.segments || [];
+  const bootstrap =
+    segments.length === 0 && (state.transcriptRecords || []).length === 0;
+  if (bootstrap) {
+    appendPendingRow(container, 0, "录制中，第一段逐字稿约 2 分钟后出现…");
+  }
+  for (const segment of segments) {
+    if (segment.status === "pending") {
+      appendPendingRow(container, segment.start, "转写中…");
+    }
+  }
+}
+
+function appendPendingRow(container, startSeconds, text) {
+  const row = document.createElement("div");
+  row.className = "session-record session-pending";
+  const stamp = document.createElement("span");
+  stamp.className = "session-record-stamp";
+  stamp.textContent = `[${sessionTimestampLabel(startSeconds)}]`;
+  const spinner = document.createElement("span");
+  spinner.className = "session-pending-spinner";
+  const label = document.createElement("span");
+  label.className = "session-record-text";
+  label.textContent = text;
+  row.append(stamp, spinner, label);
+  container.appendChild(row);
 }
 
 function renderSessionSummary(state) {
@@ -1756,7 +1791,6 @@ function showRecordingToast() {
 function showSessionMode({ active, kind, state }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
-  const hintBtn = document.getElementById("startHintBtn");
   const endBtn = document.getElementById("endLearningBtn");
   const welcome = document.getElementById("welcomeState");
   if (!bar) return;
@@ -1764,7 +1798,6 @@ function showSessionMode({ active, kind, state }) {
   if (active) {
     sessionUi.active = true;
     bar.style.display = "flex";
-    if (hintBtn) hintBtn.style.display = "none";
     endBtn.style.display = "";
     view.style.display = "";
     if (welcome) welcome.style.display = "none";
@@ -1790,15 +1823,13 @@ function showSessionMode({ active, kind, state }) {
   if (kind && kind !== "none") {
     // The toolbar icon is the only start entry point: a click inside the
     // panel can never satisfy Chrome's tabCapture invocation rule, so the
-    // panel offers a hint instead of a (doomed) start button.
+    // panel deliberately offers no start control at all.
     bar.style.display = "flex";
-    if (hintBtn) hintBtn.style.display = "";
     sessionUi.kind = kind;
     renderSessionStatus();
     if (welcome && state === null) welcome.style.display = "none";
   } else {
     bar.style.display = "none";
-    if (hintBtn) hintBtn.style.display = "none";
     if (welcome) welcome.style.display = "flex";
   }
 }
@@ -1845,12 +1876,6 @@ async function endLearning() {
 }
 
 function setupSessionUI() {
-  document.getElementById("startHintBtn")?.addEventListener("click", () => {
-    window.alert(
-      "请点击浏览器工具栏上的 Learning Digest 图标（地址栏右侧的扩展图标）来开始录制：" +
-        "图标点击本身就是 Chrome 认可的调用，点击后会自动打开此面板并开始录制。",
-    );
-  });
   document.getElementById("endLearningBtn")?.addEventListener("click", endLearning);
   chrome.tabs.onActivated.addListener(() => {
     if (!sessionUi.active) void refreshSessionUI();

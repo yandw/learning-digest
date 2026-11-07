@@ -15,6 +15,21 @@ test("manifest uses minimized install-time permissions", () => {
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.options_ui.page, "options.html");
   assert.ok(!manifest.permissions.includes("activeTab"));
+  // Capture plumbing: tabCapture feeds the offscreen recorder; the bridge
+  // content script reads media position on xiaoe-tech pages only.
+  for (const permission of ["tabCapture", "offscreen"]) {
+    assert.ok(
+      manifest.permissions.includes(permission),
+      `permissions must include ${permission}`,
+    );
+  }
+  assert.deepEqual(manifest.content_scripts, [
+    {
+      matches: ["https://*.xiaoe-tech.com/*"],
+      js: ["page-bridge.js"],
+      run_at: "document_idle",
+    },
+  ]);
   for (const host of [
     "https://api.deepseek.com/*",
     "https://openrouter.ai/*",
@@ -34,7 +49,7 @@ test("manifest uses minimized install-time permissions", () => {
   assert.equal(manifest.version, "1.4.4");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
-  assert.equal(manifest.content_scripts, undefined);
+  assert.equal(manifest.optional_permissions, undefined);
 });
 
 test("no YouTube-specific runtime code remains", () => {
@@ -357,11 +372,16 @@ test("core Learning Digest modules ship in the release and load in the service w
     "speech-providers.js",
     "session-pipeline.js",
     "session-persistence.js",
+    "source-platforms.js",
+    "session-segmenter.js",
+    "page-bridge.js",
+    "offscreen.js",
+    "offscreen.html",
   ]) {
     assert.match(checkRelease, new RegExp(`"${module}"`), module);
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-persistence\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js"\)/,
   );
 });

@@ -4,12 +4,19 @@
   "version": "1.4.4",
   "minimum_chrome_version": "116",
   "description": "Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest.",
-  "permissions": ["sidePanel", "storage"],
+  "permissions": ["sidePanel", "storage", "tabCapture", "offscreen"],
   "host_permissions": [
     "https://*.xiaoe-tech.com/*",
     "https://api.deepseek.com/*",
     "https://openrouter.ai/*",
     "https://api.groq.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*.xiaoe-tech.com/*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_idle"
+    }
   ],
   "action": {
     "default_title": "Open Learning Digest",

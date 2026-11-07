@@ -23,6 +23,9 @@ var YTD_SETTINGS = (() => {
     // slot without touching existing ones. Stored locally only.
     speechProvider: "groq",
     speechProviders: {},
+    // Session capture: target Segment length in seconds. The browser layer
+    // hands this to session-segmenter.js, which clamps to the same range.
+    segmentLengthSeconds: 120,
   });
 
   function isLegacyCustom(input) {
@@ -78,6 +81,21 @@ var YTD_SETTINGS = (() => {
     return result;
   }
 
+  /**
+   * Segment length in seconds: finite numbers are clamped to the range
+   * session-segmenter.js supports ([30, 600]); anything else falls back to
+   * the default so a corrupted setting can never break capture.
+   */
+  function normalizeSegmentLengthSeconds(value) {
+    // null/undefined/"" mean "not set" (Number(null) would be 0), not zero.
+    if (value === null || value === undefined || value === "") {
+      return DEFAULTS.segmentLengthSeconds;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return DEFAULTS.segmentLengthSeconds;
+    return Math.min(600, Math.max(30, Math.floor(parsed)));
+  }
+
   function normalize(input = {}) {
     return {
       provider: DEFAULTS.provider,
@@ -105,6 +123,7 @@ var YTD_SETTINGS = (() => {
           ? input.speechProvider.trim()
           : DEFAULTS.speechProvider,
       speechProviders: normalizeSpeechProviders(input.speechProviders),
+      segmentLengthSeconds: normalizeSegmentLengthSeconds(input.segmentLengthSeconds),
     };
   }
 

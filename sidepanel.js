@@ -1668,7 +1668,7 @@ function renderSessionStatus() {
   if (!status) return;
   const kindLabel = SESSION_KIND_LABELS[sessionUi.kind] || sessionUi.kind || "";
   status.textContent = sessionUi.active
-    ? `${kindLabel} · 进行中`
+    ? `${kindLabel} · 正在采集音频`
     : kindLabel;
 }
 

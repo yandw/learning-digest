@@ -1117,6 +1117,7 @@ async function ensureCaptureResumed() {
   }
   if (context.timestampKind === "wallclock") startLiveTimer(context);
   startSummaryTimer(context, settings.summaryIntervalMinutes);
+  console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
 }
 
@@ -1389,6 +1390,14 @@ async function handleStartLearning(message) {
   if (context.timestampKind === "wallclock") startLiveTimer(context);
   startSummaryTimer(context, settings.summaryIntervalMinutes);
   broadcastSession(context.state);
+  // The one-line "capture is live" marker: when this is absent after an
+  // icon click, the Session never started and the reason is in the
+  // startLearning failure log above.
+  console.log(
+    `[Learning Digest] 采集已开始: session=${context.sessionId} ` +
+      `mode=${context.timestampKind === "wallclock" ? "直播(墙钟)" : "录播(媒体位置)"} ` +
+      `segment=${context.segmentLengthSeconds}s provider=${context.providerId}`,
+  );
   return {
     success: true,
     sessionId: context.sessionId,

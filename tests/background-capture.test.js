@@ -55,12 +55,12 @@ test("startLearning gate names the missing field for Tencent", async () => {
   assert.match(result.error, /secretKey/);
 });
 
-test("startLearning gate names every missing field for Aliyun", async () => {
+test("startLearning gate names the missing field for Qwen", async () => {
   const { handleStartLearning } = loadBackgroundHelpers({
     settings: baseSettings({
-      speechProvider: "aliyun",
+      speechProvider: "qwen",
       speechProviders: {
-        aliyun: { accessKeyId: "id", accessKeySecret: "", appKey: "" },
+        qwen: { apiKey: "" },
       },
     }),
   });
@@ -68,8 +68,7 @@ test("startLearning gate names every missing field for Aliyun", async () => {
   const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
   assert.equal(result.success, false);
-  assert.match(result.error, /accessKeySecret/);
-  assert.match(result.error, /appKey/);
+  assert.match(result.error, /apiKey/);
 });
 
 test("startLearning proceeds to capture when the selected provider's credentials are complete", async () => {

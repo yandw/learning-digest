@@ -29,7 +29,7 @@ A switchable adapter for one learning platform (first: xiaoe-tech.com). Identifi
 _Avoid_: Adapter, connector, integration, channel
 
 **Speech Provider**:
-A switchable speech-to-text service (Groq, Tencent Cloud ASR, Aliyun ASR) with its own credentials and endpoint, responsible for turning one Segment's audio into Transcript records.
+A switchable speech-to-text service (Groq, Tencent Cloud ASR, Qwen ASR) with its own credentials and endpoint, responsible for turning one Segment's audio into Transcript records.
 _Avoid_: ASR provider, transcription provider, STT
 
 **AI Provider**:

@@ -56,16 +56,14 @@ test("speech-providers loads in a service-worker-like context (no node:crypto)",
   const providers = sandbox.YTD_SPEECH_PROVIDERS;
   assert.ok(providers, "module evaluated and exported its global");
   const ids = providers.listSpeechProviders().map((p) => p.id);
-  for (const id of ["groq", "tencent", "aliyun"]) {
+  for (const id of ["groq", "tencent", "qwen"]) {
     assert.ok(ids.includes(id), `provider ${id} registered`);
   }
 });
 
-test("tencent/aliyun signing functions exist on the Web Crypto path", async () => {
+test("tencent signing functions exist on the Web Crypto path", async () => {
   const sandbox = loadInServiceWorkerLikeContext();
   const providers = sandbox.YTD_SPEECH_PROVIDERS;
   const tencent = providers.getSpeechProvider("tencent");
-  const aliyun = providers.getSpeechProvider("aliyun");
   assert.equal(typeof tencent.signRequest, "function");
-  assert.equal(typeof aliyun.signRequest, "function");
 });

@@ -80,7 +80,7 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
   // --- shared Speech Provider cloud helpers ----------------------------------
   //
   // Used by the multi-request cloud Speech Providers (Tencent Cloud ASR,
-  // Aliyun ASR). Each provider used to carry its own copy of these; they now
+  // Qwen ASR). Each provider used to carry its own copy of these; they now
   // live here once, next to the other shared pure helpers this module
   // already provides to every Speech Provider.
 
@@ -125,7 +125,7 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
 
   /**
    * Maps the Segment audio's MIME type / file name to a cloud ASR format
-   * value, one cascade shared by the Tencent Cloud and Aliyun Speech
+   * value, one cascade shared by the Tencent Cloud and Qwen Speech
    * Providers. The two providers document nearly identical format lists;
    * the only real differences are the label they accept for the optimistic
    * webm/opus mapping (EBML is in neither documented list) and the fallback

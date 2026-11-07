@@ -84,17 +84,13 @@ test("missingProviderCredentials requires both halves of Tencent's key pair", ()
   );
 });
 
-test("missingProviderCredentials requires Aliyun's AccessKey pair and AppKey", () => {
+test("missingProviderCredentials requires Qwen's Bailian API key", () => {
   assert.deepEqual(
-    speechProviders.missingProviderCredentials("aliyun", { accessKeyId: "id" }),
-    ["accessKeySecret", "appKey"],
+    speechProviders.missingProviderCredentials("qwen", {}),
+    ["apiKey"],
   );
   assert.deepEqual(
-    speechProviders.missingProviderCredentials("aliyun", {
-      accessKeyId: "id",
-      accessKeySecret: "secret",
-      appKey: "app",
-    }),
+    speechProviders.missingProviderCredentials("qwen", { apiKey: "sk-test" }),
     [],
   );
 });

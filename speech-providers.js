@@ -555,372 +555,138 @@ var YTD_SPEECH_PROVIDER_TENCENT = (() => {
 
 YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_TENCENT);
 
-// --- Aliyun (Alibaba Cloud) NLS ASR (一句话识别 RESTful API) ---------------
-//
-// Aliyun's one-sentence recognition REST API accepts a recorded audio
-// segment over a single HTTP POST (binary body), which fits the Speech
-// Provider seam: one Segment's audio becomes exactly one request. Limits
-// per the published API contract (help.aliyun.com/zh/isi/user-guide/
-// restful-api-2): audio ≤ 1 minute, mono 16-bit, formats pcm / wav /
-// opus / speex / amr / mp3 / aac, sample rate 8000 or 16000 Hz — shorter
-// than the default Segment length, so the capture layer must slice
-// smaller Segments for this provider (Segment length is
-// provider-dependent per the glossary).
-//
-// Auth is two-step, mirroring the Tencent provider's credential model:
-// the long-term AccessKey ID/Secret pair signs a CreateToken RPC request
-// (nls-meta.<region>.aliyuncs.com, Action CreateToken, Version
-// 2019-02-28) with the POP RPC signature (SignatureMethod HMAC-SHA1,
-// SignatureVersion 1.0); the returned short-lived Token is then sent as
-// the X-NLS-Token header on the audio request. The token is cached per
-// AccessKey until the provider-reported ExpireTime, per the token
-// documentation — no fixed lifetime is assumed.
-//
-// The signing core below is a pure function over strings plus an
-// injectable HMAC-SHA1 seam so it runs on both node:crypto (tests, Node)
-// and Web Crypto (service worker). The official documentation's worked
-// example is pinned in tests/aliyun-asr.test.js.
 
-var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
-  // Shared pure helpers (crypto loader, base64, region, audio-format
-  // cascade) live in speech-transcription.js; in Node tests we require
-  // them, in the service worker both globals arrive via importScripts.
+// --- Aliyun Bailian Qwen ASR (qwen3-asr-flash, OpenAI-compatible) ----------
+//
+// Bailian's Qwen ASR model accepts one audio segment per chat-completions
+// call (input_audio content part with a base64 Data URI), which fits the
+// Speech Provider seam: one Segment's audio becomes exactly one request.
+// Per the published API contract (help.aliyun.com/zh/model-studio/
+// qwen-asr-api-reference): audio <= 5 minutes and <= 10 MB after base64 —
+// longer than the one-sentence cloud ASR APIs, so Segments for this
+// provider may be sliced larger. Auth is a single service-scoped Bailian
+// API key (Authorization: Bearer), no request signing and no token dance.
+
+var YTD_SPEECH_PROVIDER_QWEN = (() => {
+  // Shared pure helpers (base64) live in speech-transcription.js; in Node
+  // tests we require them, in the service worker both globals arrive via
+  // importScripts.
   const speechTranscription =
     typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
       ? YTD_SPEECH_TRANSCRIPTION
       : require("./speech-transcription.js");
 
-  const ID = "aliyun";
-  const LABEL = "Aliyun ASR (NLS)";
+  const ID = "qwen";
+  const LABEL = "阿里云百炼 Qwen ASR";
 
-  const TOKEN_ACTION = "CreateToken";
-  const TOKEN_VERSION = "2019-02-28";
-  const GATEWAY_PATH = "/stream/v1/asr";
-  const SUCCESS_STATUS = 20000000;
+  const MAX_ENCODED_AUDIO_BYTES = 10 * 1024 * 1024;
 
   const CREDENTIAL_FIELDS = [
-    // The AccessKey pair is masked and required on save, like Tencent's
-    // SecretId/SecretKey; see the options page's password-field check.
-    { key: "accessKeyId", type: "password" },
-    { key: "accessKeySecret", type: "password" },
-    // The AppKey is a per-project identifier, not a secret, but typing it
-    // as a password reuses the save-time required-field check — it is
-    // mandatory for every ASR request.
-    { key: "appKey", type: "password" },
-    { key: "region", type: "text" },
+    // One service-scoped key, like Groq; masked and required on save.
+    { key: "apiKey", type: "password" },
+    { key: "baseUrl", type: "text" },
+    { key: "model", type: "text" },
   ];
 
   const DEFAULTS = Object.freeze({
-    accessKeyId: "",
-    accessKeySecret: "",
-    appKey: "",
-    region: "cn-shanghai",
+    apiKey: "",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen3-asr-flash",
   });
 
-  // --- crypto seam ---------------------------------------------------------
-
-  const nodeCrypto = speechTranscription.loadNodeCrypto();
-
-  /**
-   * Platform HMAC-SHA1 primitive. hmacSha1Bytes(key, message) — key
-   * first, message second, matching the POP signing pseudocode and
-   * RFC 2202. Keys may be strings or byte arrays.
-   */
-  const crypto = (() => {
-    if (nodeCrypto) {
-      return {
-        async hmacSha1Bytes(key, string) {
-          return nodeCrypto.createHmac("sha1", key).update(string, "utf8").digest();
-        },
-      };
-    }
-    // globalThis.crypto, NOT the bare name `crypto`: this IIFE is the
-    // initializer of `const crypto` below, so a bare reference here would
-    // hit the temporal dead zone in the service worker (node:crypto exists
-    // in Node tests and masks it — the SW load path is what must work).
-    const webCrypto = globalThis.crypto;
-    if (webCrypto && webCrypto.subtle) {
-      const subtle = webCrypto.subtle;
-      const encoder = new TextEncoder();
-      return {
-        async hmacSha1Bytes(key, string) {
-          const keyBytes = typeof key === "string" ? encoder.encode(key) : key;
-          const cryptoKey = await subtle.importKey(
-            "raw",
-            keyBytes,
-            { name: "HMAC", hash: "SHA-1" },
-            false,
-            ["sign"],
-          );
-          const signature = await subtle.sign(
-            "HMAC",
-            cryptoKey,
-            encoder.encode(string),
-          );
-          return new Uint8Array(signature);
-        },
-      };
-    }
-    throw new Error(
-      "Aliyun Speech Provider needs node:crypto or Web Crypto (crypto.subtle)",
-    );
-  })();
-
-  // --- POP RPC signing (pure composition over the crypto seam) -------------
-
-  /**
-   * POP percent-encoding: UTF-8 percent-encoding where space becomes
-   * %20 (not "+"), "*" becomes %2A, and "~" stays unescaped
-   * (help.aliyun.com/zh/link-wan/developer-reference/043ed9 and the
-   * official pop-core SDK).
-   */
-  function percentEncode(value) {
-    return encodeURIComponent(String(value))
-      .replace(/\+/g, "%20")
-      .replace(/\*/g, "%2A")
-      .replace(/%7E/g, "~");
+  function normalizeBaseUrl(baseUrl) {
+    const trimmed = typeof baseUrl === "string" ? baseUrl.trim() : "";
+    return (trimmed || DEFAULTS.baseUrl).replace(/\/+$/, "");
   }
 
-  function bytesToBase64(bytes) {
-    return speechTranscription.bytesToBase64(bytes);
-  }
-
-  function isoTimestamp(date) {
-    // 2019-01-20T12:00:00Z — the POP contract has no fractional seconds.
-    return date.toISOString().replace(/\.\d+Z$/, "Z");
-  }
-
-  function randomNonce() {
-    const globalCrypto = globalThis.crypto;
-    if (globalCrypto && typeof globalCrypto.randomUUID === "function") {
-      return globalCrypto.randomUUID();
-    }
-    return `nonce-${Date.now()}-${Math.floor(Math.random() * 1e12)}`;
+  function normalizeModel(model) {
+    const trimmed = typeof model === "string" ? model.trim() : "";
+    return trimmed || DEFAULTS.model;
   }
 
   /**
-   * Signs one Aliyun POP RPC GET request (the shape CreateToken uses).
-   * Pure composition: every stage is observable in the returned object,
-   * and the official documentation's worked example is pinned in
-   * tests/aliyun-asr.test.js. NOTE: the doc renders StringToSign with
-   * literal "&" separators, but the published signature is only
-   * reproduced when the canonicalized query string — separators
-   * included — is percent-encoded a second time as a whole (matching the
-   * official pop-core SDK), so that rendering is not followed.
-   *
-   * @param {object} options
-   * @param {string} options.accessKeyId
-   * @param {string} options.accessKeySecret
-   * @param {string} options.action - RPC action, e.g. "CreateToken"
-   * @param {string} options.version - API version, e.g. "2019-02-28"
-   * @param {string} options.regionId - e.g. "cn-shanghai"
-   * @param {Object<string, string>} [options.params] - extra RPC parameters
-   * @param {string} [options.timestamp] - ISO 8601 UTC; defaults to now
-   * @param {string} [options.signatureNonce] - defaults to a random UUID
-   * @returns {Promise<object>} signing stages plus the request URL
-   */
-  async function signRequest(options) {
-    const {
-      accessKeyId,
-      accessKeySecret,
-      action,
-      version,
-      regionId,
-      params = {},
-      timestamp = isoTimestamp(new Date()),
-      signatureNonce = randomNonce(),
-    } = options;
-
-    const host = `nls-meta.${regionId}.aliyuncs.com`;
-    const allParams = {
-      AccessKeyId: accessKeyId,
-      Action: action,
-      RegionId: regionId,
-      SignatureMethod: "HMAC-SHA1",
-      SignatureNonce: signatureNonce,
-      SignatureVersion: "1.0",
-      Timestamp: timestamp,
-      Version: version,
-      ...params,
-    };
-    const names = Object.keys(allParams).sort();
-    const canonicalizedQueryString = names
-      .map((name) => `${percentEncode(name)}=${percentEncode(allParams[name])}`)
-      .join("&");
-    const stringToSign = `GET&${percentEncode("/")}&${percentEncode(canonicalizedQueryString)}`;
-    const signature = bytesToBase64(
-      await crypto.hmacSha1Bytes(`${accessKeySecret}&`, stringToSign),
-    );
-
-    const signedParams = { ...allParams, Signature: signature };
-    const queryString = Object.keys(signedParams)
-      .sort()
-      .map((name) => `${percentEncode(name)}=${percentEncode(signedParams[name])}`)
-      .join("&");
-
-    return {
-      host,
-      timestamp,
-      signatureNonce,
-      canonicalizedQueryString,
-      stringToSign,
-      signature,
-      queryString,
-      url: `https://${host}/?${queryString}`,
-    };
-  }
-
-  // --- audio + region helpers ----------------------------------------------
-
-  function normalizeRegion(region) {
-    return speechTranscription.normalizeRegion(region, DEFAULTS.region);
-  }
-
-  /**
-   * Maps the Segment audio's MIME type / file name to a documented
-   * format value (pcm, wav, opus, speex, amr, mp3, aac). MediaRecorder's
-   * default webm/opus output is an EBML container that is NOT in the
-   * documented list; it is optimistically labeled "opus" here, and the
-   * capture layer must produce a documented container for real calls
-   * (same deviation as the Tencent provider; needs validation against
-   * the live API).
-   */
-  function detectAudioFormat(segmentAudio) {
-    return speechTranscription.detectCloudAudioFormat(segmentAudio, {
-      opusFormat: "opus",
-      fallback: "pcm",
-    });
-  }
-
-  // --- token handling ------------------------------------------------------
-
-  // Single-entry cache, keyed by AccessKey ID + region, holding the
-  // provider-reported ExpireTime (Unix seconds). Reused until one minute
-  // before expiry, per the token documentation ("根据返回的 ExpireTime 判断
-  // 有效期", no fixed lifetime assumed).
-  let tokenCache = null;
-
-  async function fetchToken(accessKeyId, accessKeySecret, regionId, fetchImpl) {
-    const now = Math.floor(Date.now() / 1000);
-    if (
-      tokenCache &&
-      tokenCache.accessKeyId === accessKeyId &&
-      tokenCache.regionId === regionId &&
-      tokenCache.expireTime - 60 > now
-    ) {
-      return tokenCache.token;
-    }
-
-    const signed = await signRequest({
-      accessKeyId,
-      accessKeySecret,
-      action: TOKEN_ACTION,
-      version: TOKEN_VERSION,
-      regionId,
-    });
-    const response = await fetchImpl(signed.url, { method: "GET" });
-    if (!response.ok) {
-      throw new Error(
-        `Aliyun Speech Provider token request failed with HTTP ${response.status}`,
-      );
-    }
-    const json = await response.json();
-    const token = json?.Token?.Id;
-    if (!token) {
-      throw new Error(
-        `Aliyun Speech Provider token response missing Token.Id (Code: ${json?.Code || "none"})`,
-      );
-    }
-    const expireTime = Number(json?.Token?.ExpireTime);
-    tokenCache = {
-      accessKeyId,
-      regionId,
-      token,
-      expireTime: Number.isFinite(expireTime) ? expireTime : 0,
-    };
-    return token;
-  }
-
-  /**
-   * Transcribes one Segment's audio through Aliyun NLS one-sentence
-   * recognition (one sentence per request, so one Segment becomes one
-   * request, preceded when needed by one CreateToken request). The
-   * single Transcript record starts at 0 (segment-relative, like Groq
-   * and Tencent records) and its duration covers the Segment: the
-   * capture layer may set `ytdSegmentDuration` (seconds) on the audio
-   * Blob; otherwise 0 — unlike Tencent's SentenceRecognition, the NLS
-   * response carries no audio duration. The #11 interface has no way to
-   * pass the Segment duration explicitly — this Blob-property convention
-   * is documented here rather than changing the frozen seam. The NLS
-   * response carries no language, so records omit it.
+   * Transcribes one Segment's audio through Bailian's OpenAI-compatible
+   * chat-completions endpoint with an input_audio content part. The audio
+   * rides as a base64 Data URI in the JSON body (documented input forms are
+   * a public URL or a Data URI; a Segment's freshly recorded Blob has no
+   * public URL, so Data URI it is). One Segment becomes one request, and
+   * the single Transcript record starts at 0 (segment-relative, like the
+   * other providers); its duration covers the Segment via the
+   * `ytdSegmentDuration` Blob hint, else the provider-reported
+   * `usage.seconds`. Language is pinned to zh per this product's
+   * Chinese-only contract; the response's audio_info annotation is copied
+   * onto the record when present.
    *
    * @param {Blob} segmentAudio - the Segment's audio
-   * @param {{accessKeyId?: string, accessKeySecret?: string, appKey?: string, region?: string}} credentials
+   * @param {{apiKey?: string, baseUrl?: string, model?: string}} credentials
    * @param {typeof fetch} [fetchImpl] - injectable for tests; defaults to fetch
-   * @returns {Promise<Array<{text: string, start: number, duration: number}>>}
+   * @returns {Promise<Array<{text: string, start: number, duration: number, language?: string}>>}
    */
   async function transcribe(segmentAudio, credentials = {}, fetchImpl = fetch) {
-    const accessKeyId =
-      typeof credentials.accessKeyId === "string" ? credentials.accessKeyId.trim() : "";
-    const accessKeySecret =
-      typeof credentials.accessKeySecret === "string"
-        ? credentials.accessKeySecret.trim()
-        : "";
-    const appKey = typeof credentials.appKey === "string" ? credentials.appKey.trim() : "";
-    if (!accessKeyId || !accessKeySecret) {
+    const apiKey =
+      typeof credentials.apiKey === "string" ? credentials.apiKey.trim() : "";
+    if (!apiKey) {
+      throw new Error("Qwen Speech Provider requires a Bailian API key");
+    }
+
+    const audioBytes = new Uint8Array(await segmentAudio.arrayBuffer());
+    const encoded = await speechTranscription.bytesToBase64(audioBytes);
+    if (encoded.length > MAX_ENCODED_AUDIO_BYTES) {
       throw new Error(
-        "Aliyun Speech Provider requires AccessKey ID and AccessKey Secret",
+        `Qwen Speech Provider audio exceeds the 10 MB encoded limit (${encoded.length} bytes)`,
       );
     }
-    if (!appKey) {
-      throw new Error("Aliyun Speech Provider requires an AppKey");
-    }
-    const regionId = normalizeRegion(credentials.region);
+    const mediaType = segmentAudio?.type || "audio/mpeg";
+    const dataUri = `data:${mediaType};base64,${encoded}`;
 
-    const token = await fetchToken(accessKeyId, accessKeySecret, regionId, fetchImpl);
-    const audioBytes = new Uint8Array(await segmentAudio.arrayBuffer());
-
-    const host = `nls-gateway-${regionId}.aliyuncs.com`;
-    const query = [
-      `appkey=${percentEncode(appKey)}`,
-      `format=${detectAudioFormat(segmentAudio)}`,
-      "sample_rate=16000",
-      "enable_punctuation_prediction=true",
-      "enable_inverse_text_normalization=true",
-    ].join("&");
-    const response = await fetchImpl(`https://${host}${GATEWAY_PATH}?${query}`, {
-      method: "POST",
-      headers: {
-        "X-NLS-Token": token,
-        "Content-Type": "application/octet-stream",
-        "Content-Length": String(audioBytes.byteLength),
+    const response = await fetchImpl(
+      `${normalizeBaseUrl(credentials.baseUrl)}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: normalizeModel(credentials.model),
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "input_audio", input_audio: { data: dataUri } },
+              ],
+            },
+          ],
+          asr_options: { language: "zh", enable_itn: true },
+        }),
       },
-      body: audioBytes,
-    });
+    );
     if (!response.ok) {
       throw new Error(
-        `Aliyun Speech Provider request failed with HTTP ${response.status}`,
+        `Qwen Speech Provider request failed with HTTP ${response.status}`,
       );
     }
 
     const json = await response.json();
-    if (json?.status === undefined) {
-      throw new Error("Aliyun Speech Provider returned an unrecognized response");
-    }
-    if (json.status !== SUCCESS_STATUS) {
-      throw new Error(
-        `Aliyun Speech Provider error ${json?.status}: ${json?.message || "unknown"}`,
-      );
-    }
-
-    const text = String(json?.result || "").trim();
+    const message = json?.choices?.[0]?.message;
+    const text = String(message?.content || "").trim();
     if (!text) return [];
 
     const segmentHint = Number(segmentAudio?.ytdSegmentDuration);
+    const reportedSeconds = Number(json?.usage?.seconds);
     const duration =
-      Number.isFinite(segmentHint) && segmentHint > 0 ? Math.floor(segmentHint) : 0;
+      Number.isFinite(segmentHint) && segmentHint > 0
+        ? Math.floor(segmentHint)
+        : Number.isFinite(reportedSeconds) && reportedSeconds > 0
+          ? Math.floor(reportedSeconds)
+          : 0;
 
-    return [{ text, start: 0, duration }];
+    const record = { text, start: 0, duration };
+    const language = Array.isArray(message?.annotations)
+      ? message.annotations.find((item) => item?.type === "audio_info")?.language
+      : undefined;
+    if (typeof language === "string" && language) record.language = language;
+    return [record];
   }
 
   return {
@@ -928,15 +694,12 @@ var YTD_SPEECH_PROVIDER_ALIYUN = (() => {
     label: LABEL,
     credentialFields: CREDENTIAL_FIELDS,
     defaults: DEFAULTS,
-    helpLink: "https://nls-portal.console.aliyun.com/applist",
+    helpLink: "https://bailian.console.aliyun.com/",
     transcribe,
-    // Exposed for unit tests and debugging: the pure POP signing stages.
-    signRequest,
-    crypto,
   };
 })();
 
-YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_ALIYUN);
+YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_QWEN);
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = YTD_SPEECH_PROVIDERS;

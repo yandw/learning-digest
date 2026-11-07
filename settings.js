@@ -19,7 +19,7 @@ var YTD_SETTINGS = (() => {
     sttModel: "whisper-large-v3-turbo",
     // Speech Provider (Learning Digest): which provider transcribes Segments,
     // and that provider's own credentials. Credentials are keyed by provider
-    // id so later providers (Tencent Cloud ASR, Aliyun ASR) add their own
+    // id so later providers (Tencent Cloud ASR, Qwen ASR) add their own
     // slot without touching existing ones. Stored locally only.
     speechProvider: "groq",
     speechProviders: {},

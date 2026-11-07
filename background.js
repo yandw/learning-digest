@@ -1204,7 +1204,7 @@ async function handleStartLearning(message) {
   const credentials = settings.speechProviders[providerId] || {};
   // The gate follows the SELECTED Speech Provider's declared credential
   // fields (the password-typed ones, same rule the options page enforces on
-  // save), not a hard-coded apiKey check: Tencent and Aliyun have no apiKey.
+  // save), not a hard-coded apiKey check: Tencent has no apiKey.
   const missingFields =
     YTD_SPEECH_PROVIDERS.missingProviderCredentials(providerId, credentials);
   if (missingFields.length) {

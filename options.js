@@ -41,11 +41,8 @@ const YTD_OPTIONS = (() => {
       speechProviderFieldSecretKey: "SecretKey",
       speechProviderFieldRegion: "地域",
       speechProviderFieldEngineModelType: "引擎模型类型（如 16k_zh）",
-      speechProviderFieldAccessKeyId: "AccessKey ID",
-      speechProviderFieldAccessKeySecret: "AccessKey Secret",
-      speechProviderFieldAppKey: "AppKey",
       speechProviderLinkTencent: "创建腾讯云凭证",
-      speechProviderLinkAliyun: "创建阿里云 AccessKey",
+      speechProviderLinkQwen: "创建百炼 API Key",
       speechProviderCustomEndpointHelp:
         "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。已知限制：本版本未声明可选权限，Chrome 无法在运行时授予自定义域名，手动修改 manifest 目前是唯一方式。",
       speechProviderInvalidBaseUrl:

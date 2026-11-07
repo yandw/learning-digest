@@ -19,10 +19,10 @@ Learning Digest is a bring-your-own-key project installed locally from GitHub. I
 This repository is an early proof of concept. The platform and provider seams are in place:
 
 - the Session pipeline state machine and per-session persistence;
-- the Speech Provider registry with three providers: Groq, Tencent Cloud ASR, and Aliyun ASR;
+- the Speech Provider registry with three providers: Groq, Tencent Cloud ASR, and Qwen (Bailian) ASR;
 - the AI Provider features (analysis, explanation, translation, notes) inherited from the seed project.
 
-Source Platform capture for xiaoe-tech.com and all three Speech Providers (Groq, Tencent Cloud ASR, Aliyun ASR) are implemented. Transcription quality, latency, and cost on real lessons are not measured yet; the PoC evaluation report ([docs/poc-evaluation.md](docs/poc-evaluation.md)) records what is verified in code and the manual measurements needed for the go/no-go decision.
+Source Platform capture for xiaoe-tech.com and all three Speech Providers (Groq, Tencent Cloud ASR, Qwen ASR) are implemented. Transcription quality, latency, and cost on real lessons are not measured yet; the PoC evaluation report ([docs/poc-evaluation.md](docs/poc-evaluation.md)) records what is verified in code and the manual measurements needed for the go/no-go decision.
 
 ## Install with your coding agent
 
@@ -92,7 +92,7 @@ Base URL: https://api.groq.com/openai/v1
 Model: whisper-large-v3-turbo
 ```
 
-Add a Groq API key in the Speech Provider section of Settings. Tencent Cloud ASR and Aliyun ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
+Add a Groq API key in the Speech Provider section of Settings. Tencent Cloud ASR and Qwen (Bailian) ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
 
 Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 
@@ -110,7 +110,7 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 
 - Google Chrome 116 or newer, using the Side Panel API.
 - The Session pipeline state machine with per-session persistence (resume after closing the tab mid-lesson).
-- The Speech Provider registry with Groq, Tencent Cloud ASR, and Aliyun ASR.
+- The Speech Provider registry with Groq, Tencent Cloud ASR, and Qwen ASR.
 - AI overviews, selected-text explanations, translation, and local notes against transcripts already in the cache.
 - Local notes and a local cache for recent transcript and digest results.
 - OpenRouter (DeepSeek V4.1 Flash) for all published AI features. Other providers require a local code adaptation and are not supported by this published version.

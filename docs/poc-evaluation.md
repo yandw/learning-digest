@@ -23,6 +23,15 @@ and the claim is marked as documentation-sourced, not measurement.
 
 ## 2. Provider comparison
 
+> **Amendment (2026-11-07, after this report):** the Aliyun NLS provider was
+> removed and replaced by **Aliyun Bailian Qwen ASR** (`qwen3-asr-flash`, OpenAI-compatible
+> chat-completions with an `input_audio` Data URI). One service-scoped API key, no request
+> signing or token dance; documented limit ≤ 5 min / ≤ 10 MB (base64) per request, so the
+> default 120 s Segment fits. The Aliyun NLS column below is kept as the historical
+> record of what this report evaluated; the Qwen provider's own live measurements are
+> still TODO(manual) under the same procedure.
+
+
 ### 2.1 Code-verifiable rows
 
 | Row | Groq (whisper-large-v3-turbo) | Tencent Cloud ASR (SentenceRecognition) | Aliyun NLS (一句话识别 RESTful) |

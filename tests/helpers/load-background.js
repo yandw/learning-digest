@@ -14,6 +14,32 @@ const vm = require("node:vm");
 const root = path.resolve(__dirname, "..", "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
+/**
+ * Serves prompts/*.md to the loadPromptSection fetch seam (in the service
+ * worker it is chrome.runtime.getURL + fetch). Real files are read from
+ * disk so the flows exercise the shipped templates; `promptFiles` overrides
+ * a file by name, where null simulates a missing file (404) for the failure
+ * tests. Every other URL goes to the injected fetchImpl (AI Provider,
+ * speech providers).
+ */
+function promptAwareFetch(fetchImpl, promptFiles = {}) {
+  return async (url, options) => {
+    const match = String(url).match(/\/prompts\/([^/?#]+)$/);
+    if (match) {
+      const fileName = match[1];
+      if (Object.hasOwn(promptFiles, fileName)) {
+        const content = promptFiles[fileName];
+        if (content === null) return { ok: false, status: 404 };
+        return { ok: true, text: async () => content };
+      }
+      const filePath = path.join(root, "prompts", fileName);
+      if (!fs.existsSync(filePath)) return { ok: false, status: 404 };
+      return { ok: true, text: async () => fs.readFileSync(filePath, "utf8") };
+    }
+    return fetchImpl(url, options);
+  };
+}
+
 function loadBackgroundHelpers({
   settings = {
     provider: "deepseek",
@@ -22,6 +48,7 @@ function loadBackgroundHelpers({
     aiModel: "deepseek/deepseek-v4.1-flash-1017",
   },
   fetchImpl = fetch,
+  promptFiles = {},
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
   setIntervalImpl = () => 0,
@@ -43,7 +70,7 @@ function loadBackgroundHelpers({
     URL,
     TextDecoder,
     TextEncoder,
-    fetch: fetchImpl,
+    fetch: promptAwareFetch(fetchImpl, promptFiles),
     AbortController,
     setTimeout: setTimeoutImpl,
     clearTimeout: clearTimeoutImpl,

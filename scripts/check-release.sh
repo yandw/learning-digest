@@ -52,6 +52,8 @@ public_allowlist=(
   "icons/icon48.png"
   "icons/icon128.png"
   "prompts/explain.md"
+  "prompts/topic-tick.md"
+  "prompts/session-report.md"
   "README.md"
   "README.zh-CN.md"
   "PRIVACY.md"

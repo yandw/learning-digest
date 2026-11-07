@@ -6,14 +6,20 @@
  *
  * - Topic tick input: the Transcript records since the coverage cursor (the
  *   end of the last Topic, or 0) plus a context-only overlap tail before it
- *   and the existing Topics' titles. The background layer sends that to the
- *   AI Provider when the content-driven trigger fires and feeds the parsed
- *   result back as a `topicsAppended` event; the state machine appends to
- *   the timeline without rewriting earlier Topics (ADR 0002).
+ *   and the existing Topics' titles. The background layer loads the prompt
+ *   copy from prompts/topic-tick.md, injects it into buildTopicBlockMessages
+ *   and sends the result to the AI Provider when the content-driven trigger
+ *   fires, feeding the parsed result back as a `topicsAppended` event; the
+ *   state machine appends to the timeline without rewriting earlier Topics
+ *   (ADR 0002).
  * - Global pass input: the FULL Transcript plus the live Topic timeline as
  *   a merge hint, assembled once when the Session ends. The background layer
- *   sends it in one request and persists the parsed report as the Session
- *   Digest artifact (ADR 0002).
+ *   loads prompts/session-report.md the same way, sends one request and
+ *   persists the parsed report as the Session Digest artifact (ADR 0002).
+ *
+ * The prompt copy itself lives in the prompts/*.md files (editable without
+ * touching code); these builders only render the variable parts into the
+ * injected template sections. No fetch, no chrome dependency here.
  *
  * The coveredUntil convention governs the tick windows: a record counts as
  * covered when its `start` is strictly below the cursor, so the next window
@@ -260,60 +266,60 @@ var YTD_SESSION_SUMMARY = (() => {
       .join("\n");
   }
 
-  // The Topic tick prompt stays in Chinese: the product (prompt, titles,
-  // summaries, panel copy) is Chinese-only, and the transcript language
-  // must not leak into the timeline.
-  const TOPIC_BLOCK_SYSTEM_PROMPT = `你在维护一节长课程的话题段时间轴。请把「本段新逐字稿」切分成一到多个话题段（Topic）：每个话题段是语义连贯的一段内容，可以跨越逐字稿的固定切片边界。
-只输出一个 JSON 数组，不要输出任何其他文字，格式如下：
-[{"start": 起始秒数, "end": 结束秒数, "title": "短标题", "text": "总结", "continuation": true}]
-要求：
-- start 和 end 是相对会话开始的秒数（整数），必须落在本段新逐字稿的时间范围内。
-- title 是不超过 20 字的短标题；text 是 2 到 4 句的总结；两者一律用简体中文，忽略逐字稿本身的语言。
-- 第一个话题段如果延续上一批的最后一个话题（见「上一批的最后一个话题」），给它加 "continuation": true；其余话题段一律不加该字段。
-- 「上文回顾」里的逐字稿只是上下文，不要把它们写成新的话题段，也不要因此重复已总结过的内容。
-- 如果逐字稿里有 [语音转录失败] 这样的失败标记，请在对应话题段的总结里提及该时间段的空缺，不要编造内容。`;
-
-  // The global pass prompt stays in Chinese like the Topic tick prompt: the
-  // product (prompt, titles, summaries, panel copy) is Chinese-only, and the
-  // transcript language must not leak into the report.
-  const GLOBAL_PASS_SYSTEM_PROMPT = `你在为已结束的课程生成一份完整的会话纪要。请通读全部逐字稿，一次性完成全局整理，只输出一个 JSON 对象，不要输出任何其他文字，格式如下：
-{"topics": [{"start": 起始秒数, "end": 结束秒数, "title": "短标题", "summary": "总结"}], "quotes": [{"start": 时间戳秒数, "text": "原话"}], "todos": ["待办事项"]}
-要求：
-- topics 把整节课切分成语义连贯的话题段：start 和 end 是相对会话开始的秒数（整数），时间范围必须以逐字稿为准；title 是不超过 20 字的短标题，summary 是 2 到 4 句的总结，两者一律用简体中文，忽略逐字稿本身的语言。
-- 课中时间轴上因分段总结拆开的延续话题（同一话题被拆成多段）必须合并为一个完整的话题段，不要按拆分后的片段划分。
-- 逐字稿因录音切片可能出现在开头或结尾被截断的句子：忽略截断痕迹，把跨切片的句子衔接起来理解，不要为切片边界单独划分话题。
-- quotes 挑选课中最有价值的原话（最多 5 条），每条必须携带它在逐字稿中的时间戳（秒数）。
-- 只有当逐字稿里确实出现行动项（作业、待办、下一步要做的事）时才输出 todos；没有就输出空数组。
-- 如果逐字稿里有 [语音转录失败] 这样的失败标记，请在对应话题段的总结里提及该时间段的空缺，不要编造内容。`;
+  /**
+   * Substitutes {key} placeholders in a prompt template — the one placeholder
+   * convention for prompts/*.md. loadPromptSection in background.js delegates
+   * here for its load-time variables, and the prompt builders below use it
+   * for the Session-state variables. Only the given keys are replaced: a
+   * placeholder with no matching variable stays in the text (a broken
+   * template is visible in the prompt instead of silently vanishing), and a
+   * missing value becomes an empty string.
+   *
+   * @param {string} template
+   * @param {Record<string, unknown>} [variables]
+   * @returns {string}
+   */
+  function fillPromptTemplate(template, variables = {}) {
+    let prompt = String(template ?? "");
+    for (const [key, value] of Object.entries(variables)) {
+      prompt = prompt.split(`{${key}}`).join(String(value ?? ""));
+    }
+    return prompt;
+  }
 
   /**
-   * Chat-completion messages for one Topic tick.
+   * Chat-completion messages for one Topic tick. The prompt copy lives in
+   * prompts/topic-tick.md; the background layer loads its three sections
+   * (system prompt plus the two user-prompt variants) through
+   * loadPromptSection and injects them here, so this stays pure and
+   * browser-free. The first tick of a Session (no existing Topics) fills the
+   * first-batch variant; otherwise the template names the prior Topics and
+   * the continuation anchor.
    *
+   * @param {{systemPrompt: string, userPrompt: string, firstBatchUserPrompt: string}} template
    * @param {{existingTopicTitles: string[], contextTranscriptText: string, newTranscriptText: string}} input
    * @returns {Array<{role: string, content: string}>}
    */
-  function buildTopicBlockMessages({
-    existingTopicTitles,
-    contextTranscriptText,
-    newTranscriptText,
-  }) {
+  function buildTopicBlockMessages(
+    template,
+    { existingTopicTitles, contextTranscriptText, newTranscriptText },
+  ) {
     const titles = Array.isArray(existingTopicTitles) ? existingTopicTitles : [];
-    const userParts = [];
-    if (titles.length > 0) {
-      userParts.push(
-        `已有话题（按时间顺序）：\n${titles.map((title) => `- ${title}`).join("\n")}`,
-      );
-      userParts.push(`上一批的最后一个话题：「${titles[titles.length - 1]}」`);
-    } else {
-      userParts.push("这是本次会话的第一批话题段，此前没有已有话题。");
+    const firstBatch = titles.length === 0;
+    const userTemplate = firstBatch
+      ? template.firstBatchUserPrompt
+      : template.userPrompt;
+    const variables = {
+      contextTranscriptText: contextTranscriptText || "（无）",
+      newTranscriptText,
+    };
+    if (!firstBatch) {
+      variables.existingTopicTitlesLines = titles.join("\n- ");
+      variables.lastTopicTitle = titles[titles.length - 1];
     }
-    userParts.push(
-      `上文回顾（仅作上下文，不要总结成新的话题段）：\n${contextTranscriptText || "（无）"}`,
-    );
-    userParts.push(`本段新逐字稿：\n${newTranscriptText}`);
     return [
-      { role: "system", content: TOPIC_BLOCK_SYSTEM_PROMPT },
-      { role: "user", content: userParts.join("\n\n") },
+      { role: "system", content: template.systemPrompt },
+      { role: "user", content: fillPromptTemplate(userTemplate, variables) },
     ];
   }
 
@@ -341,29 +347,34 @@ var YTD_SESSION_SUMMARY = (() => {
   /**
    * Chat-completion messages for the Session Digest at session end: one
    * global pass over the full Transcript (ADR 0002), independent of the
-   * Rolling Summary. The live Topics ride along as a reference the model may
-   * merge, never as input to trust blindly.
+   * Rolling Summary. The prompt copy lives in prompts/session-report.md,
+   * loaded by the background layer and injected here. The live Topics ride
+   * along as a reference the model may merge, never as input to trust
+   * blindly; with an empty timeline the no-topics template variant drops
+   * the hint.
    *
+   * @param {{systemPrompt: string, userPrompt: string, userPromptWithoutTopics: string}} template
    * @param {{transcriptText: string, liveTopics: object[]}} input
    * @returns {Array<{role: string, content: string}>}
    */
-  function buildGlobalPassMessages({ transcriptText, liveTopics }) {
-    const userParts = [];
+  function buildGlobalPassMessages(template, { transcriptText, liveTopics }) {
     const topics = Array.isArray(liveTopics) ? liveTopics : [];
-    if (topics.length > 0) {
-      userParts.push(
-        `课中已识别的话题段（可参考/合并）：\n${topics
-          .map(
-            (topic) =>
-              `- [${formatTimestamp(topic?.start)}–${formatTimestamp(topic?.end)}] ${topic?.title ?? ""}`,
-          )
-          .join("\n")}`,
-      );
+    const withTopics = topics.length > 0;
+    const userTemplate = withTopics
+      ? template.userPrompt
+      : template.userPromptWithoutTopics;
+    const variables = { transcriptText: transcriptText || "（无）" };
+    if (withTopics) {
+      variables.liveTopicsLines = topics
+        .map(
+          (topic) =>
+            `[${formatTimestamp(topic?.start)}–${formatTimestamp(topic?.end)}] ${topic?.title ?? ""}`,
+        )
+        .join("\n- ");
     }
-    userParts.push(`完整逐字稿：\n${transcriptText || "（无）"}`);
     return [
-      { role: "system", content: GLOBAL_PASS_SYSTEM_PROMPT },
-      { role: "user", content: userParts.join("\n\n") },
+      { role: "system", content: template.systemPrompt },
+      { role: "user", content: fillPromptTemplate(userTemplate, variables) },
     ];
   }
 
@@ -465,6 +476,7 @@ var YTD_SESSION_SUMMARY = (() => {
     topicCursor,
     isTopicTickDue,
     assembleTopicBlockInput,
+    fillPromptTemplate,
     buildTopicBlockMessages,
     parseLooseJson,
     parseTopicBlock,

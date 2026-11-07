@@ -544,6 +544,102 @@ test("malformed model output appends nothing and leaves the snapshot untouched",
   );
 });
 
+// --- Prompt templates load from prompts/*.md through the fetch seam (#33)
+
+// Swallows the loud console output a broken template must produce, so the
+// test output stays clean and the loudness itself becomes assertable.
+function captureConsoleErrors(run) {
+  const errors = [];
+  const original = console.error;
+  console.error = (...args) => errors.push(args.map(String).join(" "));
+  return Promise.resolve()
+    .then(run)
+    .finally(() => {
+      console.error = original;
+    })
+    .then((value) => ({ value, errors }));
+}
+
+test("a tick with a missing prompt file fails loudly and calls no AI Provider", async () => {
+  const requests = [];
+  let fireSummaryTick = null;
+  const sessionId = "s_no_prompt";
+  let topicsAfterTick;
+
+  const { errors } = await captureConsoleErrors(async () => {
+    const helpers = loadBackgroundHelpers({
+      settings: baseSettings({ summaryIntervalMinutes: 15 }),
+      fetchImpl: topicAiFetch(requests),
+      // null simulates the file being missing (fetch gets a 404).
+      promptFiles: { "topic-tick.md": null },
+      setIntervalImpl: (cb) => {
+        fireSummaryTick = cb;
+        return 0;
+      },
+      stored: {
+        ytd_active_capture: capturePointer(sessionId),
+        [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+      },
+    });
+    await helpers.handleGetSessionState();
+    await fireSummaryTick();
+    topicsAfterTick = helpers.readStored(`ytd_session_${sessionId}`).topics;
+  });
+
+  assert.ok(
+    errors.some(
+      (line) => /提示词文件加载失败/.test(line) && /topic-tick\.md/.test(line),
+    ),
+    "the load failure is logged loudly, naming the missing file",
+  );
+  assert.equal(requests.length, 0, "no AI call happens without the template");
+  assert.deepEqual(topicsAfterTick, [], "a failed tick appends nothing");
+});
+
+test("ending a Session with a missing report prompt broadcasts a clear error and persists nothing", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_no_report_prompt";
+
+  const { errors, value: result } = await captureConsoleErrors(async () => {
+    const helpers = loadBackgroundHelpers({
+      settings: baseSettings(),
+      fetchImpl: reportAiFetch(requests, REPORT_BODY),
+      promptFiles: { "session-report.md": null },
+      sentMessages,
+      stored: {
+        ytd_active_capture: capturePointer(sessionId),
+        [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+      },
+    });
+    const outcome = await resumeAndEnd(helpers);
+    return { outcome, helpers };
+  });
+
+  assert.ok(
+    errors.some(
+      (line) => /提示词文件加载失败/.test(line) && /session-report\.md/.test(line),
+    ),
+    "the load failure is logged loudly, naming the missing file",
+  );
+  assert.equal(requests.length, 0, "no AI call happens without the template");
+  assert.match(
+    result.outcome.report.error,
+    /提示词文件/,
+    "the panel payload names the broken prompt file",
+  );
+  assert.equal(
+    result.helpers.readStored(`report_${sessionId}`),
+    undefined,
+    "a failed pass persists nothing",
+  );
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.report,
+  );
+  assert.ok(update, "the failure still broadcasts a renderable payload");
+  assert.match(update.report.error, /提示词文件/);
+});
+
 // --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>
 
 const REPORT_BODY = {

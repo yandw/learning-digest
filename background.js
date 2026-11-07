@@ -78,10 +78,38 @@ async function loadPromptSection(fileName, heading, variables = {}) {
   }
 
   let prompt = fenceMatch[1];
-  for (const [key, value] of Object.entries(variables)) {
-    prompt = prompt.split(`{${key}}`).join(String(value ?? ""));
+  // One substitution convention for all prompt files, shared with the pure
+  // prompt builders in session-summary.js.
+  return YTD_SESSION_SUMMARY.fillPromptTemplate(prompt, variables);
+}
+
+/**
+ * Loads the section bundle of one session prompt template (Topic tick or
+ * global pass, #33). These templates carry no load-time variables: the pure
+ * builders in session-summary.js fill their placeholders from Session state.
+ * A missing or unreadable file is a permanent misconfiguration that would
+ * fail every tick or end-of-session pass, so it is logged loudly here (a
+ * failed tick would otherwise only hit the quiet retry log) and rethrown
+ * with a clear Chinese message for the panel payloads.
+ *
+ * @param {string} fileName - prompts/ file, e.g. "topic-tick.md"
+ * @param {Record<string, string>} headings - template key -> "## " heading
+ * @returns {Promise<Record<string, string>>} the loaded sections
+ */
+async function loadPromptTemplate(fileName, headings) {
+  try {
+    const template = {};
+    for (const [key, heading] of Object.entries(headings)) {
+      template[key] = await loadPromptSection(fileName, heading);
+    }
+    return template;
+  } catch (error) {
+    console.error(
+      `[Learning Digest] 提示词文件加载失败（prompts/${fileName}）：`,
+      error?.message || error,
+    );
+    throw new Error(`提示词文件缺失或不可读：prompts/${fileName}`);
   }
-  return prompt;
 }
 
 async function requestAiCompletion({
@@ -988,9 +1016,16 @@ async function maybeRunTopicTick(context) {
   context.summaryInFlight = true;
   try {
     const input = YTD_SESSION_SUMMARY.assembleTopicBlockInput(context.state);
+    // The prompt copy lives in prompts/topic-tick.md (#33); a load failure
+    // throws before any AI call and lands in the quiet retry path below.
+    const template = await loadPromptTemplate("topic-tick.md", {
+      systemPrompt: "System prompt",
+      userPrompt: "User prompt",
+      firstBatchUserPrompt: "First batch user prompt",
+    });
     const { text } = await requestAiCompletion({
       maxTokens: 4096,
-      messages: YTD_SESSION_SUMMARY.buildTopicBlockMessages({
+      messages: YTD_SESSION_SUMMARY.buildTopicBlockMessages(template, {
         existingTopicTitles: input.existingTopicTitles,
         contextTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
           input.overlapTail,
@@ -1046,9 +1081,16 @@ async function generateSessionReport(state) {
   try {
     const { transcriptRecords, liveTopics } =
       YTD_SESSION_SUMMARY.assembleGlobalPassInput(state);
+    // The prompt copy lives in prompts/session-report.md (#33); a load
+    // failure becomes { report: null, error } below, never a broken prompt.
+    const template = await loadPromptTemplate("session-report.md", {
+      systemPrompt: "System prompt",
+      userPrompt: "User prompt",
+      userPromptWithoutTopics: "User prompt without topics",
+    });
     const { text, finishReason } = await requestAiCompletion({
       maxTokens: 8192,
-      messages: YTD_SESSION_SUMMARY.buildGlobalPassMessages({
+      messages: YTD_SESSION_SUMMARY.buildGlobalPassMessages(template, {
         transcriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
           transcriptRecords,
         ),

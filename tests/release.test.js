@@ -47,7 +47,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.32");
+  assert.equal(manifest.version, "0.1.33");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -357,12 +357,42 @@ test("retired files are absent", () => {
 test("published prompt files contain runtime sections", () => {
   const expectedSections = {
     "prompts/explain.md": ["System prompt", "User prompt"],
+    // The Topic tick and Session Digest templates (#33): the system contract
+    // plus the user-prompt variants the builders pick between (with prior
+    // Topics / first batch, with live Topics / without).
+    "prompts/topic-tick.md": [
+      "System prompt",
+      "User prompt",
+      "First batch user prompt",
+    ],
+    "prompts/session-report.md": [
+      "System prompt",
+      "User prompt",
+      "User prompt without topics",
+    ],
+  };
+  // The placeholders the pure builders fill (session-summary.js); each must
+  // occur in the file so a renamed variable breaks this test, not a Session.
+  const expectedPlaceholders = {
+    "prompts/topic-tick.md": [
+      "existingTopicTitlesLines",
+      "lastTopicTitle",
+      "contextTranscriptText",
+      "newTranscriptText",
+    ],
+    "prompts/session-report.md": ["liveTopicsLines", "transcriptText"],
   };
 
   for (const [file, sections] of Object.entries(expectedSections)) {
     const markdown = read(file);
     for (const section of sections) {
       assert.match(markdown, new RegExp(`^## ${section}$`, "m"));
+    }
+    for (const placeholder of expectedPlaceholders[file] || []) {
+      assert.ok(
+        markdown.includes(`{${placeholder}}`),
+        `${file} must carry {${placeholder}}`,
+      );
     }
   }
 });
@@ -387,6 +417,15 @@ test("core Learning Digest modules ship in the release and load in the service w
     "report.js",
   ]) {
     assert.match(checkRelease, new RegExp(`"${module}"`), module);
+  }
+  // The prompt files ship with the release too: the loader wraps them behind
+  // a variable, so check-release.sh's literal scan cannot pin them itself.
+  for (const promptFile of [
+    "prompts/explain.md",
+    "prompts/topic-tick.md",
+    "prompts/session-report.md",
+  ]) {
+    assert.match(checkRelease, new RegExp(`"${promptFile}"`), promptFile);
   }
   assert.match(
     read("background.js"),

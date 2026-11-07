@@ -1,8 +1,38 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const summary = require("../session-summary.js");
 const pipeline = require("../session-pipeline.js");
+
+// The runtime templates (#33) live in prompts/*.md; the background layer
+// loads their sections through loadPromptSection and injects them into the
+// pure builders. These tests load them the same way (## heading -> fenced
+// block), so the contract markers asserted below are the shipped copy.
+function promptSection(markdown, heading) {
+  const marker = `## ${heading}`;
+  const start = markdown.indexOf(marker) + marker.length;
+  const next = markdown.indexOf("\n## ", start);
+  const section = markdown.slice(start, next === -1 ? markdown.length : next);
+  return section.match(/```(?:[A-Za-z0-9_-]+)?\n([\s\S]*?)\n```/)[1];
+}
+
+const promptsDir = path.join(__dirname, "..", "prompts");
+const topicTickMarkdown = fs.readFileSync(path.join(promptsDir, "topic-tick.md"), "utf8");
+const sessionReportMarkdown = fs.readFileSync(path.join(promptsDir, "session-report.md"), "utf8");
+
+const TICK_TEMPLATE = {
+  systemPrompt: promptSection(topicTickMarkdown, "System prompt"),
+  userPrompt: promptSection(topicTickMarkdown, "User prompt"),
+  firstBatchUserPrompt: promptSection(topicTickMarkdown, "First batch user prompt"),
+};
+
+const REPORT_TEMPLATE = {
+  systemPrompt: promptSection(sessionReportMarkdown, "System prompt"),
+  userPrompt: promptSection(sessionReportMarkdown, "User prompt"),
+  userPromptWithoutTopics: promptSection(sessionReportMarkdown, "User prompt without topics"),
+};
 
 function activeSessionWithRecords(records, topics = []) {
   let state = pipeline.createSession({ sessionId: "s_test" });
@@ -246,7 +276,7 @@ test("failure-marker records inside the new window stay in the block input", () 
 // --- Topic block prompt: the JSON Topic contract in Chinese
 
 test("the Topic prompt demands a JSON array of Topics with seconds and a continuation flag", () => {
-  const messages = summary.buildTopicBlockMessages({
+  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
     existingTopicTitles: [],
     contextTranscriptText: "",
     newTranscriptText: "[0:00] 课程开场",
@@ -263,7 +293,7 @@ test("the Topic prompt demands a JSON array of Topics with seconds and a continu
 });
 
 test("the Topic prompt marks the overlap tail as context-only", () => {
-  const messages = summary.buildTopicBlockMessages({
+  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
     existingTopicTitles: ["导论"],
     contextTranscriptText: "[9:50] 上一段的结尾回顾",
     newTranscriptText: "[10:00] 新的内容",
@@ -277,7 +307,7 @@ test("the Topic prompt marks the overlap tail as context-only", () => {
 });
 
 test("the Topic prompt anchors continuation detection on the last existing Topic", () => {
-  const messages = summary.buildTopicBlockMessages({
+  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
     existingTopicTitles: ["导论", "二次函数"],
     contextTranscriptText: "[14:30] 承接上文",
     newTranscriptText: "[15:00] 继续讲解二次函数",
@@ -288,13 +318,77 @@ test("the Topic prompt anchors continuation detection on the last existing Topic
 });
 
 test("the first Topic tick states there are no previous Topics", () => {
-  const messages = summary.buildTopicBlockMessages({
+  const messages = summary.buildTopicBlockMessages(TICK_TEMPLATE, {
     existingTopicTitles: [],
     contextTranscriptText: "",
     newTranscriptText: "[0:00] 课程开场",
   });
 
   assert.match(messages[1].content, /没有已有话题/);
+});
+
+// --- Template injection: the builders fill placeholders, nothing more (#33)
+
+// A small synthetic template, independent of the shipped prompt copy: it
+// pins the injection mechanics (branch selection, variable landing, byte
+// structure) without restating the real templates.
+const INLINE_TICK_TEMPLATE = {
+  systemPrompt: "系统提示词",
+  userPrompt:
+    "已有：- {existingTopicTitlesLines}；上一个：「{lastTopicTitle}」；回顾：{contextTranscriptText}；新稿：{newTranscriptText}",
+  firstBatchUserPrompt: "第一批；回顾：{contextTranscriptText}；新稿：{newTranscriptText}",
+};
+
+test("the Topic builder fills the injected template's placeholders with the block input", () => {
+  const messages = summary.buildTopicBlockMessages(INLINE_TICK_TEMPLATE, {
+    existingTopicTitles: ["导论", "二次函数"],
+    contextTranscriptText: "[9:50] 回顾",
+    newTranscriptText: "[10:00] 新的内容",
+  });
+
+  assert.equal(messages[0].content, "系统提示词");
+  assert.match(messages[1].content, /^已有：- 导论\n- 二次函数；/);
+  assert.match(messages[1].content, /上一个：「二次函数」；/);
+  assert.match(messages[1].content, /回顾：\[9:50\] 回顾；/);
+  assert.match(messages[1].content, /新稿：\[10:00\] 新的内容$/);
+});
+
+test("the Topic builder picks the first-batch template when no Topics exist", () => {
+  const messages = summary.buildTopicBlockMessages(INLINE_TICK_TEMPLATE, {
+    existingTopicTitles: [],
+    contextTranscriptText: "（无）",
+    newTranscriptText: "[0:00] 开场",
+  });
+
+  assert.equal(messages[1].content, "第一批；回顾：（无）；新稿：[0:00] 开场");
+});
+
+test("an empty context falls back to （无） in the injected template", () => {
+  const messages = summary.buildTopicBlockMessages(INLINE_TICK_TEMPLATE, {
+    existingTopicTitles: [],
+    contextTranscriptText: "",
+    newTranscriptText: "[0:00] 开场",
+  });
+
+  assert.equal(messages[1].content, "第一批；回顾：（无）；新稿：[0:00] 开场");
+});
+
+test("placeholders without a matching variable stay untouched in the filled prompt", () => {
+  const messages = summary.buildTopicBlockMessages(
+    { ...INLINE_TICK_TEMPLATE, userPrompt: "未知 {unknownPlaceholder} 新稿：{newTranscriptText}" },
+    { existingTopicTitles: ["导论"], contextTranscriptText: "", newTranscriptText: "X" },
+  );
+
+  assert.equal(messages[1].content, "未知 {unknownPlaceholder} 新稿：X");
+});
+
+test("fillPromptTemplate substitutes the given {key} placeholders and nothing else", () => {
+  assert.equal(
+    summary.fillPromptTemplate("A={a} B={b} C={c}", { a: 1, b: null }),
+    "A=1 B= C={c}",
+  );
+  assert.equal(summary.fillPromptTemplate("no variables", {}), "no variables");
+  assert.equal(summary.fillPromptTemplate(undefined, { a: 1 }), "");
 });
 
 // --- Tolerant parser: model output -> Topic list (never throws)
@@ -420,7 +514,7 @@ test("global pass input tolerates Sessions without records or Topics", () => {
 });
 
 test("the global pass prompt demands one JSON object with topics, quotes and todos", () => {
-  const messages = summary.buildGlobalPassMessages({
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "[0:00] 课程开场\n[1:00] 正式内容",
     liveTopics: [{ start: 0, end: 30, title: "导论" }],
   });
@@ -437,7 +531,7 @@ test("the global pass prompt demands one JSON object with topics, quotes and tod
 });
 
 test("the global pass prompt orders continuation sections merged into whole Topics", () => {
-  const messages = summary.buildGlobalPassMessages({
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "[0:00] 课程开场",
     liveTopics: [],
   });
@@ -447,7 +541,7 @@ test("the global pass prompt orders continuation sections merged into whole Topi
 });
 
 test("the global pass prompt instructs the model to stitch recording-cut artifacts", () => {
-  const messages = summary.buildGlobalPassMessages({
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "",
     liveTopics: [],
   });
@@ -456,7 +550,7 @@ test("the global pass prompt instructs the model to stitch recording-cut artifac
 });
 
 test("the global pass prompt keeps todos conditional on real action items", () => {
-  const messages = summary.buildGlobalPassMessages({
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "",
     liveTopics: [],
   });
@@ -466,7 +560,7 @@ test("the global pass prompt keeps todos conditional on real action items", () =
 });
 
 test("the global pass user message carries the full Transcript and the live Topic hint", () => {
-  const messages = summary.buildGlobalPassMessages({
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "[0:00] 课程开场\n[61:01] 收尾",
     liveTopics: [
       { start: 0, end: 60, title: "导论" },
@@ -481,12 +575,53 @@ test("the global pass user message carries the full Transcript and the live Topi
 });
 
 test("the global pass user message omits the Topic hint when the timeline is empty", () => {
-  const messages = summary.buildGlobalPassMessages({
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "[0:00] 课程开场",
     liveTopics: [],
   });
 
   assert.doesNotMatch(messages[1].content, /课中已识别的话题段/);
+});
+
+// Synthetic template for the injection mechanics, as with the Topic builder.
+const INLINE_REPORT_TEMPLATE = {
+  systemPrompt: "纪要系统提示词",
+  userPrompt: "话题：- {liveTopicsLines}\n\n逐字稿：{transcriptText}",
+  userPromptWithoutTopics: "仅逐字稿：{transcriptText}",
+};
+
+test("the global pass builder fills the live Topics hint and the full Transcript", () => {
+  const messages = summary.buildGlobalPassMessages(INLINE_REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 开场",
+    liveTopics: [
+      { start: 0, end: 60, title: "导论" },
+      { start: 60, end: 120, title: "二次函数" },
+    ],
+  });
+
+  assert.equal(messages[0].content, "纪要系统提示词");
+  assert.equal(
+    messages[1].content,
+    "话题：- [0:00–1:00] 导论\n- [1:00–2:00] 二次函数\n\n逐字稿：[0:00] 开场",
+  );
+});
+
+test("the global pass builder picks the no-topics template on an empty timeline", () => {
+  const messages = summary.buildGlobalPassMessages(INLINE_REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 开场",
+    liveTopics: [],
+  });
+
+  assert.equal(messages[1].content, "仅逐字稿：[0:00] 开场");
+});
+
+test("an empty Transcript falls back to （无） in the injected template", () => {
+  const messages = summary.buildGlobalPassMessages(INLINE_REPORT_TEMPLATE, {
+    transcriptText: "",
+    liveTopics: [],
+  });
+
+  assert.equal(messages[1].content, "仅逐字稿：（无）");
 });
 
 const GOOD_REPORT = JSON.stringify({

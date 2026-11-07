@@ -1,12 +1,12 @@
 :root {
   color-scheme: light;
-  --bg: #f7f3ec;
+  --bg: #f2f6fc;
   --surface: #ffffff;
-  --border: #e7dfd2;
-  --text: #2e2a24;
-  --muted: #6b6258;
-  --accent: #c8674f;
-  --accent-hover: #ad523e;
+  --border: #d9e3f0;
+  --text: #1f2733;
+  --muted: #5b6b80;
+  --accent: #1b72e8;
+  --accent-hover: #155cc4;
   --danger: #9f2d2d;
 }
 
@@ -71,7 +71,7 @@ header {
 }
 
 .language-switch .language-option:focus-visible {
-  outline: 3px solid rgba(200, 103, 79, 0.28);
+  outline: 3px solid rgba(27, 114, 232, 0.28);
   outline-offset: 1px;
 }
 
@@ -166,8 +166,8 @@ a {
   margin-top: 18px;
   padding: 12px 14px;
   border-radius: 10px;
-  background: #f8eee9;
-  color: #60483f;
+  background: #e9f1fc;
+  color: #3d5470;
   font-size: 13px;
 }
 
@@ -183,9 +183,9 @@ a {
   justify-content: space-between;
   margin-bottom: 18px;
   padding: 13px 14px;
-  border: 1px solid #ecd8ce;
+  border: 1px solid #cfe0f5;
   border-radius: 12px;
-  background: #fdf6f2;
+  background: #f4f9ff;
 }
 
 .provider-name {
@@ -196,16 +196,16 @@ a {
 .agent-badge {
   padding: 4px 9px;
   border-radius: 999px;
-  background: #f2e3dc;
-  color: #714b3f;
+  background: #dbe9fa;
+  color: #2f5a8f;
   font-size: 11px;
   font-weight: 800;
 }
 
 .customization-card {
   padding: 0;
-  border-color: #ddc2b7;
-  background: linear-gradient(145deg, #fff 0%, #fff9f6 100%);
+  border-color: #b9d2ee;
+  background: linear-gradient(145deg, #fff 0%, #f7fbff 100%);
   overflow: hidden;
 }
 
@@ -240,11 +240,11 @@ a {
 }
 
 .customization-summary:hover {
-  background: #fdf3ee;
+  background: #ecf4fd;
 }
 
 .customization-summary:focus-visible {
-  outline: 3px solid rgba(200, 103, 79, 0.28);
+  outline: 3px solid rgba(27, 114, 232, 0.28);
   outline-offset: -3px;
 }
 
@@ -267,7 +267,7 @@ a {
 
 .customization-content {
   padding: 19px 22px 22px;
-  border-top: 1px solid #ead8d0;
+  border-top: 1px solid #d5e4f5;
 }
 
 .customization-intro {
@@ -292,10 +292,10 @@ a {
 .prompt-reminder {
   margin: 8px 0 10px;
   padding: 10px 12px;
-  border: 1px solid #e7b9a8;
+  border: 1px solid #a9c8ec;
   border-radius: 10px;
-  background: #fff2ec;
-  color: #60483f;
+  background: #e7f1fd;
+  color: #3d5470;
   font-size: 13px;
   font-weight: 750;
 }

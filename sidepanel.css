@@ -5,7 +5,7 @@
  * - Warm, editorial, unhurried. The opposite of shouty.
  * - Soft cream paper background; white cards float on it with gentle shadows.
  * - Rounded corners everywhere (no sharp brutalist edges).
- * - Terracotta is the single warm accent, used sparingly; sage is a quiet
+ * - Brand blue is the single accent, used sparingly; sage is a quiet blue
  *   secondary. Red is gone.
  * - Fully sans-serif, using system fonts so the extension makes no font
  *   requests to third parties.
@@ -16,28 +16,28 @@
    ============================================================ */
 :root {
   /* Surfaces & ink — all warm-toned, never pure grey */
-  --bg: #f7f3ec;
+  --bg: #f2f6fc;
   --surface: #ffffff;
-  --surface-raised: #fbf8f2;
-  --border: #ece5d9;
-  --border-heavy: #ddd4c4;
-  --text: #2e2a24;
-  --text-secondary: #6b6258;
-  --text-muted: #a39a8d;
+  --surface-raised: #f7fafd;
+  --border: #dce5f0;
+  --border-heavy: #c3d0e0;
+  --text: #1f2733;
+  --text-secondary: #5b6b80;
+  --text-muted: #93a1b3;
 
   /* Accents */
-  --accent: #c8674f; /* terracotta */
-  --accent-hover: #b25742;
-  --accent-dim: rgba(200, 103, 79, 0.1);
-  --sage: #7c8b6f; /* quiet secondary */
-  --sage-dim: rgba(124, 139, 111, 0.14);
-  --success: #7c8b6f;
-  --highlight: #d99a5b;
+  --accent: #1b72e8; /* brand blue */
+  --accent-hover: #155cc4;
+  --accent-dim: rgba(27, 114, 232, 0.1);
+  --sage: #4f7fa8; /* quiet secondary blue */
+  --sage-dim: rgba(79, 127, 168, 0.14);
+  --success: #4f7fa8;
+  --highlight: #d9a441;
 
   /* Soft shadows give depth instead of heavy borders */
-  --shadow-sm: 0 1px 3px rgba(90, 80, 60, 0.06);
-  --shadow-md: 0 4px 16px rgba(90, 80, 60, 0.1);
-  --shadow-lg: 0 16px 48px rgba(50, 42, 32, 0.22);
+  --shadow-sm: 0 1px 3px rgba(45, 65, 95, 0.06);
+  --shadow-md: 0 4px 16px rgba(45, 65, 95, 0.1);
+  --shadow-lg: 0 16px 48px rgba(25, 40, 65, 0.22);
 
   /* Rounding scale */
   --r-sm: 8px;
@@ -155,7 +155,7 @@ body {
 /* ============================================================
    TAB NAVIGATION — pill tabs on the white header.
    No background "track": the header is white and the content below is cream,
-   so the only thing in this strip is the muted labels + one terracotta pill.
+   so the only thing in this strip is the muted labels + one blue pill.
    That keeps the menu visually separate from the content area below it.
    ============================================================ */
 .tabs {
@@ -191,7 +191,7 @@ body {
   background: var(--surface-raised);
 }
 
-/* Active pill — terracotta fill on the white header */
+/* Active pill — blue fill on the white header */
 .tab.active {
   color: #fff;
   background: var(--accent);
@@ -732,7 +732,7 @@ body {
 .transcript-search-highlight {
   padding: 1px 0;
   border-radius: 3px;
-  background: #f5d9a8;
+  background: #bcd7f7;
   color: inherit;
 }
 
@@ -1032,7 +1032,7 @@ body {
   width: 84px;
   height: 84px;
   border-radius: var(--r-xl);
-  background: linear-gradient(145deg, #d2735a, #bd5740);
+  background: linear-gradient(145deg, #3b9df2, #1b72e8);
   box-shadow: 0 12px 30px rgba(200, 103, 79, 0.35);
   display: flex;
   align-items: center;

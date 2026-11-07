@@ -1,6 +1,6 @@
 {
   "name": "learning-digest",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "private": true,
   "description": "Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest.",
   "license": "MIT",

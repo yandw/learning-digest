@@ -257,11 +257,21 @@ async function handleActionClicked(tab) {
   // Without the "tabs" permission tab.url is only populated when the
   // extension has host access to the page; on unrecognized hosts it is
   // simply absent and we only open the panel.
-  if (!tab?.url) return;
-  if (YTD_SOURCE_PLATFORMS.recognizePage(tab.url).kind === "none") return;
+  if (!tab?.url) {
+    console.error("[Learning Digest] icon click ignored: tab.url is empty", tab);
+    return;
+  }
+  const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tab.url);
+  if (recognition.kind === "none") {
+    console.error("[Learning Digest] icon click ignored: page not recognized:", tab.url);
+    return;
+  }
 
   const existing = await ensureCaptureResumed();
-  if (existing) return; // Session already running; the panel shows its state.
+  if (existing) {
+    console.log("[Learning Digest] icon click: a Session is already active");
+    return; // Session already running; the panel shows its state.
+  }
 
   const result = await handleStartLearning({ url: tab.url, tabId: tab.id });
   if (result && !result.success) {
@@ -277,6 +287,10 @@ async function handleActionClicked(tab) {
         // Panel not ready yet; next retry.
       }
     }
+    console.error(
+      "[Learning Digest] startLearning failed and the panel never received it:",
+      result.error,
+    );
   }
 }
 
@@ -1298,6 +1312,7 @@ async function handleStartLearning(message) {
     captureContext = null;
     await clearContextPointer();
     const message = error?.message || String(error);
+    console.error("[Learning Digest] startLearning failed:", message);
     // Chrome only allows tabCapture after the user has INVOKED the extension
     // on the target tab (a toolbar icon click); a side-panel button click
     // does not count. Turn the raw English API error into an actionable

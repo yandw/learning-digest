@@ -114,70 +114,44 @@
         </section>
 
         <section class="card">
-          <h2 data-i18n="sttProvider">Speech Transcription provider</h2>
+          <h2 data-i18n="speechProvider">Speech Provider</h2>
           <div
             class="provider-summary"
-            aria-label="Speech Transcription provider"
-            data-i18n-aria-label="sttProviderSummaryLabel"
+            aria-label="Speech Provider"
+            data-i18n-aria-label="speechProviderSummaryLabel"
           >
-            <span class="provider-name">Groq Whisper</span>
-            <span class="provider-badge" data-i18n="sttOptionalBadge"
-              >Currently disabled</span
+            <span class="provider-badge" data-i18n="speechProviderBadge"
+              >Transcribes lesson audio into Transcript records</span
             >
           </div>
 
-          <label for="sttApiKey" data-i18n="sttApiKeyLabel"
-            >Speech Transcription API key</label
+          <label for="speechProvider" data-i18n="speechProviderLabel"
+            >Speech Provider</label
           >
-          <input
-            id="sttApiKey"
-            name="sttApiKey"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Paste your Speech Transcription key"
-          />
+          <select id="speechProvider" name="speechProvider"></select>
+
+          <div id="speechProviderFields"></div>
+
           <p class="help">
-            <span data-i18n="sttHelp"
-              >Reserved for a possible future version. Transcript fetching
-              currently uses captions only and never records audio. </span
-            >
+            <span data-i18n="speechProviderHelp"></span>
             <a
               href="https://console.groq.com/keys"
               target="_blank"
               rel="noreferrer"
-              data-i18n="sttLink"
+              data-i18n="speechProviderLink"
               >Create a Groq API key</a
-            ><span data-i18n="sttHelpSuffix">.</span>
+            ><span data-i18n="speechProviderHelpSuffix">.</span>
           </p>
-
-          <label for="sttBaseUrl" data-i18n="sttBaseUrlLabel"
-            >API base URL</label
-          >
-          <input
-            id="sttBaseUrl"
-            name="sttBaseUrl"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="https://api.groq.com/openai/v1"
-          />
-          <label for="sttModel" data-i18n="sttModelLabel">Model</label>
-          <input
-            id="sttModel"
-            name="sttModel"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="whisper-large-v3-turbo"
-          />
-          <p class="help" data-i18n="sttCustomEndpointHelp">
-            These fields are preserved for compatibility but are not used in
-            this version.
+          <p class="help" data-i18n="speechProviderCustomEndpointHelp">
+            A custom base URL must speak the OpenAI audio transcriptions API;
+            local faster-whisper servers work through the same slot. If its
+            host is not api.groq.com, add that host to host_permissions in
+            manifest.json and reload the extension.
           </p>
-          <div class="privacy-note" data-i18n="sttPrivacyNote">
-            This version does not record or send audio. Speech Transcription
-            settings remain stored locally but are not used.
+          <div class="privacy-note" data-i18n="speechProviderPrivacyNote">
+            When you transcribe, the Speech Provider receives the Segment's
+            audio. Credentials stay in this Chrome profile and are sent only
+            to the provider you configured.
           </div>
         </section>
 
@@ -286,6 +260,8 @@
     </main>
 
     <script src="settings.js"></script>
+    <script src="speech-transcription.js"></script>
+    <script src="speech-providers.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

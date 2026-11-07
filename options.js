@@ -26,22 +26,25 @@ const YTD_OPTIONS = (() => {
         "The API base URL is not a valid https URL (http is allowed only for localhost).",
       privacyNote:
         "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
-      sttProvider: "Speech Transcription provider",
-      sttProviderSummaryLabel: "Speech Transcription provider",
-      sttOptionalBadge: "Currently disabled",
-      sttApiKeyLabel: "Speech Transcription API key",
-      sttHelp:
-        "Reserved for a possible future version. Transcript fetching currently uses captions only and never records audio. ",
-      sttLink: "Create a Groq API key",
-      sttHelpSuffix: ".",
-      sttBaseUrlLabel: "API base URL",
-      sttModelLabel: "Model",
-      sttCustomEndpointHelp:
-        "These fields are preserved for compatibility but are not used in this version.",
-      sttInvalidBaseUrl:
-        "The Speech Transcription base URL is not a valid https URL (http is allowed only for localhost).",
-      sttPrivacyNote:
-        "This version does not record or send audio. Speech Transcription settings remain stored locally but are not used.",
+      speechProvider: "Speech Provider",
+      speechProviderSummaryLabel: "Speech Provider",
+      speechProviderBadge: "Transcribes lesson audio into Transcript records",
+      speechProviderLabel: "Speech Provider",
+      speechProviderHelp:
+        "Transcribes each lesson Segment into Transcript records. Credentials are stored locally and sent only to the provider you pick. ",
+      speechProviderLink: "Create a Groq API key",
+      speechProviderHelpSuffix: ".",
+      speechProviderFieldApiKey: "API key",
+      speechProviderFieldBaseUrl: "API base URL",
+      speechProviderFieldModel: "Model",
+      speechProviderCustomEndpointHelp:
+        "A custom base URL must speak the OpenAI audio transcriptions API; local faster-whisper servers work through the same slot. If its host is not api.groq.com, add that host to host_permissions in manifest.json and reload the extension.",
+      speechProviderInvalidBaseUrl:
+        "The Speech Provider base URL is not a valid https URL (http is allowed only for localhost).",
+      speechProviderKeyRequired:
+        "Add an API key for the selected Speech Provider.",
+      speechProviderPrivacyNote:
+        "When you transcribe, the Speech Provider receives the Segment's audio. Credentials stay in this Chrome profile and are sent only to the provider you configured.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -121,21 +124,24 @@ const YTD_OPTIONS = (() => {
         "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
         "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
-      sttProvider: "语音转录服务",
-      sttProviderSummaryLabel: "语音转录服务",
-      sttOptionalBadge: "当前未启用",
-      sttApiKeyLabel: "语音转录 API 密钥",
-      sttHelp:
-        "这些设置仅为可能的后续版本保留。当前版本只抓取字幕，不会录制音频。",
-      sttLink: "创建 Groq API 密钥",
-      sttHelpSuffix: "。",
-      sttBaseUrlLabel: "API 基础 URL",
-      sttModelLabel: "模型",
-      sttCustomEndpointHelp: "这些字段仅为兼容旧设置而保留，当前版本不会使用。",
-      sttInvalidBaseUrl:
-        "语音转录 API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
-      sttPrivacyNote:
-        "当前版本不会录制或发送音频。语音转录设置仅保存在本地，不会被使用。",
+      speechProvider: "语音转录服务",
+      speechProviderSummaryLabel: "语音转录服务",
+      speechProviderBadge: "将课程音频转录为 Transcript 记录",
+      speechProviderLabel: "语音转录服务",
+      speechProviderHelp:
+        "将每个 Segment 的音频转录为 Transcript 记录。凭证仅保存在本地，只发送给你选择的服务。",
+      speechProviderLink: "创建 Groq API 密钥",
+      speechProviderHelpSuffix: "。",
+      speechProviderFieldApiKey: "API 密钥",
+      speechProviderFieldBaseUrl: "API 基础 URL",
+      speechProviderFieldModel: "模型",
+      speechProviderCustomEndpointHelp:
+        "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+      speechProviderInvalidBaseUrl:
+        "语音转录服务的基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
+      speechProviderKeyRequired: "请为选中的语音转录服务填写 API 密钥。",
+      speechProviderPrivacyNote:
+        "进行转录时，语音转录服务会收到 Segment 的音频。凭证仅保存在当前 Chrome 个人资料中，只发送给你配置的服务。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -435,9 +441,12 @@ const YTD_OPTIONS = (() => {
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
     const aiModelInput = doc.getElementById("aiModel");
-    const sttApiKeyInput = doc.getElementById("sttApiKey");
-    const sttBaseUrlInput = doc.getElementById("sttBaseUrl");
-    const sttModelInput = doc.getElementById("sttModel");
+    const speechProviderSelect = doc.getElementById("speechProvider");
+    const speechProviderFields = doc.getElementById("speechProviderFields");
+    const providersApi = root.YTD_SPEECH_PROVIDERS;
+    // Per-provider credential drafts, keyed by Speech Provider id, so
+    // switching providers never loses what the user already typed.
+    const speechProviderDrafts = new Map();
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -500,6 +509,79 @@ const YTD_OPTIONS = (() => {
       for (const element of statusStates.keys()) renderStatus(element);
     }
 
+    function listAvailableSpeechProviders() {
+      return providersApi ? providersApi.listSpeechProviders() : [];
+    }
+
+    function getSelectedSpeechProvider() {
+      const providers = listAvailableSpeechProviders();
+      return (
+        providers.find((provider) => provider.id === speechProviderSelect.value) ||
+        providers[0]
+      );
+    }
+
+    function getSpeechProviderDraft(providerId) {
+      if (!speechProviderDrafts.has(providerId)) speechProviderDrafts.set(providerId, {});
+      return speechProviderDrafts.get(providerId);
+    }
+
+    function renderSpeechProviderSelect() {
+      const providers = listAvailableSpeechProviders();
+      speechProviderSelect.replaceChildren();
+      for (const provider of providers) {
+        const option = doc.createElement("option");
+        option.value = provider.id;
+        option.textContent = provider.label;
+        speechProviderSelect.append(option);
+      }
+      speechProviderSelect.disabled = providers.length === 0;
+      if (providers[0] && !providers.some((p) => p.id === speechProviderSelect.value)) {
+        speechProviderSelect.value = providers[0].id;
+      }
+    }
+
+    function fieldLabelKey(providerId, fieldKey) {
+      // e.g. speechProviderFieldApiKey; future providers add their own keys.
+      const suffix = fieldKey.charAt(0).toUpperCase() + fieldKey.slice(1);
+      return `speechProviderField${suffix}`;
+    }
+
+    function renderSpeechProviderFields() {
+      const provider = getSelectedSpeechProvider();
+      speechProviderFields.replaceChildren();
+      if (!provider) return;
+
+      const draft = getSpeechProviderDraft(provider.id);
+      for (const field of provider.credentialFields || []) {
+        const label = doc.createElement("label");
+        label.setAttribute("for", `speech-${provider.id}-${field.key}`);
+        label.textContent = translate(
+          currentLanguage,
+          fieldLabelKey(provider.id, field.key),
+        );
+        const input = doc.createElement("input");
+        input.id = `speech-${provider.id}-${field.key}`;
+        input.name = `speech-${provider.id}-${field.key}`;
+        input.type = field.type === "password" ? "password" : "text";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.placeholder = provider.defaults?.[field.key] || "";
+        input.value = draft[field.key] ?? "";
+        input.addEventListener("input", () => {
+          draft[field.key] = input.value;
+        });
+        speechProviderFields.append(label, input);
+      }
+    }
+
+    function collectSpeechProviderSettings() {
+      return {
+        speechProvider: speechProviderSelect.value,
+        speechProviders: Object.fromEntries(speechProviderDrafts.entries()),
+      };
+    }
+
     async function loadSettings() {
       try {
         const stored = await storage.get(settingsApi.STORAGE_KEY);
@@ -511,9 +593,33 @@ const YTD_OPTIONS = (() => {
         aiApiKeyInput.value = settings.aiApiKey;
         aiBaseUrlInput.value = settings.aiBaseUrl;
         aiModelInput.value = settings.aiModel;
-        sttApiKeyInput.value = settings.sttApiKey;
-        sttBaseUrlInput.value = settings.sttBaseUrl;
-        sttModelInput.value = settings.sttModel;
+
+        // Speech Provider: seed per-provider drafts from stored credentials,
+        // pre-filling Groq from the legacy stt* fields when the new slot is
+        // still empty so existing users keep their configured endpoint.
+        speechProviderDrafts.clear();
+        for (const [providerId, credentials] of Object.entries(
+          settings.speechProviders || {},
+        )) {
+          speechProviderDrafts.set(providerId, { ...credentials });
+        }
+        const groqDraft = getSpeechProviderDraft("groq");
+        if (!groqDraft.apiKey && settings.sttApiKey) {
+          groqDraft.apiKey = settings.sttApiKey;
+          groqDraft.baseUrl = groqDraft.baseUrl || settings.sttBaseUrl || "";
+          groqDraft.model = groqDraft.model || settings.sttModel || "";
+        }
+        renderSpeechProviderSelect();
+        speechProviderSelect.value = settings.speechProvider;
+        if (
+          !listAvailableSpeechProviders().some(
+            (provider) => provider.id === speechProviderSelect.value,
+          )
+        ) {
+          const first = listAvailableSpeechProviders()[0];
+          if (first) speechProviderSelect.value = first.id;
+        }
+        renderSpeechProviderFields();
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
@@ -543,27 +649,37 @@ const YTD_OPTIONS = (() => {
         return;
       }
 
-      const sttBaseUrlValue = sttBaseUrlInput.value.trim();
-      if (sttBaseUrlValue && !settingsApi.isValidBaseUrl(sttBaseUrlValue)) {
-        setStatus(saveStatus, "sttInvalidBaseUrl");
-        return;
+      const selectedProvider = getSelectedSpeechProvider();
+      if (selectedProvider) {
+        const draft = getSpeechProviderDraft(selectedProvider.id);
+        for (const field of selectedProvider.credentialFields || []) {
+          if (field.key !== "baseUrl") continue;
+          const baseUrlValue = String(draft.baseUrl || "").trim();
+          if (baseUrlValue && !settingsApi.isValidBaseUrl(baseUrlValue)) {
+            setStatus(saveStatus, "speechProviderInvalidBaseUrl");
+            return;
+          }
+        }
+        const needsKey = (selectedProvider.credentialFields || []).some(
+          (field) => field.key === "apiKey",
+        );
+        if (needsKey && !String(draft.apiKey || "").trim()) {
+          setStatus(saveStatus, "speechProviderKeyRequired");
+          return;
+        }
       }
 
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         aiBaseUrl: baseUrlValue,
         aiModel: aiModelInput.value,
-        sttApiKey: sttApiKeyInput.value,
-        sttBaseUrl: sttBaseUrlValue,
-        sttModel: sttModelInput.value,
+        ...collectSpeechProviderSettings(),
       });
 
       if (!settings.aiApiKey) {
         setStatus(saveStatus, "addDeepseekKey");
         return;
       }
-      // Speech Transcription settings are preserved for compatibility, but
-      // the current transcript-fetching flow does not use them.
 
       try {
         await storage.set({ [settingsApi.STORAGE_KEY]: settings });
@@ -631,6 +747,7 @@ const YTD_OPTIONS = (() => {
     }
 
     form.addEventListener("submit", saveSettings);
+    speechProviderSelect.addEventListener("change", renderSpeechProviderFields);
     copyCustomizationPromptBtn.addEventListener(
       "click",
       copyCustomizationPrompt,

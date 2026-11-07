@@ -17,6 +17,12 @@ var YTD_SETTINGS = (() => {
     sttApiKey: "",
     sttBaseUrl: "https://api.groq.com/openai/v1",
     sttModel: "whisper-large-v3-turbo",
+    // Speech Provider (Learning Digest): which provider transcribes Segments,
+    // and that provider's own credentials. Credentials are keyed by provider
+    // id so later providers (Tencent Cloud ASR, Aliyun ASR) add their own
+    // slot without touching existing ones. Stored locally only.
+    speechProvider: "groq",
+    speechProviders: {},
   });
 
   function isLegacyCustom(input) {
@@ -53,6 +59,25 @@ var YTD_SETTINGS = (() => {
     return typeof value === "string" && value.trim() ? value.trim() : fallback;
   }
 
+  /**
+   * Per-provider Speech Provider credentials: an object keyed by provider id
+   * whose values are objects of trimmed strings. Malformed entries are
+   * dropped rather than passed through.
+   */
+  function normalizeSpeechProviders(input) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+    const result = {};
+    for (const [providerId, credentials] of Object.entries(input)) {
+      if (!credentials || typeof credentials !== "object") continue;
+      const clean = {};
+      for (const [key, value] of Object.entries(credentials)) {
+        if (typeof value === "string") clean[key] = value.trim();
+      }
+      result[providerId] = clean;
+    }
+    return result;
+  }
+
   function normalize(input = {}) {
     return {
       provider: DEFAULTS.provider,
@@ -73,6 +98,13 @@ var YTD_SETTINGS = (() => {
         typeof input.sttApiKey === "string" ? input.sttApiKey.trim() : "",
       sttBaseUrl: normalizeBaseUrl(input.sttBaseUrl, DEFAULTS.sttBaseUrl),
       sttModel: normalizeModel(input.sttModel, DEFAULTS.sttModel),
+      // Speech Provider fields are unrelated to the legacy "custom" AI
+      // provider migration, so they're never cleared by it.
+      speechProvider:
+        typeof input.speechProvider === "string" && input.speechProvider.trim()
+          ? input.speechProvider.trim()
+          : DEFAULTS.speechProvider,
+      speechProviders: normalizeSpeechProviders(input.speechProviders),
     };
   }
 

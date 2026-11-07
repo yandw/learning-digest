@@ -1,0 +1,3 @@
+# Independent learning-digest repo, YouTube Digest frozen
+
+The multi-platform "learning" version of the extension lives in its own repo (`yandw/learning-digest`), seeded from the youtube-digest source; the original YouTube-only extension is frozen and keeps its own repo. A long-lived branch in one repo would preserve cherry-pick access to future YouTube fixes, but YouTube Digest is considered stable and unlikely to iterate, so the divergence cost of early independence is near zero while a shared repo would carry dual maintenance forever. The new product deliberately drops YouTube as a supported Source Platform for phase 1: platform support is a switchable adapter layer (like AI Provider), and YouTube can be re-added as an adapter later if ever needed.

@@ -569,3 +569,16 @@ test("the 笔记 tab is reachable during a session", () => {
   );
   assert.equal(notesPanel.classList.contains("active"), true);
 });
+
+test("segment wait copy follows the configured Segment length", () => {
+  const panel = loadPanel({ stored: {} });
+
+  // 0.1.39 default: 30-second Segments keep the first transcript row close.
+  assert.equal(panel.session.segmentLengthLabel(), "30 秒");
+
+  panel.session.setSegmentLengthForCopy(600);
+  assert.equal(panel.session.segmentLengthLabel(), "10 分钟");
+
+  panel.session.setSegmentLengthForCopy(45);
+  assert.equal(panel.session.segmentLengthLabel(), "45 秒");
+});

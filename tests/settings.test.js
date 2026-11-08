@@ -174,10 +174,10 @@ test("legacy custom AI migration does not clear Speech Provider credentials", ()
   assert.equal(normalized.speechProviders.groq.apiKey, "gsk-keep");
 });
 
-test("Segment length defaults to 120 seconds", () => {
+test("Segment length defaults to 30 seconds", () => {
   const normalized = settings.normalize({});
 
-  assert.equal(normalized.segmentLengthSeconds, 120);
+  assert.equal(normalized.segmentLengthSeconds, 30);
 });
 
 test("Segment length is clamped into the supported 30-600 range", () => {
@@ -192,7 +192,7 @@ test("malformed Segment length falls back to the default", () => {
   for (const bad of ["abc", null, undefined, NaN, Infinity, {}]) {
     assert.equal(
       settings.normalize({ segmentLengthSeconds: bad }).segmentLengthSeconds,
-      120,
+      30,
       String(bad),
     );
   }

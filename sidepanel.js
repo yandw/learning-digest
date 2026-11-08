@@ -29,6 +29,25 @@ const reportRender =
 // ============================================================
 
 let currentVideoId = null;
+// The Segment length drives user-facing wait copy (pending row, start
+// toast); cached from settings at startup instead of hardcoding minutes.
+// Options-page changes are picked up on the next panel load.
+let segmentLengthForCopy = 30;
+function segmentLengthLabel() {
+  const seconds = Math.max(30, Math.floor(Number(segmentLengthForCopy) || 30));
+  return seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`;
+}
+async function refreshSegmentLengthForCopy() {
+  try {
+    const stored = await chrome.storage.local.get(YTD_SETTINGS.STORAGE_KEY);
+    const normalized = YTD_SETTINGS.normalize(stored[YTD_SETTINGS.STORAGE_KEY] || {});
+    if (Number.isFinite(normalized.segmentLengthSeconds)) {
+      segmentLengthForCopy = normalized.segmentLengthSeconds;
+    }
+  } catch (_error) {
+    // Keep the default on any storage hiccup; copy is cosmetic.
+  }
+}
 let currentVideoUrl = null;
 let currentTranscript = null;
 let currentTranscriptText = null; // Plain text (for display/export)
@@ -200,6 +219,7 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
+  void refreshSegmentLengthForCopy();
   await evictOldCacheEntries(20);
 
   const configStatus = await chrome.runtime.sendMessage({
@@ -1535,6 +1555,10 @@ globalThis.__YTD_SESSION_TESTING__ = {
   renderNotes,
   loadNotes,
   refreshSummaryIntervalMinutes,
+  segmentLengthLabel,
+  setSegmentLengthForCopy(value) {
+    segmentLengthForCopy = value;
+  },
 };
 
 // ============================================================
@@ -1647,7 +1671,7 @@ function renderPendingSegments(container, state) {
   const bootstrap =
     segments.length === 0 && (state.transcriptRecords || []).length === 0;
   if (bootstrap) {
-    appendPendingRow(container, 0, "录制中，第一段逐字稿约 2 分钟后出现…");
+    appendPendingRow(container, 0, `录制中，第一段逐字稿约 ${segmentLengthLabel()} 后出现…`);
   }
   for (const segment of segments) {
     if (segment.status === "pending") {
@@ -2286,7 +2310,7 @@ function showRecordingToast() {
     toast.className = "recording-toast";
     document.body.appendChild(toast);
   }
-  toast.textContent = "已开始录制 · 逐字稿将在约 2 分钟后出现";
+  toast.textContent = `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
   toast.classList.add("recording-toast-visible");
   clearTimeout(showRecordingToast.timer);
   showRecordingToast.timer = setTimeout(

@@ -42,7 +42,7 @@
   let chunkStartedAtMs = 0;
   let backstopTimer = null;
   let regularCutTimer = null;
-  let segmentLengthMs = 120_000;
+  let segmentLengthMs = 30_000;
 
   const MIME_TYPE = "audio/webm;codecs=opus";
 
@@ -196,7 +196,7 @@
         },
         video: false,
       });
-      segmentLengthMs = Math.max(30_000, Number(message.segmentLengthSeconds) || 120) * 1000;
+      segmentLengthMs = Math.max(30_000, Number(message.segmentLengthSeconds) || 30) * 1000;
       startPlaybackLoop();
       startRecorder();
       armRegularCut(message.mode);

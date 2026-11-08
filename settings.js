@@ -25,7 +25,7 @@ var YTD_SETTINGS = (() => {
     speechProviders: {},
     // Session capture: target Segment length in seconds. The browser layer
     // hands this to session-segmenter.js, which clamps to the same range.
-    segmentLengthSeconds: 120,
+    segmentLengthSeconds: 30,
     // Topic timeline cadence (#28): a Topic tick fires when the Transcript
     // coverage since the last Topic reaches this length (minutes, clamped
     // to [5, 180]) and at least 10 new records exist.

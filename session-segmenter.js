@@ -16,7 +16,7 @@
  * persisted snapshot's Segments.
  */
 var YTD_SEGMENTER = (() => {
-  const DEFAULT_SEGMENT_LENGTH_SECONDS = 120;
+  const DEFAULT_SEGMENT_LENGTH_SECONDS = 30;
   const DEFAULT_MIN_SEGMENT_SECONDS = 5;
   const MIN_ALLOWED_SEGMENT_LENGTH = 30;
   const MAX_ALLOWED_SEGMENT_LENGTH = 600;
@@ -24,7 +24,7 @@ var YTD_SEGMENTER = (() => {
   /**
    * @param {object} [options]
    * @param {number} [options.segmentLengthSeconds] - target Segment length
-   *   (clamped to [30, 600]; default 120)
+   *   (clamped to [30, 600]; default 30)
    * @param {number} [options.minSegmentSeconds] - shortest tail flush keeps
    *   (default 5)
    * @param {number} [options.startAt] - position cursor to continue from

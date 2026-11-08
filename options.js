@@ -55,6 +55,9 @@ const YTD_OPTIONS = (() => {
       summaryIntervalLabel: "话题段触发的最小新内容时长（分钟）",
       summaryIntervalHelp:
         "会话进行中，每当新产生的 Transcript 达到该时长（且至少 10 条记录），AI 服务就会总结出新的话题段并追加到时间轴（每分钟检查一次）。内容阈值越短费用越高；一般课程 15 分钟即可。",
+      segmentLengthLabel: "分段长度（秒）",
+      segmentLengthHelp:
+        "分段转写模式下每段采集的音频时长，改小可更快看到逐字稿（默认 30 秒）；实时转写模式下此字段不生效；腾讯云一句话识别上限 60 秒，选用该服务时请把分段长度调整到 ≤ 60 秒。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -354,6 +357,7 @@ const YTD_OPTIONS = (() => {
     const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
     const aiModelInput = doc.getElementById("aiModel");
     const summaryIntervalInput = doc.getElementById("summaryIntervalMinutes");
+    const segmentLengthInput = doc.getElementById("segmentLengthSeconds");
     const speechProviderSelect = doc.getElementById("speechProvider");
     const speechProviderFields = doc.getElementById("speechProviderFields");
     const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
@@ -598,6 +602,9 @@ const YTD_OPTIONS = (() => {
         if (summaryIntervalInput) {
           summaryIntervalInput.value = settings.summaryIntervalMinutes;
         }
+        if (segmentLengthInput) {
+          segmentLengthInput.value = settings.segmentLengthSeconds;
+        }
 
         // Speech Provider: seed per-provider drafts from stored credentials,
         // pre-filling Groq from the legacy stt* fields when the new slot is
@@ -692,6 +699,7 @@ const YTD_OPTIONS = (() => {
         aiBaseUrl: baseUrlValue,
         aiModel: aiModelInput.value,
         summaryIntervalMinutes: summaryIntervalInput?.value,
+        segmentLengthSeconds: segmentLengthInput?.value,
         ...collectSpeechProviderSettings(),
       });
 

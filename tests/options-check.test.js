@@ -258,6 +258,93 @@ test("the Qwen section renders the 转写模式 radio and saves the choice into 
   );
 });
 
+// --- Segment length field (#22): render, save, and migration survival -------
+
+test("the Segment length field renders the stored value", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      settingsVersion: 2,
+      segmentLengthSeconds: 90,
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  assert.equal(
+    page.elements.segmentLengthSeconds.value,
+    90,
+    "the stored Segment length pre-fills the field",
+  );
+});
+
+test("saving persists a clamped Segment length", async () => {
+  // A complete provider config keeps the save gate open; only the Segment
+  // length varies.
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      speechProvider: "qwen",
+      speechProviders: { qwen: { apiKey: "sk-qwen" } },
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  // Below the segmenter minimum (30) the value clamps up to the default.
+  page.elements.segmentLengthSeconds.value = "10";
+  await page.submit();
+  assert.equal(page.stored.ytd_settings.segmentLengthSeconds, 30);
+
+  // An in-range value persists as typed.
+  page.elements.segmentLengthSeconds.value = "300";
+  await page.submit();
+  assert.equal(page.stored.ytd_settings.segmentLengthSeconds, 300);
+});
+
+test("a stamped blob's tuned Segment length survives an options save", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      settingsVersion: 2,
+      segmentLengthSeconds: 90,
+      speechProvider: "qwen",
+      speechProviders: { qwen: { apiKey: "sk-qwen" } },
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  // The load shows the user's tuned value; the save then builds a FRESH
+  // (unstamped) payload from the form. migrateSegmentLength must pass a
+  // non-legacy value through so a save never resets it to the default.
+  assert.equal(page.elements.segmentLengthSeconds.value, 90);
+  await page.submit();
+  assert.equal(page.stored.ytd_settings.segmentLengthSeconds, 90);
+  assert.equal(page.stored.ytd_settings.settingsVersion, 2);
+});
+
+test("the Segment length field markup matches the segmenter clamp and copy guidance", () => {
+  const input = read("options.html").match(
+    /<input\s+id="segmentLengthSeconds"[\s\S]*?\/>/,
+  );
+  assert.ok(input, "the Segment length number input renders");
+  assert.match(input[0], /type="number"/);
+  assert.match(input[0], /min="30"/);
+  assert.match(input[0], /max="600"/);
+  assert.match(input[0], /step="30"/);
+
+  // The ticket's provider-dependent slicing sub-scope is resolved as UI copy
+  // only: no per-provider auto-clamping, just guidance about Tencent's
+  // 60-second one-sentence recognition cap and the realtime-mode no-op.
+  const help = options.translate("zh-CN", "segmentLengthHelp");
+  assert.match(help, /分段转写模式下每段采集的音频时长/);
+  assert.match(help, /默认 30 秒/);
+  assert.match(help, /实时转写模式下此字段不生效/);
+  assert.match(help, /腾讯云一句话识别上限 60 秒/);
+  assert.match(help, /≤ 60 秒/);
+});
+
 test("other providers are unaffected: the Groq section renders no radio", async () => {
   const stored = {
     ytd_settings: {

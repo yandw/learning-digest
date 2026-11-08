@@ -161,6 +161,25 @@
             least 10 records). Lower values cost more; 15 minutes suits a
             typical lesson.
           </p>
+          <label for="segmentLengthSeconds" data-i18n="segmentLengthLabel"
+            >Segment length (seconds)</label
+          >
+          <input
+            id="segmentLengthSeconds"
+            name="segmentLengthSeconds"
+            type="number"
+            min="30"
+            max="600"
+            step="30"
+            autocomplete="off"
+          />
+          <p class="help" data-i18n="segmentLengthHelp">
+            How much audio each Segment captures in segment transcription
+            mode; smaller values surface the transcript sooner (default 30
+            seconds). This field has no effect in realtime transcription
+            mode. Tencent Cloud one-sentence recognition caps requests at 60
+            seconds, so keep this at or below 60 when using that provider.
+          </p>
         </section>
 
         <div class="form-actions">

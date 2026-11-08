@@ -606,12 +606,25 @@ var YTD_SPEECH_PROVIDER_QWEN = (() => {
     { key: "apiKey", type: "password" },
     { key: "baseUrl", type: "text" },
     { key: "model", type: "text" },
+    // Transcription mode (#45): the default Segment cutting, or the realtime
+    // WebSocket stream for live Sessions (spec #44). The options page
+    // renders radio-typed fields as an option group; the value persists
+    // inside speechProviders.qwen.mode via the shared draft/save flow.
+    {
+      key: "mode",
+      type: "radio",
+      options: [
+        { value: "segment", label: "分段转写（默认）" },
+        { value: "realtime", label: "实时转写（直播）" },
+      ],
+    },
   ];
 
   const DEFAULTS = Object.freeze({
     apiKey: "",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     model: "qwen3-asr-flash",
+    mode: "segment",
   });
 
   function normalizeBaseUrl(baseUrl) {

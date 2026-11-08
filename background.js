@@ -836,6 +836,7 @@ async function persistContextPointer(context) {
       timestampKind: context.timestampKind,
       startedAtMs: context.startedAtMs,
       segmentLengthSeconds: context.segmentLengthSeconds,
+      transcribeMode: context.transcribeMode,
       pageTitle: context.pageTitle,
     },
   });
@@ -864,6 +865,25 @@ function segmentsEndSeconds(state) {
 }
 
 /**
+ * Transcription mode (#45): realtime streaming engages only for the Qwen
+ * provider explicitly configured 实时转写 AND a wallclock (live) Session;
+ * replay/course Sessions always run segment mode in v1 (spec #44). This is
+ * distinct from the cut-cadence `mode` ("wallclock"|"video") below.
+ *
+ * @param {string} providerId - selected Speech Provider id
+ * @param {object} providerConfig - that provider's stored credentials
+ * @param {string} timestampKind - "wallclock" (live) or "video" (replay/course)
+ * @returns {"segment"|"realtime"}
+ */
+function resolveTranscribeMode(providerId, providerConfig, timestampKind) {
+  return providerId === "qwen" &&
+    providerConfig?.mode === "realtime" &&
+    timestampKind === "wallclock"
+    ? "realtime"
+    : "segment";
+}
+
+/**
  * The in-memory capture context, one shape for both creation sites. The
  * factory owns every field's default so handleStartLearning (fresh Session)
  * and ensureCaptureResumed (rebuilt from storage) cannot drift apart.
@@ -876,6 +896,8 @@ function segmentsEndSeconds(state) {
  * @param {string} parts.timestampKind
  * @param {number} parts.startedAtMs - wall-clock Session start
  * @param {number} parts.segmentLengthSeconds
+ * @param {"segment"|"realtime"} [parts.transcribeMode] - resolved at start;
+ *   pre-0.1.43 pointers without the field fall back to "segment" (#45)
  * @param {string} [parts.pageTitle] - page title reported by the bridge (#32)
  * @param {object} parts.state - Session state from session-pipeline.js
  * @param {object} parts.segmenter - scheduler from session-segmenter.js
@@ -890,6 +912,7 @@ function createCaptureContext({
   timestampKind,
   startedAtMs,
   segmentLengthSeconds,
+  transcribeMode,
   pageTitle,
   state,
   segmenter,
@@ -904,6 +927,7 @@ function createCaptureContext({
     timestampKind,
     startedAtMs,
     segmentLengthSeconds,
+    transcribeMode: transcribeMode === "realtime" ? "realtime" : "segment",
     // Absent until the bridge reports the page title; first write wins.
     pageTitle,
     state,
@@ -983,6 +1007,7 @@ async function ensureCaptureResumed() {
         streamId,
         segmentLengthSeconds: context.segmentLengthSeconds,
         mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
+        transcribeMode: context.transcribeMode,
       });
       if (!started?.success) throw new Error(started?.error || "capture restart failed");
     } catch (error) {
@@ -1329,6 +1354,11 @@ async function handleStartLearning(message) {
     timestampKind: recognition.timestampKind,
     startedAtMs: Date.now(),
     segmentLengthSeconds: settings.segmentLengthSeconds,
+    transcribeMode: resolveTranscribeMode(
+      providerId,
+      credentials,
+      recognition.timestampKind,
+    ),
     state,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
@@ -1354,6 +1384,9 @@ async function handleStartLearning(message) {
       streamId,
       segmentLengthSeconds: context.segmentLengthSeconds,
       mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
+      // Consumed by the offscreen realtime path (spec #44); the segment
+      // recorder ignores it.
+      transcribeMode: context.transcribeMode,
     });
     if (!started?.success) throw new Error(started?.error || "capture start failed");
   } catch (error) {
@@ -1381,7 +1414,7 @@ async function handleStartLearning(message) {
 
   if (context.timestampKind === "wallclock") startLiveTimer(context);
   startSummaryTimer(context);
-  broadcastSession(context.state);
+  broadcastSession(context.state, { transcribeMode: context.transcribeMode });
   // The one-line "capture is live" marker: when this is absent after an
   // icon click, the Session never started and the reason is in the
   // startLearning failure log above.
@@ -1396,6 +1429,7 @@ async function handleStartLearning(message) {
     sessionId: context.sessionId,
     kind: context.kind,
     timestampKind: context.timestampKind,
+    transcribeMode: context.transcribeMode,
     state: context.state,
   };
 }
@@ -1659,6 +1693,7 @@ async function handleGetSessionState() {
     sessionId: context.sessionId,
     kind: context.kind,
     timestampKind: context.timestampKind,
+    transcribeMode: context.transcribeMode,
     startedAtMs: context.startedAtMs,
     state: context.state,
   };

@@ -66,6 +66,18 @@ var YTD_SETTINGS = (() => {
     return typeof value === "string" && value.trim() ? value.trim() : fallback;
   }
 
+  // The Qwen provider's transcription mode (#45): "segment" (default) or
+  // "realtime". Scoped to the qwen slot — the only provider whose
+  // credentialFields declare the radio — so every other provider's stored
+  // credentials keep their exact shape.
+  function normalizeProviderTranscribeMode(providerId, credentials) {
+    if (providerId !== "qwen") return credentials;
+    return {
+      ...credentials,
+      mode: credentials.mode === "realtime" ? "realtime" : "segment",
+    };
+  }
+
   /**
    * Per-provider Speech Provider credentials: an object keyed by provider id
    * whose values are objects of trimmed strings. Malformed entries are
@@ -80,7 +92,7 @@ var YTD_SETTINGS = (() => {
       for (const [key, value] of Object.entries(credentials)) {
         if (typeof value === "string") clean[key] = value.trim();
       }
-      result[providerId] = clean;
+      result[providerId] = normalizeProviderTranscribeMode(providerId, clean);
     }
     return result;
   }

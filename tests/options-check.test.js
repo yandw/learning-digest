@@ -1,7 +1,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 
 const options = require("../options.js");
+
+const root = path.resolve(__dirname, "..");
+const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
 const AI_CONFIG = {
   baseUrl: "https://api.example.com/v1",
@@ -49,4 +55,223 @@ test("checkAiConnection classifies failure statuses", async () => {
     AI_CONFIG,
   );
   assert.deepEqual(networkError, { ok: false, reason: "aiUnreachable" });
+});
+
+// --- Speech Provider fields render + save (mock-document, panel-ia style) ----
+
+function makeElement(id = "") {
+  const element = {
+    id,
+    tagName: "",
+    dataset: {},
+    style: {},
+    children: [],
+    listeners: {},
+    disabled: false,
+    hidden: false,
+    href: "",
+    type: "",
+    name: "",
+    value: "",
+    checked: false,
+    placeholder: "",
+    textValue: "",
+    set textContent(value) {
+      element.textValue = String(value);
+      element.children.length = 0;
+    },
+    get textContent() {
+      return element.textValue;
+    },
+    className: "",
+    classList: {
+      add(name) {
+        if (!element.className.includes(name)) {
+          element.className = `${element.className} ${name}`.trim();
+        }
+      },
+      remove(name) {
+        element.className = element.className
+          .split(/\s+/)
+          .filter((part) => part && part !== name)
+          .join(" ");
+      },
+      contains(name) {
+        return element.className.split(/\s+/).includes(name);
+      },
+    },
+    setAttribute(name, value) {
+      element[`attr_${name}`] = String(value);
+    },
+    getAttribute(name) {
+      return element[`attr_${name}`];
+    },
+    append(...kids) {
+      element.children.push(...kids);
+    },
+    appendChild(child) {
+      element.children.push(child);
+      return child;
+    },
+    replaceChildren() {
+      element.children.length = 0;
+    },
+    addEventListener(type, handler) {
+      element.listeners[type] = handler;
+    },
+  };
+  return element;
+}
+
+/**
+ * Loads options.js in a mock-document sandbox (the same seam style as
+ * tests/panel-ia.test.js) and returns the storage backing plus helpers to
+ * flush the async load and drive the settings form.
+ */
+function loadOptionsPage({ stored = {} } = {}) {
+  const elements = {};
+  const elementById = (id) => elements[id] || (elements[id] = makeElement(id));
+  const createdElements = [];
+
+  const sandbox = {
+    console,
+    setTimeout,
+    clearTimeout,
+    AbortController,
+    fetch: async () => ({ ok: true }),
+    document: {
+      readyState: "complete",
+      title: "",
+      documentElement: makeElement("html"),
+      body: makeElement("body"),
+      getElementById: elementById,
+      createElement: (tag) => {
+        const el = makeElement();
+        el.tagName = tag;
+        createdElements.push(el);
+        return el;
+      },
+      querySelectorAll: () => [],
+      addEventListener() {},
+    },
+    chrome: {
+      storage: {
+        local: {
+          get: async (key) => {
+            if (key === null) return { ...stored };
+            if (Array.isArray(key)) {
+              return Object.fromEntries(key.map((item) => [item, stored[item]]));
+            }
+            return { [key]: stored[key] };
+          },
+          set: async (values) => Object.assign(stored, values),
+        },
+      },
+    },
+    YTD_SETTINGS: require("../settings.js"),
+    YTD_SPEECH_PROVIDERS: require("../speech-providers.js"),
+  };
+  sandbox.globalThis = sandbox;
+  vm.runInNewContext(read("options.js"), sandbox);
+
+  const flush = async () => {
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+
+  return {
+    elements,
+    createdElements,
+    stored,
+    flush,
+    async submit() {
+      const form = elementById("settingsForm");
+      assert.ok(form.listeners.submit, "the form has a submit handler");
+      form.listeners.submit({ preventDefault() {} });
+      await flush();
+    },
+    // Radio inputs currently rendered in the Speech Provider field container.
+    radios() {
+      const found = [];
+      const walk = (node) => {
+        for (const child of node.children || []) {
+          if (typeof child !== "object" || child === null) continue;
+          if (child.type === "radio") found.push(child);
+          walk(child);
+        }
+      };
+      walk(elementById("speechProviderFields"));
+      return found;
+    },
+  };
+}
+
+test("the Qwen section renders the 转写模式 radio and saves the choice into the provider config", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      speechProvider: "qwen",
+      speechProviders: { qwen: { apiKey: "sk-qwen" } },
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  // The radio group renders with the definition's two options, defaulting to
+  // 分段转写, under the 转写模式 group label.
+  const radios = page.radios();
+  assert.deepEqual(radios.map((radio) => radio.id), [
+    "speech-qwen-mode-segment",
+    "speech-qwen-mode-realtime",
+  ]);
+  assert.deepEqual(radios.map((radio) => radio.value), ["segment", "realtime"]);
+  assert.equal(
+    radios.find((radio) => radio.value === "segment").checked,
+    true,
+    "segment is preselected when no stored mode exists",
+  );
+  assert.equal(radios.find((radio) => radio.value === "realtime").checked, false);
+  const groupLabel = page.elements.speechProviderFields.children.find(
+    (child) => child?.textContent === "转写模式",
+  );
+  assert.ok(groupLabel, "the 转写模式 group label renders");
+
+  // Choosing 实时转写 persists into speechProviders.qwen.mode on save,
+  // alongside the untouched credentials.
+  radios.find((radio) => radio.value === "realtime").listeners.change();
+  await page.submit();
+  const saved = page.stored.ytd_settings;
+  assert.equal(saved.speechProviders.qwen.mode, "realtime");
+  assert.equal(saved.speechProviders.qwen.apiKey, "sk-qwen");
+
+  // Reopening the page reloads with the stored value preselected.
+  const reloaded = loadOptionsPage({ stored: page.stored });
+  await reloaded.flush();
+  const reloadedRealtime = reloaded
+    .radios()
+    .find((radio) => radio.value === "realtime");
+  assert.equal(
+    reloadedRealtime.checked,
+    true,
+    "the stored realtime choice preselects the radio",
+  );
+});
+
+test("other providers are unaffected: the Groq section renders no radio", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      speechProvider: "groq",
+      speechProviders: { groq: { apiKey: "gsk-x" } },
+    },
+  };
+  const page = loadOptionsPage({ stored });
+  await page.flush();
+
+  assert.deepEqual(page.radios(), []);
+  await page.submit();
+  assert.deepEqual(page.stored.ytd_settings.speechProviders.groq, {
+    apiKey: "gsk-x",
+  });
 });

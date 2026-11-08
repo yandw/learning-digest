@@ -13,6 +13,18 @@ const { loadBackgroundHelpers } = require("./helpers/load-background.js");
 const sessionPipeline = require("../session-pipeline.js");
 
 const REPLAY_URL = "https://app12345.xiaoe-tech.com/replay/l_abc123def456";
+const LIVE_URL = "https://app12345.xiaoe-tech.com/live/l_abc123def456";
+
+// Qwen settings with an optional transcription mode (#45). When mode is
+// null the credentials carry no mode key at all (the pre-0.1.43 blob shape).
+function qwenSettings(mode) {
+  return baseSettings({
+    speechProvider: "qwen",
+    speechProviders: {
+      qwen: mode === null ? { apiKey: "qwen-key" } : { apiKey: "qwen-key", mode },
+    },
+  });
+}
 
 // --- Retired legacy analysis path (#31) ---------------------------------------
 
@@ -173,7 +185,6 @@ test("action click on a recognized learning page starts the Session", async () =
 
 test("action click on a live page arms the offscreen wallclock cut", async () => {
   const sentMessages = [];
-  const LIVE_URL = "https://app12345.xiaoe-tech.com/live/l_abc123def456";
   const { handleActionClicked, handleGetSessionState } = loadBackgroundHelpers({
     settings: baseSettings(),
     sentMessages,
@@ -186,6 +197,114 @@ test("action click on a live page arms the offscreen wallclock cut", async () =>
   assert.equal(state.timestampKind, "wallclock");
   const start = sentMessages.find((message) => message.action === "captureStart");
   assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.mode, "wallclock");
+});
+
+// --- Transcription mode resolution (#45): qwen realtime only on live Sessions
+
+test("qwen realtime mode on a wallclock Session resolves captureStart transcribeMode realtime", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, readStored } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+
+  const result = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+
+  assert.equal(result.success, true);
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.transcribeMode, "realtime");
+  // The pre-existing cut-cadence field is untouched: wallclock cutting stays.
+  assert.equal(start.mode, "wallclock");
+  // The mode travels like kind/timestampKind: start response, capture pointer.
+  assert.equal(result.transcribeMode, "realtime");
+  assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
+});
+
+test("qwen realtime mode on a replay Session stays on segment transcription", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, readStored } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+
+  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  assert.equal(result.success, true);
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.transcribeMode, "segment");
+  assert.equal(start.mode, "video");
+  assert.equal(result.transcribeMode, "segment");
+  assert.equal(readStored("ytd_active_capture").transcribeMode, "segment");
+});
+
+test("qwen segment mode on a wallclock Session stays on segment transcription", async () => {
+  const sentMessages = [];
+  const { handleStartLearning } = loadBackgroundHelpers({
+    settings: qwenSettings("segment"),
+    sentMessages,
+  });
+
+  const result = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+
+  assert.equal(result.success, true);
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  assert.equal(start.transcribeMode, "segment");
+  assert.equal(start.mode, "wallclock");
+  assert.equal(result.transcribeMode, "segment");
+});
+
+test("credentials without a mode key (pre-0.1.43 blob) stay on segment transcription", async () => {
+  const sentMessages = [];
+  const { handleStartLearning } = loadBackgroundHelpers({
+    settings: qwenSettings(null),
+    sentMessages,
+  });
+
+  const result = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+
+  assert.equal(result.success, true);
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.equal(start.transcribeMode, "segment");
+  assert.equal(result.transcribeMode, "segment");
+});
+
+test("a resumed realtime Session keeps its transcribeMode from the capture pointer", async () => {
+  const sentMessages = [];
+  const { handleGetSessionState } = loadBackgroundHelpers({
+    // Settings say segment; the Session's persisted start decision wins.
+    settings: qwenSettings("segment"),
+    // The offscreen document died with the browser: the restart path re-sends
+    // captureStart, which must carry the persisted transcription mode too.
+    offscreenDocument: false,
+    sentMessages,
+    stored: {
+      ytd_active_capture: {
+        sessionId: "s_rt",
+        tabId: 7,
+        platformId: "xiaoe-tech",
+        kind: "live",
+        timestampKind: "wallclock",
+        startedAtMs: Date.now() - 300_000,
+        segmentLengthSeconds: 120,
+        transcribeMode: "realtime",
+      },
+      ytd_session_s_rt: JSON.parse(
+        JSON.stringify(sessionPipeline.createSession({ sessionId: "s_rt" })),
+      ),
+    },
+  });
+
+  const state = await handleGetSessionState();
+
+  assert.equal(state.active, true);
+  assert.equal(state.transcribeMode, "realtime");
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "the restarted capture receives captureStart");
+  assert.equal(start.transcribeMode, "realtime");
   assert.equal(start.mode, "wallclock");
 });
 

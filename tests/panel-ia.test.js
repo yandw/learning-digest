@@ -685,3 +685,88 @@ test("clicking 开始总结 after a failed pass sends regenerateReport", async (
   const endBtn = panel.elementById("endLearningBtn");
   assert.equal(endBtn.style.display, "none", "a successful retry hides the button");
 });
+
+// --- 转写模式 copy (#45): start toast + transcript empty state ----------------
+
+test("the start toast announces realtime transcription for realtime Sessions", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: { sessionId: "s_toast_rt", status: "active" },
+    transcribeMode: "realtime",
+  });
+
+  const toast = panel.elementById("recordingToast");
+  assert.ok(toast, "the recording toast element exists");
+  assert.equal(toast.textContent, "已开始录制 · 实时转写已开启");
+});
+
+test("the start toast keeps the Segment wait copy for segment Sessions", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.setSegmentLengthForCopy(30);
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: { sessionId: "s_toast_seg", status: "active" },
+    transcribeMode: "segment",
+  });
+
+  const toast = panel.elementById("recordingToast");
+  assert.ok(toast, "the recording toast element exists");
+  assert.equal(toast.textContent, "已开始录制 · 逐字稿将在约 30 秒后出现");
+});
+
+test("an absent transcription mode keeps the Segment wait toast", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: { sessionId: "s_toast_absent", status: "active" },
+  });
+
+  const toast = panel.elementById("recordingToast");
+  assert.equal(toast.textContent, "已开始录制 · 逐字稿将在约 30 秒后出现");
+});
+
+test("the transcript empty state names realtime transcription instead of the Segment wait", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: {
+      sessionId: "s_empty_rt",
+      status: "active",
+      segments: [],
+      transcriptRecords: [],
+    },
+    transcribeMode: "realtime",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const pendingRow = findDescendants(transcript, "session-pending")[0];
+  assert.ok(pendingRow, "the empty transcript still shows a pending row");
+  const text = findDescendants(pendingRow, "session-record-text")[0];
+  assert.equal(text.textContent, "实时转写中，识别内容将逐句出现…");
+});
+
+test("the transcript empty state keeps the Segment wait copy in segment mode", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.setSegmentLengthForCopy(30);
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: {
+      sessionId: "s_empty_seg",
+      status: "active",
+      segments: [],
+      transcriptRecords: [],
+    },
+    transcribeMode: "segment",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const pendingRow = findDescendants(transcript, "session-pending")[0];
+  const text = findDescendants(pendingRow, "session-record-text")[0];
+  assert.equal(text.textContent, "录制中，第一段逐字稿约 30 秒 后出现…");
+});

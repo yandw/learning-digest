@@ -39,7 +39,7 @@ test("the registry ships with the Qwen ASR Speech Provider", () => {
   assert.equal(qwen.id, "qwen");
   assert.equal(typeof qwen.transcribe, "function");
   const keys = qwen.credentialFields.map((field) => field.key);
-  assert.deepEqual(keys, ["apiKey", "baseUrl", "model"]);
+  assert.deepEqual(keys, ["apiKey", "baseUrl", "model", "mode"]);
   assert.equal(
     qwen.credentialFields.find((f) => f.key === "apiKey").type,
     "password",
@@ -50,6 +50,22 @@ test("the registry ships with the Qwen ASR Speech Provider", () => {
   );
   assert.equal(qwen.defaults.model, "qwen3-asr-flash");
   assert.equal(typeof qwen.helpLink, "string");
+});
+
+test("the Qwen transcription mode is a radio field with the segment default (#45)", () => {
+  const modeField = qwen.credentialFields.find((f) => f.key === "mode");
+
+  assert.ok(modeField, "the mode field is declared");
+  assert.equal(modeField.type, "radio");
+  assert.deepEqual(
+    modeField.options.map((option) => option.value),
+    ["segment", "realtime"],
+  );
+  assert.deepEqual(
+    modeField.options.map((option) => option.label),
+    ["分段转写（默认）", "实时转写（直播）"],
+  );
+  assert.equal(qwen.defaults.mode, "segment");
 });
 
 test("listSpeechProviders exposes all three providers: Groq, Tencent, Qwen", () => {

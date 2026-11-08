@@ -41,6 +41,7 @@ const YTD_OPTIONS = (() => {
       speechProviderFieldSecretKey: "SecretKey",
       speechProviderFieldRegion: "地域",
       speechProviderFieldEngineModelType: "引擎模型类型（如 16k_zh）",
+      speechProviderFieldMode: "转写模式",
       speechProviderLinkTencent: "创建腾讯云凭证",
       speechProviderLinkQwen: "创建百炼 API Key",
       speechProviderCustomEndpointHelp:
@@ -509,6 +510,40 @@ const YTD_OPTIONS = (() => {
       }
     }
 
+    // The transcription-mode radio group (#45): rendered from the provider
+    // definition's radio-typed field. The choice lands in the draft like any
+    // text field's value, so the shared normalize/save flow persists it.
+    function renderSpeechProviderRadioGroup(provider, field, draft) {
+      const groupLabel = doc.createElement("label");
+      groupLabel.textContent = translate(
+        currentLanguage,
+        fieldLabelKey(provider.id, field.key),
+      );
+      const group = doc.createElement("div");
+      group.className = "speech-radio-options";
+      const current =
+        draft[field.key] ??
+        provider.defaults?.[field.key] ??
+        field.options?.[0]?.value;
+      for (const option of field.options || []) {
+        const optionLabel = doc.createElement("label");
+        optionLabel.className = "speech-radio-option";
+        const input = doc.createElement("input");
+        input.id = `speech-${provider.id}-${field.key}-${option.value}`;
+        input.name = `speech-${provider.id}-${field.key}`;
+        input.type = "radio";
+        input.value = option.value;
+        input.checked = current === option.value;
+        input.autocomplete = "off";
+        input.addEventListener("change", () => {
+          draft[field.key] = option.value;
+        });
+        optionLabel.append(input, option.label);
+        group.append(optionLabel);
+      }
+      speechProviderFields.append(groupLabel, group);
+    }
+
     function renderSpeechProviderFields() {
       const provider = getSelectedSpeechProvider();
       speechProviderFields.replaceChildren();
@@ -517,6 +552,10 @@ const YTD_OPTIONS = (() => {
 
       const draft = getSpeechProviderDraft(provider.id);
       for (const field of provider.credentialFields || []) {
+        if (field.type === "radio") {
+          renderSpeechProviderRadioGroup(provider, field, draft);
+          continue;
+        }
         const label = doc.createElement("label");
         label.setAttribute("for", `speech-${provider.id}-${field.key}`);
         label.textContent = translate(

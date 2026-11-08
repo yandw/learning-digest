@@ -1592,6 +1592,9 @@ const sessionUi = {
   titleSessionId: null,
   kind: null,
   timestampKind: null,
+  // Transcription mode (#45): "segment" (default) or "realtime"; drives the
+  // start toast and the transcript empty-state copy.
+  transcribeMode: null,
   renderedRecords: 0,
   active: false,
   // True once an end-time report has been adopted: the Session view (the
@@ -1684,7 +1687,15 @@ function renderPendingSegments(container, state) {
   const bootstrap =
     segments.length === 0 && (state.transcriptRecords || []).length === 0;
   if (bootstrap) {
-    appendPendingRow(container, 0, `录制中，第一段逐字稿约 ${segmentLengthLabel()} 后出现…`);
+    // Realtime Sessions (#45) stream utterances instead of cutting Segments,
+    // so the Segment-wait copy would never come true there.
+    appendPendingRow(
+      container,
+      0,
+      sessionUi.transcribeMode === "realtime"
+        ? "实时转写中，识别内容将逐句出现…"
+        : `录制中，第一段逐字稿约 ${segmentLengthLabel()} 后出现…`,
+    );
   }
   for (const segment of segments) {
     if (segment.status === "pending") {
@@ -2331,7 +2342,11 @@ function showRecordingToast() {
     toast.className = "recording-toast";
     document.body.appendChild(toast);
   }
-  toast.textContent = `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
+  // Realtime Sessions (#45) have no Segment wait to announce.
+  toast.textContent =
+    sessionUi.transcribeMode === "realtime"
+      ? "已开始录制 · 实时转写已开启"
+      : `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
   toast.classList.add("recording-toast-visible");
   clearTimeout(showRecordingToast.timer);
   showRecordingToast.timer = setTimeout(
@@ -2340,7 +2355,7 @@ function showRecordingToast() {
   );
 }
 
-function showSessionMode({ active, kind, state }) {
+function showSessionMode({ active, kind, state, transcribeMode }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
   const welcome = document.getElementById("welcomeState");
@@ -2348,6 +2363,7 @@ function showSessionMode({ active, kind, state }) {
 
   if (active) {
     sessionUi.active = true;
+    if (transcribeMode) sessionUi.transcribeMode = transcribeMode;
     const activeSessionId = state?.sessionId ?? sessionUi.sessionId ?? null;
     if (activeSessionId) {
       sessionUi.sessionId = activeSessionId;
@@ -2422,7 +2438,12 @@ async function refreshSessionUI() {
       sessionUi.lastSessionId = session.sessionId;
       sessionUi.kind = session.kind;
       sessionUi.timestampKind = session.timestampKind;
-      showSessionMode({ active: true, kind: session.kind, state: session.state });
+      showSessionMode({
+        active: true,
+        kind: session.kind,
+        state: session.state,
+        transcribeMode: session.transcribeMode,
+      });
     } else {
       showSessionMode({ active: false, kind: recognition.kind, state: null });
     }
@@ -2584,6 +2605,7 @@ function setupSessionUI() {
       if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
       sessionUi.sessionId = message.sessionId;
       sessionUi.lastSessionId = message.sessionId;
+      if (message.transcribeMode) sessionUi.transcribeMode = message.transcribeMode;
       observeSessionTitle(message.state);
       renderSessionTranscript(message.state);
       renderLiveTopics(message.state);

@@ -109,6 +109,24 @@ button {
   font: inherit;
 }
 
+/* The transcription-mode radio group (#45): option rows, not the
+   full-width bordered text inputs the generic input rule above paints. */
+.speech-radio-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-weight: 400;
+}
+
+.speech-radio-option input[type="radio"] {
+  width: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  flex: none;
+}
+
 textarea {
   min-height: 190px;
   resize: vertical;

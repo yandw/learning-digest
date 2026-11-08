@@ -174,6 +174,41 @@ test("legacy custom AI migration does not clear Speech Provider credentials", ()
   assert.equal(normalized.speechProviders.groq.apiKey, "gsk-keep");
 });
 
+test("the Qwen transcription mode is validated into the segment/realtime enum", () => {
+  // Both enum values pass through; the field is scoped to the qwen slot
+  // (spec #44), the only provider that declares it.
+  const realtime = settings.normalize({
+    speechProviders: { qwen: { mode: "realtime" } },
+  });
+  assert.equal(realtime.speechProviders.qwen.mode, "realtime");
+
+  const segment = settings.normalize({
+    speechProviders: { qwen: { mode: "segment" } },
+  });
+  assert.equal(segment.speechProviders.qwen.mode, "segment");
+
+  // Invalid and absent values fall back to the default segment mode.
+  for (const bad of ["yolo", "", "  ", 7, null]) {
+    const normalized = settings.normalize({
+      speechProviders: { qwen: { mode: bad } },
+    });
+    assert.equal(normalized.speechProviders.qwen.mode, "segment", String(bad));
+  }
+  const absent = settings.normalize({
+    speechProviders: { qwen: { apiKey: "sk-qwen" } },
+  });
+  assert.deepEqual(absent.speechProviders.qwen, {
+    apiKey: "sk-qwen",
+    mode: "segment",
+  });
+
+  // Other providers are untouched: no mode key is invented for them.
+  const groq = settings.normalize({
+    speechProviders: { groq: { apiKey: "gsk-keep" } },
+  });
+  assert.deepEqual(groq.speechProviders.groq, { apiKey: "gsk-keep" });
+});
+
 test("Segment length defaults to 30 seconds", () => {
   const normalized = settings.normalize({});
 

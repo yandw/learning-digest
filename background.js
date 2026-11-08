@@ -912,20 +912,32 @@ function segmentsEndSeconds(state) {
 }
 
 /**
- * Transcription mode (#45): realtime streaming engages only for the Qwen
- * provider explicitly configured 实时转写 AND a wallclock (live) Session;
- * replay/course Sessions always run segment mode in v1 (spec #44). This is
- * distinct from the cut-cadence `mode` ("wallclock"|"video") below.
+ * The Session timeline position (seconds from Session start) the Transcript
+ * records have reached: the end of the last record. For a realtime Session
+ * (#49) this is the playback position — video-kind utterances stamp at
+ * video positions — and it bounds where seek detection resumes after a
+ * worker restart, the same job segmentsEndSeconds does for segment mode.
+ */
+function lastUtteranceEndSeconds(state) {
+  return state.transcriptRecords.reduce(
+    (end, record) => Math.max(end, Number(record?.start) + Number(record?.duration) || 0),
+    0,
+  );
+}
+
+/**
+ * Transcription mode (#45, widened by #49): realtime streaming engages for
+ * the Qwen provider explicitly configured 实时转写, on ANY Session kind —
+ * replay/course Sessions stamp their utterances at video positions (see
+ * mapUtteranceStart), live Sessions keep stream time. This is distinct from
+ * the cut-cadence `mode` ("wallclock"|"video") below.
  *
  * @param {string} providerId - selected Speech Provider id
  * @param {object} providerConfig - that provider's stored credentials
- * @param {string} timestampKind - "wallclock" (live) or "video" (replay/course)
  * @returns {"segment"|"realtime"}
  */
-function resolveTranscribeMode(providerId, providerConfig, timestampKind) {
-  return providerId === "qwen" &&
-    providerConfig?.mode === "realtime" &&
-    timestampKind === "wallclock"
+function resolveTranscribeMode(providerId, providerConfig) {
+  return providerId === "qwen" && providerConfig?.mode === "realtime"
     ? "realtime"
     : "segment";
 }
@@ -984,6 +996,12 @@ function createCaptureContext({
     // or seek jump carried by the pointer), so the first tick after a
     // restart never reads as a seek from 0.
     lastPosition: segmenter.emittedUpTo,
+    // The last VIDEO position the page bridge reported (#49), updated on
+    // every bridged report. Realtime video-kind Sessions stamp finalized
+    // utterances from this (mapUtteranceStart); null until the first
+    // report lands — never persisted, a rebuilt context re-learns it
+    // within one bridge tick.
+    lastVideoPosition: null,
     pendingChunks: [],
     providerId,
     credentials,
@@ -1088,6 +1106,16 @@ async function ensureCaptureResumed() {
     providerId: settings.speechProvider,
     credentials: settings.speechProviders[settings.speechProvider] || {},
   });
+  // Realtime Sessions have no Segments bounding the cursor, so seek
+  // detection (#49) rebuilds its baseline from the last Transcript record's
+  // end: without it, the first post-restart report reads as a seek from 0
+  // and falsely marks the already-transcribed head as skipped.
+  if (context.transcribeMode === "realtime") {
+    context.lastPosition = Math.max(
+      context.lastPosition,
+      lastUtteranceEndSeconds(resumedState),
+    );
+  }
   captureContext = context;
 
   // The offscreen recorder survives a worker restart but not a browser
@@ -1452,11 +1480,7 @@ async function handleStartLearning(message) {
     timestampKind: recognition.timestampKind,
     startedAtMs: Date.now(),
     segmentLengthSeconds: settings.segmentLengthSeconds,
-    transcribeMode: resolveTranscribeMode(
-      providerId,
-      credentials,
-      recognition.timestampKind,
-    ),
+    transcribeMode: resolveTranscribeMode(providerId, credentials),
     state,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
@@ -1543,11 +1567,38 @@ async function handleMediaPosition(message, sender) {
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
   if (sender.tab?.id !== context.tabId) return;
-  // Realtime Sessions (#47) run the wallclock timeline for their whole
-  // life: no probe anchor, no seek cuts, no scheduler feeds — the position
-  // stream has nothing left to drive once Segments are out of the picture.
-  if (context.transcribeMode === "realtime") return;
   const position = Number(message.position);
+  // The video position every consumer below reads: realtime video-kind
+  // Sessions stamp finalized utterances from it (#49), the segment-mode
+  // seek/anchor logic follows the same stream as before.
+  if (Number.isFinite(position) && position >= 0) {
+    context.lastVideoPosition = position;
+  }
+  // Realtime Sessions (#47, #49) run no Segment schedule: no scheduler
+  // feeds, no re-listen retries (there is no recorder to re-cut from). What
+  // still rides the position stream: the #48 probe (a wallclock Session
+  // anchors to the video timeline so utterances stamp at video positions
+  // from the anchor on), the #48 seek-forward hole marker, and media-end
+  // auto-stop. A wallclock Session whose probe lapsed stays on stream-time
+  // stamps for its whole life, exactly as pre-#49.
+  if (context.transcribeMode === "realtime") {
+    if (context.timestampKind !== "video") {
+      await probeForAnchor(context, position);
+      if (context.timestampKind !== "video") return;
+    }
+    if (Number.isFinite(position)) {
+      await handleRealtimeSeekForward(context, position);
+      // Seek detection needs the live position as its baseline; the
+      // monotonic max mirrors feedPosition's rule for the segment path.
+      context.lastPosition = Math.max(context.lastPosition, position);
+    }
+    // Media end auto-ends replay/course Sessions; live ends only via the
+    // explicit end action.
+    if (message.ended && (context.kind === "replay" || context.kind === "course")) {
+      await endActiveSession(context, { reason: "mediaEnded" });
+    }
+    return;
+  }
   if (context.timestampKind !== "video") {
     // #48 probe window: a wallclock Session anchors to the video timeline
     // when the bridge reports a valid position in time. While it stays
@@ -1895,6 +1946,75 @@ async function handleRealtimePartial(message) {
   }
 }
 
+/**
+ * The Session-timeline start second for one finalized realtime utterance
+ * (#49): a wallclock Session keeps the offscreen stream time as today; a
+ * video-kind Session (replay/course, or a live Session that anchored via
+ * the #48 probe) stamps at the VIDEO position the speech belongs to. The
+ * utterance finalizes ~0.4s after its speech ended, so the last bridged
+ * video position minus the utterance duration approximates where the
+ * speech began. Clamped to ≥ 0 and ≥ the segmenter cursor — the anchor or
+ * seek target — so a record never lands before the Session's video
+ * timeline begins (the cursor only moves there via #48's anchor/seek).
+ * Before the first bridged report there is no position to read and the
+ * stream time stands in: a ≤1s window at Session start, stamped
+ * approximately (a D7-class corner, accepted).
+ *
+ * @param {object} context - the active capture context
+ * @param {{start?: number, duration?: number}} message - the offscreen event
+ * @returns {number} the record's start second (NaN passes through: the
+ *   pipeline drops a record without a finite start, as before)
+ */
+function mapUtteranceStart(context, message) {
+  const start = Number(message?.start);
+  if (context.timestampKind !== "video") return start;
+  const origin = context.segmenter.emittedUpTo;
+  const position = Number.isFinite(context.lastVideoPosition)
+    ? context.lastVideoPosition
+    : start;
+  return Math.max(0, origin, position - Number(message?.duration));
+}
+
+/**
+ * Realtime seek-forward (0.1.49): the #48 seek awareness for Sessions that
+ * run no recorder. There is no audio to cut and no Segment cursor riding
+ * the position stream, so a forward seek leaves only the honest hole
+ * marker over the skipped range and the stamping clamp re-bases to the new
+ * position; the per-utterance mapping itself is stateless (recomputed from
+ * the last bridged position), so no mapping state needs resetting. A seek
+ * mid-utterance makes that one utterance's stamp approximate — its formula
+ * reads the post-seek position while the speech began pre-seek (a D7-class
+ * corner, accepted). Backward moves and small advances leave everything
+ * untouched, like the segment path.
+ *
+ * @param {object} context - the active capture context
+ * @param {number} position - the bridged position, unvalidated
+ */
+async function handleRealtimeSeekForward(context, position) {
+  const previous = context.lastPosition;
+  if (!Number.isFinite(previous) || position <= previous) return;
+  if (position - previous <= context.segmentLengthSeconds + SEEK_JUMP_TOLERANCE_SECONDS) {
+    return;
+  }
+  // No tail flush: realtime has no recorder to cut pre-seek audio from —
+  // the utterances already finalized carry their own video stamps.
+  const gapStart = previous;
+  context.segmenter.jumpTo(position);
+  // The pointer is persisted BEFORE the gap marker lands: a worker death
+  // mid-seek must never resume below the jumped cursor.
+  await persistContextPointer(context);
+  const gapDuration = position - gapStart;
+  if (gapDuration > 0) {
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "gapSkipped",
+      start: gapStart,
+      duration: gapDuration,
+    });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state);
+  }
+}
+
 async function handleRealtimeUtterance(message) {
   const context = await ensureCaptureResumed();
   // A trailing utterance after the Session ended is dropped: the offscreen
@@ -1906,7 +2026,7 @@ async function handleRealtimeUtterance(message) {
   const next = YTD_SESSION_PIPELINE.applyEvent(context.state, {
     type: "utteranceCaptured",
     text: message?.text,
-    start: message?.start,
+    start: mapUtteranceStart(context, message),
     duration: message?.duration,
     failed: message?.failed === true,
   });

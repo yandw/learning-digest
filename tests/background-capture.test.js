@@ -201,7 +201,7 @@ test("action click on a live page arms the offscreen wallclock cut", async () =>
   assert.equal(start.mode, "wallclock");
 });
 
-// --- Transcription mode resolution (#45): qwen realtime only on live Sessions
+// --- Transcription mode resolution (#45/#49): qwen realtime on any Session kind
 
 test("qwen realtime mode on a wallclock Session resolves captureStart transcribeMode realtime", async () => {
   const sentMessages = [];
@@ -223,7 +223,7 @@ test("qwen realtime mode on a wallclock Session resolves captureStart transcribe
   assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
 });
 
-test("qwen realtime mode on a replay Session stays on segment transcription", async () => {
+test("qwen realtime mode on a replay Session resolves captureStart transcribeMode realtime", async () => {
   const sentMessages = [];
   const { handleStartLearning, readStored } = loadBackgroundHelpers({
     settings: qwenSettings("realtime"),
@@ -235,19 +235,19 @@ test("qwen realtime mode on a replay Session stays on segment transcription", as
   assert.equal(result.success, true);
   const start = sentMessages.find((message) => message.action === "captureStart");
   assert.ok(start, "captureStart reached the offscreen recorder");
-  assert.equal(start.transcribeMode, "segment");
+  assert.equal(start.transcribeMode, "realtime");
+  // The pre-existing cut-cadence field is untouched: video cutting stays.
   assert.equal(start.mode, "video");
-  assert.equal(result.transcribeMode, "segment");
-  assert.equal(readStored("ytd_active_capture").transcribeMode, "segment");
+  assert.equal(result.transcribeMode, "realtime");
+  assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
 });
 
 // The third timestampKind (review finding): a COURSE page is video-kind
-// like a replay, so it must never go realtime either — the branch test pins
-// the whole non-wallclock family.
+// like a replay — the branch test pins the whole video family on realtime.
 const COURSE_URL =
   "https://apptdemenwi8039.pc.xiaoe-tech.com/p/t_pc/goods_pc_detail/goods_detail/term_5f4380290ac80_9unBs1";
 
-test("qwen realtime mode on a course Session stays on segment transcription", async () => {
+test("qwen realtime mode on a course Session resolves captureStart transcribeMode realtime", async () => {
   const sentMessages = [];
   const { handleStartLearning, readStored } = loadBackgroundHelpers({
     settings: qwenSettings("realtime"),
@@ -259,11 +259,10 @@ test("qwen realtime mode on a course Session stays on segment transcription", as
   assert.equal(result.success, true);
   const start = sentMessages.find((message) => message.action === "captureStart");
   assert.ok(start, "captureStart reached the offscreen recorder");
-  // Video-kind Sessions never realtime in v1: the wallclock-only gate wins.
-  assert.equal(start.transcribeMode, "segment");
+  assert.equal(start.transcribeMode, "realtime");
   assert.equal(start.mode, "video");
-  assert.equal(result.transcribeMode, "segment");
-  assert.equal(readStored("ytd_active_capture").transcribeMode, "segment");
+  assert.equal(result.transcribeMode, "realtime");
+  assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
 });
 
 test("qwen segment mode on a wallclock Session stays on segment transcription", async () => {
@@ -612,6 +611,187 @@ test("a resumed realtime Session keeps its transcribeMode from the capture point
   // a fresh start (message-only, the pointer stays key-free).
   assert.equal(start.apiKey, "qwen-key");
   assert.equal(readStored("ytd_active_capture").apiKey, undefined);
+});
+
+// --- Realtime video-kind stamping (#49): utterances land at video positions
+//
+// A replay/course realtime Session keeps its video timeline: the offscreen
+// stream time means nothing on a seekable video, so each finalized utterance
+// stamps at the last bridged video position minus its duration. The bridged
+// position travels the normal mediaPosition message.
+
+test("a realtime utterance on a replay Session stamps at the bridged position minus its duration", async () => {
+  const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
+    loadBackgroundHelpers({
+      // Pinned segment length: the bridge ticks below the seek threshold so
+      // the position stream stays a plain playback feed (no seek handling).
+      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+    });
+  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  assert.equal(started.transcribeMode, "realtime");
+
+  // The bridge reports the video position every second; the utterance
+  // finalized just after the 60s mark, so its start is that position minus
+  // the utterance's own duration. Stream time (12.5) is discarded.
+  await handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "对齐到视频位置的一句。",
+    start: 12.5,
+    duration: 5.5,
+  });
+
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.transcriptRecords, [
+    { text: "对齐到视频位置的一句。", start: 54.5, duration: 5.5 },
+  ]);
+});
+
+test("a video-kind realtime utterance whose speech began before 0:00 clamps to 0", async () => {
+  const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+    });
+  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  await handleMediaPosition(mediaPositionMessage(3), { tab: { id: 7 } });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "开头的一句。",
+    start: 1,
+    duration: 5.5,
+  });
+
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(snapshot.transcriptRecords[0].start, 0);
+});
+
+test("a realtime wallclock Session anchors via the probe and stamps at video positions", async () => {
+  const { handleStartLearning, handleGetSessionState, handleMediaPosition, handleRealtimeUtterance, readStored } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+    });
+  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.timestampKind, "wallclock");
+
+  // The #48 probe still applies to realtime Sessions: the first bridged
+  // position anchors the live Session to the video timeline, and utterances
+  // finalize at video positions from then on.
+  await handleMediaPosition(mediaPositionMessage(800), { tab: { id: 7 } });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "对齐后的一句。",
+    start: 30,
+    duration: 4,
+  });
+
+  assert.equal((await handleGetSessionState()).timestampKind, "video");
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.transcriptRecords, [
+    { text: "对齐后的一句。", start: 800, duration: 4 },
+  ]);
+});
+
+test("a seek during realtime replay marks the skipped range and keeps stamping at video positions", async () => {
+  const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+    });
+  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  // One minute played (stamped from the bridged positions), then the
+  // learner drags the bar to 10:00. There is no recorder to cut a pre-seek
+  // tail from, so the seek only marks the skipped range.
+  await handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "跳转前的一句。",
+    start: 5,
+    duration: 4,
+  });
+  await handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await handleMediaPosition(mediaPositionMessage(610), { tab: { id: 7 } });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "跳转后的一句。",
+    start: 25,
+    duration: 4,
+  });
+
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.transcriptRecords, [
+    { text: "跳转前的一句。", start: 56, duration: 4 },
+    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+    { text: "跳转后的一句。", start: 606, duration: 4 },
+  ]);
+  assert.deepEqual(snapshot.segments, [], "realtime has no Segments");
+  // The jumped cursor travels the pointer, so a worker restart resumes
+  // past the skipped range.
+  assert.equal(readStored("ytd_active_capture").cursorSeconds, 600);
+});
+
+test("media end auto-ends a realtime replay Session like any replay Session", async () => {
+  const { handleStartLearning, handleGetSessionState, handleMediaPosition, readStored } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+      fetchImpl: noNetworkFetch,
+    });
+  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  assert.equal(started.transcribeMode, "realtime");
+
+  await handleMediaPosition(mediaPositionMessage(600, { ended: true }), { tab: { id: 7 } });
+
+  const state = await handleGetSessionState();
+  assert.equal(state.active, false);
+  assert.equal(readStored(`ytd_session_${started.sessionId}`).status, "ended");
+  // The ended Session is no longer resumable: the capture pointer is gone.
+  assert.equal(readStored("ytd_active_capture"), undefined);
+});
+
+test("a resumed realtime replay Session baselines seek detection at the last record's end", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { settingsVersion: 2 }),
+    stored: {
+      ytd_active_capture: {
+        sessionId: "s_rt_resume",
+        tabId: 7,
+        platformId: "xiaoe-tech",
+        kind: "replay",
+        timestampKind: "video",
+        startedAtMs: Date.now() - 600_000,
+        segmentLengthSeconds: 120,
+        transcribeMode: "realtime",
+        cursorSeconds: 0,
+      },
+      ytd_session_s_rt_resume: {
+        ...JSON.parse(
+          JSON.stringify(sessionPipeline.createSession({ sessionId: "s_rt_resume" })),
+        ),
+        transcriptRecords: [{ text: "重启前的一句。", start: 96, duration: 4 }],
+      },
+    },
+  });
+
+  // The worker died mid-playback and the video meanwhile reached 10:00.
+  // The first report must not read as a seek from 0 — the head was already
+  // transcribed (records are video-stamped) — so the marker covers only the
+  // genuinely untranscribed restart hole, from the last record's end.
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+
+  const snapshot = helpers.readStored("ytd_session_s_rt_resume");
+  const markers = snapshot.transcriptRecords.filter(
+    (record) => record.failed === true,
+  );
+  assert.deepEqual(
+    markers.map((record) => ({
+      text: record.text,
+      start: record.start,
+      duration: record.duration,
+    })),
+    [{ text: "[已跳过 1:40–10:00]", start: 100, duration: 500 }],
+  );
 });
 
 test("action click on an unrecognized page only opens the panel", async () => {

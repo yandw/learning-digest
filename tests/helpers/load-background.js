@@ -56,6 +56,17 @@ function loadBackgroundHelpers({
   offscreenDocument = true,
   getMediaStreamId = async () => "test-stream-id",
   sentMessages = null,
+  // Per-action override for runtime.sendMessage (the offscreen channel):
+  // return the response for a given message, e.g. a captureCut chunk.
+  sendMessageImpl = null,
+  // Transcription stub for the Speech Provider seam: speech-providers.js is
+  // require()'d on the HOST (its fetch never sees the VM's fetch stub), so
+  // dispatch tests re-register the selected provider with this function.
+  // It receives (segmentAudio, credentials) and resolves provider-relative
+  // records, or rejects to fail the Segment.
+  transcribeImpl = null,
+  // Controllable Date.now for the #48 probe window; defaults to real time.
+  dateNow = () => Date.now(),
   sidePanel = {
     setPanelBehavior() {},
     setOptions: () => Promise.resolve(),
@@ -65,13 +76,25 @@ function loadBackgroundHelpers({
 } = {}) {
   const listeners = { addListener() {} };
   const localStorage = { ytd_settings: settings, ...stored };
+  // A Date subclass with an injectable now(): everything else (parse, UTC,
+  // instances) inherits unchanged, so only clock reads are controllable.
+  class SandboxDate extends Date {}
+  SandboxDate.now = dateNow;
   const sandbox = {
     console,
     URL,
     TextDecoder,
     TextEncoder,
+    // The dispatch path (#48 tests) constructs Blobs from cut data URLs and
+    // submits them as FormData: all standard Node globals.
+    atob,
+    btoa,
+    Blob,
+    File,
+    FormData,
     fetch: promptAwareFetch(fetchImpl, promptFiles),
     AbortController,
+    Date: SandboxDate,
     setTimeout: setTimeoutImpl,
     clearTimeout: clearTimeoutImpl,
     setInterval: setIntervalImpl,
@@ -115,6 +138,7 @@ function loadBackgroundHelpers({
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
         sendMessage: (msg) => {
           if (sentMessages) sentMessages.push(msg);
+          if (sendMessageImpl) return Promise.resolve(sendMessageImpl(msg));
           return Promise.resolve({ success: true });
         },
       },
@@ -133,6 +157,14 @@ function loadBackgroundHelpers({
     // from every orchestration test.
     YTD_SETTINGS: require("../../settings.js"),
   };
+  if (transcribeImpl) {
+    sandbox.YTD_SPEECH_PROVIDERS.registerSpeechProvider({
+      id: "groq",
+      label: "Stub Groq (test)",
+      credentialFields: [{ key: "apiKey", type: "password" }],
+      transcribe: transcribeImpl,
+    });
+  }
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("background.js"), sandbox);
   return {

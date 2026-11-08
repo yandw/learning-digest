@@ -751,6 +751,10 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleGetSessionState,
   handleActionClicked,
   handlePageTitle,
+  // Timeline anchoring + seek-awareness (#48): the bridge's position stream
+  // drives the probe window, the anchor transition, seek cuts and the
+  // Plan A re-listen retries — see tests/background-capture.test.js.
+  handleMediaPosition,
   // Capture death (#captureEnded): the offscreen recorder's one-shot notice
   // that its stream went inactive; see tests/background-capture.test.js.
   handleCaptureEnded,
@@ -774,6 +778,22 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
 
 const ACTIVE_CAPTURE_KEY = "ytd_active_capture";
 const LIVE_TICK_MS = 1000;
+
+/**
+ * #48 timeline anchoring: a wallclock Session probes for a bridged media
+ * position for this long after its start. The first valid position anchors
+ * the Session to the video timeline; a lapsed window stays wallclock for
+ * the whole Session (the timeline never switches mid-Session).
+ */
+const PROBE_WINDOW_MS = 10_000;
+
+/**
+ * #48 seek-forward threshold: a position jump larger than one Segment plus
+ * this tolerance within one bridge tick is a seek (cut at the seek point,
+ * jump the cursor, mark the gap). Smaller jumps feed the scheduler
+ * normally, matching the replay path's D7 semantics.
+ */
+const SEEK_JUMP_TOLERANCE_SECONDS = 5;
 
 /** @type {object|null} in-memory capture context, rebuilt from storage on wake. */
 let captureContext = null;
@@ -826,7 +846,10 @@ function broadcastSession(state, extra = {}) {
 
 async function persistContextPointer(context) {
   // Session metadata only — Speech Provider credentials are re-read from
-  // settings on rebuild and are never duplicated here.
+  // settings on rebuild and are never duplicated here. cursorSeconds (#48)
+  // carries the segmenter cursor across a restart for the two cases where
+  // it runs ahead of the persisted Segments: the mid-video anchor and the
+  // seek-forward jump (the skipped range produces no Segment records).
   await chrome.storage.local.set({
     [ACTIVE_CAPTURE_KEY]: {
       sessionId: context.sessionId,
@@ -838,6 +861,7 @@ async function persistContextPointer(context) {
       segmentLengthSeconds: context.segmentLengthSeconds,
       transcribeMode: context.transcribeMode,
       pageTitle: context.pageTitle,
+      cursorSeconds: context.segmenter ? context.segmenter.emittedUpTo : 0,
     },
   });
 }
@@ -932,12 +956,29 @@ function createCaptureContext({
     pageTitle,
     state,
     segmenter,
-    lastPosition: segmentsEndSeconds(state),
+    // The last position seen on the active timeline. A rebuilt context
+    // resumes at the segmenter cursor (which already includes a #48 anchor
+    // or seek jump carried by the pointer), so the first tick after a
+    // restart never reads as a seek from 0.
+    lastPosition: segmenter.emittedUpTo,
     pendingChunks: [],
     providerId,
     credentials,
     liveTimer: null,
     summaryTimer: null,
+    // #48 probe window deadline (ms): set only for a FRESH wallclock Session
+    // (in handleStartLearning). A resumed wallclock Session never probes —
+    // its wallclock Segments are already on the timeline and anchoring would
+    // mix timelines. Anchoring (or lapsing) sets it back to null.
+    probeDeadlineMs: null,
+    // #48 Plan A re-listen state: non-null while playback is below the
+    // segmenter cursor (re-watching covered ranges). frontier is the cursor
+    // where new content resumes; attempted holds the failed Segment ids
+    // already retried during this pass so each retries at most once.
+    relisten: null,
+    // #48 retry watch: the failed Segment whose range playback is currently
+    // re-covering, {segmentId, start, end}; the retry cut fires at end.
+    retryWatch: null,
     // One Topic tick at a time; a fresh or resumed Session simply waits for
     // the first timer fire, where the content-driven trigger decides.
     summaryInFlight: false,
@@ -986,7 +1027,13 @@ async function ensureCaptureResumed() {
     state: resumedState,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: pointer.segmentLengthSeconds,
-      startAt: segmentsEndSeconds(resumedState),
+      // The cursor can run ahead of the persisted Segments after a #48
+      // mid-video anchor or seek-forward jump (the skipped range produces
+      // no Segment records); the pointer carries it across the restart.
+      startAt: Math.max(
+        segmentsEndSeconds(resumedState),
+        Math.floor(Number(pointer.cursorSeconds) || 0),
+      ),
       startIndex: resumedState.segments.length,
     }),
     providerId: settings.speechProvider,
@@ -1246,10 +1293,11 @@ function feedPosition(context, positionSeconds) {
  * recorder (consuming any backstop chunk first), transcribe exactly once,
  * then feed the result back into the state machine. Every transition is
  * persisted and broadcast so a close at any point loses at most the
- * in-flight Segment.
+ * in-flight Segment. Retry dispatches (#48) pass an explicit segmentId —
+ * the FAILED Segment's own id — so the result replaces that Segment's
+ * failure marker instead of appending a new entry.
  */
-async function dispatchSegment(context, segment) {
-  const segmentId = `seg-${segment.index}`;
+async function dispatchSegment(context, segment, segmentId = `seg-${segment.index}`) {
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
     type: "segmentCaptured",
     segment: { id: segmentId, start: segment.start, duration: segment.duration },
@@ -1369,6 +1417,15 @@ async function handleStartLearning(message) {
   captureContext = context;
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, state);
   await persistContextPointer(context);
+  // #48: a fresh wallclock Session probes for a bridged media position for
+  // the first 10 seconds; anchoring re-aligns the whole timeline to the
+  // video position (the pointer above still says wallclock — the anchor
+  // persists its own pointer). Resumed wallclock Sessions never probe, so
+  // their recorded wallclock timeline can never be mixed with video
+  // timestamps.
+  if (context.timestampKind === "wallclock") {
+    context.probeDeadlineMs = Date.now() + PROBE_WINDOW_MS;
+  }
 
   try {
     // The icon-click path supplies a streamId fetched while the click's
@@ -1437,14 +1494,229 @@ async function handleStartLearning(message) {
 async function handleMediaPosition(message, sender) {
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
-  if (context.timestampKind !== "video") return; // live runs on wall-clock
   if (sender.tab?.id !== context.tabId) return;
-  feedPosition(context, Number(message.position) || 0);
+  const position = Number(message.position);
+  if (context.timestampKind !== "video") {
+    // #48 probe window: a wallclock Session anchors to the video timeline
+    // when the bridge reports a valid position in time. While it stays
+    // wallclock (no probe, lapsed window, or not-yet-valid position), the
+    // position stream is ignored exactly as before.
+    await probeForAnchor(context, position);
+    if (context.timestampKind !== "video") return;
+  }
+  if (!Number.isFinite(position)) return;
+  // #48 seek-awareness, in order: a forward seek cuts at the seek point and
+  // jumps the cursor; re-listening below the cursor cuts at the range
+  // boundaries (failed-Segment retries, Plan A); only then does the
+  // scheduler see the position.
+  await handleSeekForward(context, position);
+  await updateRelisten(context, position);
+  feedPosition(context, position);
   // Media end auto-ends replay/course Sessions; live ends only via the
   // explicit end action.
   if (message.ended && (context.kind === "replay" || context.kind === "course")) {
     await endActiveSession(context, { reason: "mediaEnded" });
   }
+}
+
+/**
+ * The #48 probe: within the 10s window from Session start, the first valid
+ * bridged position (a finite number ≥ 0 — the bridge only reports when a
+ * media element exists) anchors the Session to the video timeline. A lapsed
+ * window stays wallclock for the whole Session.
+ *
+ * @param {object} context - the active capture context
+ * @param {number} position - the bridged position, unvalidated
+ */
+async function probeForAnchor(context, position) {
+  if (context.probeDeadlineMs === null) return; // resumed Session: no probe
+  if (Date.now() > context.probeDeadlineMs) {
+    context.probeDeadlineMs = null;
+    return;
+  }
+  if (!Number.isFinite(position) || position < 0) return;
+  await anchorSessionToVideo(context, position);
+}
+
+/**
+ * Anchors a wallclock Session to the video timeline (#48): the timestamp
+ * kind flips to "video" (persisted in the pointer so a restart keeps it),
+ * the wallclock live tick stops, and a fresh scheduler is seeded at the
+ * bridged position — records before the anchor point produce nothing (no
+ * backfill of the skipped head), and Segment indices stay continuous.
+ *
+ * The probe window's audio (already recorded, ≤ 10s of it) is consumed by
+ * the first anchored cut rather than discarded, so no lesson audio is lost.
+ */
+async function anchorSessionToVideo(context, position) {
+  const anchor = Math.max(0, Math.floor(position));
+  context.timestampKind = "video";
+  context.probeDeadlineMs = null;
+  if (context.liveTimer) {
+    clearInterval(context.liveTimer);
+    context.liveTimer = null;
+  }
+  context.segmenter = YTD_SEGMENTER.createSegmenter({
+    segmentLengthSeconds: context.segmentLengthSeconds,
+    startAt: anchor,
+    startIndex: context.state.segments.length,
+  });
+  context.lastPosition = Math.max(context.lastPosition, anchor);
+  // The recorder's regular wall-clock cut cadence (armed at captureStart)
+  // belongs to the wallclock timeline; the anchored Session cuts following
+  // the media position, like any replay Session.
+  await sendOffscreen({ action: "captureCadence", mode: "video" });
+  await persistContextPointer(context);
+  broadcastSession(context.state, { timestampKind: context.timestampKind });
+  console.log(
+    `[Learning Digest] 会话已对齐视频时间轴: session=${context.sessionId} ` +
+      `position=${YTD_SPEECH_TRANSCRIPTION.formatTimestamp(anchor)}`,
+  );
+}
+
+/**
+ * #48 seek-forward: a position jump larger than one Segment plus a small
+ * tolerance within one tick cuts the recorder at the seek point (the
+ * pre-seek audio lands as the tail record with its pre-seek timestamps),
+ * jumps the scheduler cursor emitting nothing for the skipped range, and
+ * appends one visible gap marker so the Digest is honest about the hole.
+ * Backward moves and small advances return without touching anything.
+ */
+async function handleSeekForward(context, position) {
+  const previous = context.lastPosition;
+  if (!Number.isFinite(previous) || position <= previous) return;
+  if (position - previous <= context.segmentLengthSeconds + SEEK_JUMP_TOLERANCE_SECONDS) {
+    return;
+  }
+  // A seek invalidates any in-progress re-listen pass: the buffered audio
+  // no longer maps to what playback covered, so the retry watch re-arms on
+  // the next position if the seek landed inside a failed range.
+  context.retryWatch = null;
+  // (a) The pre-seek audio lands as a tail record stamped with its pre-seek
+  // coverage — flush() emits the trailing partial Segment, when audible.
+  const tail = context.segmenter.flush(previous);
+  const gapStart = context.segmenter.emittedUpTo;
+  // (b) The cursor jumps; the skipped range emits nothing. The pointer is
+  // persisted BEFORE the tail dispatch: a worker death mid-seek must never
+  // resume below the jumped cursor and backfill the skipped range.
+  context.segmenter.jumpTo(position);
+  context.lastPosition = Math.max(context.lastPosition, position);
+  await persistContextPointer(context);
+  if (tail) await dispatchSegment(context, tail);
+  // (c) One visible gap marker over the uncovered range. When the tail was
+  // too short to emit, its sub-minimum coverage folds into the gap so no
+  // audio silently disappears.
+  const gapDuration = position - gapStart;
+  if (gapDuration > 0) {
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "gapSkipped",
+      start: gapStart,
+      duration: gapDuration,
+    });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state);
+  }
+}
+
+/**
+ * #48 Plan A re-listen bookkeeping, run on every video position BEFORE the
+ * scheduler sees it. Below the cursor nothing new is ever recorded (the
+ * no-backward rule keeps one record set per position range), with two
+ * on-demand cuts at the range boundaries:
+ *
+ * - entering the re-listen (or a failed Segment's range): the buffered
+ *   audio is first-pass material that must not duplicate or smear into the
+ *   next record, so it is cut and discarded;
+ * - playback re-covering a failed Segment's full range: the buffered
+ *   re-watched audio is dispatched as that Segment's retry, replacing its
+ *   [语音转录失败] marker exactly once;
+ * - playback passing the old cursor frontier again: the re-watched buffer
+ *   is discarded so the next Segment's cut holds only new audio.
+ */
+async function updateRelisten(context, position) {
+  const cursor = context.segmenter.emittedUpTo;
+  if (context.retryWatch) {
+    const watch = context.retryWatch;
+    if (position < watch.start) {
+      // Sought away from the range mid-pass; the next entry re-arms.
+      context.retryWatch = null;
+      return;
+    }
+    if (position >= watch.end) {
+      context.retryWatch = null;
+      await dispatchRetrySegment(context, watch.segmentId);
+      // A retry cut at (or past) the frontier already flushed the buffer:
+      // the re-listen pass is over.
+      if (position >= context.segmenter.emittedUpTo) context.relisten = null;
+    }
+    return;
+  }
+  if (position < cursor) {
+    if (!context.relisten) {
+      context.relisten = { frontier: cursor, attempted: new Set() };
+      // Entry boundary: the buffer holds first-pass audio since the last
+      // real cut (including any queued backstop chunks) — discard it.
+      await discardRecordedAudio(context);
+    }
+    const failed = findFailedSegmentAt(context, position);
+    if (failed && !context.relisten.attempted.has(failed.id)) {
+      context.retryWatch = {
+        segmentId: failed.id,
+        start: failed.start,
+        end: failed.start + failed.duration,
+      };
+      // Range-entry boundary: drop the covered audio buffered since the
+      // last cut so the retry cut holds only this range's re-watched audio.
+      await discardRecordedAudio(context);
+    }
+    return;
+  }
+  if (context.relisten) {
+    // Playback passed the old cursor frontier: new content resumes.
+    context.relisten = null;
+    context.retryWatch = null;
+    await discardRecordedAudio(context);
+  }
+}
+
+function findFailedSegmentAt(context, position) {
+  return context.state.segments.find(
+    (segment) =>
+      segment.status === "failed" &&
+      position >= segment.start &&
+      position < segment.start + segment.duration,
+  );
+}
+
+/**
+ * Cuts and discards everything recorded since the last real Segment cut —
+ * queued backstop chunks included. Used at the #48 re-listen boundaries,
+ * where the buffered audio is already transcribed first-pass material
+ * (Plan A: one record set per position range, no duplicates).
+ */
+async function discardRecordedAudio(context) {
+  context.pendingChunks.length = 0;
+  await sendOffscreen({ action: "captureCut" });
+}
+
+/**
+ * Dispatches the re-watched audio for one failed Segment (#48 Plan A): the
+ * cut is taken on demand at the range boundary and transcribed under the
+ * FAILED Segment's own id, so transcribeOk replaces its marker in place.
+ * The outcome (done or still failed) is whatever the transcription returns;
+ * the id is marked attempted for this pass either way.
+ */
+async function dispatchRetrySegment(context, segmentId) {
+  const segment = context.state.segments.find(
+    (candidate) => candidate.id === segmentId,
+  );
+  if (!segment || segment.status !== "failed") return;
+  if (context.relisten) context.relisten.attempted.add(segmentId);
+  await dispatchSegment(
+    context,
+    { start: segment.start, duration: segment.duration },
+    segmentId,
+  );
 }
 
 /**
@@ -1479,7 +1751,11 @@ async function handleBackstopChunk(message) {
   if (!context || context.ended) return;
   context.pendingChunks.push({ dataUrl: message.dataUrl, durationSeconds: message.durationSeconds, mimeType: message.mimeType });
   // Keep the position stream moving even if the live tick was suspended.
-  feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
+  // Wallclock Sessions only (#48): an anchored Session's timeline is the
+  // video position — wall-clock elapsed must never feed it.
+  if (context.timestampKind === "wallclock") {
+    feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
+  }
 }
 
 /**

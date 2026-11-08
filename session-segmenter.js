@@ -74,6 +74,20 @@ var YTD_SEGMENTER = (() => {
     }
 
     /**
+     * Seeks the cursor forward to positionSeconds WITHOUT emitting anything
+     * for the skipped range (#48 seek-forward). The caller owns everything
+     * the skipped range needs (flushing the pre-seek tail, the visible gap
+     * marker record); the scheduler only moves the cursor. Positions at or
+     * before the cursor are ignored — the no-backward rule.
+     *
+     * @param {number} positionSeconds
+     */
+    function jumpTo(positionSeconds) {
+      const position = Math.floor(Number(positionSeconds) || 0);
+      if (position > emittedUpTo) emittedUpTo = position;
+    }
+
+    /**
      * Ends scheduling: returns the trailing partial Segment covering
      * [emittedUpTo, position], or null when nothing audible remains (an
      * exact boundary, or a tail shorter than minSegmentSeconds).
@@ -91,6 +105,7 @@ var YTD_SEGMENTER = (() => {
 
     return {
       recordPosition,
+      jumpTo,
       flush,
       get emittedUpTo() {
         return emittedUpTo;

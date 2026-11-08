@@ -1647,8 +1647,13 @@ function renderSessionStatus() {
   const status = document.getElementById("sessionStatus");
   if (!status) return;
   const kindLabel = SESSION_KIND_LABELS[sessionUi.kind] || sessionUi.kind || "";
+  // The timeline mode (#48): an anchored Session counts video positions,
+  // a wallclock one counts elapsed time — the learner should know which
+  // timeline the transcript stamps follow.
+  const modeLabel =
+    sessionUi.timestampKind === "video" ? "已对齐视频时间轴" : "直播计时（墙钟）";
   status.textContent = sessionUi.active
-    ? `${kindLabel} · 正在采集音频`
+    ? `${kindLabel} · ${modeLabel} · 正在采集音频`
     : kindLabel;
 }
 
@@ -2355,7 +2360,7 @@ function showRecordingToast() {
   );
 }
 
-function showSessionMode({ active, kind, state, transcribeMode }) {
+function showSessionMode({ active, kind, state, transcribeMode, timestampKind }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
   const welcome = document.getElementById("welcomeState");
@@ -2364,6 +2369,9 @@ function showSessionMode({ active, kind, state, transcribeMode }) {
   if (active) {
     sessionUi.active = true;
     if (transcribeMode) sessionUi.transcribeMode = transcribeMode;
+    // The timeline mode (#48): wallclock at start, "video" once the probe
+    // anchored the Session — the status line names which one is live.
+    if (timestampKind) sessionUi.timestampKind = timestampKind;
     const activeSessionId = state?.sessionId ?? sessionUi.sessionId ?? null;
     if (activeSessionId) {
       sessionUi.sessionId = activeSessionId;
@@ -2443,6 +2451,7 @@ async function refreshSessionUI() {
         kind: session.kind,
         state: session.state,
         transcribeMode: session.transcribeMode,
+        timestampKind: session.timestampKind,
       });
     } else {
       showSessionMode({ active: false, kind: recognition.kind, state: null });
@@ -2606,6 +2615,12 @@ function setupSessionUI() {
       sessionUi.sessionId = message.sessionId;
       sessionUi.lastSessionId = message.sessionId;
       if (message.transcribeMode) sessionUi.transcribeMode = message.transcribeMode;
+      if (message.timestampKind) {
+        // The probe anchored the Session to the video timeline (#48); the
+        // status line flips immediately instead of waiting for the poll.
+        sessionUi.timestampKind = message.timestampKind;
+        renderSessionStatus();
+      }
       observeSessionTitle(message.state);
       renderSessionTranscript(message.state);
       renderLiveTopics(message.state);

@@ -1425,3 +1425,341 @@ test("the settings blob is stamped with the version on the first read", async ()
   assert.equal(blob.settingsVersion, 2);
   assert.equal(blob.segmentLengthSeconds, 30);
 });
+
+// --- Timeline anchoring + seek-awareness (#48) ------------------------------
+//
+// l_ Sessions run wallclock by URL (D6), but the page bridge already
+// reports the media position every second. The worker now probes for it at
+// Session start: the first valid position anchors the Session to the video
+// timeline; a lapsed window stays wallclock. Anchored Sessions are
+// seek-aware exactly like replay ones: forward seeks cut at the seek point
+// and mark the skipped gap, re-listened failed Segments retry (Plan A), and
+// nothing ever mixes the two timelines inside one Session.
+
+// Drains the fire-and-forget dispatch chain (storage writes, the offscreen
+// round trip, the transcription fetch) deterministically.
+async function drain(steps = 40) {
+  for (let i = 0; i < steps; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+// A transcription stub on the Speech Provider seam: the first `failFirst`
+// calls reject so a first-pass Segment can be forced failed while later
+// ones succeed. Records are provider-relative (start 0), like the real
+// providers; the capture layer stamps them onto the Segment's range.
+function asrTranscribe({ failFirst = 0, text = "转写内容", durations = [] } = {}) {
+  let attempts = 0;
+  return async (_segmentAudio, _credentials) => {
+    attempts += 1;
+    if (attempts <= failFirst) {
+      throw new Error("provider boom");
+    }
+    const duration = durations.length > 0 ? durations.shift() : 120;
+    return [{ text, start: 0, duration, language: "zh" }];
+  };
+}
+
+// A catch-all fetch stub: nothing in these flows may reach the network.
+const noNetworkFetch = async () => ({ ok: false, status: 599, text: async () => "" });
+
+// The offscreen recorder's captureCut answer: one chunk as a data URL.
+function cutReply() {
+  return (message) =>
+    message.action === "captureCut"
+      ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
+      : { success: true };
+}
+
+function mediaPositionMessage(position, extra = {}) {
+  return {
+    action: "mediaPosition",
+    position,
+    duration: 9000,
+    paused: false,
+    ended: false,
+    ...extra,
+  };
+}
+
+// The v2 settings migration forces a stored 120 (the legacy default) back
+// to 30 unless the blob is stamped, so these tests pin the version to keep
+// the round Segment numbers in their assertions.
+function pinnedSettings(overrides = {}) {
+  return { ...baseSettings(overrides), settingsVersion: 2 };
+}
+
+test("a wallclock l_ Session anchors to the video timeline on the first bridged position", async () => {
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    sentMessages,
+  });
+
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.success, true);
+  assert.equal(started.timestampKind, "wallclock");
+
+  // The bridge reports the video parked at 13:20 within the probe window.
+  // Any bridged position anchors — paused included (keep-it-simple rule).
+  await helpers.handleMediaPosition(mediaPositionMessage(800, { paused: true }), {
+    tab: { id: 7 },
+  });
+  await drain();
+
+  assert.equal((await helpers.handleGetSessionState()).timestampKind, "video");
+  // The anchored mode is persisted in the pointer with the segmenter cursor.
+  const pointer = helpers.readStored("ytd_active_capture");
+  assert.equal(pointer.timestampKind, "video");
+  assert.equal(pointer.cursorSeconds, 800);
+
+  // The skipped head (0 → 800) produces nothing: the first Segment starts
+  // at the anchor position with the post-anchor audio.
+  await helpers.handleMediaPosition(mediaPositionMessage(920.4), { tab: { id: 7 } });
+  await drain();
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [{ start: 800, duration: 120 }],
+  );
+  assert.equal(snapshot.transcriptRecords[0].start, 800);
+  // The anchor broadcast tells the panel the timeline flipped immediately.
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.timestampKind,
+  );
+  assert.equal(update.timestampKind, "video");
+});
+
+test("a wallclock Session with no bridged position in the probe window stays wallclock", async () => {
+  let now = 1_700_000_000_000;
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    dateNow: () => now,
+  });
+
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.timestampKind, "wallclock");
+
+  // The window lapses before any position arrives; the later report is
+  // ignored and the Session keeps today's wallclock behavior.
+  now += 11_000;
+  await helpers.handleMediaPosition(mediaPositionMessage(800), { tab: { id: 7 } });
+  await drain();
+
+  assert.equal((await helpers.handleGetSessionState()).timestampKind, "wallclock");
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.segments, []);
+  assert.deepEqual(snapshot.transcriptRecords, []);
+
+  // The timeline never switches mid-Session: later positions change nothing.
+  now += 1_000;
+  await helpers.handleMediaPosition(mediaPositionMessage(900), { tab: { id: 7 } });
+  await drain();
+  assert.equal((await helpers.handleGetSessionState()).timestampKind, "wallclock");
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.segments, []);
+});
+
+test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skipped gap", async () => {
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    // The tail cut holds 60s of pre-seek audio; the post-seek Segment 120s.
+    transcribeImpl: asrTranscribe({ durations: [60] }),
+    sentMessages,
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  // One minute played, then the learner drags the bar to 10:00.
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  // (a) The pre-seek audio landed as a tail record with pre-seek timestamps.
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [{ start: 0, duration: 60 }],
+  );
+  // (c) One visible gap marker covers the skipped range — and nothing else
+  // was emitted for it.
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      duration: record.duration,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 0, duration: 60, failed: false },
+      { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+    ],
+  );
+  // The seek point was cut on demand.
+  assert.ok(sentMessages.some((message) => message.action === "captureCut"));
+
+  // (d) The next Segment starts at the new position with post-seek audio;
+  // the jumped cursor survived in the pointer.
+  assert.equal(helpers.readStored("ytd_active_capture").cursorSeconds, 600);
+  await helpers.handleMediaPosition(mediaPositionMessage(720), { tab: { id: 7 } });
+  await drain();
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 0, duration: 60 },
+      { start: 600, duration: 120 },
+    ],
+  );
+});
+
+test("re-listening a failed Segment retries it once and replaces the marker with no duplicates", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    // First pass: seg-0 fails, seg-1 transcribes; the re-listen retry of
+    // seg-0 then succeeds.
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ failFirst: 1 }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  // First pass: two Segments, the first failed with its visible marker. The
+  // bridge ticks once a second, so the feeds stay within the seek threshold.
+  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(130), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(250), { tab: { id: 7 } });
+  await drain();
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => segment.status),
+    ["failed", "done"],
+  );
+  const marker = snapshot.transcriptRecords.find((record) => record.failed === true);
+  assert.equal(marker.text, "[语音转录失败]");
+
+  // Seek back to 0:00 and re-listen through the failed range.
+  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(130), { tab: { id: 7 } });
+  await drain();
+
+  // The retry landed under the failed Segment's own id: its marker is
+  // replaced in place, the timeline stays single-copy and monotonic.
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => segment.status),
+    ["done", "done"],
+  );
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 0, failed: false },
+      { text: "转写内容", start: 120, failed: false },
+    ],
+  );
+
+  // Plan A: covered ranges are never re-emitted, and new content resumes
+  // once playback passes the old cursor frontier.
+  await helpers.handleMediaPosition(mediaPositionMessage(240), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(360), { tab: { id: 7 } });
+  await drain();
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(snapshot.segments.length, 3);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 0, duration: 120 },
+      { start: 120, duration: 120 },
+      { start: 240, duration: 120 },
+    ],
+  );
+  assert.equal(snapshot.transcriptRecords.length, 3);
+  assert.equal(snapshot.transcriptRecords.filter((record) => record.failed).length, 0);
+});
+
+test("a worker restart keeps the anchored video timeline and its cursor", async () => {
+  const sentMessages = [];
+  const first = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    sentMessages,
+  });
+  const started = await first.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  await first.handleMediaPosition(mediaPositionMessage(800), { tab: { id: 7 } });
+  await drain();
+
+  // The worker restarts: the pointer (timestampKind video, cursor 800) and
+  // the snapshot rebuild the context. No re-probe, no wallclock re-arm.
+  const second = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    sentMessages,
+    offscreenDocument: false,
+    stored: {
+      ytd_active_capture: first.readStored("ytd_active_capture"),
+      [`ytd_session_${started.sessionId}`]: first.readStored(
+        `ytd_session_${started.sessionId}`,
+      ),
+    },
+  });
+
+  const state = await second.handleGetSessionState();
+  assert.equal(state.active, true);
+  assert.equal(state.timestampKind, "video");
+  // The restarted capture is armed as a video-mode capture: no wallclock cut.
+  const restartStart = sentMessages
+    .filter((message) => message.action === "captureStart")
+    .pop();
+  assert.equal(restartStart.mode, "video");
+
+  // Positions continue on the video timeline from the persisted cursor.
+  await second.handleMediaPosition(mediaPositionMessage(920.4), { tab: { id: 7 } });
+  await drain();
+  const snapshot = second.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [{ start: 800, duration: 120 }],
+  );
+});

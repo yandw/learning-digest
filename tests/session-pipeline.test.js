@@ -270,6 +270,99 @@ test("a Segment already marked done is never re-transcribed after resume", () =>
   assert.deepEqual(state, before);
 });
 
+// --- Seek-gap marker + failed-Segment retry (#48) --------------------------
+
+test("gapSkipped appends one visible gap marker record for the skipped range", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 60,
+    duration: 540,
+  });
+
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+  ]);
+  // The gap is annotation only: no Segment is invented for audio that was
+  // never recorded.
+  assert.deepEqual(state.segments, []);
+});
+
+test("gapSkipped rejects malformed ranges instead of corrupting the Transcript", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+  for (const bad of [
+    { start: -5, duration: 10 },
+    { start: 0, duration: 0 },
+    { start: 0, duration: -10 },
+    { start: Number.NaN, duration: 10 },
+  ]) {
+    assert.throws(
+      () => sessionPipeline.applyEvent(state, { type: "gapSkipped", ...bad }),
+      /gapSkipped requires/,
+    );
+  }
+  assert.deepEqual(state.transcriptRecords, []);
+});
+
+test("transcribeOk on a failed Segment replaces its marker with the retry records exactly once", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-1", start: 0, duration: 120 },
+  });
+  state = sessionPipeline.applyEvent(state, { type: "transcribeFailed", segmentId: "seg-1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-2", start: 120, duration: 120 },
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcribeOk",
+    segmentId: "seg-2",
+    records: [{ text: "第二段", start: 120, duration: 5 }],
+  });
+
+  // Plan A (#48): re-listening over the failed range retries exactly that
+  // Segment; the re-watched records take the marker's place in the timeline.
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcribeOk",
+    segmentId: "seg-1",
+    records: [{ text: "重听第一段", start: 0, duration: 120 }],
+  });
+
+  assert.equal(state.segments[0].status, "done");
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "重听第一段", start: 0, duration: 120 },
+    { text: "第二段", start: 120, duration: 5 },
+  ]);
+
+  // A second result for the same Segment settles nothing further: the
+  // replacement happens exactly once, no duplicate rows.
+  const after = state;
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcribeOk",
+    segmentId: "seg-1",
+    records: [{ text: "重复", start: 0, duration: 120 }],
+  });
+  assert.equal(state, after);
+});
+
+test("a failed retry leaves the original marker in place", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-1", start: 0, duration: 120 },
+  });
+  state = sessionPipeline.applyEvent(state, { type: "transcribeFailed", segmentId: "seg-1" });
+
+  // The re-watched audio failed to transcribe too: settleSegment drops the
+  // late failure, and the visible [语音转录失败] marker stays.
+  state = sessionPipeline.applyEvent(state, { type: "transcribeFailed", segmentId: "seg-1" });
+  assert.equal(state.segments[0].status, "failed");
+  assert.deepEqual(state.transcriptRecords, [
+    speechTranscription.failedChunkRecord(0, 120),
+  ]);
+});
+
 test("snapshot round-trips through JSON and resume continues from it", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   state = sessionPipeline.applyEvent(state, {

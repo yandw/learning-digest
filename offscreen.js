@@ -16,6 +16,9 @@
  * - captureCut {}: stops the current recorder (one decodable blob per
  *   recorder, the same pattern the pre-strip code used), immediately
  *   starts the next, and responds with the finished chunk as a data URL.
+ * - captureCadence {mode}: re-arms (or disarms) the regular wall-clock cut
+ *   mid-Session; the worker sends it when a wallclock Session anchors to
+ *   the video timeline (#48) and position-driven cuts take over.
  * - captureStop {}: stops recording and releases the stream.
  *
  * Chunks travel as base64 data URLs because chrome.runtime messages are
@@ -232,6 +235,15 @@
         },
       );
       return true;
+    }
+    if (message.action === "captureCadence") {
+      // #48 timeline anchoring: re-arm (or disarm) the regular wall-clock
+      // cut mid-Session. A wallclock Session that anchored to the video
+      // timeline switches to position-driven cuts like any replay Session,
+      // so its wall-clock cadence must stop here.
+      armRegularCut(message.mode);
+      sendResponse({ success: true });
+      return false;
     }
     if (message.action === "captureStop") {
       clearTimeout(backstopTimer);

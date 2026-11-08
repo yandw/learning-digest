@@ -73,6 +73,49 @@ test("a backward seek is ignored and never re-emits Segments", () => {
   ]);
 });
 
+test("mid-video startAt seeds the cursor so the skipped head never backfills", () => {
+  // #48: a Session anchored to a video already 13 minutes in starts its
+  // records there — the range 0 → anchor produces nothing (no D7-style
+  // empty backfill of positions that were never played).
+  const segmenter = createSegmenter({
+    segmentLengthSeconds: 120,
+    startAt: 800,
+    startIndex: 0,
+  });
+  assert.deepEqual(segmenter.recordPosition(800), []);
+  assert.deepEqual(segmenter.recordPosition(919.9), []);
+  assert.deepEqual(segmenter.recordPosition(920.4), [
+    { index: 0, start: 800, duration: 120 },
+  ]);
+  assert.equal(segmenter.emittedUpTo, 920);
+  assert.deepEqual(segmenter.flush(925), { index: 1, start: 920, duration: 5 });
+});
+
+test("jumpTo seeks the cursor forward without emitting anything for the skipped range", () => {
+  // #48 seek-forward: the skipped range emits no Segments (the gap is made
+  // visible by the pipeline's gap marker instead), and the next Segment
+  // starts at the new position with the post-seek audio.
+  const segmenter = createSegmenter({ segmentLengthSeconds: 120 });
+  assert.deepEqual(segmenter.recordPosition(60), []);
+  segmenter.jumpTo(600);
+  assert.equal(segmenter.emittedUpTo, 600);
+  // Playback continues from the seek target.
+  assert.deepEqual(segmenter.recordPosition(720), [
+    { index: 0, start: 600, duration: 120 },
+  ]);
+  assert.deepEqual(segmenter.flush(725), { index: 1, start: 720, duration: 5 });
+});
+
+test("jumpTo never moves the cursor backwards", () => {
+  const segmenter = createSegmenter({ segmentLengthSeconds: 120 });
+  segmenter.recordPosition(300);
+  segmenter.jumpTo(100);
+  assert.equal(segmenter.emittedUpTo, 240);
+  assert.deepEqual(segmenter.recordPosition(360), [
+    { index: 2, start: 240, duration: 120 },
+  ]);
+});
+
 test("flush returns the trailing partial Segment and covers it fully", () => {
   const segmenter = createSegmenter({ segmentLengthSeconds: 120 });
   segmenter.recordPosition(150);

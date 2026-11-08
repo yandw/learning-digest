@@ -85,7 +85,9 @@ var YTD_SESSION_PIPELINE = (() => {
    * Events:
    * - {type: "segmentCaptured", segment: {id, start, duration}}
    * - {type: "transcribeOk", segmentId, records: [{text, start, duration, language?}]}
+   *   (a failed segmentId retries that Segment: its marker is replaced, #48)
    * - {type: "transcribeFailed", segmentId}
+   * - {type: "gapSkipped", start, duration} - seek-forward hole marker (#48)
    * - {type: "topicsAppended", topics: [{start, end, title, text, continuation?}]}
    * - {type: "titleCaptured", title: string} - the page title (#32)
    * - {type: "sessionEnd"}
@@ -105,6 +107,8 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTranscribeOk(state, event);
       case "transcribeFailed":
         return onTranscribeFailed(state, event);
+      case "gapSkipped":
+        return onGapSkipped(state, event);
       case "topicsAppended":
         return onTopicsAppended(state, event);
       case "titleCaptured":
@@ -156,7 +160,51 @@ var YTD_SESSION_PIPELINE = (() => {
 
   function onTranscribeOk(state, event) {
     const records = Array.isArray(event.records) ? event.records : [];
+    const segment = findSegment(state, event.segmentId);
+    if (!segment) throw new Error(`Unknown Segment: ${String(event.segmentId)}`);
+    // A re-listen retry (#48, Plan A): transcribeOk targeting a failed
+    // Segment replaces its [语音转录失败] marker with the re-watched
+    // records — exactly once, since the Segment is marked done here and a
+    // later result for a done Segment is dropped below.
+    if (segment.status === "failed") {
+      return replaceFailureMarker(state, segment, records);
+    }
     return settleSegment(state, event.segmentId, "done", records);
+  }
+
+  /**
+   * Marks a failed Segment done and swaps its failure-marker record for the
+   * retry's records at the same position in the timeline. The marker is
+   * matched by its exact shape (failedChunkRecord over the Segment's own
+   * range), so gap markers and other Segments' annotations are never
+   * touched. When the marker is absent (a pre-0.1.45 snapshot), the records
+   * are appended — the Segment still becomes done, never duplicated.
+   */
+  function replaceFailureMarker(state, segment, records) {
+    const marker = speechTranscription.failedChunkRecord(
+      segment.start,
+      segment.duration,
+    );
+    const markerIndex = state.transcriptRecords.findIndex(
+      (record) =>
+        record.failed === true &&
+        record.start === marker.start &&
+        record.duration === marker.duration &&
+        record.text === marker.text,
+    );
+    const transcriptRecords = [...state.transcriptRecords];
+    if (markerIndex >= 0) {
+      transcriptRecords.splice(markerIndex, 1, ...records);
+    } else {
+      transcriptRecords.push(...records);
+    }
+    return {
+      ...state,
+      segments: state.segments.map((candidate) =>
+        candidate.id === segment.id ? { ...candidate, status: "done" } : candidate,
+      ),
+      transcriptRecords,
+    };
   }
 
   function onTranscribeFailed(state, event) {
@@ -170,6 +218,35 @@ var YTD_SESSION_PIPELINE = (() => {
       segment.duration,
     );
     return settleSegment(state, event.segmentId, "failed", [marker]);
+  }
+
+  /**
+   * Appends the one visible marker record for a seek-forward's skipped
+   * range (#48): the Digest stays honest about the hole without inventing
+   * Segments for audio that was never recorded. The marker shape mirrors
+   * failedChunkRecord (failed: true) so it renders and formats exactly like
+   * the other visible annotations.
+   */
+  function onGapSkipped(state, event) {
+    const start = Math.floor(Number(event.start));
+    const duration = Math.floor(Number(event.duration));
+    if (
+      !Number.isFinite(start) ||
+      start < 0 ||
+      !Number.isFinite(duration) ||
+      duration <= 0
+    ) {
+      throw new Error(
+        "gapSkipped requires a non-negative start and a positive duration",
+      );
+    }
+    const marker = {
+      text: `[已跳过 ${speechTranscription.formatTimestamp(start)}–${speechTranscription.formatTimestamp(start + duration)}]`,
+      start,
+      duration,
+      failed: true,
+    };
+    return { ...state, transcriptRecords: [...state.transcriptRecords, marker] };
   }
 
   function onTopicsAppended(state, event) {

@@ -596,6 +596,38 @@ test("segment wait copy follows the configured Segment length", () => {
   assert.equal(panel.session.segmentLengthLabel(), "45 秒");
 });
 
+test("the session status line names the live timeline mode (#48)", () => {
+  const panel = loadPanel({ stored: {} });
+
+  // Wallclock (live or not-yet-anchored): the transcript counts elapsed time.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    timestampKind: "wallclock",
+  });
+  assert.match(
+    panel.elementById("sessionStatus").textContent,
+    /直播计时（墙钟）/,
+  );
+
+  // Anchored by the probe: the transcript follows the video position.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    timestampKind: "video",
+  });
+  assert.match(
+    panel.elementById("sessionStatus").textContent,
+    /已对齐视频时间轴/,
+  );
+  assert.doesNotMatch(
+    panel.elementById("sessionStatus").textContent,
+    /直播计时/,
+  );
+});
+
 test("the Session view shows on the 逐字稿 tab only", () => {
   const panel = loadPanel({ stored: {} });
 

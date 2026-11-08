@@ -657,7 +657,7 @@ test("the jump picks the nearest record at or before the timestamp", () => {
   assert.equal(panel.overview.findSessionRecordForSeconds(container, 1000)?.dataset.seconds, "120");
   assert.equal(panel.overview.findSessionRecordForSeconds(container, -1), null);
   assert.equal(
-    panel.overview.findSessionRecordForSeconds(panel.elementById("sessionDigest"), 10),
+    panel.overview.findSessionRecordForSeconds(panel.elementById("overviewQuotes"), 10),
     null,
   );
 });

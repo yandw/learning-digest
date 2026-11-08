@@ -47,7 +47,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.36");
+  assert.equal(manifest.version, "0.1.37");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -302,7 +302,7 @@ test("notes filters preserve selected contrast and expose pressed state", () => 
 
   assert.match(
     html,
-    /id="notesFilterThis"[\s\S]*?aria-pressed="true"[\s\S]*?>[\s\S]*?本课程/,
+    /id="notesFilterThis"[\s\S]*?aria-pressed="true"[\s\S]*?>[\s\S]*?本会话/,
   );
   assert.match(
     html,
@@ -317,8 +317,8 @@ test("notes filters preserve selected contrast and expose pressed state", () => 
     /\.notes-filter \.enhance-btn:hover:not\(:disabled\)\s*\{[^}]*background:\s*transparent;[^}]*color:\s*var\(--text-secondary\);/,
   );
   assert.match(css, /\.notes-filter \.enhance-btn:focus-visible\s*\{[^}]*outline:/);
-  assert.match(js, /setNotesFilter\(false\)/);
-  assert.match(js, /setNotesFilter\(true\)/);
+  assert.match(js, /applyNotesFilter\(false\)/);
+  assert.match(js, /applyNotesFilter\(true\)/);
   assert.match(js, /setAttribute\("aria-pressed", String\(!showAll\)\)/);
   assert.match(js, /setAttribute\("aria-pressed", String\(showAll\)\)/);
 });

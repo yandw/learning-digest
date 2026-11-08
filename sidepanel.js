@@ -216,6 +216,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   // D7 (#30): reopening the panel shows the most recent persisted report
   // even with no active Session.
   void adoptLatestStoredReport();
+  // The 概览 first-topic hint names the configured tick interval.
+  void refreshSummaryIntervalMinutes();
 });
 
 // Listen for messages from the background script.
@@ -225,7 +227,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const filterAll = document
       .getElementById("notesFilterAll")
       ?.classList.contains("active");
-    loadNotes(filterAll ? null : currentVideoId);
+    loadNotes(filterAll ? null : currentNotesScopeId());
     sendResponse({ success: true });
   }
   return false;
@@ -278,13 +280,30 @@ function setupEventListeners() {
   );
 
   document.getElementById("notesFilterThis")?.addEventListener("click", () => {
-    setNotesFilter(false);
-    loadNotes(currentVideoId);
+    applyNotesFilter(false);
   });
   document.getElementById("notesFilterAll")?.addEventListener("click", () => {
-    setNotesFilter(true);
-    loadNotes(null); // Load all notes
+    applyNotesFilter(true);
   });
+
+  // Session notes carry a jumpable stamp; one delegated listener covers
+  // every row render.
+  document
+    .getElementById("notesList")
+    ?.addEventListener("click", handleNotesListClick);
+
+  // The selection toolbar serves both transcript surfaces (legacy rows and
+  // session records), so it is wired once at startup.
+  setupExplainFeature();
+}
+
+/**
+ * Applies a notes filter button press: updates the pressed state and loads
+ * the matching scope (本会话 = the current Session or video, 全部笔记 = all).
+ */
+function applyNotesFilter(showAll) {
+  setNotesFilter(showAll);
+  loadNotes(showAll ? null : currentNotesScopeId());
 }
 
 function setNotesFilter(showAll) {
@@ -352,9 +371,6 @@ async function startDigest(videoId, videoUrl) {
 
     // Load notes for this video
     loadNotes(videoId);
-
-    // Setup explain feature
-    setupExplainFeature();
     return;
   }
 
@@ -830,15 +846,17 @@ function dismissSelectionActions(clearSelection = false) {
 }
 
 /**
- * Sets up text selection handling in the transcript.
- * When the user selects text, shows Explain and Note actions.
+ * Sets up text selection handling for both transcript surfaces (the legacy
+ * digest rows and the Session transcript records). When the user selects
+ * text in either, shows Explain and Note actions.
  */
 function setupExplainFeature() {
   const transcriptList = document.getElementById("transcriptList");
-  if (!transcriptList) return;
+  const sessionTranscript = document.getElementById("sessionTranscript");
+  if (!transcriptList && !sessionTranscript) return;
 
-  // This setup can run again after a cached transcript render. Abort old
-  // document listeners so one selection creates only one action toolbar.
+  // This setup can run again (it aborts old document listeners so one
+  // selection creates only one action toolbar).
   selectionActionsController?.abort();
   selectionActionsController = new AbortController();
   const selectionSignal = selectionActionsController.signal;
@@ -853,12 +871,21 @@ function setupExplainFeature() {
   tooltip.className = "explain-tooltip";
   tooltip.setAttribute("role", "toolbar");
   tooltip.setAttribute("aria-label", "选中文字操作");
-  tooltip.innerHTML = `
-    <button class="explain-btn" type="button">解释</button>
-    <button class="selection-note-btn" type="button">笔记</button>
-  `;
+  const explainButton = document.createElement("button");
+  explainButton.type = "button";
+  explainButton.className = "explain-btn";
+  explainButton.textContent = "解释";
+  const noteButton = document.createElement("button");
+  noteButton.type = "button";
+  noteButton.className = "selection-note-btn";
+  noteButton.textContent = "笔记";
+  tooltip.append(explainButton, noteButton);
   tooltip.style.display = "none";
   document.body.appendChild(tooltip);
+
+  const selectionContainers = [transcriptList, sessionTranscript].filter(
+    Boolean,
+  );
 
   let selectedText = "";
   let selectedTimestamp = 0;
@@ -884,12 +911,16 @@ function setupExplainFeature() {
       const text = selection?.toString().trim() || "";
       const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
 
-      // Both ends must be inside the transcript. The first selected row
-      // supplies the timestamp when the selection spans more than one row.
+      // Both ends must be inside one of the transcript surfaces. The first
+      // selected row supplies the timestamp when the selection spans more
+      // than one row; session rows carry their start second too.
       const isInTranscript = Boolean(
         range &&
-          transcriptList.contains(range.startContainer) &&
-          transcriptList.contains(range.endContainer),
+          selectionContainers.some(
+            (container) =>
+              container.contains(range.startContainer) &&
+              container.contains(range.endContainer),
+          ),
       );
 
       // Allow any selection length.
@@ -899,7 +930,9 @@ function setupExplainFeature() {
           range.startContainer.nodeType === 1
             ? range.startContainer
             : range.startContainer.parentElement;
-        const selectedRow = startElement?.closest(".transcript-entry");
+        const selectedRow = startElement?.closest(
+          ".transcript-entry, .session-record",
+        );
         const rowSeconds = Number(selectedRow?.dataset.seconds);
         selectedTimestamp = Number.isFinite(rowSeconds) ? rowSeconds : 0;
 
@@ -929,61 +962,82 @@ function setupExplainFeature() {
   );
 
   // Handle explain button click
-  tooltip
-    .querySelector(".explain-btn")
-    .addEventListener("click", async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!selectedText) return;
+  explainButton.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedText) return;
 
-      tooltip.style.display = "none";
-      await showExplanation(selectedText);
-    });
+    tooltip.style.display = "none";
+    await showExplanation(selectedText);
+  });
 
   // Save the exact selected words at the first selected transcript row. This
   // action does not move playback and does not ask the AI to rewrite the text.
-  tooltip
-    .querySelector(".selection-note-btn")
-    .addEventListener("click", async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!selectedText || !currentVideoId) return;
+  noteButton.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const target = noteSaveTarget();
+    if (!selectedText || !target) return;
 
-      const button = event.currentTarget;
-      const originalText = button.textContent;
-      button.textContent = "保存中…";
-      button.disabled = true;
+    const button = event.currentTarget;
+    const originalText = button.textContent;
+    button.textContent = "保存中…";
+    button.disabled = true;
 
-      try {
-        const result = await chrome.runtime.sendMessage({
-          action: "saveNote",
-          videoId: currentVideoId,
-          timestamp: selectedTimestamp,
-          videoTitle: currentVideoTitle,
-          channelName: currentChannelName,
-          selectedText,
-        });
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: "saveNote",
+        videoId: target.videoId,
+        timestamp: selectedTimestamp,
+        videoTitle: target.videoTitle,
+        channelName: target.channelName,
+        selectedText,
+      });
 
-        if (!result?.success) {
-          throw new Error(result?.error || "Could not save note");
-        }
-
-        button.textContent = "已保存";
-        loadNotes(currentVideoId);
-        setTimeout(() => {
-          tooltip.style.display = "none";
-          button.textContent = originalText;
-          button.disabled = false;
-        }, 900);
-      } catch (error) {
-        console.error("[Learning Digest] Save selected note error:", error);
-        button.textContent = "出错";
-        setTimeout(() => {
-          button.textContent = originalText;
-          button.disabled = false;
-        }, 1500);
+      if (!result?.success) {
+        throw new Error(result?.error || "Could not save note");
       }
-    });
+
+      button.textContent = "已保存";
+      loadNotes(currentNotesScopeId());
+      setTimeout(() => {
+        tooltip.style.display = "none";
+        button.textContent = originalText;
+        button.disabled = false;
+      }, 900);
+    } catch (error) {
+      console.error("[Learning Digest] Save selected note error:", error);
+      button.textContent = "出错";
+      setTimeout(() => {
+        button.textContent = originalText;
+        button.disabled = false;
+      }, 1500);
+    }
+  });
+}
+
+/**
+ * Where a note saved from the selection toolbar belongs: a loaded legacy
+ * digest stores it under the video id with the video's title; a Session
+ * stores it under the Session id with the course title the page bridge
+ * reported (falling back to the id). With no target there is nothing to
+ * attach the note to.
+ */
+function noteSaveTarget() {
+  if (currentVideoId) {
+    return {
+      videoId: currentVideoId,
+      videoTitle: currentVideoTitle,
+      channelName: currentChannelName,
+    };
+  }
+  const sessionId = currentSessionContextId();
+  if (!sessionId) return null;
+  return {
+    videoId: sessionId,
+    videoTitle: sessionUi.title || sessionId,
+    channelName: "",
+  };
 }
 
 /**
@@ -1142,6 +1196,47 @@ async function loadFromCache(videoId) {
 // ============================================================
 
 /**
+ * The Session id the panel's session-mode surfaces currently belong to: the
+ * active one, else the last observed one (kept after the Session ends so
+ * notes and jumps keep working while its transcript is still on screen),
+ * else the Session whose report the startup scan adopted.
+ */
+function currentSessionContextId() {
+  return (
+    sessionUi.sessionId || sessionUi.lastSessionId || reportTabUi.sessionId || null
+  );
+}
+
+/**
+ * The 本会话 notes scope: a loaded legacy digest's video, else the current
+ * Session context. Null means all notes.
+ */
+function currentNotesScopeId() {
+  return currentVideoId || currentSessionContextId();
+}
+
+/**
+ * True when the note belongs to the current Session context: its stamp then
+ * jumps into the Session transcript. Legacy video notes keep their plain,
+ * non-jumping stamp.
+ */
+function noteStampJumps(note) {
+  const sessionId = currentSessionContextId();
+  return Boolean(sessionId) && note.videoId === sessionId;
+}
+
+/**
+ * One delegated listener for the notes list: session notes render a
+ * clickable [m:ss] stamp that jumps to the transcript position (the same
+ * affordance the Overview timestamps use).
+ */
+function handleNotesListClick(event) {
+  const stamp = event.target?.closest?.(".note-timestamp-jump");
+  if (!stamp) return;
+  jumpToTranscriptTimestamp(Number(stamp.dataset.seconds));
+}
+
+/**
  * Loads and renders notes from storage.
  * @param {string|null} videoId - Filter by video ID, or null for all notes
  */
@@ -1175,20 +1270,22 @@ function renderNotes(notes, filteredVideoId) {
 
   if (!notes || notes.length === 0) {
     notesIntro.style.display = "block";
-    notesIntro.textContent = filteredVideoId
-      ? "本会话还没有笔记。在逐字稿中选中文字，点击「笔记」即可保存。"
-      : "还没有保存任何笔记。在逐字稿中选中文字，点击「笔记」即可保存。";
+    notesIntro.textContent =
+      "在逐字稿中选中文字，点击浮条上的「笔记」即可保存。";
     return;
   }
 
   notesIntro.style.display = "none";
 
   notes.forEach((note, index) => {
+    const stampClasses = noteStampJumps(note)
+      ? "note-timestamp note-timestamp-jump"
+      : "note-timestamp";
     const noteEl = document.createElement("div");
     noteEl.className = "note-item";
     noteEl.innerHTML = `
       <div class="note-header">
-        <span class="note-timestamp" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>
+        <span class="${stampClasses}" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>
         ${!filteredVideoId ? `<span class="note-video-title">${escapeHtml(note.videoTitle)}</span>` : ""}
       </div>
       <div class="note-text">${escapeHtml(note.text)}</div>
@@ -1427,6 +1524,18 @@ globalThis.__YTD_OVERVIEW_TESTING__ = {
   findSessionRecordForSeconds,
 };
 
+// Session-mode IA helpers for the repository's Node tests (0.1.37). The
+// extension does not read this object at runtime.
+globalThis.__YTD_SESSION_TESTING__ = {
+  setupExplainFeature,
+  startDigest,
+  applyNotesFilter,
+  handleNotesListClick,
+  renderNotes,
+  loadNotes,
+  refreshSummaryIntervalMinutes,
+};
+
 // ============================================================
 // SESSION CAPTURE UX (xiaoe-tech Source Platform)
 // ============================================================
@@ -1440,17 +1549,38 @@ globalThis.__YTD_OVERVIEW_TESTING__ = {
 
 const sessionUi = {
   sessionId: null,
+  // The most recently observed Session, kept after it ends so the notes
+  // tab's 本会话 scope and the note stamps keep working while the ended
+  // Session's transcript is still on screen.
+  lastSessionId: null,
+  // The course title the page bridge reported for the Session (#32); used
+  // as the title of session-mode notes.
+  title: null,
+  titleSessionId: null,
   kind: null,
   timestampKind: null,
   renderedRecords: 0,
   active: false,
-  // End-time report state (#29): what is on screen and which Session it
-  // belongs to, so the 重试 button can target the right report and the 5s
-  // poll does not wipe it the moment the capture context goes away.
+  // True once an end-time report has been adopted: the Session view (the
+  // transcript the report's timestamps jump into) stays visible after the
+  // Session ends instead of being wiped by the 5s poll.
   reportShown: false,
-  reportSessionId: null,
-  lastReport: null,
 };
+
+/**
+ * Remembers the current Session's course title (the page bridge reports it
+ * once per Session, #32). A new Session id starts with a fresh title.
+ */
+function observeSessionTitle(state) {
+  if (!state?.sessionId) return;
+  if (state.sessionId !== sessionUi.titleSessionId) {
+    sessionUi.titleSessionId = state.sessionId;
+    sessionUi.title = null;
+  }
+  if (typeof state.title === "string" && state.title) {
+    sessionUi.title = state.title;
+  }
+}
 
 const SESSION_KIND_LABELS = {
   live: "直播",
@@ -1541,45 +1671,9 @@ function appendPendingRow(container, startSeconds, text) {
   container.appendChild(row);
 }
 
-// The Rolling Summary is an append-only Topic timeline (#28): one entry per
-// Topic with its Transcript time range, title and summary. A Topic that
-// continues the previous tick's last one carries a 续 marker and renders
-// indented; appended Topics are never rewritten, so re-renders just redraw
-// the same list.
-function renderSessionSummary(state) {
-  const section = document.getElementById("sessionSummary");
-  const text = document.getElementById("sessionSummaryText");
-  if (!section || !text) return;
-  const topics = Array.isArray(state?.topics) ? state.topics : [];
-  if (topics.length === 0) {
-    text.textContent = "";
-    section.style.display = "none";
-    return;
-  }
-  text.textContent = "";
-  for (const topic of topics) {
-    const entry = document.createElement("div");
-    entry.className = topic.continuation
-      ? "session-topic session-topic-continuation"
-      : "session-topic";
-    const title = document.createElement("div");
-    title.className = "session-topic-title";
-    const range = `[${sessionTimestampLabel(topic.start)}–${sessionTimestampLabel(topic.end)}]`;
-    title.textContent = topic.continuation
-      ? `续 ${range} ${topic.title}`
-      : `${range} ${topic.title}`;
-    const body = document.createElement("div");
-    body.className = "session-topic-text";
-    body.textContent = topic.text;
-    entry.append(title, body);
-    text.appendChild(entry);
-  }
-  section.style.display = "flex";
-}
-
 // True when a report payload carries anything renderable at all (error,
-// skipped marker, or at least one Topic/quote/todo). Shared by the end-time
-// card and the 纪要 tab funnel.
+// skipped marker, or at least one Topic/quote/todo). Shared by the report
+// adoption path and the 纪要 tab funnel.
 function reportHasContent(report) {
   return Boolean(
     report &&
@@ -1592,117 +1686,17 @@ function reportHasContent(report) {
   );
 }
 
-// The end-time Session Digest (#29): the compact report rendered from the
-// global pass JSON — Topics with time ranges and summaries, timestamped
-// quotes, and action items. A truncated or failed pass renders the retry
-// error with a 重试 button that asks the background to re-run the pass.
-// (The tab-based report view is ticket #30; this stays the end-time view.)
-function renderSessionReport(report, sessionId = null) {
-  const section = document.getElementById("sessionDigest");
-  const container = document.getElementById("sessionDigestText");
-  if (!section || !container) return;
-  sessionUi.reportShown = false;
-  if (sessionId) sessionUi.reportSessionId = sessionId;
-  const hasContent = reportHasContent(report);
-  container.textContent = "";
-  if (!hasContent) {
-    section.style.display = "none";
-    return;
-  }
+/**
+ * The end-time Session Digest arrives here from every path (broadcast,
+ * endLearning, retry): the 纪要 tab funnel adopts it and the 概览 tab
+ * re-renders from the same artifact, so the final report Topics replace the
+ * live timeline. Keeping the Session view open afterwards preserves the
+ * transcript those timestamps jump into.
+ */
+function adoptSessionReport(report, sessionId) {
+  if (!reportHasContent(report)) return;
   sessionUi.reportShown = true;
-  sessionUi.lastReport = report;
-  // Every report arrival also feeds the 纪要 tab (#30).
   void applyReportPayloadToTab(report, sessionId);
-  if (report.error) {
-    renderReportError(container, report.error);
-  } else if (report.skipped === "noTranscript") {
-    appendReportLine(container, "未捕获到逐字稿，未生成学习纪要。");
-  } else {
-    renderReportTopics(container, report.topics);
-    renderReportQuotes(container, report.quotes);
-    renderReportTodos(container, report.todos);
-  }
-  section.style.display = "flex";
-}
-
-function appendReportLine(container, text) {
-  const row = document.createElement("div");
-  row.className = "session-topic-text";
-  row.textContent = text;
-  container.appendChild(row);
-  return row;
-}
-
-function renderReportError(container, error) {
-  const message = appendReportLine(container, error);
-  const actions = document.createElement("div");
-  actions.className = "session-report-actions";
-  const retry = document.createElement("button");
-  retry.className = "session-btn";
-  retry.type = "button";
-  retry.textContent = "重试";
-  retry.addEventListener("click", async () => {
-    retry.disabled = true;
-    message.textContent = "正在重新生成学习纪要…";
-    try {
-      const result = await chrome.runtime.sendMessage({
-        action: "regenerateReport",
-        sessionId: sessionUi.reportSessionId || undefined,
-      });
-      if (result?.report) {
-        // The background also broadcasts the report; rendering the direct
-        // response covers a broadcast the panel missed.
-        renderSessionReport(result.report, result.sessionId || sessionUi.reportSessionId);
-        return;
-      }
-    } catch (_error) {
-      // Background unreachable; restore the error below so retry stays
-      // available.
-    }
-    renderSessionReport(sessionUi.lastReport, sessionUi.reportSessionId);
-  });
-  actions.appendChild(retry);
-  container.appendChild(actions);
-}
-
-function renderReportTopics(container, topics) {
-  for (const topic of Array.isArray(topics) ? topics : []) {
-    const entry = document.createElement("div");
-    entry.className = "session-topic";
-    const title = document.createElement("div");
-    title.className = "session-topic-title";
-    title.textContent = `[${sessionTimestampLabel(topic.start)}–${sessionTimestampLabel(topic.end)}] ${topic.title}`;
-    const body = document.createElement("div");
-    body.className = "session-topic-text";
-    body.textContent = topic.summary;
-    entry.append(title, body);
-    container.appendChild(entry);
-  }
-}
-
-function renderReportQuotes(container, quotes) {
-  const list = Array.isArray(quotes) ? quotes : [];
-  if (list.length === 0) return;
-  appendReportHeading(container, "关键原话");
-  for (const quote of list) {
-    appendReportLine(container, `[${sessionTimestampLabel(quote.start)}] ${quote.text}`);
-  }
-}
-
-function renderReportTodos(container, todos) {
-  const list = Array.isArray(todos) ? todos : [];
-  if (list.length === 0) return;
-  appendReportHeading(container, "行动项");
-  for (const todo of list) {
-    appendReportLine(container, `· ${todo}`);
-  }
-}
-
-function appendReportHeading(container, text) {
-  const heading = document.createElement("div");
-  heading.className = "session-report-heading";
-  heading.textContent = text;
-  container.appendChild(heading);
 }
 
 // ============================================================
@@ -1713,9 +1707,9 @@ function appendReportHeading(container, text) {
 // (report.error) shows the retry affordance; a persisted artifact renders
 // compactly; an active Session shows the generating hint; anything else is
 // the idle line. The startup scan (D7) surfaces the most recent persisted
-// report so reopening the panel is never a dead end. The end-time card in
-// the Session view (#29) stays as-is; this tab mirrors every report arrival
-// through the same funnel.
+// report so reopening the panel is never a dead end. This tab is the
+// deliverable's full surface; every report arrival funnels here (and the
+// 概览 tab re-renders from the same artifact).
 
 const reportTabUi = {
   // The Session the tab is about; a new active Session retires the artifact.
@@ -2012,16 +2006,23 @@ function resetReportTabForTesting() {
 }
 
 // ============================================================
-// OVERVIEW TAB (#31): the Session Digest view
+// OVERVIEW TAB (#31): the Topic timeline and quotes
 // ============================================================
 //
-// The 概览 tab renders Topics and key quotes from the same report artifact
-// the 纪要 funnel holds — no second AI pass, no lazy self-analysis. Every
-// timestamp is a jump control: clicking it opens the 逐字稿 tab at the
-// matching Session transcript record. Until a report exists the tab shows
-// guidance instead.
+// The 概览 tab has two blocks: the Topic timeline first, quotes second.
+// During a Session the timeline shows the live Rolling Summary's Topics
+// (append-only, #28); once the end-time report is adopted it shows the
+// report's merged Topics from the same artifact the 纪要 funnel holds — no
+// second AI pass, no lazy self-analysis. Quotes only exist after the report.
+// Every timestamp is a jump control: clicking it opens the 逐字稿 tab at the
+// matching Session transcript record. Until there is anything to show, the
+// tab shows guidance instead.
 
 const OVERVIEW_EMPTY_TEXT = "结束一次学习会话后，这里会显示话题与金句。";
+
+// The Rolling Summary tick interval (settings.summaryIntervalMinutes): the
+// pre-first-tick hint names it. Refreshed from storage when a Session starts.
+let summaryIntervalMinutes = 15;
 
 function overviewElements() {
   return {
@@ -2031,6 +2032,30 @@ function overviewElements() {
     quotesSection: document.getElementById("overviewQuotesSection"),
     quotes: document.getElementById("overviewQuotes"),
   };
+}
+
+/**
+ * Reads the configured summary interval so the first-topic hint is truthful.
+ * When the value changes while a Session is running, refreshes the hint —
+ * it is only on screen before the first Topic tick renders.
+ */
+async function refreshSummaryIntervalMinutes() {
+  let minutes = 15;
+  try {
+    if (typeof YTD_SETTINGS !== "undefined" && YTD_SETTINGS?.normalize) {
+      const result = await chrome.storage.local.get(YTD_SETTINGS.STORAGE_KEY);
+      minutes =
+        YTD_SETTINGS.normalize(result?.[YTD_SETTINGS.STORAGE_KEY] || {})
+          .summaryIntervalMinutes || 15;
+    }
+  } catch (_error) {
+    // Storage unreachable; the default hint stays.
+  }
+  if (minutes === summaryIntervalMinutes) return;
+  summaryIntervalMinutes = minutes;
+  if (!sessionUi.active) return;
+  if (document.getElementById("overviewTopics")?.children.length) return;
+  renderOverviewLive([], { live: true });
 }
 
 /**
@@ -2048,9 +2073,46 @@ function renderOverviewTab() {
       : null;
   const topics = Array.isArray(report?.topics) ? report.topics : [];
   const quotes = Array.isArray(report?.quotes) ? report.quotes : [];
+  renderOverviewContent(els, topics, quotes, { live: false });
+}
+
+/**
+ * The live side of the Overview: the Rolling Summary's Topics while a
+ * Session runs, or the guidance line once it goes idle. An adopted report
+ * owns the tab, so both paths step aside when one is on screen — the final
+ * report Topics replace the live ones and live ticks never clobber them.
+ */
+function renderOverviewLive(topics, { live }) {
+  const els = overviewElements();
+  if (!els.empty || !els.topics || !els.quotes) return;
+  const artifact = reportTabUi.artifact;
+  if (artifact?.report && !artifact.report.error && !artifact.report.skipped) {
+    return;
+  }
+  renderOverviewContent(els, Array.isArray(topics) ? topics : [], [], { live });
+}
+
+/**
+ * Renders one Session tick's Rolling Summary Topics into the timeline.
+ * Appended Topics are never rewritten, so re-renders just redraw the list.
+ */
+function renderLiveTopics(state) {
+  renderOverviewLive(state?.topics, { live: true });
+}
+
+/**
+ * One Overview render, shared by the live timeline and the report funnel:
+ * Topics always, quotes only once a report carried them. With nothing to
+ * show, the guidance line is the live-session first-topic hint before the
+ * first tick and the general line otherwise.
+ */
+function renderOverviewContent(els, topics, quotes, { live = false } = {}) {
   const hasContent = topics.length > 0 || quotes.length > 0;
 
-  els.empty.textContent = OVERVIEW_EMPTY_TEXT;
+  els.empty.textContent =
+    live && topics.length === 0
+      ? `第一个话题段将在约 ${summaryIntervalMinutes} 分钟后出现。`
+      : OVERVIEW_EMPTY_TEXT;
   els.empty.style.display = hasContent ? "none" : "block";
   els.topicsSection.style.display = topics.length ? "block" : "none";
   els.quotesSection.style.display = quotes.length ? "block" : "none";
@@ -2088,11 +2150,14 @@ function buildOverviewTopic(topic, index) {
   );
   const name = document.createElement("span");
   name.classList.add("overview-topic-name");
-  name.textContent = topic?.title ?? "";
+  // A live Topic continuing the previous tick's last one keeps the 续
+  // marker; the merged report Topics never carry it.
+  name.textContent = topic?.continuation ? `续 ${topic?.title ?? ""}` : topic?.title ?? "";
   title.appendChild(name);
   const summary = document.createElement("div");
   summary.classList.add("overview-topic-summary");
-  summary.textContent = topic?.summary ?? "";
+  // Live Topic ticks carry `text`; report Topics carry `summary`.
+  summary.textContent = topic?.summary ?? topic?.text ?? "";
   content.append(title, summary);
   row.append(step, content);
   return row;
@@ -2175,9 +2240,14 @@ function findSessionRecordForSeconds(container, seconds) {
   return match;
 }
 
-function clearSessionSummaryViews() {
-  renderSessionSummary(null);
-  renderSessionReport(null);
+/**
+ * Resets the Overview's live rendering when a Session goes idle with no
+ * report on screen. An adopted report keeps the tab (the guard inside
+ * renderOverviewLive), and the report's own funnel re-renders it anyway.
+ */
+function clearLiveOverview() {
+  sessionUi.reportShown = false;
+  renderOverviewLive([], { live: false });
 }
 
 // One-shot-per-Session toast: every path that surfaces an active Session
@@ -2211,19 +2281,25 @@ function showSessionMode({ active, kind, state }) {
 
   if (active) {
     sessionUi.active = true;
-    // A new Session retires any previous Session's report card.
-    sessionUi.reportSessionId = null;
-    sessionUi.lastReport = null;
-    renderSessionReport(null);
+    const activeSessionId = state?.sessionId ?? sessionUi.sessionId ?? null;
+    if (activeSessionId) {
+      sessionUi.sessionId = activeSessionId;
+      sessionUi.lastSessionId = activeSessionId;
+    }
+    observeSessionTitle(state);
+    // A new Session retires any previous Session's report state.
+    sessionUi.reportShown = false;
     // ...and the 纪要 tab shows the generating hint until the new report
     // lands (#30); only an id change retires it, so the poll is safe.
     const reportSessionBefore = reportTabUi.sessionId;
-    reportTabSetActiveSession(state?.sessionId ?? sessionUi.sessionId ?? null);
+    reportTabSetActiveSession(activeSessionId);
     // A fresh Session surfaces the deliverable's tab (story 7): the 纪要 tab
     // reads 报告生成中… until the end-time pass lands. Later polls never
-    // yank the learner off the tab they picked.
+    // yank the learner off the tab they picked. The first-topic hint is
+    // truthful about the configured tick interval from Session start on.
     if (reportTabUi.sessionId && reportTabUi.sessionId !== reportSessionBefore) {
       surfaceReportTab();
+      void refreshSummaryIntervalMinutes();
     }
     bar.style.display = "flex";
     endBtn.style.display = "";
@@ -2234,7 +2310,7 @@ function showSessionMode({ active, kind, state }) {
       showRecordingToast();
     }
     renderSessionStatus();
-    renderSessionSummary(state);
+    renderLiveTopics(state);
     renderSessionTranscript(state);
     return;
   }
@@ -2244,12 +2320,13 @@ function showSessionMode({ active, kind, state }) {
   sessionUi.renderedRecords = 0;
   endBtn.style.display = "none";
   if (sessionUi.reportShown) {
-    // An end-time report (artifact or retry error) is on screen: keep the
-    // Session view open so the 5s poll does not wipe it right after ending.
+    // The ended Session's report is on screen: keep the Session view (the
+    // transcript its timestamps jump into) open so the 5s poll does not
+    // wipe it right after ending.
     view.style.display = "";
   } else {
     view.style.display = "none";
-    clearSessionSummaryViews();
+    clearLiveOverview();
     const transcript = document.getElementById("sessionTranscript");
     if (transcript) transcript.textContent = "";
   }
@@ -2280,6 +2357,7 @@ async function refreshSessionUI() {
     const session = await chrome.runtime.sendMessage({ action: "getSessionState" });
     if (session?.active) {
       sessionUi.sessionId = session.sessionId;
+      sessionUi.lastSessionId = session.sessionId;
       sessionUi.kind = session.kind;
       sessionUi.timestampKind = session.timestampKind;
       showSessionMode({ active: true, kind: session.kind, state: session.state });
@@ -2299,12 +2377,14 @@ async function endLearning() {
     const result = await chrome.runtime.sendMessage({ action: "endLearning" });
     if (result?.state) {
       renderSessionTranscript(result.state);
-      renderSessionSummary(result.state);
+      observeSessionTitle(result.state);
+      renderLiveTopics(result.state);
       const status = document.getElementById("sessionStatus");
       if (status) status.textContent = "会话已结束";
       if (result.report) {
-        // Keep the Session view open so the end-time report stays readable.
-        renderSessionReport(result.report, result.state.sessionId);
+        // Keep the Session view open so the transcript stays readable and
+        // the report's timestamps keep somewhere to jump into.
+        adoptSessionReport(result.report, result.state.sessionId);
         return;
       }
     }
@@ -2349,9 +2429,11 @@ function setupSessionUI() {
     if (message.action === "sessionUpdate" && message.state) {
       if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
       sessionUi.sessionId = message.sessionId;
+      sessionUi.lastSessionId = message.sessionId;
+      observeSessionTitle(message.state);
       renderSessionTranscript(message.state);
-      renderSessionSummary(message.state);
-      if (message.report) renderSessionReport(message.report, message.sessionId);
+      renderLiveTopics(message.state);
+      if (message.report) adoptSessionReport(message.report, message.sessionId);
       if (message.state.status === "ended") {
         sessionUi.active = false;
         const status = document.getElementById("sessionStatus");

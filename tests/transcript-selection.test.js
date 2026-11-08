@@ -9,9 +9,21 @@ const source = fs.readFileSync(
 );
 
 test("the selection toolbar preserves selection and contains pointer events", () => {
+  // The toolbar serves both transcript surfaces (legacy rows and session
+  // records); the end-to-end behavior lives in tests/panel-ia.test.js.
   assert.match(
     source,
-    /class="explain-btn"[\s\S]*?>解释<[\s\S]*class="selection-note-btn"[\s\S]*?>笔记</,
+    /function setupExplainFeature\(\) \{[\s\S]*?getElementById\("transcriptList"\);[\s\S]*?getElementById\("sessionTranscript"\);/,
+    "the selection wiring covers both transcript surfaces",
+  );
+  assert.match(
+    source,
+    /closest\(\s*"\.transcript-entry, \.session-record",?\s*\)/,
+    "a selection's timestamp comes from either row shape",
+  );
+  assert.match(
+    source,
+    /className = "explain-btn";[\s\S]*?textContent = "解释";[\s\S]*?className = "selection-note-btn";[\s\S]*?textContent = "笔记";/,
   );
   assert.match(
     source,
@@ -23,11 +35,12 @@ test("the selection toolbar preserves selection and contains pointer events", ()
   );
   assert.match(
     source,
-    /\.addEventListener\("click", async \(event\) => \{\s+event\.preventDefault\(\);\s+event\.stopPropagation\(\);/,
+    /noteButton\.addEventListener\("click", async \(event\) => \{\s+event\.preventDefault\(\);\s+event\.stopPropagation\(\);/,
   );
   assert.match(
     source,
-    /querySelector\("\.selection-note-btn"\)[\s\S]*action: "saveNote"[\s\S]*timestamp: selectedTimestamp[\s\S]*selectedText/,
+    /action: "saveNote"[\s\S]*?videoId: target\.videoId[\s\S]*?timestamp: selectedTimestamp[\s\S]*?selectedText,/,
+    "the note save targets the resolved video or session id",
   );
   assert.match(
     source,

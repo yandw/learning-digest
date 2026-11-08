@@ -1113,7 +1113,11 @@ async function ensureCaptureResumed() {
       );
     }
   }
-  if (context.timestampKind === "wallclock") startLiveTimer(context);
+  // The live tick exists to feed the scheduler on the wallclock timeline;
+  // realtime Sessions (#47) schedule nothing, so their tick is not armed.
+  if (context.timestampKind === "wallclock" && context.transcribeMode !== "realtime") {
+    startLiveTimer(context);
+  }
   startSummaryTimer(context);
   console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
@@ -1322,10 +1326,11 @@ async function produceSessionReport(state, meta = null) {
  * Feeds the scheduler one position reading (video position for replay and
  * course pages, wall-clock elapsed for live) and dispatches whatever
  * Segments completed. Feeding is idempotent: the scheduler's cursor only
- * moves forward.
+ * moves forward. Realtime Sessions (#47) never schedule: they have no
+ * recorder to cut from, so a dispatched Segment could only ever fail.
  */
 function feedPosition(context, positionSeconds) {
-  if (context.ended) return;
+  if (context.ended || context.transcribeMode === "realtime") return;
   context.lastPosition = Math.max(context.lastPosition, positionSeconds);
   for (const segment of context.segmenter.recordPosition(positionSeconds)) {
     void dispatchSegment(context, segment);
@@ -1519,7 +1524,11 @@ async function handleStartLearning(message) {
     };
   }
 
-  if (context.timestampKind === "wallclock") startLiveTimer(context);
+  // Realtime Sessions (#47) schedule nothing (see feedPosition): no live
+  // tick, and the wallclock timeline stands for the whole Session.
+  if (context.timestampKind === "wallclock" && context.transcribeMode !== "realtime") {
+    startLiveTimer(context);
+  }
   startSummaryTimer(context);
   broadcastSession(context.state, { transcribeMode: context.transcribeMode });
   // The one-line "capture is live" marker: when this is absent after an
@@ -1545,6 +1554,10 @@ async function handleMediaPosition(message, sender) {
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
   if (sender.tab?.id !== context.tabId) return;
+  // Realtime Sessions (#47) run the wallclock timeline for their whole
+  // life: no probe anchor, no seek cuts, no scheduler feeds — the position
+  // stream has nothing left to drive once Segments are out of the picture.
+  if (context.transcribeMode === "realtime") return;
   const position = Number(message.position);
   if (context.timestampKind !== "video") {
     // #48 probe window: a wallclock Session anchors to the video timeline
@@ -1834,34 +1847,62 @@ async function handleCaptureEnded(message, _sender) {
 }
 
 // ============================================================
-// REALTIME TRANSCRIPTION FORWARDING (#46)
+// REALTIME TRANSCRIPTION PIPELINE (#46 offscreen client, #47 handling)
 // ============================================================
 //
 // The offscreen document owns the realtime WebSocket and streams the
-// server's findings as unsolicited messages. For now the worker only
-// forwards them to the panel inside the sessionUpdate envelope; ticket R3
-// replaces the forwarding with the pipeline handling (utteranceCaptured ->
-// Transcript record -> Topic ticks). Without an active capture the events
-// are dropped: the offscreen document cannot outlive its Session.
+// server's findings as unsolicited messages. The worker turns them into
+// pipeline activity: a partial is a lightweight panel-only broadcast (the
+// panel owns the draft display), a finalized utterance feeds the state
+// machine as an utteranceCaptured event — a plain Transcript record, no
+// Segment — and an error surfaces loudly. Topic ticks run on the same
+// content thresholds as segment mode: isTopicTickDue reads
+// transcriptRecords coverage, which utterance records grow like any other,
+// and a check runs right after each utterance (the 60s summary timer stays
+// armed as the backstop). Without an active capture the events are
+// dropped: the offscreen document cannot outlive its Session.
 
 async function handleRealtimePartial(message) {
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
-  broadcastSession(context.state, {
-    realtimePartial: { text: String(message?.text || "") },
-  });
+  // Lightweight and state-free on purpose: partials stream at speaking
+  // pace, and the full state would ship the whole Transcript every time.
+  // The panel replaces its draft with this text; no state churn here.
+  try {
+    chrome.runtime
+      .sendMessage({
+        action: "sessionUpdate",
+        sessionId: context.sessionId,
+        realtimePartial: { text: String(message?.text || "") },
+      })
+      .catch(() => {});
+  } catch (_error) {
+    // Side panel closed; the next state broadcast re-syncs it.
+  }
 }
 
 async function handleRealtimeUtterance(message) {
   const context = await ensureCaptureResumed();
-  if (!context || context.ended) return;
-  broadcastSession(context.state, {
-    realtimeUtterance: {
-      text: String(message?.text || ""),
-      start: Number(message?.start) || 0,
-      duration: Number(message?.duration) || 0,
-    },
+  // A trailing utterance after the Session ended is dropped: the offscreen
+  // client finishes its session.finish handshake after the end broadcast.
+  if (!context || context.ended) {
+    debugLog("[Learning Digest BG] realtimeUtterance dropped: no active Session");
+    return;
+  }
+  const next = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "utteranceCaptured",
+    text: message?.text,
+    start: message?.start,
+    duration: message?.duration,
   });
+  // An invalid payload is a pipeline no-op: nothing to persist or broadcast.
+  if (next === context.state) return;
+  context.state = next;
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  broadcastSession(context.state);
+  // Same content thresholds as segment mode: the record may have completed
+  // the coverage the tick was waiting for.
+  await maybeRunTopicTick(context);
 }
 
 async function handleRealtimeError(message) {
@@ -1888,7 +1929,12 @@ async function endActiveSession(context, { reason } = {}) {
     context.timestampKind === "wallclock"
       ? (Date.now() - context.startedAtMs) / 1000
       : context.lastPosition;
-  const tail = context.segmenter.flush(finalPosition);
+  // Realtime Sessions (#47) have no Segments to flush: their Transcript is
+  // already complete (every finalized utterance landed as a record).
+  const tail =
+    context.transcribeMode === "realtime"
+      ? null
+      : context.segmenter.flush(finalPosition);
   if (tail) await dispatchSegment(context, tail);
 
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, { type: "sessionEnd" });

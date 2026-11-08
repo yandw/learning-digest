@@ -304,6 +304,87 @@ test("gapSkipped rejects malformed ranges instead of corrupting the Transcript",
   assert.deepEqual(state.transcriptRecords, []);
 });
 
+// --- utteranceCaptured: realtime utterances are plain Transcript records (#47)
+
+test("utteranceCaptured appends one Transcript record without creating a Segment", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "大家好，我们开始上课。",
+    start: 12.5,
+    duration: 5.5,
+  });
+
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "大家好，我们开始上课。", start: 12.5, duration: 5.5 },
+  ]);
+  // Realtime has no Segments: the record goes straight into the timeline.
+  assert.deepEqual(state.segments, []);
+  assert.equal(state.status, "active");
+});
+
+test("utteranceCaptured is a no-op on empty text or non-finite timing", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+
+  // The events arrive unsolicited from the ASR server, so a malformed one
+  // is ignored — never an error that could crash the Session.
+  const empty = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "   ",
+    start: 0,
+    duration: 1,
+  });
+  assert.equal(empty, state, "a whitespace-only utterance is ignored");
+
+  const noText = sessionPipeline.applyEvent(state, { type: "utteranceCaptured" });
+  assert.equal(noText, state, "a missing text is ignored");
+
+  const badStart = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "大家好",
+    start: Number.NaN,
+    duration: 1,
+  });
+  assert.equal(badStart, state, "a non-finite start is ignored");
+
+  const badDuration = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "大家好",
+    start: 0,
+    duration: "五秒",
+  });
+  assert.equal(badDuration, state, "a non-finite duration is ignored");
+
+  assert.deepEqual(state.transcriptRecords, []);
+});
+
+test("utterance records ride a snapshot round-trip like segment records", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "第一句。",
+    start: 0,
+    duration: 3.2,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "第二句。",
+    start: 5,
+    duration: 4.4,
+  });
+
+  const resumed = sessionPipeline.resumeFromSnapshot(
+    JSON.parse(JSON.stringify(state)),
+  );
+
+  // The records live in the same transcriptRecords field, so resume carries
+  // them for free and the Session keeps feeding events from there.
+  assert.deepEqual(resumed.transcriptRecords, [
+    { text: "第一句。", start: 0, duration: 3.2 },
+    { text: "第二句。", start: 5, duration: 4.4 },
+  ]);
+});
+
 test("transcribeOk on a failed Segment replaces its marker with the retry records exactly once", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   state = sessionPipeline.applyEvent(state, {

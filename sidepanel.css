@@ -1508,6 +1508,37 @@ body {
   min-height: 0;
 }
 
+/* The realtime draft box (#47): the live partial the ASR server is still
+   revising, pinned above the transcript rows during realtime Sessions. */
+.session-realtime {
+  align-items: flex-start;
+  background: #e8f1fc;
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+}
+
+.session-realtime-badge {
+  background: #1a73e8;
+  border-radius: 4px;
+  color: #fff;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 6px;
+}
+
+.session-realtime-draft {
+  color: #5a6472;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* 纪要 tab (#30): the compact report fragment, the tab's hint/error states
    and the open/download actions. The fragment reuses the full report's class
    names, restyled here for the narrow panel column. */

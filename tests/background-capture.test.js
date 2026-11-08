@@ -17,12 +17,13 @@ const LIVE_URL = "https://app12345.xiaoe-tech.com/live/l_abc123def456";
 
 // Qwen settings with an optional transcription mode (#45). When mode is
 // null the credentials carry no mode key at all (the pre-0.1.43 blob shape).
-function qwenSettings(mode) {
+function qwenSettings(mode, overrides = {}) {
   return baseSettings({
     speechProvider: "qwen",
     speechProviders: {
       qwen: mode === null ? { apiKey: "qwen-key" } : { apiKey: "qwen-key", mode },
     },
+    ...overrides,
   });
 }
 
@@ -306,15 +307,41 @@ test("a segment captureStart carries no apiKey", async () => {
   assert.equal(start.apiKey, undefined);
 });
 
-// --- Realtime server events (#46): the router forwards offscreen's findings -
+// --- Realtime pipeline handling (#47): utterances become Transcript records
 //
-// R2 forwards only; richer handling (utterance -> Transcript record, Topic
-// ticks) is R3's ticket. The offscreen document sends these unsolicited, so
-// the handlers are fire-and-forget like captureChunk.
+// R3 replaces the 0.1.46 forwarding: realtimePartial stays a lightweight
+// panel-only broadcast (the panel owns the draft display), realtimeUtterance
+// feeds the pipeline as an utteranceCaptured event (record → persist →
+// broadcast → Topic tick), and realtimeError surfaces loudly. The offscreen
+// document sends these unsolicited, so the handlers stay fire-and-forget
+// like captureChunk.
 
-test("realtime offscreen events forward as sessionUpdate extras to the panel", async () => {
+test("realtimePartial broadcasts a lightweight sessionUpdate extra without state", async () => {
   const sentMessages = [];
-  const { handleStartLearning, handleRealtimePartial, handleRealtimeUtterance, handleRealtimeError } =
+  const { handleStartLearning, handleRealtimePartial } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.success, true);
+
+  await handleRealtimePartial({ action: "realtimePartial", text: "正在说的话" });
+
+  const partial = sentMessages.find((message) => message.realtimePartial);
+  assert.ok(partial, "the partial reaches the panel as a sessionUpdate extra");
+  assert.equal(partial.action, "sessionUpdate");
+  // Property assertion: the payload is created inside the background VM
+  // context, so a cross-realm deepEqual never matches.
+  assert.equal(partial.realtimePartial.text, "正在说的话");
+  assert.equal(partial.sessionId, started.sessionId);
+  // Lightweight: partials stream at speaking pace, so the draft extra must
+  // not ship the full Session state on every revision.
+  assert.equal(partial.state, undefined);
+});
+
+test("a realtime utterance appends a Transcript record, persists and broadcasts", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, handleRealtimeUtterance, readStored } =
     loadBackgroundHelpers({
       settings: qwenSettings("realtime"),
       sentMessages,
@@ -322,32 +349,141 @@ test("realtime offscreen events forward as sessionUpdate extras to the panel", a
   const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
   assert.equal(started.success, true);
 
-  await handleRealtimePartial({ action: "realtimePartial", text: "正在说的话" });
   await handleRealtimeUtterance({
     action: "realtimeUtterance",
     text: "一句完整的话。",
     start: 12.5,
     duration: 5.5,
   });
-  await handleRealtimeError({ action: "realtimeError", message: "实时转写连接已断开" });
+  // An empty draft never reaches the pipeline.
+  await handleRealtimeUtterance({ action: "realtimeUtterance", text: "   " });
 
-  const partial = sentMessages.find((message) => message.realtimePartial);
-  assert.ok(partial, "the partial reaches the panel as a sessionUpdate extra");
-  assert.equal(partial.action, "sessionUpdate");
-  // Property assertions: the payloads are created inside the background VM
-  // context, so a cross-realm deepEqual never matches.
-  assert.equal(partial.realtimePartial.text, "正在说的话");
-  assert.equal(partial.sessionId, started.sessionId);
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.transcriptRecords, [
+    { text: "一句完整的话。", start: 12.5, duration: 5.5 },
+  ]);
+  assert.deepEqual(snapshot.segments, [], "realtime has no Segments");
+  const update = sentMessages
+    .filter((message) => message.action === "sessionUpdate" && message.state)
+    .pop();
+  assert.ok(update, "the panel receives the grown state");
+  assert.equal(update.state.transcriptRecords.length, 1);
+});
 
-  const utterance = sentMessages.find((message) => message.realtimeUtterance);
-  assert.ok(utterance, "the utterance reaches the panel as a sessionUpdate extra");
-  assert.equal(utterance.realtimeUtterance.text, "一句完整的话。");
-  assert.equal(utterance.realtimeUtterance.start, 12.5);
-  assert.equal(utterance.realtimeUtterance.duration, 5.5);
+test("realtime utterances trigger a Topic tick once coverage crosses the threshold", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_rt_tick";
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { summaryIntervalMinutes: 5 }),
+    fetchImpl: topicAiFetch(requests),
+    sentMessages,
+    stored: {
+      ytd_active_capture: {
+        ...capturePointer(sessionId),
+        kind: "live",
+        timestampKind: "wallclock",
+        transcribeMode: "realtime",
+      },
+      [`ytd_session_${sessionId}`]: JSON.parse(
+        JSON.stringify(sessionPipeline.createSession({ sessionId })),
+      ),
+    },
+  });
+  await helpers.handleGetSessionState();
 
-  const notice = sentMessages.find((message) => message.realtimeNotice);
-  assert.ok(notice, "the error reaches the panel as a realtimeNotice extra");
-  assert.equal(notice.realtimeNotice.message, "实时转写连接已断开");
+  // Ten 30-second utterances: 5 minutes of coverage plus the 10-record
+  // debounce — the same content thresholds as segment mode, fed by records
+  // that never came from a Segment.
+  for (let i = 0; i < 10; i += 1) {
+    await helpers.handleRealtimeUtterance({
+      action: "realtimeUtterance",
+      text: `第 ${i + 1} 句`,
+      start: i * 30,
+      duration: 30,
+    });
+  }
+
+  assert.equal(requests.length, 1, "the tick fired on the content thresholds");
+  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).topics.length, 1);
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.state?.topics?.length,
+  );
+  assert.ok(update, "the tick broadcast reaches the panel");
+});
+
+test("trailing realtime events after the Session ended are dropped", async () => {
+  const sentMessages = [];
+  const {
+    handleStartLearning,
+    handleEndLearning,
+    handleRealtimePartial,
+    handleRealtimeUtterance,
+    handleRealtimeError,
+    readStored,
+  } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  const ended = await handleEndLearning();
+  assert.equal(ended.success, true);
+  const broadcastsBefore = sentMessages.filter(
+    (message) => message.action === "sessionUpdate",
+  ).length;
+
+  await handleRealtimePartial({ action: "realtimePartial", text: "迟到的话" });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "迟到的整句。",
+    start: 999,
+    duration: 3,
+  });
+  await handleRealtimeError({ action: "realtimeError", message: "迟到的错误" });
+
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    broadcastsBefore,
+    "no broadcast after the Session ended",
+  );
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(
+    snapshot.transcriptRecords.some((record) => record.text === "迟到的整句。"),
+    false,
+    "the trailing utterance never entered the Transcript",
+  );
+});
+
+test("a realtime Session never dispatches Segments from the position stream", async () => {
+  const timers = [];
+  let now = 1_700_000_000_000;
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    setIntervalImpl: (cb, delayMs) => {
+      timers.push({ cb, delayMs });
+      return timers.length;
+    },
+    dateNow: () => now,
+  });
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.success, true);
+
+  // Five minutes of wall-clock lesson time: the live tick feeds the
+  // scheduler far past one Segment length. The realtime path has no
+  // recorder (captureCut would fail), so nothing may be scheduled.
+  now += 300_000;
+  for (const timer of timers) {
+    if (timer.delayMs === 1000) await timer.cb();
+  }
+
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.transcribeMode, "realtime");
+  assert.deepEqual(state.state.segments, [], "realtime has no Segments");
+  assert.deepEqual(
+    state.state.transcriptRecords.filter((record) => record.failed === true),
+    [],
+    "no [语音转录失败] markers from disabled Segment scheduling",
+  );
 });
 
 test("realtime events with no active capture are dropped without broadcasting", async () => {

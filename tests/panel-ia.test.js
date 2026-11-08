@@ -170,6 +170,7 @@ function loadPanel({ stored = {} } = {}) {
   const sentMessages = [];
   const createdElements = [];
   const docListeners = {};
+  const alerts = [];
   let selection = null;
   let nextResponse = { success: true };
 
@@ -190,7 +191,9 @@ function loadPanel({ stored = {} } = {}) {
       getSelection: () => selection,
       scrollY: 0,
       close() {},
-      alert() {},
+      alert: (message) => {
+        alerts.push(String(message));
+      },
       addEventListener() {},
     },
     document: {
@@ -272,6 +275,7 @@ function loadPanel({ stored = {} } = {}) {
     createdElements,
     sentMessages,
     docListeners,
+    alerts,
     flush,
     setSelection: (value) => {
       selection = value;
@@ -300,14 +304,14 @@ function showSession(panel, state) {
 
 // --- 逐字稿 purity -----------------------------------------------------------
 
-test("the session view renders the transcript only", () => {
+test("the session view renders the realtime draft box above the transcript", () => {
   const html = read("sidepanel.html");
   const js = read("sidepanel.js");
 
   assert.match(
     html,
-    /<div id="sessionView" class="session-view" style="display: none">\s*<div class="session-transcript" id="sessionTranscript"><\/div>\s*<\/div>/,
-    "the session view holds nothing but the transcript",
+    /<div id="sessionView" class="session-view" style="display: none">\s*<div class="session-realtime" id="sessionRealtimeBox" style="display: none">\s*<span class="session-realtime-badge" id="sessionRealtimeBadge">实时转写中<\/span>\s*<span class="session-realtime-draft" id="sessionRealtimeDraft"><\/span>\s*<\/div>\s*<div class="session-transcript" id="sessionTranscript"><\/div>\s*<\/div>/,
+    "the realtime draft box sits above the transcript inside the session view",
   );
   assert.doesNotMatch(html, /id="sessionSummary"|id="sessionDigest"/);
   // The card renderers and their containers are gone from the panel logic.
@@ -761,7 +765,120 @@ test("an absent transcription mode keeps the Segment wait toast", () => {
   assert.equal(toast.textContent, "已开始录制 · 逐字稿将在约 30 秒后出现");
 });
 
-test("the transcript empty state names realtime transcription instead of the Segment wait", () => {
+// --- 实时转写 live box (#47): the draft above the transcript ------------------
+
+test("the realtime draft box shows the badge and fully replaces the draft on every partial", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    transcribeMode: "realtime",
+  });
+
+  const box = panel.elementById("sessionRealtimeBox");
+  assert.equal(box.style.display, "", "the box shows during an active realtime Session");
+  // The badge label itself is static markup, asserted by the HTML test above.
+
+  panel.session.handleSessionUpdateMessage(
+    { action: "sessionUpdate", sessionId: "s_1", realtimePartial: { text: "今天我们讲" } },
+    () => {},
+  );
+  assert.equal(
+    panel.elementById("sessionRealtimeDraft").textContent,
+    "今天我们讲",
+  );
+
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      realtimePartial: { text: "今天我们讲混合动力。" },
+    },
+    () => {},
+  );
+  assert.equal(
+    panel.elementById("sessionRealtimeDraft").textContent,
+    "今天我们讲混合动力。",
+    "each partial fully replaces the draft",
+  );
+});
+
+test("a finalized utterance appends a normal row and clears the draft", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    transcribeMode: "realtime",
+  });
+  panel.session.handleSessionUpdateMessage(
+    { action: "sessionUpdate", sessionId: "s_1", realtimePartial: { text: "还没定稿的话" } },
+    () => {},
+  );
+
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      state: activeSessionState({
+        transcriptRecords: [
+          { start: 0, text: "开场" },
+          { start: 75, text: "第二段" },
+          { start: 90, text: "定稿的一句话。", duration: 4 },
+        ],
+      }),
+    },
+    () => {},
+  );
+
+  const transcript = panel.elementById("sessionTranscript");
+  const newRow = transcript.children.find((row) => row.dataset.seconds === "90");
+  assert.ok(newRow, "the utterance renders as a normal record row");
+  assert.equal(newRow.classList.contains("session-record-failed"), false);
+  assert.equal(
+    panel.elementById("sessionRealtimeDraft").textContent,
+    "",
+    "the draft cleared once the record landed",
+  );
+});
+
+test("the realtime draft box stays hidden for segment Sessions and after the Session ends", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: {
+      sessionId: "s_seg",
+      status: "active",
+      segments: [],
+      transcriptRecords: [],
+    },
+    transcribeMode: "segment",
+  });
+  assert.equal(
+    panel.elementById("sessionRealtimeBox").style.display,
+    "none",
+    "a segment Session has no draft box",
+  );
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    transcribeMode: "realtime",
+  });
+  assert.equal(panel.elementById("sessionRealtimeBox").style.display, "");
+
+  panel.session.showSessionMode({ active: false, kind: "live", state: null });
+  assert.equal(
+    panel.elementById("sessionRealtimeBox").style.display,
+    "none",
+    "ending the Session hides the box",
+  );
+});
+
+test("a realtime Session shows no pending rows; the draft box is the waiting affordance", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.showSessionMode({
     active: true,
@@ -776,10 +893,41 @@ test("the transcript empty state names realtime transcription instead of the Seg
   });
 
   const transcript = panel.elementById("sessionTranscript");
-  const pendingRow = findDescendants(transcript, "session-pending")[0];
-  assert.ok(pendingRow, "the empty transcript still shows a pending row");
-  const text = findDescendants(pendingRow, "session-record-text")[0];
-  assert.equal(text.textContent, "实时转写中，识别内容将逐句出现…");
+  assert.equal(
+    findDescendants(transcript, "session-pending").length,
+    0,
+    "no spinner rows in realtime mode",
+  );
+  assert.equal(
+    panel.elementById("sessionRealtimeBox").style.display,
+    "",
+    "the live box replaces the Segment-wait affordance",
+  );
+});
+
+test("a realtimeError notice alerts and takes the status line, like captureEnded", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    transcribeMode: "realtime",
+  });
+
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      realtimeNotice: { message: "实时转写连接已断开" },
+    },
+    () => {},
+  );
+
+  assert.deepEqual(panel.alerts, ["实时转写连接已断开"]);
+  assert.equal(
+    panel.elementById("sessionStatus").textContent,
+    "实时转写连接已断开",
+  );
 });
 
 test("the transcript empty state keeps the Segment wait copy in segment mode", () => {

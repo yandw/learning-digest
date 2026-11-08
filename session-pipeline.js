@@ -1,8 +1,9 @@
 /**
  * Session pipeline: a pure, event-driven state machine over Session state.
  *
- * Events (segmentCaptured, transcribeOk, transcribeFailed, topicsAppended,
- * titleCaptured, sessionEnd) drive transitions over state
+ * Events (segmentCaptured, transcribeOk, transcribeFailed, gapSkipped,
+ * utteranceCaptured, topicsAppended, titleCaptured, sessionEnd) drive
+ * transitions over state
  * { sessionId, segments, transcriptRecords, topics, title?, status }.
  * Segments carry their own lifecycle (pending → done / failed).
  *
@@ -88,6 +89,8 @@ var YTD_SESSION_PIPELINE = (() => {
    *   (a failed segmentId retries that Segment: its marker is replaced, #48)
    * - {type: "transcribeFailed", segmentId}
    * - {type: "gapSkipped", start, duration} - seek-forward hole marker (#48)
+   * - {type: "utteranceCaptured", text, start, duration} - one finalized
+   *   realtime utterance (#47); appends a plain Transcript record
    * - {type: "topicsAppended", topics: [{start, end, title, text, continuation?}]}
    * - {type: "titleCaptured", title: string} - the page title (#32)
    * - {type: "sessionEnd"}
@@ -109,6 +112,8 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTranscribeFailed(state, event);
       case "gapSkipped":
         return onGapSkipped(state, event);
+      case "utteranceCaptured":
+        return onUtteranceCaptured(state, event);
       case "topicsAppended":
         return onTopicsAppended(state, event);
       case "titleCaptured":
@@ -247,6 +252,28 @@ var YTD_SESSION_PIPELINE = (() => {
       failed: true,
     };
     return { ...state, transcriptRecords: [...state.transcriptRecords, marker] };
+  }
+
+  /**
+   * Appends one finalized realtime utterance (#47) as a plain Transcript
+   * record: the realtime stream has no Segments, so the record goes
+   * straight into the timeline and every consumer (panel rows, Topic tick
+   * coverage, the Digest) sees it like any other record. Validation is
+   * tolerant on purpose — the events arrive unsolicited from the ASR
+   * server, so an empty (whitespace-only) text or a non-finite timing is a
+   * no-op that leaves the state untouched instead of an error.
+   */
+  function onUtteranceCaptured(state, event) {
+    const text = typeof event?.text === "string" ? event.text.trim() : "";
+    const start = Number(event?.start);
+    const duration = Number(event?.duration);
+    if (!text || !Number.isFinite(start) || !Number.isFinite(duration)) {
+      return state;
+    }
+    return {
+      ...state,
+      transcriptRecords: [...state.transcriptRecords, { text, start, duration }],
+    };
   }
 
   function onTopicsAppended(state, event) {

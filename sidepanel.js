@@ -1567,6 +1567,10 @@ globalThis.__YTD_SESSION_TESTING__ = {
   endLearning,
   renderEndButton,
   adoptSessionReport,
+  // The sessionUpdate envelope's branches (#47 live box, notices), driven
+  // directly by the mock-DOM tests since the real listener only registers
+  // on DOMContentLoaded.
+  handleSessionUpdateMessage,
 };
 
 // ============================================================
@@ -1595,6 +1599,10 @@ const sessionUi = {
   // Transcription mode (#45): "segment" (default) or "realtime"; drives the
   // start toast and the transcript empty-state copy.
   transcribeMode: null,
+  // The live draft (#47) the realtime ASR server is still revising. Full
+  // replacement on every realtimePartial; a finalized utterance's own
+  // record row supersedes it, so transcript growth clears it.
+  realtimeDraft: "",
   renderedRecords: 0,
   active: false,
   // True once an end-time report has been adopted: the Session view (the
@@ -1661,6 +1669,11 @@ function renderSessionTranscript(state) {
   const container = document.getElementById("sessionTranscript");
   if (!container || !state) return;
   const records = state.transcriptRecords || [];
+  if (records.length > sessionUi.renderedRecords) {
+    // New record rows (a finalized realtime utterance among them, #47)
+    // supersede whatever draft the live box was showing.
+    sessionUi.realtimeDraft = "";
+  }
   for (const record of records.slice(sessionUi.renderedRecords)) {
     const row = document.createElement("div");
     row.className = record.failed
@@ -1679,27 +1692,43 @@ function renderSessionTranscript(state) {
   }
   sessionUi.renderedRecords = records.length;
   renderPendingSegments(container, state);
+  renderRealtimeDraft();
   container.scrollTop = container.scrollHeight;
+}
+
+/**
+ * The realtime draft box (#47): the badge plus the ASR server's
+ * still-revising draft, pinned above the transcript during an active
+ * realtime Session. The draft text is whatever the last realtimePartial
+ * delivered (full replacement); visibility follows the Session lifecycle —
+ * ending the Session, or a segment-mode Session, hides the box entirely.
+ */
+function renderRealtimeDraft() {
+  const box = document.getElementById("sessionRealtimeBox");
+  const draft = document.getElementById("sessionRealtimeDraft");
+  if (!box || !draft) return;
+  draft.textContent = sessionUi.realtimeDraft;
+  box.style.display =
+    sessionUi.active && sessionUi.transcribeMode === "realtime" ? "" : "none";
 }
 
 // Pending Segments (and the wait before the very first one) render as
 // spinner rows — the same loading affordance the original digest
 // transcript had: the learner sees activity at 0:00 instead of an empty
 // pane while the first Segment is still being recorded and transcribed.
+// Realtime Sessions (#47) show no spinner rows at all: the live draft box
+// above the transcript is their waiting affordance.
 function renderPendingSegments(container, state) {
   container.querySelectorAll(".session-pending").forEach((row) => row.remove());
+  if (sessionUi.transcribeMode === "realtime") return;
   const segments = state.segments || [];
   const bootstrap =
     segments.length === 0 && (state.transcriptRecords || []).length === 0;
   if (bootstrap) {
-    // Realtime Sessions (#45) stream utterances instead of cutting Segments,
-    // so the Segment-wait copy would never come true there.
     appendPendingRow(
       container,
       0,
-      sessionUi.transcribeMode === "realtime"
-        ? "实时转写中，识别内容将逐句出现…"
-        : `录制中，第一段逐字稿约 ${segmentLengthLabel()} 后出现…`,
+      `录制中，第一段逐字稿约 ${segmentLengthLabel()} 后出现…`,
     );
   }
   for (const segment of segments) {
@@ -2403,12 +2432,19 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind })
     renderSessionStatus();
     renderLiveTopics(state);
     renderSessionTranscript(state);
+    // The transcript render above skips the box when state is absent; the
+    // visibility pass here keeps it in step with the lifecycle regardless.
+    renderRealtimeDraft();
     return;
   }
 
   sessionUi.active = false;
   sessionUi.sessionId = null;
   sessionUi.renderedRecords = 0;
+  // The ended (or idle) Session takes its draft with it; a new Session
+  // starts with an empty live box.
+  sessionUi.realtimeDraft = "";
+  renderRealtimeDraft();
   renderEndButton();
   if (!sessionUi.reportShown) {
     clearLiveOverview();
@@ -2592,48 +2628,85 @@ function setupSessionUI() {
   // true state; rendering is idempotent.
   setInterval(() => void refreshSessionUI(), 5000);
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.action === "sessionUpdate" && message.startError) {
-      // Auto-start from the toolbar icon failed (e.g. missing API key);
-      // surface the reason in the panel that click just opened.
-      window.alert(message.startError);
-      sendResponse({ success: true });
-      return false;
-    }
-    if (message.action === "sessionUpdate" && message.captureNotice) {
-      // The capture stream died mid-Session (course tab closed or navigated
-      // away) and the worker auto-ended the Session; surface the reason the
-      // same way the startError precedent does. The ended state and its
-      // digest arrive in the follow-up sessionUpdate broadcast.
-      window.alert(message.captureNotice);
-      const status = document.getElementById("sessionStatus");
-      if (status) status.textContent = message.captureNotice;
-      sendResponse({ success: true });
-      return false;
-    }
-    if (message.action === "sessionUpdate" && message.state) {
-      if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
-      sessionUi.sessionId = message.sessionId;
-      sessionUi.lastSessionId = message.sessionId;
-      if (message.transcribeMode) sessionUi.transcribeMode = message.transcribeMode;
-      if (message.timestampKind) {
-        // The probe anchored the Session to the video timeline (#48); the
-        // status line flips immediately instead of waiting for the poll.
-        sessionUi.timestampKind = message.timestampKind;
-        renderSessionStatus();
-      }
-      observeSessionTitle(message.state);
-      renderSessionTranscript(message.state);
-      renderLiveTopics(message.state);
-      if (message.report) adoptSessionReport(message.report, message.sessionId);
-      if (message.state.status === "ended") {
-        sessionUi.active = false;
-        const status = document.getElementById("sessionStatus");
-        if (status) status.textContent = "会话已结束";
-      }
-      sendResponse({ success: true });
-      return false;
+    if (message.action === "sessionUpdate") {
+      return handleSessionUpdateMessage(message, sendResponse);
     }
     return false;
   });
   void refreshSessionUI();
+}
+
+/**
+ * The sessionUpdate envelope's branches, extracted from the message
+ * listener so the repository's tests can drive them directly (the listener
+ * itself only registers on DOMContentLoaded). Every branch answers with
+ * {success: true} and returns false (no async response held open).
+ *
+ * @param {object} message - a sessionUpdate broadcast from the worker
+ * @param {(response: object) => void} sendResponse
+ * @returns {boolean}
+ */
+function handleSessionUpdateMessage(message, sendResponse) {
+  if (message.startError) {
+    // Auto-start from the toolbar icon failed (e.g. missing API key);
+    // surface the reason in the panel that click just opened.
+    window.alert(message.startError);
+    sendResponse({ success: true });
+    return false;
+  }
+  if (message.captureNotice) {
+    // The capture stream died mid-Session (course tab closed or navigated
+    // away) and the worker auto-ended the Session; surface the reason the
+    // same way the startError precedent does. The ended state and its
+    // digest arrive in the follow-up sessionUpdate broadcast.
+    window.alert(message.captureNotice);
+    const status = document.getElementById("sessionStatus");
+    if (status) status.textContent = message.captureNotice;
+    sendResponse({ success: true });
+    return false;
+  }
+  if (message.realtimeNotice) {
+    // The realtime WebSocket gave up mid-Session (#47); the Session itself
+    // is still active and endable. Same surface as captureEnded: an alert
+    // plus the status line, so the dead transcript stream has a reason.
+    const notice = message.realtimeNotice.message || "实时转写出现错误";
+    window.alert(notice);
+    const status = document.getElementById("sessionStatus");
+    if (status) status.textContent = notice;
+    sendResponse({ success: true });
+    return false;
+  }
+  if (message.realtimePartial) {
+    // The live draft (#47): full replacement on every event; the box only
+    // shows for an active realtime Session (renderRealtimeDraft decides).
+    if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
+    sessionUi.realtimeDraft = String(message.realtimePartial.text ?? "");
+    renderRealtimeDraft();
+    sendResponse({ success: true });
+    return false;
+  }
+  if (message.state) {
+    if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
+    sessionUi.sessionId = message.sessionId;
+    sessionUi.lastSessionId = message.sessionId;
+    if (message.transcribeMode) sessionUi.transcribeMode = message.transcribeMode;
+    if (message.timestampKind) {
+      // The probe anchored the Session to the video timeline (#48); the
+      // status line flips immediately instead of waiting for the poll.
+      sessionUi.timestampKind = message.timestampKind;
+      renderSessionStatus();
+    }
+    observeSessionTitle(message.state);
+    renderSessionTranscript(message.state);
+    renderLiveTopics(message.state);
+    if (message.report) adoptSessionReport(message.report, message.sessionId);
+    if (message.state.status === "ended") {
+      sessionUi.active = false;
+      const status = document.getElementById("sessionStatus");
+      if (status) status.textContent = "会话已结束";
+    }
+    sendResponse({ success: true });
+    return false;
+  }
+  return false;
 }

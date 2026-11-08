@@ -1512,6 +1512,7 @@ globalThis.__YTD_REPORT_TESTING__ = {
   showSessionMode,
   retryReportFromTab,
   openReportInTab,
+  openReportForPrint,
   downloadReportFile,
   resetReportTabForTesting,
 };
@@ -1951,15 +1952,34 @@ async function retryReportFromTab() {
   renderReportTab();
 }
 
-/** Opens the shown session's report page in a browser tab. */
-function openReportInTab() {
-  const sessionId =
+/**
+ * The Session id the report actions act on: the shown artifact wins, then
+ * the failed report's Session, then the tab's active Session.
+ */
+function reportTargetSessionId() {
+  return (
     reportTabUi.artifact?.sessionId ||
     reportTabUi.error?.sessionId ||
-    reportTabUi.sessionId;
+    reportTabUi.sessionId ||
+    null
+  );
+}
+
+/** Opens the shown session's report page in a browser tab. */
+function openReportInTab() {
+  const sessionId = reportTargetSessionId();
   if (!sessionId) return;
   chrome.tabs.create({
     url: `${chrome.runtime.getURL("report.html")}?session=${encodeURIComponent(sessionId)}`,
+  });
+}
+
+/** 打印 / 存为 PDF: opens the report page with ?print=1 so it auto-prints. */
+function openReportForPrint() {
+  const sessionId = reportTargetSessionId();
+  if (!sessionId) return;
+  chrome.tabs.create({
+    url: `${chrome.runtime.getURL("report.html")}?session=${encodeURIComponent(sessionId)}&print=1`,
   });
 }
 
@@ -1986,6 +2006,9 @@ function setupReportTab() {
   document
     .getElementById("reportOpenBtn")
     ?.addEventListener("click", openReportInTab);
+  document
+    .getElementById("reportPrintBtn")
+    ?.addEventListener("click", openReportForPrint);
   document
     .getElementById("reportDownloadHtmlBtn")
     ?.addEventListener("click", () => downloadReportFile("html"));

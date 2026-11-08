@@ -1160,9 +1160,11 @@ async function produceSessionReport(state, meta = null) {
         report: outcome.report,
         generatedAtMs: Date.now(),
       };
-      // Meta rides along when known (#30): the report header needs it. A
-      // failed pass persists nothing, so a retry reconstructs instead.
-      if (meta) artifact.meta = meta;
+      // Meta rides along when known (#30): the report header needs it, and
+      // the generated-at stamp (0.1.38) joins it so the header shows when
+      // the pass ran. A failed pass persists nothing, so a retry
+      // reconstructs instead.
+      if (meta) artifact.meta = { ...meta, generatedAtMs: artifact.generatedAtMs };
       const storageKey = `${YTD_REPORT_RENDER.REPORT_STORAGE_KEY_PREFIX}${state.sessionId}`;
       await chrome.storage.local.set({ [storageKey]: artifact });
       return { report: outcome.report, persisted: true };

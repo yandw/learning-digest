@@ -809,7 +809,30 @@ test("captureEnded on a Session with no Transcript skips the digest without cras
 
 // --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>
 
+// Schema v2 (0.1.38): the mocked model output carries the new fields too —
+// overview conclusions, per-Topic bullets and thematic categories.
 const REPORT_BODY = {
+  overview: ["这节课围绕三个核心概念展开。", "课后练习比听课更重要。"],
+  topics: [
+    {
+      start: 0,
+      end: 900,
+      title: "导论",
+      bullets: ["课程目标与学习方法。", "三个核心概念的关系。"],
+      summary: "老师介绍了课程目标。",
+    },
+  ],
+  categories: [
+    { title: "学习方法", points: ["先练习再核对。", "错题要复盘。"] },
+  ],
+  quotes: [{ start: 30, text: "学习是一场旅程。" }],
+  todos: ["完成课后练习"],
+};
+
+// A v1-shaped model output: no overview, no bullets, no categories. The
+// parser must land it in storage exactly as-is so old renderers (and new
+// ones) keep treating it the same.
+const V1_REPORT_BODY = {
   topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
   quotes: [{ start: 30, text: "学习是一场旅程。" }],
   todos: ["完成课后练习"],
@@ -864,6 +887,10 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
   assert.ok(stored, "the report artifact is persisted under report_<sessionId>");
   assert.equal(stored.sessionId, sessionId);
   assert.deepEqual(stored.report, REPORT_BODY);
+  // Schema v2 (0.1.38): the new fields ride through persistence untouched.
+  assert.deepEqual(stored.report.overview, REPORT_BODY.overview);
+  assert.deepEqual(stored.report.topics[0].bullets, REPORT_BODY.topics[0].bullets);
+  assert.deepEqual(stored.report.categories, REPORT_BODY.categories);
   assert.equal(typeof stored.generatedAtMs, "number");
   // Artifact meta (#30): captured from the ending capture context. The
   // pointer carries the same startedAtMs the resumed context was built
@@ -872,6 +899,9 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
   assert.equal(typeof stored.meta.endedAtMs, "number");
   assert.equal(stored.meta.kind, "replay");
   assert.equal(stored.meta.platformId, "xiaoe-tech");
+  // The generated-at stamp joins the meta so the report header can show
+  // when the pass ran (0.1.38).
+  assert.equal(stored.meta.generatedAtMs, stored.generatedAtMs);
   assert.equal(
     helpers.readStored(`digest_${sessionId}`),
     undefined,
@@ -884,6 +914,33 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
   assert.ok(update, "the end broadcast carries the report");
   assert.deepEqual(update.report, REPORT_BODY);
   assert.equal(update.state.status, "ended");
+});
+
+test("a v1 report body without the new fields persists unchanged", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_v1_report";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, V1_REPORT_BODY),
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  const result = await resumeAndEnd(helpers);
+
+  assert.equal(result.success, true);
+  const stored = helpers.readStored(`report_${sessionId}`);
+  assert.ok(stored, "the v1 artifact is persisted under report_<sessionId>");
+  assert.deepEqual(stored.report, V1_REPORT_BODY);
+  // Byte-identical shape: the parser grew no new keys for a v1 payload.
+  assert.deepEqual(Object.keys(stored.report).sort(), ["quotes", "todos", "topics"]);
+  assert.equal(stored.report.topics[0].bullets, undefined);
+  assert.equal(stored.report.overview, undefined);
+  assert.equal(stored.report.categories, undefined);
 });
 
 test("a truncated global pass persists nothing and broadcasts the retry error", async () => {

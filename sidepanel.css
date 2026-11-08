@@ -29,6 +29,7 @@
   --accent: #1b72e8; /* brand blue */
   --accent-hover: #155cc4;
   --accent-dim: rgba(27, 114, 232, 0.1);
+  --accent-deep: #16406b; /* deep brand blue: the 核心要点 card */
   --sage: #4f7fa8; /* quiet secondary blue */
   --sage-dim: rgba(79, 127, 168, 0.14);
   --success: #4f7fa8;
@@ -1554,6 +1555,17 @@ body {
   font-size: 13px;
   line-height: 1.6;
   padding: 4px 0 12px;
+  /* Schema v2 (0.1.38): the compact fragment cycles the full report's flat
+     category palette (see REPORT_STYLE in report-render.js); the tokens are
+     duplicated here so the panel stylesheet stays self-contained. */
+  --cat-blue-bg: #e8f1fc;
+  --cat-blue-border: #1b72e8;
+  --cat-green-bg: #e9f5ef;
+  --cat-green-border: #3e8e6d;
+  --cat-amber-bg: #fdf3e3;
+  --cat-amber-border: #d9a441;
+  --cat-purple-bg: #f1edf9;
+  --cat-purple-border: #7a5fb8;
 }
 
 .report-compact .report-header {
@@ -1634,8 +1646,16 @@ body {
   z-index: 1;
 }
 
+/* Schema v2 (0.1.38): the compact fragment mirrors the full report's flat
+   cards — the 核心要点 deep-blue card, Topic bullets on the tinted card, and
+   the 主题归纳 category grid cycling the palette above. */
 .report-compact .topic-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
   min-width: 0;
+  padding: 8px 10px;
 }
 
 .report-compact .topic-title {
@@ -1645,15 +1665,131 @@ body {
 }
 
 .report-compact .topic-time {
+  background: var(--accent-dim);
+  border-radius: 999px;
   color: var(--accent);
+  display: inline-block;
   font-family: var(--font-mono);
   font-size: 11px;
+  padding: 0 6px;
 }
 
 .report-compact .topic-summary {
   color: var(--text-secondary);
   margin: 0;
   white-space: pre-wrap;
+}
+
+.report-compact .overview-card {
+  background: var(--accent-deep);
+  border-radius: 10px;
+  color: #eef5ff;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.report-compact .overview-card li {
+  padding-left: 14px;
+  position: relative;
+}
+
+.report-compact .overview-card li::before {
+  background: #7db4f5;
+  border-radius: 50%;
+  content: "";
+  height: 6px;
+  left: 0;
+  position: absolute;
+  top: 0.7em;
+  width: 6px;
+}
+
+.report-compact .topic-bullets {
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .topic-bullets li {
+  padding-left: 12px;
+  position: relative;
+}
+
+.report-compact .topic-bullets li::before {
+  background: var(--accent);
+  border-radius: 50%;
+  content: "";
+  height: 5px;
+  left: 0;
+  opacity: 0.55;
+  position: absolute;
+  top: 0.7em;
+  width: 5px;
+}
+
+.report-compact .category-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-compact .category-card {
+  background: var(--cat-bg, var(--cat-blue-bg));
+  border: 1px solid var(--cat-border, var(--cat-blue-border));
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+
+.report-compact .category-card.cat-0 { --cat-bg: var(--cat-blue-bg); --cat-border: var(--cat-blue-border); }
+.report-compact .category-card.cat-1 { --cat-bg: var(--cat-green-bg); --cat-border: var(--cat-green-border); }
+.report-compact .category-card.cat-2 { --cat-bg: var(--cat-amber-bg); --cat-border: var(--cat-amber-border); }
+.report-compact .category-card.cat-3 { --cat-bg: var(--cat-purple-bg); --cat-border: var(--cat-purple-border); }
+
+.report-compact .category-chip {
+  background: var(--cat-border, var(--cat-blue-border));
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  padding: 0 8px;
+}
+
+.report-compact .category-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .category-points li {
+  padding-left: 12px;
+  position: relative;
+}
+
+.report-compact .category-points li::before {
+  background: var(--cat-border, var(--cat-blue-border));
+  border-radius: 50%;
+  content: "";
+  height: 5px;
+  left: 0;
+  position: absolute;
+  top: 0.7em;
+  width: 5px;
+}
+
+.report-compact .report-footer {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
 }
 
 .report-compact .quote-item {

@@ -29,10 +29,22 @@ const META = {
 /**
  * Loads report.js in a sandbox. The top-level auto-run also executes against
  * the stubs; assertions target the last written document, which both runs
- * produce identically.
+ * produce identically. The document stub also records createElement/body
+ * appends, window.print calls and scheduled timers, so the print-toolbar
+ * injection and the ?print=1 auto-print are observable.
  */
 function loadReportPage({ search = "", stored = {} } = {}) {
   const written = [];
+  const createdElements = [];
+  const printCalls = [];
+  const timers = [];
+  const body = {
+    children: [],
+    appendChild(child) {
+      body.children.push(child);
+      return child;
+    },
+  };
   const sandbox = {
     console,
     URLSearchParams,
@@ -45,7 +57,30 @@ function loadReportPage({ search = "", stored = {} } = {}) {
         written.push(String(html));
       },
       close() {},
+      createElement(tag) {
+        const element = {
+          tagName: tag,
+          type: "",
+          className: "",
+          textContent: "",
+          listeners: {},
+          addEventListener(type, handler) {
+            element.listeners[type] = handler;
+          },
+        };
+        createdElements.push(element);
+        return element;
+      },
+      body,
     },
+    window: {
+      print: () => printCalls.push(true),
+    },
+    setTimeout: (fn, delay) => {
+      timers.push({ fn, delay });
+      return timers.length;
+    },
+    clearTimeout() {},
     chrome: {
       storage: {
         local: {
@@ -60,6 +95,9 @@ function loadReportPage({ search = "", stored = {} } = {}) {
   return {
     openPersistedReport: sandbox.__YTD_REPORT_PAGE_TESTING__.openPersistedReport,
     lastDocument: () => written.filter((entry) => typeof entry === "string").at(-1) || "",
+    createdElements,
+    printCalls,
+    timers,
   };
 }
 
@@ -157,4 +195,101 @@ test("report.html wires the renderer and controller as external scripts", () => 
   assert.match(js, /REPORT_STORAGE_KEY_PREFIX\}\$\{sessionId\}/);
   assert.match(js, /renderReportHtml/);
   assert.match(js, /没有找到报告/);
+});
+
+// --- 打印 / 存为 PDF (0.1.38) -------------------------------------------------
+
+test("the rendered report page carries a print toolbar outside the artifact", async () => {
+  const page = loadReportPage({
+    search: "?session=s_abc123",
+    stored: {
+      report_s_abc123: {
+        sessionId: "s_abc123",
+        report: REPORT,
+        meta: META,
+        generatedAtMs: 1,
+      },
+    },
+  });
+
+  await page.openPersistedReport();
+
+  // The written artifact stays inert: no toolbar markup inside the rendered
+  // document (the class name exists only in the inlined CSS rules), which is
+  // what a download or archive keeps.
+  const html = page.lastDocument();
+  assert.doesNotMatch(html, /<button/i);
+  assert.doesNotMatch(html, /<script/i);
+  // The live page gains the toolbar as a DOM element wired to window.print().
+  const button = page.createdElements.find((el) => el.className === "report-print-btn");
+  assert.ok(button, "the print toolbar button is injected");
+  assert.equal(button.textContent, "打印 / 存为 PDF");
+  assert.equal(page.printCalls.length, 0, "no dialog before the click");
+  button.listeners.click();
+  assert.equal(page.printCalls.length, 1);
+});
+
+test("?print=1 auto-opens the print dialog after the report renders", async () => {
+  const page = loadReportPage({
+    search: "?session=s_abc123&print=1",
+    stored: {
+      report_s_abc123: {
+        sessionId: "s_abc123",
+        report: REPORT,
+        meta: META,
+        generatedAtMs: 1,
+      },
+    },
+  });
+  // The top-level auto-run also renders against the stubs; let it settle,
+  // then observe one explicit render in isolation.
+  await new Promise((resolve) => setImmediate(resolve));
+  page.timers.length = 0;
+  page.printCalls.length = 0;
+
+  await page.openPersistedReport();
+
+  assert.equal(page.timers.length, 1, "one delayed print per render");
+  assert.ok(page.timers[0].delay > 0, "the dialog waits until the DOM is painted");
+  page.timers[0].fn();
+  assert.equal(page.printCalls.length, 1);
+
+  // Without the parameter nothing is scheduled.
+  const plain = loadReportPage({
+    search: "?session=s_abc123",
+    stored: {
+      report_s_abc123: {
+        sessionId: "s_abc123",
+        report: REPORT,
+        meta: META,
+        generatedAtMs: 1,
+      },
+    },
+  });
+  await plain.openPersistedReport();
+  assert.equal(plain.timers.length, 0);
+  assert.equal(plain.printCalls.length, 0);
+});
+
+test("the missing-report dead end injects no print toolbar and schedules nothing", async () => {
+  const page = loadReportPage({ search: "?session=s_missing&print=1", stored: {} });
+
+  await page.openPersistedReport();
+
+  assert.match(page.lastDocument(), /没有找到报告/);
+  assert.equal(page.createdElements.length, 0);
+  assert.equal(page.timers.length, 0);
+  assert.equal(page.printCalls.length, 0);
+});
+
+test("the report stylesheet carries the print / PDF rules", () => {
+  const html = require("../report-render.js").renderReportHtml(REPORT, META);
+
+  assert.match(html, /@media print/);
+  assert.match(html, /@page\s*\{/);
+  assert.match(html, /break-inside:\s*avoid/);
+  assert.match(html, /print-color-adjust:\s*exact/);
+  // The injected toolbar hides itself in print output.
+  assert.match(html, /\.report-print-btn\s*\{[^}]*position:\s*fixed/);
+  assert.match(html, /@media print\s*\{[\s\S]*\.report-print-btn\s*\{[^}]*display:\s*none/);
 });

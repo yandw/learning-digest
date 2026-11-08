@@ -718,6 +718,21 @@ test("open sends the shown session to the report page in a new tab", async () =>
   assert.match(createdTabs[0].url, /^chrome-extension:\/\/test\/report\.html\?session=s_1$/);
 });
 
+test("打印 opens the report page with ?print=1 so the dialog opens itself", async () => {
+  const { report, createdTabs } = loadPanel({
+    stored: { report_s_1: readyArtifact("s_1") },
+  });
+  await report.applyReportPayloadToTab(REPORT_A, "s_1");
+
+  report.openReportForPrint();
+
+  assert.equal(createdTabs.length, 1);
+  assert.match(
+    createdTabs[0].url,
+    /^chrome-extension:\/\/test\/report\.html\?session=s_1&print=1$/,
+  );
+});
+
 test("downloads use Blob object URLs and session-named files", async () => {
   const { report, createdObjectUrls, createdElements } = loadPanel({
     stored: { report_s_1: readyArtifact("s_1") },
@@ -764,12 +779,14 @@ test("the report UI copy names the deliverable 学习纪要 everywhere", () => {
 test("the 纪要 tab is wired in sidepanel.html and sidepanel.js", () => {
   const html = read("sidepanel.html");
   const js = read("sidepanel.js");
+  const css = read("sidepanel.css");
 
   assert.match(html, /<button class="tab" data-tab="report">纪要<\/button>/);
   assert.match(html, /<div class="tab-panel" data-panel="report">/);
   assert.match(html, /id="reportTabHint"/);
   assert.match(html, /id="reportTabActions"/);
   assert.match(html, /id="reportOpenBtn"[\s\S]*?在新标签页打开/);
+  assert.match(html, /id="reportPrintBtn"[\s\S]*?打印 \/ 存为 PDF/);
   assert.match(html, /id="reportDownloadHtmlBtn"[\s\S]*?下载 HTML/);
   assert.match(html, /id="reportDownloadMdBtn"[\s\S]*?下载 Markdown/);
   assert.match(html, /id="reportRetryBtn"[\s\S]*?重试/);
@@ -785,10 +802,20 @@ test("the 纪要 tab is wired in sidepanel.html and sidepanel.js", () => {
   );
   assert.match(
     js,
+    /getElementById\("reportPrintBtn"\)\s*\??\.\s*addEventListener\("click", openReportForPrint\)/,
+  );
+  assert.match(
+    js,
     /getElementById\("reportRetryBtn"\)\s*\??\.\s*addEventListener\("click", retryReportFromTab\)/,
   );
   assert.match(js, /setupReportTab\(\)/);
   assert.match(js, /void adoptLatestStoredReport\(\)/);
   // The tab hook feeds every report arrival into the 纪要 tab.
   assert.match(js, /applyReportPayloadToTab\(report, sessionId\)/);
+  // The compact fragment's v2 sections (overview card, topic bullets,
+  // category grid) are restyled for the narrow panel column.
+  assert.match(css, /\.report-compact \.overview-card\s*\{/);
+  assert.match(css, /\.report-compact \.topic-bullets\s*\{/);
+  assert.match(css, /\.report-compact \.category-grid\s*\{/);
+  assert.match(css, /\.report-compact \.report-footer\s*\{/);
 });

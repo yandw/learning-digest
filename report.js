@@ -26,6 +26,38 @@ function writeDocument(html) {
   document.close();
 }
 
+/**
+ * Whether the URL asks for the print dialog: the panel's 打印 / 存为 PDF
+ * button opens report.html?session=…&print=1.
+ */
+function wantsAutoPrint() {
+  return new URLSearchParams(location.search).get("print") === "1";
+}
+
+/**
+ * Injects the 打印 / 存为 PDF toolbar AFTER the rendered artifact lands.
+ * The written document itself stays inert — no script, no UI — so an
+ * archived or downloaded report carries nothing interactive; the live
+ * extension page owns the button and binds it to window.print(). Its
+ * styling (and the @media print hiding rule) ships inside the rendered
+ * document's REPORT_STYLE.
+ */
+function injectPrintToolbar() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "report-print-btn";
+  button.textContent = "打印 / 存为 PDF";
+  button.addEventListener("click", () => window.print());
+  document.body.appendChild(button);
+}
+
+/** Opens the print dialog once the rendered DOM has had a frame to paint. */
+function scheduleAutoPrint() {
+  // The small delay is deliberate: document.write just replaced the whole
+  // document, and the print dialog must snapshot a painted page.
+  setTimeout(() => window.print(), 300);
+}
+
 // The Brand Blue tokens the dead end styles itself with — the same values
 // REPORT_STYLE inlines for every rendered report (see report-render.js), so
 // the failure page reads like the report it could not open. Declared once
@@ -109,6 +141,10 @@ async function openPersistedReport() {
   writeDocument(
     reportRender.renderReportHtml(artifact.report, artifact.meta || null),
   );
+  // The toolbar and the ?print=1 dialog belong to the live page, never to
+  // the archived document string.
+  injectPrintToolbar();
+  if (wantsAutoPrint()) scheduleAutoPrint();
 }
 
 // Pure helpers are exposed for the repository's Node tests. The extension
@@ -117,6 +153,9 @@ globalThis.__YTD_REPORT_PAGE_TESTING__ = {
   reportSessionId,
   openPersistedReport,
   renderMissingReport,
+  wantsAutoPrint,
+  injectPrintToolbar,
+  scheduleAutoPrint,
 };
 
 void openPersistedReport();

@@ -530,6 +530,65 @@ test("the global pass prompt demands one JSON object with topics, quotes and tod
   assert.match(messages[0].content, /秒/);
 });
 
+// Schema v2 (0.1.38): the global pass may also return overview conclusions,
+// per-Topic bullets and thematic categories. The prompt documents all three
+// and keeps every v2 field optional.
+
+test("the global pass prompt asks for the overview, bullets and categories fields", () => {
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /"overview"/);
+  assert.match(messages[0].content, /"bullets"/);
+  assert.match(messages[0].content, /"categories"/);
+  assert.match(messages[0].content, /"points"/);
+});
+
+test("the global pass prompt grounds the overview in the transcript", () => {
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /overview 提炼 3 到 5 条一句话核心结论/);
+  assert.match(messages[0].content, /以逐字稿内容为依据/);
+  assert.match(messages[0].content, /不要编造/);
+});
+
+test("the global pass prompt asks for short bullet sentences per Topic", () => {
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /bullets 是 2 到 5 条/);
+  assert.match(messages[0].content, /要点短句/);
+  assert.match(messages[0].content, /summary 给出 2 到 4 句的总结代替/);
+});
+
+test("the global pass prompt frames categories as thematic, not a timeline repeat", () => {
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /categories 从整节课的全局视角归纳 2 到 4 个主题类别/);
+  assert.match(messages[0].content, /每个类别 2 到 4 条要点/);
+  assert.match(messages[0].content, /不要复述 topics 的时间轴/);
+});
+
+test("the global pass prompt keeps the v2 fields optional", () => {
+  const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
+    transcriptText: "[0:00] 课程开场",
+    liveTopics: [],
+  });
+
+  assert.match(messages[0].content, /可选字段/);
+  assert.match(messages[0].content, /空数组/);
+});
+
 test("the global pass prompt orders continuation sections merged into whole Topics", () => {
   const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "[0:00] 课程开场",
@@ -693,6 +752,109 @@ test("the global pass parser accepts missing quotes and todos as empty lists", (
       todos: [],
     },
   );
+});
+
+// --- Schema v2 (0.1.38): overview, per-Topic bullets and categories ---------
+
+// A mixed v2 payload: valid entries next to the slips the clamps exist for.
+const V2_REPORT = JSON.stringify({
+  overview: [" 结论一 ", "结论二", "", 42],
+  topics: [
+    {
+      start: 0,
+      end: 900,
+      title: "导论",
+      bullets: [" 要点一 ", "要点二", ""],
+      summary: "老师介绍了课程目标。",
+    },
+    { start: 900, end: 1800, title: "只有要点", bullets: ["唯一要点。"] },
+    { start: 1800, end: 2700, title: "v1 话题", summary: "只有总结。" },
+    { start: 2700, end: 3600, title: "无正文" },
+  ],
+  categories: [
+    { title: " 方法 ", points: [" 点一 ", "点二"] },
+    { title: "无要点" },
+    { title: "空要点", points: [] },
+    "不是对象",
+  ],
+  quotes: [{ start: 30, text: "原话。" }],
+  todos: [],
+});
+
+test("the global pass parser maps the v2 schema fields", () => {
+  const report = summary.parseGlobalPass(V2_REPORT);
+
+  assert.deepEqual(report.overview, ["结论一", "结论二"]);
+  assert.deepEqual(report.topics, [
+    {
+      start: 0,
+      end: 900,
+      title: "导论",
+      bullets: ["要点一", "要点二"],
+      summary: "老师介绍了课程目标。",
+    },
+    { start: 900, end: 1800, title: "只有要点", bullets: ["唯一要点。"] },
+    { start: 1800, end: 2700, title: "v1 话题", summary: "只有总结。" },
+  ]);
+  assert.deepEqual(report.categories, [{ title: "方法", points: ["点一", "点二"] }]);
+  assert.deepEqual(report.quotes, [{ start: 30, text: "原话。" }]);
+  assert.deepEqual(report.todos, []);
+});
+
+test("the global pass parser caps the v2 arrays at the prompt's limits", () => {
+  const report = summary.parseGlobalPass(
+    JSON.stringify({
+      overview: ["一", "二", "三", "四", "五", "六", "七"],
+      topics: [
+        {
+          start: 0,
+          end: 60,
+          title: "话题",
+          bullets: ["一", "二", "三", "四", "五", "六"],
+          summary: "总结。",
+        },
+      ],
+      categories: [
+        { title: "甲", points: ["一", "二", "三", "四", "五"] },
+        { title: "乙", points: ["一"] },
+        { title: "丙", points: ["一"] },
+        { title: "丁", points: ["一"] },
+        { title: "戊", points: ["一"] },
+      ],
+    }),
+  );
+
+  assert.equal(report.overview.length, 5, "overview clamps to 5 conclusions");
+  assert.equal(report.topics[0].bullets.length, 5, "bullets clamp to 5 points");
+  assert.equal(report.categories.length, 4, "categories clamp to 4 cards");
+  assert.equal(report.categories[0].points.length, 4, "category points clamp to 4");
+});
+
+test("the global pass parser caps v2 string lengths", () => {
+  const long = "长".repeat(400);
+  const report = summary.parseGlobalPass(
+    JSON.stringify({
+      overview: [long],
+      topics: [{ start: 0, end: 60, title: "话题", bullets: [long] }],
+      categories: [{ title: "主题", points: [long] }],
+    }),
+  );
+
+  assert.equal(report.overview[0].length, 300);
+  assert.equal(report.topics[0].bullets[0].length, 300);
+  assert.equal(report.categories[0].points[0].length, 300);
+});
+
+test("the global pass parser omits the v2 keys when the model returns none", () => {
+  // A v1-shaped payload (and empty v2 arrays) must not grow new keys: the
+  // v1 artifact shape in storage stays byte-identical.
+  const v1Report = summary.parseGlobalPass(GOOD_REPORT);
+  assert.deepEqual(Object.keys(v1Report).sort(), ["quotes", "todos", "topics"]);
+
+  const emptyV2 = summary.parseGlobalPass(
+    JSON.stringify({ overview: [], categories: [], topics: [], quotes: [], todos: [] }),
+  );
+  assert.deepEqual(Object.keys(emptyV2).sort(), ["quotes", "todos", "topics"]);
 });
 
 

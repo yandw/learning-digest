@@ -198,13 +198,29 @@ var YTD_SESSION_SUMMARY = (() => {
   const TOPIC_TEXT_MAX_LENGTH = 1500;
 
   /**
+   * The shared time-range clamp both parsers apply: finite numeric seconds
+   * become non-negative integers, and an end before the start rejects the
+   * entry. Returns the clamped {start, end}, or null.
+   *
+   * @param {*} entry
+   * @returns {{start: number, end: number}|null}
+   */
+  function sanitizeTopicRange(entry) {
+    const start = Number(entry?.start);
+    const end = Number(entry?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    const safeStart = Math.max(0, Math.floor(start));
+    const safeEnd = Math.max(0, Math.floor(end));
+    return safeEnd < safeStart ? null : { start: safeStart, end: safeEnd };
+  }
+
+  /**
    * The shared Topic-entry validation both parsers apply: a usable entry is
-   * an object carrying a finite numeric time range (clamped to non-negative
-   * integer seconds, end never before start) plus a non-empty title and body
-   * string (trimmed, length-capped). Returns the clamped fields with the
-   * body under `bodyKey`, or null when the entry is not usable — the callers
-   * keep only their distinct entry shape on top (tick `text` with the
-   * continuation flag, report `summary`).
+   * an object carrying a valid time range (see sanitizeTopicRange) plus a
+   * non-empty title and body string (trimmed, length-capped). Returns the
+   * clamped fields with the body under `bodyKey`, or null when the entry is
+   * not usable — the callers keep only their distinct entry shape on top
+   * (tick `text` with the continuation flag, report `summary` + `bullets`).
    *
    * @param {*} entry
    * @param {string} bodyKey - "text" (tick) or "summary" (report)
@@ -213,12 +229,8 @@ var YTD_SESSION_SUMMARY = (() => {
    */
   function sanitizeTopicFields(entry, bodyKey, bodyMaxLength) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-    const start = Number(entry.start);
-    const end = Number(entry.end);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-    const safeStart = Math.max(0, Math.floor(start));
-    const safeEnd = Math.max(0, Math.floor(end));
-    if (safeEnd < safeStart) return null;
+    const range = sanitizeTopicRange(entry);
+    if (!range) return null;
     const title =
       typeof entry.title === "string" ? entry.title.trim().slice(0, TOPIC_TITLE_MAX_LENGTH) : "";
     const body =
@@ -226,7 +238,7 @@ var YTD_SESSION_SUMMARY = (() => {
         ? entry[bodyKey].trim().slice(0, bodyMaxLength)
         : "";
     if (!title || !body) return null;
-    return { start: safeStart, end: safeEnd, title, [bodyKey]: body };
+    return { start: range.start, end: range.end, title, [bodyKey]: body };
   }
 
   /**
@@ -409,26 +421,63 @@ var YTD_SESSION_SUMMARY = (() => {
   const REPORT_QUOTE_MAX_LENGTH = 3000;
   const REPORT_TODO_MAX_LENGTH = 500;
 
+  // Schema v2 caps (0.1.38): overview conclusions, per-Topic bullets and
+  // category cards mirror the prompt's limits (3–5 conclusions, 2–5 bullets,
+  // 2–4 categories of 2–4 points); the parser clamps to the maxima so an
+  // over-eager model cannot balloon the artifact.
+  const REPORT_OVERVIEW_MAX_COUNT = 5;
+  const REPORT_OVERVIEW_MAX_LENGTH = 300;
+  const REPORT_BULLETS_MAX_COUNT = 5;
+  const REPORT_BULLET_MAX_LENGTH = 300;
+  const REPORT_CATEGORIES_MAX_COUNT = 4;
+  const REPORT_CATEGORY_POINTS_MAX_COUNT = 4;
+  const REPORT_CATEGORY_POINT_MAX_LENGTH = 300;
+
+  /**
+   * Keeps only non-empty string items, trimmed and length-capped, at most
+   * maxCount of them; anything else the model slipped in is dropped.
+   *
+   * @param {*} value
+   * @param {{maxLength: number, maxCount: number}} limits
+   * @returns {string[]}
+   */
+  function sanitizeStringList(value, { maxLength, maxCount }) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item) => typeof item === "string" && item.trim().length > 0)
+      .map((item) => item.trim().slice(0, maxLength))
+      .slice(0, maxCount);
+  }
+
   /**
    * Maps one raw model entry to a report Topic ({start, end, title,
-   * summary}), or null when the entry is not usable (missing title/summary,
-   * non-numeric or inverted time range) — the same shared validation as the
-   * tick parser's sanitizeTopicEntry, with the body under `summary`.
-   * Numbers become non-negative integer seconds; strings are trimmed and
-   * length-capped.
+   * bullets?, summary?}), or null when the entry is not usable (missing
+   * title, non-numeric or inverted time range, no body at all). Schema v2:
+   * `bullets` (short points) are the preferred body and `summary` stays the
+   * v1 fallback — either alone keeps the Topic. Strings are trimmed and
+   * length-capped; a v1 entry (summary only) keeps the exact v1 shape.
    *
    * @param {*} entry
    * @returns {object|null}
    */
   function sanitizeReportTopic(entry) {
-    const fields = sanitizeTopicFields(entry, "summary", TOPIC_TEXT_MAX_LENGTH);
-    if (!fields) return null;
-    return {
-      start: fields.start,
-      end: fields.end,
-      title: fields.title,
-      summary: fields.summary,
-    };
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const range = sanitizeTopicRange(entry);
+    const title =
+      typeof entry.title === "string" ? entry.title.trim().slice(0, TOPIC_TITLE_MAX_LENGTH) : "";
+    const summary =
+      typeof entry.summary === "string"
+        ? entry.summary.trim().slice(0, TOPIC_TEXT_MAX_LENGTH)
+        : "";
+    const bullets = sanitizeStringList(entry.bullets, {
+      maxLength: REPORT_BULLET_MAX_LENGTH,
+      maxCount: REPORT_BULLETS_MAX_COUNT,
+    });
+    if (!range || !title || (!summary && bullets.length === 0)) return null;
+    const topic = { start: range.start, end: range.end, title };
+    if (bullets.length > 0) topic.bullets = bullets;
+    if (summary) topic.summary = summary;
+    return topic;
   }
 
   /**
@@ -462,15 +511,38 @@ var YTD_SESSION_SUMMARY = (() => {
   }
 
   /**
+   * Maps one raw model entry to a report category ({title, points}), or
+   * null when the title is empty or no point survived (schema v2: the
+   * thematic groupings the 主题归纳 grid renders).
+   *
+   * @param {*} entry
+   * @returns {object|null}
+   */
+  function sanitizeReportCategory(entry) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const title =
+      typeof entry.title === "string" ? entry.title.trim().slice(0, TOPIC_TITLE_MAX_LENGTH) : "";
+    const points = sanitizeStringList(entry.points, {
+      maxLength: REPORT_CATEGORY_POINT_MAX_LENGTH,
+      maxCount: REPORT_CATEGORY_POINTS_MAX_COUNT,
+    });
+    if (!title || points.length === 0) return null;
+    return { title, points };
+  }
+
+  /**
    * Parses the global pass output into the Session Digest report. Tolerant
    * of the same LLM slips as the Topic tick parser (fences, prose, trailing
    * commas); the payload must be a JSON object, and every entry is
    * re-validated so a malformed item is dropped instead of reaching the
-   * panel. Returns null when the text holds no usable report object at all —
+   * panel. The v2 fields (overview, and per-Topic bullets inside topics,
+   * categories) are optional: they land on the artifact only when something
+   * usable survived, so a v1-shaped payload keeps the exact v1 shape.
+   * Returns null when the text holds no usable report object at all —
    * the caller treats that like truncation and offers a retry.
    *
    * @param {string} text - raw text from the model
-   * @returns {{topics: object[], quotes: object[], todos: string[]}|null}
+   * @returns {{topics: object[], quotes: object[], todos: string[], overview?: string[], categories?: object[]}|null}
    */
   function parseGlobalPass(text) {
     let parsed;
@@ -480,7 +552,15 @@ var YTD_SESSION_SUMMARY = (() => {
       return null;
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return {
+    const overview = sanitizeStringList(parsed.overview, {
+      maxLength: REPORT_OVERVIEW_MAX_LENGTH,
+      maxCount: REPORT_OVERVIEW_MAX_COUNT,
+    });
+    const categories = (Array.isArray(parsed.categories) ? parsed.categories : [])
+      .map(sanitizeReportCategory)
+      .filter(Boolean)
+      .slice(0, REPORT_CATEGORIES_MAX_COUNT);
+    const report = {
       topics: (Array.isArray(parsed.topics) ? parsed.topics : [])
         .map(sanitizeReportTopic)
         .filter(Boolean),
@@ -489,6 +569,9 @@ var YTD_SESSION_SUMMARY = (() => {
         .filter(Boolean),
       todos: sanitizeReportTodos(parsed.todos),
     };
+    if (overview.length > 0) report.overview = overview;
+    if (categories.length > 0) report.categories = categories;
+    return report;
   }
 
   return {

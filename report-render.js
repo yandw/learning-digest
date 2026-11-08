@@ -6,6 +6,14 @@
  * - renderReportMarkdown Markdown export for archiving/sharing
  * - renderReportCompact  HTML fragment for the narrow side panel 纪要 tab
  *
+ * The artifact shape is the global pass schema: v1 {topics (+summary),
+ * quotes, todos} plus the optional v2 fields (0.1.38) — overview
+ * conclusions, per-Topic bullets and thematic categories. Renderers treat
+ * the v2 fields as absent on v1 artifacts and omit every empty section, so
+ * old persisted reports render unchanged. The full document is a flat
+ * colored-card template: 核心要点 card, 话题时间轴 step bar, 主题归纳 grid,
+ * 金句 blockquotes, 待办 checklist and a footer.
+ *
  * Everything is escaped and self-contained: no images, no Mermaid, no
  * external assets, and no script in the output (MV3 extension pages forbid
  * inline scripts, and an archived report must be inert). Browser-free so it
@@ -79,9 +87,10 @@ var YTD_REPORT_RENDER = (() => {
   }
 
   /**
-   * The header meta line: kind label, platform, local date range — each
-   * omitted when the artifact does not know it (a retried pass may only be
-   * able to reconstruct the timestamps).
+   * The header meta line: kind label, platform, local date range, Session
+   * duration and the generated-at stamp — each omitted when the artifact
+   * does not know it (a retried pass may only be able to reconstruct the
+   * timestamps; generatedAtMs rides on the persisted meta).
    */
   function metaLineParts(meta) {
     const parts = [];
@@ -90,7 +99,25 @@ var YTD_REPORT_RENDER = (() => {
     if (meta?.platformId) parts.push(String(meta.platformId));
     const range = formatDateRange(meta);
     if (range) parts.push(range);
+    const duration = formatDuration(meta);
+    if (duration) parts.push(`时长 ${duration}`);
+    const generatedAt = formatMetaDate(meta?.generatedAtMs);
+    if (generatedAt) parts.push(`生成于 ${generatedAt}`);
     return parts;
+  }
+
+  /** 时长 label like 「2 小时 25 分」 or 「45 分钟」, or null when unknown. */
+  function formatDuration(meta) {
+    const start = Number(meta?.startedAtMs);
+    const end = Number(meta?.endedAtMs);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+    const minutes = Math.round((end - start) / 60000);
+    if (minutes <= 0) return null;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    if (hours === 0) return `${rest} 分钟`;
+    if (rest === 0) return `${hours} 小时`;
+    return `${hours} 小时 ${rest} 分`;
   }
 
   function reportTitle(meta) {
@@ -110,7 +137,46 @@ var YTD_REPORT_RENDER = (() => {
     return Array.isArray(report?.todos) ? report.todos : [];
   }
 
+  /** Schema v2: the 核心要点 conclusions (absent on v1 artifacts). */
+  function reportOverview(report) {
+    return Array.isArray(report?.overview) ? report.overview : [];
+  }
+
+  /** Schema v2: the 主题归纳 category cards (absent on v1 artifacts). */
+  function reportCategories(report) {
+    return Array.isArray(report?.categories) ? report.categories : [];
+  }
+
+  /** Schema v2: a Topic's short bullet points (absent on v1 artifacts). */
+  function topicBullets(topic) {
+    return Array.isArray(topic?.bullets) ? topic.bullets : [];
+  }
+
   // --- shared section builders (full page and compact fragment) -------------
+
+  function overviewHtml(report) {
+    const overview = reportOverview(report);
+    if (overview.length === 0) return "";
+    const items = overview.map((line) => `    <li>${escapeHtml(line)}</li>`).join("\n");
+    return [
+      '  <section class="report-overview">',
+      '    <h2 class="report-section-title">核心要点</h2>',
+      '  <ul class="overview-card">',
+      items,
+      "  </ul>",
+      "  </section>",
+    ].join("\n");
+  }
+
+  /** The Topic body: bullets as a list when present, else the v1 summary. */
+  function topicBodyHtml(topic) {
+    const bullets = topicBullets(topic);
+    if (bullets.length > 0) {
+      const items = bullets.map((bullet) => `        <li>${escapeHtml(bullet)}</li>`).join("\n");
+      return ['      <ul class="topic-bullets">', items, "      </ul>"].join("\n");
+    }
+    return `      <p class="topic-summary">${escapeHtml(topic?.summary)}</p>`;
+  }
 
   function topicsHtml(report) {
     const topics = reportTopics(report);
@@ -123,7 +189,7 @@ var YTD_REPORT_RENDER = (() => {
           `      <div class="topic-step" aria-hidden="true"><span class="topic-step-dot">${index + 1}</span></div>`,
           '      <div class="topic-content">',
           `        <h3 class="topic-title"><span class="topic-time">${escapeHtml(range)}</span> ${escapeHtml(topic?.title)}</h3>`,
-          `        <p class="topic-summary">${escapeHtml(topic?.summary)}</p>`,
+          topicBodyHtml(topic),
           "      </div>",
           "    </section>",
         ].join("\n");
@@ -131,9 +197,41 @@ var YTD_REPORT_RENDER = (() => {
       .join("\n");
     return [
       '  <section class="report-topics">',
-      '    <h2 class="report-section-title">话题</h2>',
+      '    <h2 class="report-section-title">话题时间轴</h2>',
       '  <div class="topic-list">',
       items,
+      "  </div>",
+      "  </section>",
+    ].join("\n");
+  }
+
+  // The category palette cycles through four flat tints (see --cat-* in
+  // REPORT_STYLE); card N gets palette class cat-(N % 4).
+  const CATEGORY_PALETTE_COUNT = 4;
+
+  function categoriesHtml(report) {
+    const categories = reportCategories(report);
+    if (categories.length === 0) return "";
+    const cards = categories
+      .map((category, index) => {
+        const points = (Array.isArray(category?.points) ? category.points : [])
+          .map((point) => `        <li>${escapeHtml(point)}</li>`)
+          .join("\n");
+        return [
+          `    <div class="category-card cat-${index % CATEGORY_PALETTE_COUNT}">`,
+          `      <div class="category-chip">${escapeHtml(category?.title)}</div>`,
+          '      <ul class="category-points">',
+          points,
+          "      </ul>",
+          "    </div>",
+        ].join("\n");
+      })
+      .join("\n");
+    return [
+      '  <section class="report-categories">',
+      '    <h2 class="report-section-title">主题归纳</h2>',
+      '  <div class="category-grid">',
+      cards,
       "  </div>",
       "  </section>",
     ].join("\n");
@@ -152,7 +250,7 @@ var YTD_REPORT_RENDER = (() => {
       .join("\n");
     return [
       '  <section class="report-quotes">',
-      '    <h2 class="report-section-title">关键原话</h2>',
+      '    <h2 class="report-section-title">金句</h2>',
       items,
       "  </section>",
     ].join("\n");
@@ -171,7 +269,7 @@ var YTD_REPORT_RENDER = (() => {
       .join("\n");
     return [
       '  <section class="report-todos">',
-      '    <h2 class="report-section-title">行动项</h2>',
+      '    <h2 class="report-section-title">待办</h2>',
       '  <ul class="todo-list">',
       items,
       "  </ul>",
@@ -181,7 +279,9 @@ var YTD_REPORT_RENDER = (() => {
 
   function bodySectionsHtml(report) {
     const sections = [
+      overviewHtml(report),
       topicsHtml(report),
+      categoriesHtml(report),
       quotesHtml(report),
       todosHtml(report),
     ].filter(Boolean);
@@ -191,12 +291,21 @@ var YTD_REPORT_RENDER = (() => {
     return sections.join("\n");
   }
 
+  /** The one-line footer every report surface ends with. */
+  function reportFooterHtml() {
+    return '  <footer class="report-footer">由 Learning Digest 生成</footer>';
+  }
+
   // --- full document ---------------------------------------------------------
 
   // The report page styles itself with the extension's Brand Blue tokens
   // (see sidepanel.css :root), inlined here so the archived document is
-  // standalone. The topic list reads as a timeline: numbered step dots on a
-  // vertical line, one stop per Topic.
+  // standalone. Flat colored-card design: solid tints and borders only — no
+  // gradients, minimal shadows. The topic list reads as a timeline (numbered
+  // step chips on a vertical line, one flat card per Topic) and the category
+  // grid cycles a fixed four-color palette declared as custom properties.
+  // The compact fragment in sidepanel.css mirrors --accent-deep and the
+  // --cat-* palette for the narrow panel column.
   const REPORT_STYLE = `
     :root {
       --bg: #f2f6fc;
@@ -207,7 +316,16 @@ var YTD_REPORT_RENDER = (() => {
       --text-muted: #93a1b3;
       --accent: #1b72e8;
       --accent-dim: rgba(27, 114, 232, 0.1);
+      --accent-deep: #16406b;
       --sage: #4f7fa8;
+      --cat-blue-bg: #e8f1fc;
+      --cat-blue-border: #1b72e8;
+      --cat-green-bg: #e9f5ef;
+      --cat-green-border: #3e8e6d;
+      --cat-amber-bg: #fdf3e3;
+      --cat-amber-border: #d9a441;
+      --cat-purple-bg: #f1edf9;
+      --cat-purple-border: #7a5fb8;
     }
     * { box-sizing: border-box; }
     body {
@@ -218,7 +336,7 @@ var YTD_REPORT_RENDER = (() => {
       line-height: 1.7;
     }
     .report {
-      max-width: 720px;
+      max-width: 760px;
       margin: 0 auto;
       padding: 40px 24px 64px;
     }
@@ -226,41 +344,62 @@ var YTD_REPORT_RENDER = (() => {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 24px 28px;
-      margin-bottom: 28px;
+      padding: 26px 30px;
+      margin-bottom: 20px;
     }
     .report-title {
       margin: 0 0 8px;
-      font-size: 24px;
-      line-height: 1.4;
+      font-size: 26px;
+      line-height: 1.35;
     }
     .report-meta {
       color: var(--text-secondary);
       font-size: 14px;
     }
     .report-section-title {
-      margin: 0 0 12px;
-      font-size: 18px;
+      margin: 0 0 10px;
+      font-size: 17px;
     }
-    .report-topics, .report-quotes, .report-todos {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 24px 28px;
+    .report-overview, .report-topics, .report-categories, .report-quotes, .report-todos {
       margin-bottom: 20px;
     }
+    /* 核心要点: one deep-blue solid card with light text. */
+    .overview-card {
+      margin: 0;
+      padding: 18px 22px;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--accent-deep);
+      color: #eef5ff;
+      border-radius: 14px;
+      font-size: 15px;
+    }
+    .overview-card li { padding-left: 18px; position: relative; }
+    .overview-card li::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: 0.72em;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #7db4f5;
+    }
+    /* 话题时间轴: one numbered step chip per Topic on a vertical line, each
+       Topic rendered as a flat card with an accent left border. */
     .topic-list {
       margin: 0;
-      padding: 0 0 0 4px;
+      padding: 0;
       list-style: none;
       position: relative;
     }
-    /* CSS step bar: one numbered stop per Topic, joined by a vertical line. */
     .topic-list .report-topic {
       display: flex;
-      gap: 14px;
+      gap: 12px;
       position: relative;
-      padding-bottom: 20px;
+      padding-bottom: 12px;
     }
     .topic-list .report-topic:last-child { padding-bottom: 0; }
     .topic-step {
@@ -274,8 +413,8 @@ var YTD_REPORT_RENDER = (() => {
     .topic-step::after {
       content: "";
       position: absolute;
-      top: 26px;
-      bottom: 4px;
+      top: 30px;
+      bottom: -4px;
       left: 50%;
       width: 2px;
       transform: translateX(-50%);
@@ -294,22 +433,104 @@ var YTD_REPORT_RENDER = (() => {
       flex: 0 0 auto;
       z-index: 1;
     }
-    .topic-content { min-width: 0; }
+    .topic-content {
+      flex: 1;
+      min-width: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      padding: 12px 18px;
+    }
     .topic-title {
-      margin: 2px 0 4px;
-      font-size: 16px;
+      margin: 0 0 6px;
+      font-size: 15.5px;
       line-height: 1.5;
     }
     .topic-time {
+      display: inline-block;
       color: var(--accent);
+      background: var(--accent-dim);
+      border-radius: 999px;
+      padding: 0 8px;
       font-family: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
-      font-size: 13px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .topic-bullets {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      color: var(--text-secondary);
+      font-size: 14.5px;
+    }
+    .topic-bullets li { padding-left: 16px; position: relative; }
+    .topic-bullets li::before {
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: 0.7em;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: 0.55;
     }
     .topic-summary {
       margin: 0;
       color: var(--text-secondary);
-      font-size: 15px;
+      font-size: 14.5px;
       white-space: pre-wrap;
+    }
+    /* 主题归纳: a responsive grid of flat tinted cards cycling the palette. */
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+    }
+    .category-card { --cat-bg: var(--cat-blue-bg); --cat-border: var(--cat-blue-border); }
+    .category-card.cat-0 { --cat-bg: var(--cat-blue-bg); --cat-border: var(--cat-blue-border); }
+    .category-card.cat-1 { --cat-bg: var(--cat-green-bg); --cat-border: var(--cat-green-border); }
+    .category-card.cat-2 { --cat-bg: var(--cat-amber-bg); --cat-border: var(--cat-amber-border); }
+    .category-card.cat-3 { --cat-bg: var(--cat-purple-bg); --cat-border: var(--cat-purple-border); }
+    .category-card {
+      background: var(--cat-bg);
+      border: 1px solid var(--cat-border);
+      border-radius: 12px;
+      padding: 12px 16px;
+    }
+    .category-chip {
+      display: inline-block;
+      background: var(--cat-border);
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 999px;
+      padding: 1px 10px;
+      margin-bottom: 8px;
+    }
+    .category-points {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 14px;
+    }
+    .category-points li { padding-left: 14px; position: relative; }
+    .category-points li::before {
+      content: "";
+      position: absolute;
+      left: 1px;
+      top: 0.7em;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--cat-border);
     }
     .quote-item {
       margin: 0 0 12px;
@@ -342,6 +563,44 @@ var YTD_REPORT_RENDER = (() => {
       border: 1px solid var(--border);
       border-radius: 16px;
       padding: 24px 28px;
+    }
+    .report-footer {
+      margin-top: 28px;
+      color: var(--text-muted);
+      font-size: 12px;
+      text-align: center;
+    }
+    /* The print toolbar lives only on the live report page (report.js injects
+       it); an archived or downloaded report renders without it. */
+    .report-print-btn {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 10;
+      background: var(--accent);
+      color: #ffffff;
+      border: none;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-family: inherit;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    /* 打印 / 存为 PDF: white background, sane margins, cards never split
+       across pages, and the flat tints survive via print-color-adjust. */
+    @page { margin: 14mm; }
+    @media print {
+      body { background: #ffffff; }
+      .report { max-width: none; padding: 0; }
+      .report-print-btn { display: none !important; }
+      .report-header, .overview-card, .topic-content, .category-card,
+      .quote-item, .report-topic, .report-empty {
+        break-inside: avoid;
+      }
+      * {
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
     }
   `;
 
@@ -376,6 +635,7 @@ var YTD_REPORT_RENDER = (() => {
       metaLine,
       "    </header>",
       bodySectionsHtml(report),
+      reportFooterHtml(),
       "  </main>",
       "</body>",
       "</html>",
@@ -387,12 +647,13 @@ var YTD_REPORT_RENDER = (() => {
   // --- Markdown export -------------------------------------------------------
 
   /**
-   * The Markdown export: # title, ## per Topic with the time range in the
-   * heading, timestamped quotes, todo checklist, and the meta as plain
-   * list lines.
+   * The Markdown export: # title, ## 核心要点 conclusions, ## per Topic with
+   * the time range in the heading (bullets when present, else the summary),
+   * ## 主题归纳 with ### subheads, timestamped quotes, todo checklist, and
+   * the meta as plain list lines. Sections with no data are omitted.
    *
    * @param {object} report - the parsed global-pass report JSON
-   * @param {object|null} meta - { title?, startedAtMs, endedAtMs, kind, platformId? }
+   * @param {object|null} meta - { title?, startedAtMs, endedAtMs, kind, platformId?, generatedAtMs? }
    * @returns {string}
    */
   function renderReportMarkdown(report, meta) {
@@ -400,17 +661,42 @@ var YTD_REPORT_RENDER = (() => {
     for (const part of metaLineParts(meta)) {
       lines.push(`- ${part}`);
     }
+    const overview = reportOverview(report);
+    if (overview.length > 0) {
+      lines.push("", "## 核心要点", "");
+      for (const line of overview) {
+        lines.push(`- ${line}`);
+      }
+    }
     for (const topic of reportTopics(report)) {
       lines.push(
         "",
         `## [${formatTimestamp(topic?.start)}–${formatTimestamp(topic?.end)}] ${topic?.title ?? ""}`,
         "",
-        String(topic?.summary ?? ""),
       );
+      const bullets = topicBullets(topic);
+      if (bullets.length > 0) {
+        for (const bullet of bullets) {
+          lines.push(`- ${bullet}`);
+        }
+      } else {
+        lines.push(String(topic?.summary ?? ""));
+      }
+    }
+    const categories = reportCategories(report);
+    if (categories.length > 0) {
+      lines.push("", "## 主题归纳");
+      for (const category of categories) {
+        lines.push("", `### ${category?.title ?? ""}`, "");
+        const points = Array.isArray(category?.points) ? category.points : [];
+        for (const point of points) {
+          lines.push(`- ${point}`);
+        }
+      }
     }
     const quotes = reportQuotes(report);
     if (quotes.length > 0) {
-      lines.push("", "## 关键原话", "");
+      lines.push("", "## 金句", "");
       for (const quote of quotes) {
         lines.push(
           `> [${formatTimestamp(quote?.start)}] ${quote?.text ?? ""}`,
@@ -419,7 +705,7 @@ var YTD_REPORT_RENDER = (() => {
     }
     const todos = reportTodos(report);
     if (todos.length > 0) {
-      lines.push("", "## 行动项", "");
+      lines.push("", "## 待办", "");
       for (const todo of todos) {
         lines.push(`- [ ] ${todo}`);
       }
@@ -452,6 +738,7 @@ var YTD_REPORT_RENDER = (() => {
       metaLine,
       "  </div>",
       bodySectionsHtml(report),
+      reportFooterHtml(),
       "</div>",
     ]
       .filter(Boolean)

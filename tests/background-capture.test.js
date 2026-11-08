@@ -696,6 +696,117 @@ test("ending a Session with a missing report prompt broadcasts a clear error and
   assert.match(update.report.error, /提示词文件/);
 });
 
+// --- Capture death: the offscreen recorder's captureEnded notice --------------
+//
+// Live-tested failure chain: the course tab closes mid-Session, the
+// tabCapture stream goes inactive, and every later recorder start throws
+// NotSupportedError inside the offscreen document. Segments came back
+// [语音转录失败] while the Session zombie-ed on as "active". The recorder
+// now sends one captureEnded notice when its stream dies, and the worker
+// auto-ends the Session honestly from whatever Transcript exists.
+
+test("a captureEnded notice auto-ends the active Session and broadcasts the reason", async () => {
+  const requests = [];
+  const sentMessages = [];
+  let fireSummaryCheck = null;
+  const sessionId = "s_capture_dead";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    setIntervalImpl: (cb) => {
+      fireSummaryCheck = cb;
+      return 0;
+    },
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+  await helpers.handleGetSessionState();
+
+  await helpers.handleCaptureEnded(
+    { action: "captureEnded", reason: "capture stream is no longer active" },
+    {},
+  );
+
+  // Nothing stays resumable: the Session ended and the pointer is cleared.
+  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined);
+  // The panel learns the reason immediately, then sees the ended state with
+  // the digest built from the Transcript that exists.
+  const notice = sentMessages.find((message) => message.captureNotice);
+  assert.ok(notice, "the notice broadcast reaches the panel");
+  assert.equal(
+    notice.captureNotice,
+    "音频采集已中断（标签页已关闭或已离开课程页），会话自动结束。",
+  );
+  const ended = sentMessages.find(
+    (message) =>
+      message.action === "sessionUpdate" && message.state?.status === "ended",
+  );
+  assert.ok(ended, "the end broadcast reaches the panel");
+  assert.deepEqual(ended.report, REPORT_BODY);
+  assert.equal(requests.length, 1, "exactly one global pass over what exists");
+
+  // Death is final: no further ticks, and a repeated notice is a no-op.
+  await fireSummaryCheck();
+  assert.equal(requests.length, 1, "an ended Session never ticks again");
+  const updatesBefore = sentMessages.filter(
+    (message) => message.action === "sessionUpdate",
+  ).length;
+  await helpers.handleCaptureEnded(
+    { action: "captureEnded", reason: "late duplicate" },
+    {},
+  );
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    updatesBefore,
+    "a second captureEnded is a no-op",
+  );
+});
+
+test("captureEnded on a Session with no Transcript skips the digest without crashing", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_death_no_transcript";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    sentMessages,
+    stored: {
+      ytd_active_capture: capturePointer(sessionId),
+      // The stream died before any Segment transcribed: the Session snapshot
+      // is the fresh createSession shape with zero records.
+      [`ytd_session_${sessionId}`]: JSON.parse(
+        JSON.stringify(sessionPipeline.createSession({ sessionId })),
+      ),
+    },
+  });
+  await helpers.handleGetSessionState();
+
+  await helpers.handleCaptureEnded(
+    { action: "captureEnded", reason: "capture stream is no longer active" },
+    {},
+  );
+
+  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
+  assert.equal(requests.length, 0, "no AI call without a Transcript");
+  assert.equal(
+    helpers.readStored(`report_${sessionId}`),
+    undefined,
+    "a skipped pass persists no artifact",
+  );
+  const ended = sentMessages.find(
+    (message) =>
+      message.action === "sessionUpdate" && message.state?.status === "ended",
+  );
+  assert.ok(ended, "the Session still ends broadcast-honestly");
+  // Property assertion only: the skipped payload object is created inside
+  // the background VM context, so a cross-realm deepEqual never matches.
+  assert.equal(ended.report.skipped, "noTranscript");
+});
+
 // --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>
 
 const REPORT_BODY = {

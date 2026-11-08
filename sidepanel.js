@@ -2335,6 +2335,17 @@ function setupSessionUI() {
       sendResponse({ success: true });
       return false;
     }
+    if (message.action === "sessionUpdate" && message.captureNotice) {
+      // The capture stream died mid-Session (course tab closed or navigated
+      // away) and the worker auto-ended the Session; surface the reason the
+      // same way the startError precedent does. The ended state and its
+      // digest arrive in the follow-up sessionUpdate broadcast.
+      window.alert(message.captureNotice);
+      const status = document.getElementById("sessionStatus");
+      if (status) status.textContent = message.captureNotice;
+      sendResponse({ success: true });
+      return false;
+    }
     if (message.action === "sessionUpdate" && message.state) {
       if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
       sessionUi.sessionId = message.sessionId;

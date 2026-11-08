@@ -531,6 +531,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  if (message.action === "captureEnded") {
+    // Unsolicited one-shot notice from the offscreen recorder: the capture
+    // stream went inactive mid-Session (course tab closed or navigated
+    // away). Fire-and-forget, like captureChunk.
+    handleCaptureEnded(message, sender).catch((error) =>
+      console.error(
+        "[Learning Digest] captureEnded handling failed:",
+        error?.message || error,
+      ),
+    );
+    return false;
+  }
+
   // Unknown action - still send a response to prevent hanging
   debugLog("[Learning Digest BG] Unknown action:", message.action);
   sendResponse({ success: false, error: "Unknown action" });
@@ -725,6 +738,9 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleGetSessionState,
   handleActionClicked,
   handlePageTitle,
+  // Capture death (#captureEnded): the offscreen recorder's one-shot notice
+  // that its stream went inactive; see tests/background-capture.test.js.
+  handleCaptureEnded,
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
@@ -1415,6 +1431,31 @@ async function handleBackstopChunk(message) {
   context.pendingChunks.push({ dataUrl: message.dataUrl, durationSeconds: message.durationSeconds, mimeType: message.mimeType });
   // Keep the position stream moving even if the live tick was suspended.
   feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
+}
+
+/**
+ * The offscreen recorder's one-shot death notice: the capture stream went
+ * inactive (course tab closed or navigated away) and no further recording
+ * is possible. Auto-end the Session honestly — the digest is produced from
+ * whatever Transcript exists (the noTranscript skip covers the empty case)
+ * — instead of zombie-ing as "active" with a dead stream. The notice
+ * broadcast goes out first so the panel learns the reason immediately;
+ * the ended state and report follow in endActiveSession's own broadcast.
+ * A repeated notice finds the context ended (or the pointer cleared) and
+ * is a no-op.
+ */
+async function handleCaptureEnded(message, _sender) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  const reason =
+    typeof message?.reason === "string" && message.reason
+      ? message.reason
+      : "unknown reason";
+  console.error("[Learning Digest] capture stream ended, auto-ending session:", reason);
+  broadcastSession(context.state, {
+    captureNotice: "音频采集已中断（标签页已关闭或已离开课程页），会话自动结束。",
+  });
+  await endActiveSession(context, { reason: "captureEnded" });
 }
 
 async function endActiveSession(context, { reason } = {}) {

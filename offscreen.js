@@ -24,6 +24,14 @@
  * pushed to the worker as an unsolicited captureChunk message; the
  * wallclock regular cut uses the same unsolicited channel.
  *
+ * A capture stream can die mid-Session (the course tab is closed or
+ * navigated away, leaving the tabCapture stream inactive forever). Every
+ * later recorder start would then throw NotSupportedError, so startRecorder
+ * guards for it and throws a clear error instead; the self-cut and
+ * captureCut paths turn that rejection into a one-shot unsolicited
+ * captureEnded notice to the worker (which auto-ends the Session) and shut
+ * everything down so nothing keeps failing after death.
+ *
  * Browser-only: not unit-tested (spec Testing Decisions); verified
  * manually per the ticket's checklist.
  */
@@ -63,6 +71,35 @@
     playbackContext = null;
   }
 
+  // One-shot death notice to the worker: the capture stream is gone for
+  // good, so the worker auto-ends the Session instead of zombie-ing.
+  // Best-effort: the worker may be gone too; lastError is tolerated.
+  function notifyCaptureEnded(reason) {
+    try {
+      chrome.runtime.sendMessage(
+        { action: "captureEnded", reason },
+        () => void chrome.runtime.lastError,
+      );
+    } catch (_error) {
+      // Worker gone; nothing can be told about the death anymore.
+    }
+  }
+
+  // A dead stream stays dead: release everything the capture held so no
+  // timer fires into a broken recorder after death. Same cleanup shape as
+  // captureStop, minus the response.
+  function shutdownCapture() {
+    clearTimeout(backstopTimer);
+    clearInterval(regularCutTimer);
+    regularCutTimer = null;
+    stopPlaybackLoop();
+    if (stream) {
+      for (const track of stream.getTracks()) track.stop();
+      stream = null;
+    }
+    recorder = null;
+  }
+
   // Cut a chunk now and push it to the service worker unsolicited. The
   // worker wakes on the message, so the cut pipeline keeps running even
   // while the worker's own timers are suspended.
@@ -77,6 +114,12 @@
       } catch (_error) {
         // Worker gone; nothing useful to do with the chunk anyway.
       }
+    }, (error) => {
+      // The stream died mid-Session (tab closed or navigated away). Tell
+      // the worker once, loudly, then release everything instead of letting
+      // every later cut fail the same way in silence.
+      notifyCaptureEnded(error?.message || String(error));
+      shutdownCapture();
     });
   }
 
@@ -101,6 +144,17 @@
   }
 
   function startRecorder() {
+    // A tabCapture stream whose tab closed or navigated away stays inactive
+    // forever; starting a recorder on it throws NotSupportedError (the
+    // live-tested zombie path). Fail with a clear error instead; callers
+    // turn the rejection into a captureEnded notice.
+    const hasLiveAudio =
+      !!stream &&
+      stream.active &&
+      stream.getAudioTracks().some((track) => track.readyState === "live");
+    if (!hasLiveAudio) {
+      throw new Error("capture stream is no longer active");
+    }
     const options = MediaRecorder.isTypeSupported(MIME_TYPE) ? { mimeType: MIME_TYPE } : undefined;
     recorder = new MediaRecorder(stream, options);
     recorder.start();
@@ -166,8 +220,16 @@
       return true;
     }
     if (message.action === "captureCut") {
-      void cutChunk().then((chunk) =>
-        sendResponse(chunk || { error: "not recording" }),
+      void cutChunk().then(
+        (chunk) => sendResponse(chunk || { error: "not recording" }),
+        (error) => {
+          // The stream died mid-Session: same handling as selfCutAndSend's
+          // rejection, plus the response the worker's dispatch is awaiting;
+          // the channel must ALWAYS close.
+          notifyCaptureEnded(error?.message || String(error));
+          shutdownCapture();
+          sendResponse({ error: error?.message || String(error) });
+        },
       );
       return true;
     }

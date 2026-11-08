@@ -764,6 +764,10 @@ function switchTab(tabName) {
     panel.classList.toggle("active", panel.dataset.panel === tabName);
   });
 
+  // The Session view (the live transcript) belongs to the 逐字稿 tab only:
+  // 概览/纪要/笔记 must not have it stacked underneath their own content.
+  updateSessionViewVisibility();
+
   // Restore the independent transcript reading position when the user
   // returns here (Notes always opens at the top instead).
   if (tabName === "transcript") {
@@ -1559,6 +1563,10 @@ globalThis.__YTD_SESSION_TESTING__ = {
   setSegmentLengthForCopy(value) {
     segmentLengthForCopy = value;
   },
+  showSessionMode,
+  endLearning,
+  renderEndButton,
+  adoptSessionReport,
 };
 
 // ============================================================
@@ -1590,6 +1598,11 @@ const sessionUi = {
   // transcript the report's timestamps jump into) stays visible after the
   // Session ends instead of being wiped by the 5s poll.
   reportShown: false,
+  // End-button state machine (0.1.40): 结束学习 click or a report retry sets
+  // reportGenerating until any end-time payload arrives; a failed pass keeps
+  // reportError so the 开始总结 button doubles as the retry affordance.
+  reportGenerating: false,
+  reportError: null,
 };
 
 /**
@@ -1719,8 +1732,13 @@ function reportHasContent(report) {
  * transcript those timestamps jump into.
  */
 function adoptSessionReport(report, sessionId) {
-  if (!reportHasContent(report)) return;
+  // Any end-time payload (content, error, skipped) settles the generating
+  // state, keeps the Session view alive for the button's state machine, and
+  // funnels into the tabs — applyReportPayloadToTab renders error/skipped.
+  sessionUi.reportGenerating = false;
+  sessionUi.reportError = report?.error || null;
   sessionUi.reportShown = true;
+  renderEndButton();
   void applyReportPayloadToTab(report, sessionId);
 }
 
@@ -1863,6 +1881,9 @@ function reportTabSetActiveSession(sessionId) {
  * @param {string|null} sessionId - the Session it belongs to
  */
 async function applyReportPayloadToTab(report, sessionId) {
+  sessionUi.reportGenerating = false;
+  sessionUi.reportError = report?.error || null;
+  renderEndButton();
   if (!report || typeof report !== "object" || !reportHasContent(report)) return;
   if (
     sessionId &&
@@ -2322,7 +2343,6 @@ function showRecordingToast() {
 function showSessionMode({ active, kind, state }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
-  const endBtn = document.getElementById("endLearningBtn");
   const welcome = document.getElementById("welcomeState");
   if (!bar) return;
 
@@ -2349,8 +2369,8 @@ function showSessionMode({ active, kind, state }) {
       void refreshSummaryIntervalMinutes();
     }
     bar.style.display = "flex";
-    endBtn.style.display = "";
-    view.style.display = "";
+    renderEndButton();
+    updateSessionViewVisibility();
     if (welcome) welcome.style.display = "none";
     if (state?.sessionId && !toastedSessions.has(state.sessionId)) {
       toastedSessions.add(state.sessionId);
@@ -2365,18 +2385,13 @@ function showSessionMode({ active, kind, state }) {
   sessionUi.active = false;
   sessionUi.sessionId = null;
   sessionUi.renderedRecords = 0;
-  endBtn.style.display = "none";
-  if (sessionUi.reportShown) {
-    // The ended Session's report is on screen: keep the Session view (the
-    // transcript its timestamps jump into) open so the 5s poll does not
-    // wipe it right after ending.
-    view.style.display = "";
-  } else {
-    view.style.display = "none";
+  renderEndButton();
+  if (!sessionUi.reportShown) {
     clearLiveOverview();
     const transcript = document.getElementById("sessionTranscript");
     if (transcript) transcript.textContent = "";
   }
+  updateSessionViewVisibility();
 
   if (kind && kind !== "none") {
     // The toolbar icon is the only start entry point: a click inside the
@@ -2419,26 +2434,118 @@ async function refreshSessionUI() {
 
 async function endLearning() {
   const endBtn = document.getElementById("endLearningBtn");
+  if (!sessionUi.active) {
+    // The 开始总结 button doubles as the retry affordance after a failed
+    // summary pass: clicking it regenerates the last ended Session's report.
+    if (sessionUi.reportError && sessionUi.lastSessionId) {
+      sessionUi.reportGenerating = true;
+      renderEndButton();
+      try {
+        const result = await chrome.runtime.sendMessage({
+          action: "regenerateReport",
+          sessionId: sessionUi.lastSessionId,
+        });
+        if (result?.report) {
+          adoptSessionReport(result.report, sessionUi.lastSessionId);
+        } else {
+          sessionUi.reportGenerating = false;
+          renderEndButton();
+        }
+      } catch (error) {
+        sessionUi.reportGenerating = false;
+        sessionUi.reportError = error?.message || String(error);
+        renderEndButton();
+      }
+    }
+    return;
+  }
+  sessionUi.reportGenerating = true;
   endBtn.disabled = true;
+  renderEndButton();
   try {
     const result = await chrome.runtime.sendMessage({ action: "endLearning" });
     if (result?.state) {
+      // The end response's status settles the Session locally; the follow-up
+      // broadcast/poll only brings the report from here on.
+      if (result.state.status === "ended") sessionUi.active = false;
       renderSessionTranscript(result.state);
       observeSessionTitle(result.state);
       renderLiveTopics(result.state);
       const status = document.getElementById("sessionStatus");
-      if (status) status.textContent = "会话已结束";
+      if (status) {
+        status.textContent = sessionUi.reportGenerating
+          ? "会话已结束 · 正在生成学习纪要…"
+          : "会话已结束";
+      }
       if (result.report) {
         // Keep the Session view open so the transcript stays readable and
         // the report's timestamps keep somewhere to jump into.
         adoptSessionReport(result.report, result.state.sessionId);
         return;
       }
+      // No report in the end response: a follow-up broadcast carries it;
+      // until then the button shows the disabled 开始总结 state.
+      renderEndButton();
+      return;
     }
     showSessionMode({ active: false, kind: sessionUi.kind, state: null });
-  } finally {
-    endBtn.disabled = false;
+    renderEndButton();
+  } catch (error) {
+    // The end action itself failed: the Session is still active, so restore
+    // the button to 结束学习 instead of leaving a disabled 开始总结 behind.
+    sessionUi.reportGenerating = false;
+    console.error("[Learning Digest] endLearning failed:", error?.message || error);
+    renderEndButton();
   }
+}
+
+/**
+ * The 结束学习/开始总结 button is a small state machine over the Session
+ * lifecycle: active → 结束学习 (enabled); ended with the report generating →
+ * 开始总结 (disabled); ended with a failed pass → 开始总结 (enabled, acts as
+ * retry); otherwise (report ready/skipped, or nothing to show) hidden.
+ */
+function renderEndButton() {
+  const endBtn = document.getElementById("endLearningBtn");
+  if (!endBtn) return;
+  if (sessionUi.active) {
+    endBtn.style.display = "";
+    endBtn.disabled = false;
+    endBtn.textContent = "结束学习";
+    return;
+  }
+  if (sessionUi.reportGenerating) {
+    endBtn.style.display = "";
+    endBtn.disabled = true;
+    endBtn.textContent = "开始总结";
+    return;
+  }
+  if (sessionUi.reportError) {
+    endBtn.style.display = "";
+    endBtn.disabled = false;
+    endBtn.textContent = "开始总结";
+    return;
+  }
+  endBtn.style.display = "none";
+  endBtn.disabled = false;
+  endBtn.textContent = "结束学习";
+}
+
+/**
+ * The Session view (the live transcript) belongs to the 逐字稿 tab alone:
+ * it shows there whenever a Session view has content to show, and every
+ * other tab renders only its own panel. Kept in sync from switchTab and
+ * showSessionMode so the 5s poll can never fight the active tab.
+ */
+function updateSessionViewVisibility() {
+  const view = document.getElementById("sessionView");
+  if (!view) return;
+  const hasSessionContent =
+    sessionUi.active ||
+    sessionUi.reportShown ||
+    Boolean(sessionUi.sessionId || sessionUi.lastSessionId) ||
+    view.childElementCount > 0;
+  view.style.display = transcriptTabIsActive() && hasSessionContent ? "" : "none";
 }
 
 function setupSessionUI() {

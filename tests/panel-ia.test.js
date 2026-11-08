@@ -201,7 +201,20 @@ function loadPanel({ stored = {} } = {}) {
         createdElements.push(el);
         return el;
       },
-      querySelector: () => null,
+      querySelector: (selector) => {
+        // resultTabIsActive probes the active panel with this compound
+        // selector; evaluate it against the recorded tab-panel elements.
+        const panelMatch = /^\.tab-panel\[data-panel="([\w-]+)"\]\.active$/.exec(
+          String(selector),
+        );
+        if (panelMatch) {
+          const panel = selectorResults[".tab-panel"].find(
+            (item) => item.dataset.panel === panelMatch[1],
+          );
+          return panel && panel.classList.contains("active") ? panel : null;
+        }
+        return null;
+      },
       querySelectorAll: (selector) => selectorResults[selector] || [],
       addEventListener: (type, handler) => {
         docListeners[type] = handler;
@@ -581,4 +594,94 @@ test("segment wait copy follows the configured Segment length", () => {
 
   panel.session.setSegmentLengthForCopy(45);
   assert.equal(panel.session.segmentLengthLabel(), "45 秒");
+});
+
+test("the Session view shows on the 逐字稿 tab only", () => {
+  const panel = loadPanel({ stored: {} });
+
+  // A fresh Session surfaces the 纪要 tab (story 7): the generating hint
+  // owns the view and the transcript must not stack underneath it.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: { sessionId: "s_view", status: "active" },
+  });
+  const view = panel.elementById("sessionView");
+  assert.equal(view.style.display, "none", "the surfaced 纪要 tab has no transcript underneath");
+
+  panel.transcript.switchTab("transcript");
+  assert.equal(view.style.display, "", "the 逐字稿 tab shows the Session view");
+
+  panel.transcript.switchTab("overview");
+  assert.equal(view.style.display, "none", "概览 must not stack the transcript");
+  panel.transcript.switchTab("report");
+  assert.equal(view.style.display, "none", "纪要 must not stack the transcript");
+  panel.transcript.switchTab("notes");
+  assert.equal(view.style.display, "none", "笔记 must not stack the transcript");
+  panel.transcript.switchTab("transcript");
+  assert.equal(view.style.display, "", "switching back restores the transcript");
+});
+
+test("the end button walks the 结束学习 → 开始总结 → hidden lifecycle", async () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: { sessionId: "s_end", status: "active" },
+  });
+  const endBtn = panel.elementById("endLearningBtn");
+  assert.equal(endBtn.textContent, "结束学习");
+  assert.equal(endBtn.disabled, false);
+
+  // Ending without a report in the response: the button flips to a disabled
+  // 开始总结 while the summary pass is pending.
+  panel.setNextResponse(() => ({
+    state: { sessionId: "s_end", status: "ended" },
+  }));
+  await panel.session.endLearning();
+  assert.equal(endBtn.textContent, "开始总结");
+  assert.equal(endBtn.disabled, true, "开始总结 is not clickable while generating");
+
+  // The failed pass keeps the button as an enabled retry affordance.
+  panel.session.adoptSessionReport(
+    { error: "报告长度受限，生成未完成，请重试。" },
+    "s_end",
+  );
+  assert.equal(endBtn.textContent, "开始总结");
+  assert.equal(endBtn.disabled, false, "开始总结 is clickable to retry");
+
+  // A successful report hides the button entirely.
+  panel.session.adoptSessionReport(
+    { topics: [{ start: 0, end: 30, title: "开场", summary: "内容。" }], quotes: [], todos: [] },
+    "s_end",
+  );
+  assert.equal(endBtn.style.display, "none");
+});
+
+test("clicking 开始总结 after a failed pass sends regenerateReport", async () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: { sessionId: "s_retry", status: "active" },
+  });
+  panel.session.showSessionMode({
+    active: false,
+    kind: "live",
+    state: null,
+  });
+  panel.session.adoptSessionReport({ error: "生成失败" }, "s_retry");
+
+  panel.setNextResponse(() => ({
+    report: { topics: [{ start: 0, end: 30, title: "开场", summary: "内容。" }] },
+  }));
+  await panel.session.endLearning();
+
+  const regenerate = panel.sentMessages.find(
+    (message) => message.action === "regenerateReport",
+  );
+  assert.ok(regenerate, "the retry funnels through regenerateReport");
+  assert.equal(regenerate.sessionId, "s_retry");
+  const endBtn = panel.elementById("endLearningBtn");
+  assert.equal(endBtn.style.display, "none", "a successful retry hides the button");
 });

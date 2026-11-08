@@ -44,8 +44,8 @@ function loadBackgroundHelpers({
   settings = {
     provider: "deepseek",
     aiApiKey: "test-key",
-    aiBaseUrl: "https://openrouter.ai/api/v1",
-    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+    aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    aiModel: "qwen3.8-flash",
   },
   fetchImpl = fetch,
   promptFiles = {},

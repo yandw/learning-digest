@@ -150,8 +150,13 @@ async function requestAiCompletion({
   if (responseFormat) {
     body.response_format = responseFormat;
   }
-  // Product features need bounded, predictable latency rather than reasoning traces.
-  body.thinking = { type: "disabled" };
+  // Product features need bounded, predictable latency rather than reasoning
+  // traces. `thinking` is a DeepSeek-specific body field — only send it to
+  // DeepSeek endpoints so other OpenAI-compatible providers (e.g. Bailian
+  // Qwen) never receive an unknown parameter.
+  if (/deepseek\.com/i.test(settings.aiBaseUrl)) {
+    body.thinking = { type: "disabled" };
+  }
 
   const controller = new AbortController();
   let timeoutKind = "";

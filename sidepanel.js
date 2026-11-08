@@ -734,7 +734,7 @@ function showError(title, message) {
 
 function showConfigError(configStatus) {
   const missingKeys = [];
-  if (!configStatus.hasAiKey) missingKeys.push("OpenRouter API 密钥");
+  if (!configStatus.hasAiKey) missingKeys.push("AI API 密钥");
 
   showState("error");
   document.getElementById("errorTitle").textContent = "缺少 API 密钥";

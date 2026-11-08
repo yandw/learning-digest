@@ -123,13 +123,13 @@ test("customization prompt is prefilled in Chinese", () => {
   const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
 
   assert.doesNotMatch(html, /supadata/i);
-  assert.match(html, /placeholder="Paste your OpenRouter key"/);
-  assert.match(html, /https:\/\/openrouter\.ai\/keys/);
+  assert.match(html, /placeholder="Paste your Bailian key"/);
+  assert.match(html, /https:\/\/bailian\.console\.aliyun\.com\//);
   assert.ok(html.includes(`>${chinesePrompt}</textarea>`));
   assert.match(chinesePrompt, /^请把当前本地 Learning Digest 工作区改为使用/);
   assert.match(
     chinesePrompt,
-    /DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。/,
+    /现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。/,
   );
 
   assert.match(chinesePrompt, /\[PROVIDER\]/);

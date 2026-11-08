@@ -25,7 +25,7 @@ There is no guaranteed response time or bug-bounty program. Please allow a reaso
 Examples include:
 
 - API keys or private content included in source, logs, screenshots, or release ZIPs;
-- unexpected requests to network origins outside the documented Source Platform, DeepSeek, OpenRouter, and Speech Provider hosts;
+- unexpected requests to network origins outside the documented Source Platform, AI Provider, and Speech Provider hosts;
 - script or HTML injection through transcript, metadata, service errors, or model output;
 - access to browsing data outside the documented Source Platform scope;
 - unintended transmission of notes, transcripts, audio, or credentials;

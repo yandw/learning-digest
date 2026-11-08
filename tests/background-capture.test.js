@@ -625,7 +625,7 @@ test("a realtime utterance on a replay Session stamps at the bridged position mi
     loadBackgroundHelpers({
       // Pinned segment length: the bridge ticks below the seek threshold so
       // the position stream stays a plain playback feed (no seek handling).
-      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+      settings: qwenSettings("realtime", { settingsVersion: 3 }),
     });
   const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
   assert.equal(started.transcribeMode, "realtime");
@@ -651,7 +651,7 @@ test("a realtime utterance on a replay Session stamps at the bridged position mi
 test("a video-kind realtime utterance whose speech began before 0:00 clamps to 0", async () => {
   const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
     loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+      settings: qwenSettings("realtime", { settingsVersion: 3 }),
     });
   const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
@@ -670,7 +670,7 @@ test("a video-kind realtime utterance whose speech began before 0:00 clamps to 0
 test("a realtime wallclock Session anchors via the probe and stamps at video positions", async () => {
   const { handleStartLearning, handleGetSessionState, handleMediaPosition, handleRealtimeUtterance, readStored } =
     loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+      settings: qwenSettings("realtime", { settingsVersion: 3 }),
     });
   const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
   assert.equal(started.timestampKind, "wallclock");
@@ -696,7 +696,7 @@ test("a realtime wallclock Session anchors via the probe and stamps at video pos
 test("a seek during realtime replay marks the skipped range and keeps stamping at video positions", async () => {
   const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
     loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+      settings: qwenSettings("realtime", { settingsVersion: 3 }),
     });
   const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
@@ -735,7 +735,7 @@ test("a seek during realtime replay marks the skipped range and keeps stamping a
 test("media end auto-ends a realtime replay Session like any replay Session", async () => {
   const { handleStartLearning, handleGetSessionState, handleMediaPosition, readStored } =
     loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 2 }),
+      settings: qwenSettings("realtime", { settingsVersion: 3 }),
       fetchImpl: noNetworkFetch,
     });
   const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -1993,7 +1993,7 @@ test("the settings blob is stamped with the version on the first read", async ()
   await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
   const blob = readStored("ytd_settings");
-  assert.equal(blob.settingsVersion, 2);
+  assert.equal(blob.settingsVersion, 3);
   assert.equal(blob.segmentLengthSeconds, 30);
 });
 
@@ -2053,11 +2053,11 @@ function mediaPositionMessage(position, extra = {}) {
   };
 }
 
-// The v2 settings migration forces a stored 120 (the legacy default) back
-// to 30 unless the blob is stamped, so these tests pin the version to keep
-// the round Segment numbers in their assertions.
+// The settings migration forces a stored 120 (the legacy default) back
+// to 30 unless the blob is stamped with the current version, so these tests
+// pin the version to keep the round Segment numbers in their assertions.
 function pinnedSettings(overrides = {}) {
-  return { ...baseSettings(overrides), settingsVersion: 2 };
+  return { ...baseSettings(overrides), settingsVersion: 3 };
 }
 
 test("a wallclock l_ Session anchors to the video timeline on the first bridged position", async () => {

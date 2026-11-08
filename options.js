@@ -9,23 +9,23 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "界面语言",
       heading: "使用你自己的 API 密钥",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 OpenRouter。本开源扩展没有开发者服务器，也不使用分析服务。",
+        "密钥仅保存在当前 Chrome 个人资料中，只会发送给你配置的 AI 服务。本开源扩展没有开发者服务器，也不使用分析服务。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
-      deepseekApiKeyLabel: "OpenRouter API 密钥",
+      deepseekApiKeyLabel: "AI API 密钥",
       deepseekHelp:
-        "Learning Digest 通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型，生成话题时间轴、学习纪要、翻译和润色笔记。",
-      deepseekLink: "创建 OpenRouter API 密钥",
+        "Learning Digest 通过 OpenAI 兼容接口调用大模型（默认阿里云百炼 qwen3.8-flash），生成话题时间轴、学习纪要、翻译和润色笔记。",
+      deepseekLink: "创建百炼 API 密钥",
       deepseekHelpSuffix: "。",
       aiBaseUrlLabel: "API 基础 URL",
       aiModelLabel: "模型",
       customEndpointHelp:
-        "两个字段都留空则保持 OpenRouter 默认值。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 openrouter.ai，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+        "两个字段都留空则保持默认值（阿里云百炼）。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 dashscope.aliyuncs.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
       invalidBaseUrl:
         "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
-        "使用 AI 功能时，OpenRouter 会收到逐字稿及相关会话上下文，并转发给你配置的模型服务商。保存前请查看 OpenRouter 的服务条款和价格。",
+        "使用 AI 功能时，你配置的 AI 服务会收到逐字稿及相关会话上下文（默认为阿里云百炼）。保存前请查看该服务的服务条款和价格。",
       speechProvider: "语音转录服务",
       speechProviderSummaryLabel: "语音转录服务",
       speechProviderBadge: "将课程音频转录为 Transcript 记录",
@@ -75,7 +75,7 @@ const YTD_OPTIONS = (() => {
       customizationReminder:
         "复制前，请先把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。",
       customizationPrompt:
-        "请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。",
+        "请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。",
       copyCustomizationPrompt: "复制编辑后的提示词",
       localData: "本地数据",
       localDataHelp:
@@ -86,7 +86,7 @@ const YTD_OPTIONS = (() => {
       footer:
         '完整数据流说明请参阅仓库中的 <a href="PRIVACY.md" target="_blank">PRIVACY.md</a>。',
       migrationWarning:
-        "已安全移除自定义服务设置。AI 密钥已清除。请输入 OpenRouter API 密钥以继续使用。",
+        "已安全移除自定义服务设置。AI 密钥已清除。请输入 AI API 密钥以继续使用。",
       saving: "正在保存…",
       verifying: "已保存。正在校验 API 连接…",
       savedVerified:
@@ -97,7 +97,7 @@ const YTD_OPTIONS = (() => {
       aiHttpError: ({ status }) => `AI 端点返回 HTTP ${status}`,
       aiUnreachable:
         "无法连接 AI 端点（请检查基础 URL 和 manifest 的 host_permissions）",
-      addDeepseekKey: "请添加 OpenRouter API 密钥。",
+      addDeepseekKey: "请添加 AI API 密钥。",
       saveFailed: "无法保存设置，请重试。",
       copying: "正在复制…",
       promptCopied: "已复制编辑后的提示词。",

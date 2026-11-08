@@ -321,7 +321,7 @@ test("a stamped blob's tuned Segment length survives an options save", async () 
   assert.equal(page.elements.segmentLengthSeconds.value, 90);
   await page.submit();
   assert.equal(page.stored.ytd_settings.segmentLengthSeconds, 90);
-  assert.equal(page.stored.ytd_settings.settingsVersion, 2);
+  assert.equal(page.stored.ytd_settings.settingsVersion, 3);
 });
 
 test("the Segment length field markup matches the segmenter clamp and copy guidance", () => {

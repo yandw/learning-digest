@@ -33,7 +33,7 @@ xiaoe-tech.com 的 Source Platform 采集和三个 Speech Provider（Groq、腾�
 你的 Agent 应该：
 
 1. 询问你想把项目保存在哪里，把它下载或克隆到那里，并告诉你准确的完整路径。如果你需要建议，它可以推荐 macOS 或 Linux 上的 `~/Documents/learning-digest`，或 Windows 上的 `%USERPROFILE%\Documents\learning-digest`。
-2. 打开下面的 DeepSeek 官方页面，帮你创建自己的账号。
+2. 打开下面的阿里云百炼页面，帮你创建自己的账号。
 3. 带你完成在 Chrome 中通过“加载已解压的扩展程序”选择你刚才确定的那个准确项目文件夹。
 4. 告诉你如何在扩展的 **Settings** 页面输入 API 密钥。
 5. 说明侧边栏、Session 流水线和 Speech Provider 设置如何配合工作。
@@ -59,29 +59,29 @@ xiaoe-tech.com 的 Source Platform 采集和三个 Speech Provider（Groq、腾�
 
 ## 设置 API 密钥
 
-Learning Digest 使用你自己的 OpenRouter API 密钥生成摘要、解释内容、翻译和笔记功能。Session 转写使用 Speech Provider（默认为阿里云百炼 Qwen ASR），需要单独的密钥。
+Learning Digest 使用你自己的 AI 服务密钥（默认阿里云百炼）生成摘要、解释内容、翻译和笔记功能。Session 转写使用 Speech Provider（默认为阿里云百炼 Qwen ASR），需要单独的密钥。
 
-### 获取 OpenRouter API 密钥
+### 获取 AI 服务 API 密钥
 
-1. 打开官方 [OpenRouter API Keys 页面](https://openrouter.ai/keys)。
-2. 按提示登录或创建 OpenRouter 账号。
-3. 选择 **Create API Key**，起一个容易识别的名字，例如 `Learning Digest`，然后创建。
+1. 打开官方 [阿里云百炼控制台](https://bailian.console.aliyun.com/)。
+2. 按提示登录或创建阿里云账号，并按需开通百炼（Model Studio）服务。
+3. 创建 API Key，起一个容易识别的名字，例如 `Learning Digest`。
 4. 立即复制密钥，完整密钥可能只显示一次。
-5. 把密钥粘贴到 Learning Digest 设置的 **OpenRouter API key** 字段中。
-6. 如果 OpenRouter 提示额度不足，请在 OpenRouter 账号中充值后重试。
+5. 把密钥粘贴到 Learning Digest 设置的 **AI API 密钥** 字段中。
+6. 如果百炼提示额度不足，请在百炼账号中充值后重试。
 
-当前账号和 API 详情以 [OpenRouter 官方文档](https://openrouter.ai/docs/) 为准。
+当前账号和 API 详情以 [阿里云百炼官方文档](https://help.aliyun.com/zh/model-studio/) 为准。
 
 从侧边栏打开 **Settings**。你也可以在 `chrome://extensions` 的扩展卡片上打开 Learning Digest 的 **Options** 页面，或右键点击工具栏图标。请只在这些设置字段中粘贴密钥，永远不要把密钥粘贴到 AI 聊天、仓库文件、截图或公开信息中。
 
-发布版本通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型作为 AI 服务：
+发布版本通过阿里云百炼使用 qwen3.8-flash 模型作为 AI 服务：
 
 ```text
-Base URL: https://openrouter.ai/api/v1
-Model: deepseek/deepseek-v4.1-flash-1017
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+Model: qwen3.8-flash
 ```
 
-Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在设置中固定，因此你需要输入的 AI 凭证只有 OpenRouter API 密钥。如果想换其他服务或模型，请复制设置页中安全自定义提示词，交给编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
+Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在设置中固定，因此你需要输入的 AI 凭证只有百炼 API 密钥。如果想换其他服务或模型，请复制设置页中安全自定义提示词，交给编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
 
 ### Speech Provider 密钥
 
@@ -113,21 +113,13 @@ Model: qwen3-asr-flash
 - Speech Provider 注册表，内置 Groq、腾讯云 ASR、阿里云 ASR。
 - 针对缓存 Transcript 的 AI 概览、选中文本解释、翻译和本地笔记。
 - 本地笔记，以及近期 Transcript 和 Digest 结果的本地缓存。
-- 所有已发布的 AI 功能都使用 DeepSeek V4 Flash。其他服务需要你自行修改本地代码，发布版本不提供支持。
+- 所有已发布的 AI 功能都通过阿里云百炼使用 qwen3.8-flash。其他服务需要你自行修改本地代码，发布版本不提供支持。
 
 xiaoe-tech.com 的 Source Platform 采集已实现；真实课程上的 Provider 评估见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。Firefox、Safari、移动端浏览器和其他 Chromium 浏览器目前未做测试和支持。
 
 ## AI 费用
 
-OpenRouter 在模型服务商价格之上收取自己的加成；`deepseek/deepseek-v4.1-flash-1017` 的当前费率见 [OpenRouter 模型页面](https://openrouter.ai/models/deepseek/deepseek-v4.1-flash-1017)。DeepSeek 原始 list 价格（2026 年 8 月 27 日，每 100 万 token 美元价，仅供参考）：
-
-| Token 类型 | 非高峰 | 高峰 |
-| --- | ---: | ---: |
-| 缓存命中输入 | $0.007 | $0.014 |
-| 缓存未命中输入 | $0.22 | $0.44 |
-| 输出 | $0.66 | $1.32 |
-
-高峰时段为周一至周五 UTC 01:00-04:00 和 06:00-10:00，其余时间按非高峰计费。使用前请以官方页面为准。
+阿里云百炼对 `qwen3.8-flash` 采用阶梯计价，单价取决于单次请求的输入 token 总量；当前费率以[官方模型价格页](https://help.aliyun.com/zh/model-studio/model-pricing)为准。
 
 Session 转写由你的 Speech Provider 计费。Groq 当前的 Whisper 定价见 Groq 官方定价页面；一节课的音频转写通常只需几分之一美分。
 

@@ -9,8 +9,11 @@ var YTD_SETTINGS = (() => {
   const DEFAULTS = Object.freeze({
     provider: "deepseek",
     aiApiKey: "",
-    aiBaseUrl: "https://openrouter.ai/api/v1",
-    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+    // AI Provider (0.1.51 default): Alibaba Cloud Bailian's OpenAI-compatible
+    // endpoint. One model field drives every AI feature (Topic ticks, the
+    // end-of-session report pass, explain-selection).
+    aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    aiModel: "qwen3.8-flash",
     // Speech Transcription Provider: independent of the AI Provider above.
     // Defaults to Groq's OpenAI-compatible endpoint, but the user can point
     // it at any OpenAI-compatible /audio/transcriptions host.
@@ -171,13 +174,45 @@ var YTD_SETTINGS = (() => {
     return stored;
   }
 
+  /**
+   * v3 migration (0.1.51): the published AI Provider default moves from
+   * OpenRouter (DeepSeek V4.1 Flash) to Alibaba Cloud Bailian (Qwen). Blobs
+   * stamped below v3 (or unstamped) that still sit at BOTH old defaults, or
+   * lack the fields entirely, were never customized — the same "old default
+   * is never a user choice" precedent as the Segment length migration — so
+   * they move to the new defaults. Any other stored pair passes through
+   * untouched.
+   */
+  function migrateAiProvider(source) {
+    if (Number(source?.settingsVersion) >= SETTINGS_VERSION) {
+      return { aiBaseUrl: source.aiBaseUrl, aiModel: source.aiModel };
+    }
+    const baseUrl =
+      typeof source?.aiBaseUrl === "string" ? source.aiBaseUrl.trim() : "";
+    const model =
+      typeof source?.aiModel === "string" ? source.aiModel.trim() : "";
+    const atLegacyDefaults =
+      (!baseUrl || baseUrl === LEGACY_AI_BASE_URL) &&
+      (!model || model === LEGACY_AI_MODEL);
+    if (!atLegacyDefaults) {
+      return { aiBaseUrl: source.aiBaseUrl, aiModel: source.aiModel };
+    }
+    return { aiBaseUrl: DEFAULTS.aiBaseUrl, aiModel: DEFAULTS.aiModel };
+  }
+
   // Settings blobs are stamped with a version so default changes can reach
-  // installs that saved settings under an older default (see the v2 Segment
-  // migration below). Callers persist the stamped object once after migrate.
-  const SETTINGS_VERSION = 2;
+  // installs that saved settings under an older default (see the Segment
+  // and AI Provider migrations above). Callers persist the stamped object
+  // once after migrate.
+  const SETTINGS_VERSION = 3;
   const LEGACY_SEGMENT_DEFAULT = 120;
+  // Pre-0.1.51 AI Provider defaults. Only migrateAiProvider reads them, to
+  // recognize blobs that still point at the old published provider.
+  const LEGACY_AI_BASE_URL = "https://openrouter.ai/api/v1";
+  const LEGACY_AI_MODEL = "deepseek/deepseek-v4.1-flash-1017";
 
   function normalize(input = {}) {
+    const migratedAi = migrateAiProvider(input);
     return {
       settingsVersion: SETTINGS_VERSION,
       provider: DEFAULTS.provider,
@@ -188,10 +223,10 @@ var YTD_SETTINGS = (() => {
           : "",
       aiBaseUrl: isLegacyCustom(input)
         ? DEFAULTS.aiBaseUrl
-        : normalizeBaseUrl(input.aiBaseUrl, DEFAULTS.aiBaseUrl),
+        : normalizeBaseUrl(migratedAi.aiBaseUrl, DEFAULTS.aiBaseUrl),
       aiModel: isLegacyCustom(input)
         ? DEFAULTS.aiModel
-        : normalizeModel(input.aiModel, DEFAULTS.aiModel),
+        : normalizeModel(migratedAi.aiModel, DEFAULTS.aiModel),
       // Speech Transcription Provider fields are unrelated to the legacy
       // "custom" AI provider migration, so they're never cleared by it.
       sttApiKey:

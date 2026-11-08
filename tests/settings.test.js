@@ -21,13 +21,14 @@ test("custom AI base URL and model are preserved", () => {
   );
 });
 
-test("empty or invalid AI endpoint config falls back to DeepSeek defaults", () => {
+test("empty or invalid AI endpoint config falls back to the Bailian Qwen defaults", () => {
   const empty = settings.normalize({});
-  assert.equal(empty.aiBaseUrl, "https://openrouter.ai/api/v1");
-  assert.equal(empty.aiModel, "deepseek/deepseek-v4.1-flash-1017");
+  assert.equal(empty.aiBaseUrl, "https://dashscope.aliyuncs.com/compatible-mode/v1");
+  assert.equal(empty.aiModel, "qwen3.8-flash");
+  assert.equal(empty.settingsVersion, 3);
   assert.equal(
     settings.chatCompletionsUrl(),
-    "https://openrouter.ai/api/v1/chat/completions",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
   );
 
   const invalid = settings.normalize({
@@ -263,21 +264,104 @@ test("a legacy blob with the old default Segment length migrates to 30", () => {
   const normalized = settings.normalize({ segmentLengthSeconds: 120 });
 
   assert.equal(normalized.segmentLengthSeconds, 30);
-  assert.equal(normalized.settingsVersion, 2);
+  assert.equal(normalized.settingsVersion, 3);
 });
 
 test("a stamped blob keeps a hand-tuned Segment length", () => {
+  // A v2 stamp (0.1.41-0.1.50) is below the current version, but 600 was
+  // never a shipped default, so the hand-tuned value passes through and the
+  // blob is re-stamped to the current version.
   const normalized = settings.normalize({
     settingsVersion: 2,
     segmentLengthSeconds: 600,
   });
 
   assert.equal(normalized.segmentLengthSeconds, 600);
-  assert.equal(normalized.settingsVersion, 2);
+  assert.equal(normalized.settingsVersion, 3);
 });
 
 test("an unstamped blob with a hand-tuned Segment length keeps it", () => {
   const normalized = settings.normalize({ segmentLengthSeconds: 600 });
 
   assert.equal(normalized.segmentLengthSeconds, 600);
+});
+
+test("a v2 blob at the old AI defaults migrates to the Bailian Qwen defaults", () => {
+  // 0.1.51: OpenRouter + DeepSeek V4.1 Flash were the shipped defaults, so a
+  // blob still pointing at both was never customized — the same "old default
+  // is never a user choice" precedent as the Segment length migration.
+  const normalized = settings.normalize({
+    settingsVersion: 2,
+    aiApiKey: "sk-kept",
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+  });
+
+  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(
+    normalized.aiBaseUrl,
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  );
+  assert.equal(normalized.aiModel, "qwen3.8-flash");
+  assert.equal(normalized.aiApiKey, "sk-kept");
+});
+
+test("an unstamped blob at the old AI defaults migrates too", () => {
+  // Pre-0.1.41 blobs may lack the version stamp entirely.
+  const normalized = settings.normalize({
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+  });
+
+  assert.equal(normalized.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
+  assert.equal(normalized.aiModel, settings.DEFAULTS.aiModel);
+  assert.equal(normalized.settingsVersion, 3);
+});
+
+test("a v2 blob with a customized AI endpoint passes through untouched", () => {
+  const normalized = settings.normalize({
+    settingsVersion: 2,
+    aiBaseUrl: "https://api.example.com/v1",
+    aiModel: "my-model",
+  });
+
+  assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
+  assert.equal(normalized.aiModel, "my-model");
+  assert.equal(normalized.settingsVersion, 3);
+});
+
+test("a v2 blob with only one AI field customized keeps both stored values", () => {
+  // Migration fires only when BOTH fields sit at (or lack) the old defaults:
+  // one customized field proves the pair was hand-configured.
+  const customModel = settings.normalize({
+    settingsVersion: 2,
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "my-model",
+  });
+  assert.equal(customModel.aiBaseUrl, "https://openrouter.ai/api/v1");
+  assert.equal(customModel.aiModel, "my-model");
+
+  const customBaseUrl = settings.normalize({
+    settingsVersion: 2,
+    aiBaseUrl: "https://openrouter.ai/api/v1/",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+  });
+  assert.equal(customBaseUrl.aiBaseUrl, "https://openrouter.ai/api/v1");
+  assert.equal(
+    customBaseUrl.aiModel,
+    "deepseek/deepseek-v4.1-flash-1017",
+  );
+});
+
+test("a blob stamped at the current version is never AI-migrated", () => {
+  // A user who deliberately re-picks the old provider on a v3 install keeps
+  // it: only pre-v3 stamps (or unstamped blobs) are migrated.
+  const normalized = settings.normalize({
+    settingsVersion: 3,
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+  });
+
+  assert.equal(normalized.aiBaseUrl, "https://openrouter.ai/api/v1");
+  assert.equal(normalized.aiModel, "deepseek/deepseek-v4.1-flash-1017");
 });

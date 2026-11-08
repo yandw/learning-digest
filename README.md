@@ -33,7 +33,7 @@ You do not need to understand the code or use the command line. Send this messag
 Your agent should:
 
 1. Ask where you want to keep the project, download or clone it there, and tell you the exact full path. If you want a suggestion, it can offer `~/Documents/learning-digest` on macOS or Linux, or `%USERPROFILE%\Documents\learning-digest` on Windows.
-2. Open the official DeepSeek page below and help you create your own account.
+2. Open the official Alibaba Cloud Bailian page below and help you create your own account.
 3. Walk you through selecting the exact project folder you chose in Chrome with **Load unpacked**.
 4. Show you where to enter your API keys in the extension's **Settings** page.
 5. Explain how the side panel, Session pipeline, and Speech Provider settings fit together.
@@ -59,29 +59,29 @@ Because this is an unpacked extension, it does not update automatically. After d
 
 ## Set up your API keys
 
-Learning Digest uses your own OpenRouter API key for summaries, explanations, translation, and note features. Session transcription uses a Speech Provider, Groq by default, with its own key.
+Learning Digest uses your own AI provider API key (Alibaba Cloud Bailian by default) for summaries, explanations, translation, and note features. Session transcription uses a Speech Provider, Qwen ASR on Bailian by default, with its own key.
 
-### Get an OpenRouter API key
+### Get an AI provider API key
 
-1. Open the official [OpenRouter API Keys page](https://openrouter.ai/keys).
-2. Sign in or create an OpenRouter account when prompted.
-3. Choose **Create API Key**, give it a recognizable name such as `Learning Digest`, and create it.
+1. Open the official [Alibaba Cloud Bailian console](https://bailian.console.aliyun.com/).
+2. Sign in or create an Alibaba Cloud account when prompted, and activate Bailian (Model Studio) if asked.
+3. Create an API key, give it a recognizable name such as `Learning Digest`, and create it.
 4. Copy the key immediately. The full key may only be shown once.
-5. Paste it into **OpenRouter API key** in Learning Digest Settings.
-6. If OpenRouter reports insufficient credits, add credit in your OpenRouter account and try again.
+5. Paste it into **AI API key** in Learning Digest Settings.
+6. If Bailian reports insufficient quota, top up in your Bailian account and try again.
 
-See the [official OpenRouter documentation](https://openrouter.ai/docs/) for current account and API details.
+See the [official Alibaba Cloud Model Studio documentation](https://help.aliyun.com/zh/model-studio/) for current account and API details.
 
 Open **Settings** from the side panel. You can also open the Learning Digest **Options** page from its card at `chrome://extensions` or by right-clicking its toolbar icon. Paste keys only into these Settings fields. Never paste a key into an AI chat, repository file, screenshot, or public message.
 
-The published version uses OpenRouter with the DeepSeek V4.1 Flash model as its AI provider:
+The published version uses Alibaba Cloud Bailian with the qwen3.8-flash model as its AI provider:
 
 ```text
-Base URL: https://openrouter.ai/api/v1
-Model: deepseek/deepseek-v4.1-flash-1017
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+Model: qwen3.8-flash
 ```
 
-Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your OpenRouter API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
+Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your Bailian API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
 
 ### Speech Provider key
 
@@ -113,21 +113,13 @@ Keys and settings are stored in Chrome's local extension storage on your device.
 - The Speech Provider registry with Groq, Tencent Cloud ASR, and Qwen ASR.
 - AI overviews, selected-text explanations, translation, and local notes against transcripts already in the cache.
 - Local notes and a local cache for recent transcript and digest results.
-- OpenRouter (DeepSeek V4.1 Flash) for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
+- Alibaba Cloud Bailian (qwen3.8-flash) for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
 
 Source Platform capture for xiaoe-tech.com is implemented; real-lesson provider evaluation is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 
 ## AI pricing
 
-OpenRouter passes through model provider pricing plus its own margin; current rates for `deepseek/deepseek-v4.1-flash-1017` are listed on the [OpenRouter model page](https://openrouter.ai/models/deepseek/deepseek-v4.1-flash-1017). The original DeepSeek list prices (August 27, 2026, per 1 million tokens, for reference) are:
-
-| Token type | Off-peak | Peak |
-| --- | ---: | ---: |
-| Cache-hit input | $0.007 | $0.014 |
-| Cache-miss input | $0.22 | $0.44 |
-| Output | $0.66 | $1.32 |
-
-Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday. All other hours use off-peak rates. Check the official page before relying on these prices.
+Bailian uses tiered pricing for `qwen3.8-flash`: the per-million-token rate depends on the input token size of each request. Current rates are listed on the [official model pricing page](https://help.aliyun.com/zh/model-studio/model-pricing). Check the official page before relying on these prices.
 
 Session transcription is billed by your Speech Provider. Groq's current Whisper pricing is listed on Groq's official pricing page; a typical lesson costs a small fraction of a cent per hour of audio.
 

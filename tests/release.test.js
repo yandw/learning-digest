@@ -47,7 +47,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.50");
+  assert.equal(manifest.version, "0.1.51");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -158,25 +158,31 @@ test("release copy documents current scope without em dashes", () => {
   );
   assert.match(chineseReadme, /不接受上游 Issue 或 Pull Request/);
 
-  // Bring-your-own-key spirit: DeepSeek key setup docs stay.
-  assert.match(readme, /openrouter\.ai\/keys/i);
-  assert.match(readme, /openrouter\.ai\/docs/i);
-  assert.match(readme, /openrouter\.ai\/models\/deepseek\/deepseek-v4\.1-flash-1017/i);
-  assert.match(readme, /\$0\.007[\s\S]*\$0\.014/);
-  assert.match(readme, /\$0\.22[\s\S]*\$0\.44/);
-  assert.match(readme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(chineseReadme, /openrouter\.ai\/keys/i);
-  assert.match(chineseReadme, /\$0\.007[\s\S]*\$0\.014/);
-  assert.match(chineseReadme, /\$0\.22[\s\S]*\$0\.44/);
-  assert.match(chineseReadme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(readme, /published version uses OpenRouter with the DeepSeek V4\.1 Flash model as its AI provider/i);
-  assert.match(chineseReadme, /发布版本通过 OpenRouter 使用 DeepSeek V4\.1 Flash 模型/);
+  // Bring-your-own-key spirit: AI key setup docs stay, now pointing at the
+  // Bailian default (0.1.51) with tiered pricing per the official price page.
+  assert.match(readme, /bailian\.console\.aliyun\.com/i);
+  assert.match(readme, /help\.aliyun\.com\/zh\/model-studio/i);
+  assert.match(readme, /qwen3\.8-flash/);
+  assert.match(readme, /tiered pricing/i);
+  assert.match(
+    readme,
+    /help\.aliyun\.com\/zh\/model-studio\/model-pricing/i,
+  );
+  assert.match(chineseReadme, /bailian\.console\.aliyun\.com/i);
+  assert.match(chineseReadme, /qwen3\.8-flash/);
+  assert.match(chineseReadme, /阶梯计价/);
+  assert.match(
+    chineseReadme,
+    /help\.aliyun\.com\/zh\/model-studio\/model-pricing/i,
+  );
+  assert.match(readme, /published version uses Alibaba Cloud Bailian with the qwen3\.8-flash model as its AI provider/i);
+  assert.match(chineseReadme, /发布版本通过阿里云百炼使用 qwen3\.8-flash 模型/);
   assert.match(readme, /bring-your-own-key/i);
 
   const optionsPage = read("options.html");
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
-  assert.match(optionsPage, /openrouter\.ai\/keys/i);
+  assert.match(optionsPage, /bailian\.console\.aliyun\.com/i);
   assert.doesNotMatch(optionsPage, /<select\b[^>]*\bid="provider"/);
   assert.doesNotMatch(optionsPage, /id="provider"/);
   assert.match(optionsPage, /id="aiBaseUrl"/);
@@ -215,7 +221,7 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(optionsScript, /已复制编辑后的提示词。/);
   assert.match(optionsScript, /migration\.migrated[\s\S]*storage\.set/);
 
-  assert.ok(optionsPage.includes(">请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。</textarea>"));
+  assert.ok(optionsPage.includes(">请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。</textarea>"));
   assert.doesNotMatch(optionsPage, /Documents|USERPROFILE/);
 
   assert.match(readme, /^## Remix it with your coding agent$/m);
@@ -336,7 +342,10 @@ test("runtime has no source-file credential dependency or retired model", () => 
   assert.doesNotMatch(runtime, /\bCONFIG\./);
   assert.doesNotMatch(runtime, /importScripts\(["']config\.js/);
   assert.doesNotMatch(runtime, /\bdeepseek-chat\b/);
-  assert.match(runtime, /deepseek\/deepseek-v4\.1-flash-1017/);
+  // The shipped default model (0.1.51): one aiModel field drives every AI
+  // call. The old OpenRouter model string survives only in settings.js as
+  // the v3 migration's legacy marker, never as a runtime choice.
+  assert.match(runtime, /qwen3\.8-flash/);
 });
 
 test("retired files are absent", () => {

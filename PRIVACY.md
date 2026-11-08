@@ -1,6 +1,6 @@
 # Privacy
 
-Effective: November 7, 2026
+Effective: November 9, 2026
 
 Learning Digest is a GitHub-only, bring-your-own-key Chrome extension. It has no Learning Digest account, developer-operated backend, analytics, advertising, or telemetry.
 
@@ -20,15 +20,15 @@ Depending on the feature you use, Learning Digest handles:
 
 ## Where data goes
 
-### AI Provider (OpenRouter)
+### AI Provider (Alibaba Cloud Bailian)
 
-The published version sends AI feature content to OpenRouter at `https://openrouter.ai/api/v1`, which routes it to the DeepSeek V4.1 Flash model:
+The published version sends AI feature content to Alibaba Cloud Bailian at `https://dashscope.aliyuncs.com/compatible-mode/v1`, which serves the qwen3.8-flash model:
 
 - transcript plus relevant session context for a rolling summary or the session digest;
 - small semantic transcript batches currently needed for progressive Chinese
   translation, or requested explanation content.
 
-The endpoint and `deepseek/deepseek-v4.1-flash-1017` model are fixed in the published Settings page. You provide one OpenRouter API key. To use another provider or model, you must adapt your own local source copy and its permissions. The Settings page provides a coding-agent prompt for that purpose and warns you never to include an API key in the prompt or chat.
+The endpoint and `qwen3.8-flash` model are fixed in the published Settings page. You provide one Bailian API key. To use another provider or model, you must adapt your own local source copy and its permissions. The Settings page provides a coding-agent prompt for that purpose and warns you never to include an API key in the prompt or chat.
 
 ### Speech Provider
 
@@ -36,7 +36,7 @@ When you run a Session, each Segment's audio is sent directly to the Speech Prov
 
 AI requests go directly from the extension to the configured providers. They are authenticated with the keys you supply. Learning Digest's developer does not proxy or receive these requests.
 
-OpenRouter, DeepSeek, Groq, and any other configured provider process data under their own terms, privacy policies, retention practices, and account settings. Do not send confidential, personal, or regulated content unless their terms and your obligations permit it.
+Alibaba Cloud Bailian, Groq, and any other configured provider process data under their own terms, privacy policies, retention practices, and account settings. Do not send confidential, personal, or regulated content unless their terms and your obligations permit it.
 
 ## Local storage and retention
 
@@ -66,8 +66,8 @@ Learning Digest uses Chrome permissions for these purposes:
 - `sidePanel`: display the Learning Digest interface beside the current tab.
 - `storage`: store settings, keys, notes, Session snapshots, and cached results locally.
 - `*.xiaoe-tech.com` host access: identify course pages and capture lesson audio on the first supported Source Platform.
-- DeepSeek host access: provide AI overviews, explanations, and translation through DeepSeek V4 Flash.
-- OpenRouter host access: allow AI features to use OpenRouter when it is configured as the AI provider in a local copy.
+- Bailian host access: provide AI overviews, explanations, and translation through qwen3.8-flash (the default AI Provider), alongside the default Speech Provider.
+- OpenRouter and DeepSeek host access: allow AI features to use those providers when they are configured as the AI provider in a local copy.
 - Speech Provider host access (default `dashscope.aliyuncs.com`): transcribe Session Segments through your configured Speech Provider.
 
 Learning Digest does not use these permissions to monitor general browsing activity.

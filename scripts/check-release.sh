@@ -36,6 +36,7 @@ public_allowlist=(
   "session-segmenter.js"
   "session-summary.js"
   "page-bridge.js"
+  "realtime-protocol.js"
   "offscreen.html"
   "offscreen.js"
   "report-render.js"

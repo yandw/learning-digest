@@ -557,6 +557,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  // --- Realtime transcription events (qwen3-asr-flash-realtime, #46) ---
+  //
+  // The offscreen WebSocket client streams server findings unsolicited.
+  // R2 forwards them to the panel as sessionUpdate extras; the pipeline
+  // that turns realtimeUtterance into Transcript records is R3.
+
+  if (message.action === "realtimePartial") {
+    handleRealtimePartial(message).catch((error) =>
+      console.error(
+        "[Learning Digest] realtimePartial handling failed:",
+        error?.message || error,
+      ),
+    );
+    return false;
+  }
+
+  if (message.action === "realtimeUtterance") {
+    handleRealtimeUtterance(message).catch((error) =>
+      console.error(
+        "[Learning Digest] realtimeUtterance handling failed:",
+        error?.message || error,
+      ),
+    );
+    return false;
+  }
+
+  if (message.action === "realtimeError") {
+    handleRealtimeError(message).catch((error) =>
+      console.error(
+        "[Learning Digest] realtimeError handling failed:",
+        error?.message || error,
+      ),
+    );
+    return false;
+  }
+
   // Unknown action - still send a response to prevent hanging
   debugLog("[Learning Digest BG] Unknown action:", message.action);
   sendResponse({ success: false, error: "Unknown action" });
@@ -758,6 +794,11 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // Capture death (#captureEnded): the offscreen recorder's one-shot notice
   // that its stream went inactive; see tests/background-capture.test.js.
   handleCaptureEnded,
+  // Realtime forwarding (#46): offscreen's unsolicited WebSocket findings;
+  // see tests/background-capture.test.js.
+  handleRealtimePartial,
+  handleRealtimeUtterance,
+  handleRealtimeError,
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
@@ -1055,6 +1096,9 @@ async function ensureCaptureResumed() {
         segmentLengthSeconds: context.segmentLengthSeconds,
         mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
         transcribeMode: context.transcribeMode,
+        ...(context.transcribeMode === "realtime"
+          ? { apiKey: context.credentials.apiKey }
+          : {}),
       });
       if (!started?.success) throw new Error(started?.error || "capture restart failed");
     } catch (error) {
@@ -1444,6 +1488,12 @@ async function handleStartLearning(message) {
       // Consumed by the offscreen realtime path (spec #44); the segment
       // recorder ignores it.
       transcribeMode: context.transcribeMode,
+      // The realtime WebSocket handshake needs the Qwen key (spec #44:
+      // message-only transport, never persisted); the segment recorder
+      // ignores it.
+      ...(context.transcribeMode === "realtime"
+        ? { apiKey: context.credentials.apiKey }
+        : {}),
     });
     if (!started?.success) throw new Error(started?.error || "capture start failed");
   } catch (error) {
@@ -1781,6 +1831,51 @@ async function handleCaptureEnded(message, _sender) {
     captureNotice: "音频采集已中断（标签页已关闭或已离开课程页），会话自动结束。",
   });
   await endActiveSession(context, { reason: "captureEnded" });
+}
+
+// ============================================================
+// REALTIME TRANSCRIPTION FORWARDING (#46)
+// ============================================================
+//
+// The offscreen document owns the realtime WebSocket and streams the
+// server's findings as unsolicited messages. For now the worker only
+// forwards them to the panel inside the sessionUpdate envelope; ticket R3
+// replaces the forwarding with the pipeline handling (utteranceCaptured ->
+// Transcript record -> Topic ticks). Without an active capture the events
+// are dropped: the offscreen document cannot outlive its Session.
+
+async function handleRealtimePartial(message) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  broadcastSession(context.state, {
+    realtimePartial: { text: String(message?.text || "") },
+  });
+}
+
+async function handleRealtimeUtterance(message) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  broadcastSession(context.state, {
+    realtimeUtterance: {
+      text: String(message?.text || ""),
+      start: Number(message?.start) || 0,
+      duration: Number(message?.duration) || 0,
+    },
+  });
+}
+
+async function handleRealtimeError(message) {
+  // Loud regardless of Session state: a realtime failure is otherwise only
+  // visible as a silently dead transcript stream.
+  console.error(
+    "[Learning Digest] realtime transcription error:",
+    message?.message || "(no reason given)",
+  );
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  broadcastSession(context.state, {
+    realtimeNotice: { message: String(message?.message || "实时转写出现错误") },
+  });
 }
 
 async function endActiveSession(context, { reason } = {}) {

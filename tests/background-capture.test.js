@@ -272,6 +272,105 @@ test("credentials without a mode key (pre-0.1.43 blob) stay on segment transcrip
   assert.equal(result.transcribeMode, "segment");
 });
 
+// --- Realtime capture (#46): the API key rides captureStart to offscreen ----
+//
+// The realtime WebSocket lives in the offscreen document and needs the Qwen
+// key for its handshake; it travels in the captureStart message and is never
+// persisted (the capture pointer stays key-free).
+
+test("a realtime captureStart carries the Qwen apiKey to offscreen", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, readStored } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+
+  await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.equal(start.apiKey, "qwen-key");
+  // Message-only transport: the persisted pointer never sees the key.
+  assert.equal(readStored("ytd_active_capture").apiKey, undefined);
+});
+
+test("a segment captureStart carries no apiKey", async () => {
+  const sentMessages = [];
+  const { handleStartLearning } = loadBackgroundHelpers({
+    settings: qwenSettings("segment"),
+    sentMessages,
+  });
+
+  await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.equal(start.apiKey, undefined);
+});
+
+// --- Realtime server events (#46): the router forwards offscreen's findings -
+//
+// R2 forwards only; richer handling (utterance -> Transcript record, Topic
+// ticks) is R3's ticket. The offscreen document sends these unsolicited, so
+// the handlers are fire-and-forget like captureChunk.
+
+test("realtime offscreen events forward as sessionUpdate extras to the panel", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, handleRealtimePartial, handleRealtimeUtterance, handleRealtimeError } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime"),
+      sentMessages,
+    });
+  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.success, true);
+
+  await handleRealtimePartial({ action: "realtimePartial", text: "正在说的话" });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "一句完整的话。",
+    start: 12.5,
+    duration: 5.5,
+  });
+  await handleRealtimeError({ action: "realtimeError", message: "实时转写连接已断开" });
+
+  const partial = sentMessages.find((message) => message.realtimePartial);
+  assert.ok(partial, "the partial reaches the panel as a sessionUpdate extra");
+  assert.equal(partial.action, "sessionUpdate");
+  // Property assertions: the payloads are created inside the background VM
+  // context, so a cross-realm deepEqual never matches.
+  assert.equal(partial.realtimePartial.text, "正在说的话");
+  assert.equal(partial.sessionId, started.sessionId);
+
+  const utterance = sentMessages.find((message) => message.realtimeUtterance);
+  assert.ok(utterance, "the utterance reaches the panel as a sessionUpdate extra");
+  assert.equal(utterance.realtimeUtterance.text, "一句完整的话。");
+  assert.equal(utterance.realtimeUtterance.start, 12.5);
+  assert.equal(utterance.realtimeUtterance.duration, 5.5);
+
+  const notice = sentMessages.find((message) => message.realtimeNotice);
+  assert.ok(notice, "the error reaches the panel as a realtimeNotice extra");
+  assert.equal(notice.realtimeNotice.message, "实时转写连接已断开");
+});
+
+test("realtime events with no active capture are dropped without broadcasting", async () => {
+  const sentMessages = [];
+  const { handleRealtimePartial, handleRealtimeUtterance, handleRealtimeError } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime"),
+      sentMessages,
+    });
+
+  await handleRealtimePartial({ action: "realtimePartial", text: "孤儿事件" });
+  await handleRealtimeUtterance({ action: "realtimeUtterance", text: "孤儿事件" });
+  await handleRealtimeError({ action: "realtimeError", message: "孤儿事件" });
+
+  assert.equal(
+    sentMessages.filter(
+      (message) => message.realtimePartial || message.realtimeUtterance || message.realtimeNotice,
+    ).length,
+    0,
+    "no sessionUpdate is broadcast without an active capture",
+  );
+});
+
 test("a resumed realtime Session keeps its transcribeMode from the capture pointer", async () => {
   const sentMessages = [];
   const { handleGetSessionState } = loadBackgroundHelpers({

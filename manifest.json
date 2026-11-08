@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Learning Digest",
-  "version": "0.1.35",
+  "version": "0.1.36",
   "minimum_chrome_version": "116",
-  "description": "把课程音频变成学习资料：分段中文转写、滚动摘要和完整的会话纪要。",
+  "description": "把课程音频变成学习资料：分段中文转写、话题时间轴和完整的学习纪要。",
   "permissions": ["sidePanel", "storage", "tabCapture", "offscreen"],
   "host_permissions": [
     "https://*.xiaoe-tech.com/*",

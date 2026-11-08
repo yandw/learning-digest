@@ -738,13 +738,27 @@ test("downloads use Blob object URLs and session-named files", async () => {
 
 // --- Static wiring ------------------------------------------------------------
 
-test("the report UI copy names the deliverable 会话纪要 everywhere", () => {
-  // The old 会话总结 wording is unified to the 纪要 surface's name in every
-  // user-facing string: the end-time card, the welcome line, the settings
-  // blurb and the store description.
-  for (const file of ["sidepanel.html", "sidepanel.js", "options.js", "manifest.json"]) {
-    assert.doesNotMatch(read(file), /会话总结/, `${file} still says 会话总结`);
+test("the report UI copy names the deliverable 学习纪要 everywhere", () => {
+  // The deliverable is a course-content summary: the wording is 学习纪要 in
+  // every user-facing string (end-time card, welcome line, settings blurb,
+  // store description), never 会话总结/会话纪要, and no meeting vocabulary
+  // anywhere in UI copy or the report prompt.
+  const uiFiles = ["sidepanel.html", "sidepanel.js", "options.js", "manifest.json"];
+  for (const file of uiFiles) {
+    assert.doesNotMatch(read(file), /会话总结|会话纪要/, `${file} still says 会话总结/会话纪要`);
+    assert.doesNotMatch(read(file), /会议/, `${file} contains meeting vocabulary`);
   }
+  for (const file of ["prompts/session-report.md", "prompts/topic-tick.md"]) {
+    // The guard line itself lists the banned words; exclude it, then require
+    // the body to be free of meeting vocabulary.
+    const body = read(file)
+      .split("\n")
+      .filter((line) => !line.includes("「会议」") && !line.includes("不是会议纪要"))
+      .join("\n");
+    assert.doesNotMatch(body, /与会|议程|决议|会议/, `${file} contains meeting vocabulary outside its guard line`);
+    assert.match(read(file), /不是会议纪要/, `${file} does not frame the deliverable against meeting minutes`);
+  }
+  assert.match(read("prompts/session-report.md"), /学习纪要/);
 });
 
 test("the 纪要 tab is wired in sidepanel.html and sidepanel.js", () => {

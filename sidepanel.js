@@ -1616,7 +1616,7 @@ function renderSessionReport(report, sessionId = null) {
   if (report.error) {
     renderReportError(container, report.error);
   } else if (report.skipped === "noTranscript") {
-    appendReportLine(container, "未捕获到逐字稿，未生成会话纪要。");
+    appendReportLine(container, "未捕获到逐字稿，未生成学习纪要。");
   } else {
     renderReportTopics(container, report.topics);
     renderReportQuotes(container, report.quotes);
@@ -1643,7 +1643,7 @@ function renderReportError(container, error) {
   retry.textContent = "重试";
   retry.addEventListener("click", async () => {
     retry.disabled = true;
-    message.textContent = "正在重新生成会话纪要…";
+    message.textContent = "正在重新生成学习纪要…";
     try {
       const result = await chrome.runtime.sendMessage({
         action: "regenerateReport",
@@ -1796,12 +1796,12 @@ function renderReportTab() {
     return;
   }
   if (reportTabUi.skipped) {
-    els.hint.textContent = "未捕获到逐字稿，未生成会话纪要。";
+    els.hint.textContent = "未捕获到逐字稿，未生成学习纪要。";
     els.hint.style.display = "flex";
     return;
   }
   if (reportTabUi.regenerating) {
-    els.hint.textContent = "正在重新生成会话纪要…";
+    els.hint.textContent = "正在重新生成学习纪要…";
     els.hint.style.display = "flex";
     return;
   }
@@ -1814,7 +1814,7 @@ function renderReportTab() {
     }
     return;
   }
-  els.hint.textContent = "结束学习后，会话纪要会显示在这里。";
+  els.hint.textContent = "结束学习后，学习纪要会显示在这里。";
   els.hint.style.display = "flex";
 }
 

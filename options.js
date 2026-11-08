@@ -15,7 +15,7 @@ const YTD_OPTIONS = (() => {
       providerBadge: "当前版本支持",
       deepseekApiKeyLabel: "OpenRouter API 密钥",
       deepseekHelp:
-        "Learning Digest 通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型，生成话题时间轴、会话纪要、翻译和润色笔记。",
+        "Learning Digest 通过 OpenRouter 使用 DeepSeek V4.1 Flash 模型，生成话题时间轴、学习纪要、翻译和润色笔记。",
       deepseekLink: "创建 OpenRouter API 密钥",
       deepseekHelpSuffix: "。",
       aiBaseUrlLabel: "API 基础 URL",

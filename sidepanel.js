@@ -2654,22 +2654,17 @@ function handleSessionUpdateMessage(message, sendResponse) {
     sendResponse({ success: true });
     return false;
   }
-  if (message.captureNotice) {
-    // The capture stream died mid-Session (course tab closed or navigated
-    // away) and the worker auto-ended the Session; surface the reason the
-    // same way the startError precedent does. The ended state and its
-    // digest arrive in the follow-up sessionUpdate broadcast.
-    window.alert(message.captureNotice);
-    const status = document.getElementById("sessionStatus");
-    if (status) status.textContent = message.captureNotice;
-    sendResponse({ success: true });
-    return false;
-  }
-  if (message.realtimeNotice) {
-    // The realtime WebSocket gave up mid-Session (#47); the Session itself
-    // is still active and endable. Same surface as captureEnded: an alert
-    // plus the status line, so the dead transcript stream has a reason.
-    const notice = message.realtimeNotice.message || "实时转写出现错误";
+  if (message.captureNotice || message.realtimeNotice) {
+    // One surface for every mid-Session trouble notice: a dead capture
+    // stream (course tab closed or navigated away), a realtime error while
+    // the Session stays active, or the WS client's final give-up. All are
+    // alerts plus the status line — the same surface the startError
+    // precedent uses — and any auto-end arrives in the follow-up
+    // sessionUpdate broadcast with the ended state and its digest.
+    const notice =
+      message.captureNotice ||
+      message.realtimeNotice.message ||
+      "实时转写出现错误";
     window.alert(notice);
     const status = document.getElementById("sessionStatus");
     if (status) status.textContent = notice;

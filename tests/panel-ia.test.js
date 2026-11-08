@@ -930,6 +930,58 @@ test("a realtimeError notice alerts and takes the status line, like captureEnded
   );
 });
 
+test("a captureNotice alerts and takes the status line through the same surface", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    transcribeMode: "segment",
+  });
+
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      captureNotice: "音频采集已中断（标签页已关闭或已离开课程页），会话自动结束。",
+    },
+    () => {},
+  );
+
+  assert.deepEqual(panel.alerts, [
+    "音频采集已中断（标签页已关闭或已离开课程页），会话自动结束。",
+  ]);
+  assert.equal(
+    panel.elementById("sessionStatus").textContent,
+    "音频采集已中断（标签页已关闭或已离开课程页），会话自动结束。",
+  );
+});
+
+test("a realtimeGaveUp notice alerts and takes the status line like every other notice", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "live",
+    state: activeSessionState(),
+    transcribeMode: "realtime",
+  });
+
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      realtimeNotice: { message: "实时转写连接失败，会话自动结束。" },
+    },
+    () => {},
+  );
+
+  assert.deepEqual(panel.alerts, ["实时转写连接失败，会话自动结束。"]);
+  assert.equal(
+    panel.elementById("sessionStatus").textContent,
+    "实时转写连接失败，会话自动结束。",
+  );
+});
+
 test("the transcript empty state keeps the Segment wait copy in segment mode", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.setSegmentLengthForCopy(30);

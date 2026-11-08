@@ -224,6 +224,34 @@ test("the tracker resets after each completed utterance", () => {
   assert.equal(second.durationSeconds, 3.5);
 });
 
+// A transcription.failed event means the utterance's audio is lost for
+// good, but its speech_started/stopped pairing still places the hole on
+// the timeline: the failure-marker record needs the same seconds-based
+// timing onCompleted produces, and the pairing resets exactly the same.
+
+test("a failed utterance consumes the pending pairing and reports its timing", () => {
+  const tracker = protocol.createUtteranceTracker();
+  tracker.onSpeechStarted(12_500);
+  tracker.onSpeechStopped(18_000);
+  assert.deepEqual(tracker.onFailed(), {
+    startSeconds: 12.5,
+    durationSeconds: 5.5,
+  });
+  // Consumed like onCompleted: a later bare completion starts fresh.
+  const next = tracker.onCompleted("下一句");
+  assert.equal(next.startSeconds, 0);
+});
+
+test("a failed event with no pending pairing reports none", () => {
+  const tracker = protocol.createUtteranceTracker();
+  assert.equal(tracker.onFailed(), null, "no markers at all -> no pairing");
+  // A pairing an earlier completion already consumed is gone too.
+  tracker.onSpeechStarted(1_000);
+  tracker.onSpeechStopped(3_000);
+  tracker.onCompleted("第一句");
+  assert.equal(tracker.onFailed(), null, "an already-consumed pairing is gone");
+});
+
 // --- PCM framing: Float32 samples -> base64 little-endian PCM16 -------------
 
 test("chunkFloat32ToPcm16Base64 encodes known samples to little-endian PCM16", () => {

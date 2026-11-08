@@ -62,10 +62,16 @@
  *
  * Realtime reconnect: a WebSocket close while the Session is active
  * reconnects with bounded backoff (500 ms doubling, capped 5 s); after 5
- * failed attempts one realtimeError (实时转写连接已断开) surfaces and the
- * realtime path shuts down (capture released, lesson audio back on the
- * speakers) — the worker-side Session stays active and can still be ended
- * normally. Audio is dropped while disconnected.
+ * failed attempts the realtime path shuts down entirely (WebSocket and
+ * capture released, lesson audio back on the speakers) and one
+ * realtimeGaveUp message tells the worker, which auto-ends the Session
+ * honestly — the learner keeps the transcript collected so far and the
+ * digest built from it. Audio is dropped while disconnected. A failed
+ * utterance (conversation.item.input_audio_transcription.failed) is NOT a
+ * connection failure: when the tracker holds the item's speech pairing it
+ * lands as a realtimeUtterance with failed: true — the same failure-marker
+ * record shape the segment path uses — and realtimeError stays reserved
+ * for connection-level failures.
  *
  * Browser-only: WebSocket/AudioContext are DOM APIs, so the realtime wiring
  * is not unit-tested (spec Testing Decisions); the pure protocol layer it
@@ -79,8 +85,12 @@
  * 3. The lesson stays audible exactly once: the pump routes through a zero
  *    gain node and must never double the playback loopback.
  * 4. Drop the network mid-Session: reconnect attempts at 500 ms / 1 s /
- *    2 s / 4 s / 5 s, then a single realtimeError 实时转写连接已断开;
- *    the Session still ends cleanly.
+ *    2 s / 4 s / 5 s, then the Session auto-ends with the panel notice
+ *    实时转写连接失败，会话自动结束。(one realtimeGaveUp to the worker)
+ *    and the digest is built from the transcript collected so far.
+ * 4b. A transcription.failed server event (no network problem): the
+ *     utterance lands in the transcript as a [实时转写失败] failure-marker
+ *     record instead of alerting; only connection failures alert.
  * 5. End learning: session.finish goes out BEFORE ws.close(), ideally after
  *    session.finished (2 s timeout fallback), and the document releases
  *    everything (no leaked AudioContext/timers).
@@ -260,11 +270,12 @@
       return;
     }
     if (session.reconnectAttempt >= REALTIME_MAX_RECONNECTS) {
-      sendRealtimeWorkerMessage({
-        action: "realtimeError",
-        message: "实时转写连接已断开",
-      });
+      // Final give-up: tear down the realtime path AND the capture, then
+      // tell the worker once. The worker answers like captureEnded — loud
+      // log, panel notice, auto-end — so the Session cannot zombie on with
+      // a dead stream; the learner keeps the transcript collected so far.
       shutdownRealtimeCapture();
+      sendRealtimeWorkerMessage({ action: "realtimeGaveUp" });
       return;
     }
     const delayMs = Math.min(
@@ -344,9 +355,6 @@
           ),
         ),
       );
-      session.streamedMs += Math.round(
-        (chunkSamples.length / session.context.sampleRate) * 1000,
-      );
     } catch (error) {
       // A send on a dying socket throws; the close event drives reconnect.
       console.error("[Learning Digest] realtime append failed:", error?.message || error);
@@ -383,16 +391,29 @@
         });
         break;
       }
-      case "conversation.item.input_audio_transcription.failed":
+      case "conversation.item.input_audio_transcription.failed": {
+        // A failed UTTERANCE is a content hole, not a connection problem:
+        // it lands as a failure-marker record (the segment path's
+        // [语音转录失败] shape) whenever the tracker holds the item's
+        // speech_started/stopped pairing, so the transcript gap stays
+        // visible like any other failed transcription. realtimeError stays
+        // reserved for connection-level failures.
         console.error(
           "[Learning Digest] realtime utterance failed:",
           parsed.error?.message || parsed.itemId || "(no detail)",
         );
-        sendRealtimeWorkerMessage({
-          action: "realtimeError",
-          message: `实时转写失败：${parsed.error?.message || parsed.itemId || "未知原因"}`,
-        });
+        const pairing = session.tracker.onFailed();
+        if (pairing) {
+          sendRealtimeWorkerMessage({
+            action: "realtimeUtterance",
+            text: "[实时转写失败]",
+            start: pairing.startSeconds,
+            duration: pairing.durationSeconds,
+            failed: true,
+          });
+        }
         break;
+      }
       case "error":
         console.error(
           "[Learning Digest] realtime server error:",

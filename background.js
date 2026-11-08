@@ -560,33 +560,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // --- Realtime transcription events (qwen3-asr-flash-realtime, #46) ---
   //
   // The offscreen WebSocket client streams server findings unsolicited.
-  // R2 forwards them to the panel as sessionUpdate extras; the pipeline
-  // that turns realtimeUtterance into Transcript records is R3.
+  // One shared dispatch: the handlers differ, the plumbing (loud catch,
+  // no response held open) is identical for every realtime action.
 
-  if (message.action === "realtimePartial") {
-    handleRealtimePartial(message).catch((error) =>
+  const realtimeHandler = REALTIME_EVENT_HANDLERS[message.action];
+  if (realtimeHandler) {
+    realtimeHandler(message).catch((error) =>
       console.error(
-        "[Learning Digest] realtimePartial handling failed:",
-        error?.message || error,
-      ),
-    );
-    return false;
-  }
-
-  if (message.action === "realtimeUtterance") {
-    handleRealtimeUtterance(message).catch((error) =>
-      console.error(
-        "[Learning Digest] realtimeUtterance handling failed:",
-        error?.message || error,
-      ),
-    );
-    return false;
-  }
-
-  if (message.action === "realtimeError") {
-    handleRealtimeError(message).catch((error) =>
-      console.error(
-        "[Learning Digest] realtimeError handling failed:",
+        `[Learning Digest] ${message.action} handling failed:`,
         error?.message || error,
       ),
     );
@@ -799,6 +780,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleRealtimePartial,
   handleRealtimeUtterance,
   handleRealtimeError,
+  handleRealtimeGaveUp,
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
@@ -1028,6 +1010,32 @@ function createCaptureContext({
 }
 
 /**
+ * The captureStart payload for the offscreen document, one builder for both
+ * call sites (handleStartLearning's fresh Session and
+ * ensureCaptureResumed's mid-Session restart) so a resumed realtime Session
+ * can never drift from a fresh one. The Qwen key rides the message only in
+ * realtime mode (spec #44: message-only transport, never persisted); the
+ * segment recorder ignores it.
+ */
+function buildCaptureStartMessage(context, streamId) {
+  return {
+    action: "captureStart",
+    streamId,
+    segmentLengthSeconds: context.segmentLengthSeconds,
+    mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
+    // Consumed by the offscreen realtime path (spec #44); the segment
+    // recorder ignores it.
+    transcribeMode: context.transcribeMode,
+    // The realtime WebSocket handshake needs the Qwen key (spec #44:
+    // message-only transport, never persisted); the segment recorder
+    // ignores it.
+    ...(context.transcribeMode === "realtime"
+      ? { apiKey: context.credentials.apiKey }
+      : {}),
+  };
+}
+
+/**
  * Rebuilds the in-memory capture context after a service-worker restart.
  * Resume is exactly the #12 contract: load the snapshot, resumeFromSnapshot,
  * keep feeding events — done Segments are never re-transcribed.
@@ -1090,16 +1098,9 @@ async function ensureCaptureResumed() {
         targetTabId: context.tabId,
       });
       await ensureOffscreen();
-      const started = await sendOffscreen({
-        action: "captureStart",
-        streamId,
-        segmentLengthSeconds: context.segmentLengthSeconds,
-        mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
-        transcribeMode: context.transcribeMode,
-        ...(context.transcribeMode === "realtime"
-          ? { apiKey: context.credentials.apiKey }
-          : {}),
-      });
+      const started = await sendOffscreen(
+        buildCaptureStartMessage(context, streamId),
+      );
       if (!started?.success) throw new Error(started?.error || "capture restart failed");
     } catch (error) {
       // Without the tab (closed or navigated away) capture cannot restart;
@@ -1485,21 +1486,9 @@ async function handleStartLearning(message) {
       message.streamId ||
       (await chrome.tabCapture.getMediaStreamId({ targetTabId: context.tabId }));
     await ensureOffscreen();
-    const started = await sendOffscreen({
-      action: "captureStart",
-      streamId,
-      segmentLengthSeconds: context.segmentLengthSeconds,
-      mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
-      // Consumed by the offscreen realtime path (spec #44); the segment
-      // recorder ignores it.
-      transcribeMode: context.transcribeMode,
-      // The realtime WebSocket handshake needs the Qwen key (spec #44:
-      // message-only transport, never persisted); the segment recorder
-      // ignores it.
-      ...(context.transcribeMode === "realtime"
-        ? { apiKey: context.credentials.apiKey }
-        : {}),
-    });
+    const started = await sendOffscreen(
+      buildCaptureStartMessage(context, streamId),
+    );
     if (!started?.success) throw new Error(started?.error || "capture start failed");
   } catch (error) {
     captureContext = null;
@@ -1846,6 +1835,28 @@ async function handleCaptureEnded(message, _sender) {
   await endActiveSession(context, { reason: "captureEnded" });
 }
 
+/**
+ * The realtime client's one-shot give-up notice: every reconnect backoff
+ * attempt failed, the offscreen document already released the WebSocket and
+ * the capture, and no further transcription is possible this Session.
+ * Handled like captureEnded — loud log, notice broadcast first, honest
+ * auto-end — so the learner keeps the transcript collected so far and the
+ * digest built from it, instead of a zombie Session with a dead stream.
+ * A repeated notice finds the context ended (or the pointer cleared) and
+ * is a no-op.
+ */
+async function handleRealtimeGaveUp(_message) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) return;
+  console.error(
+    "[Learning Digest] realtime WebSocket gave up after repeated reconnect failures, auto-ending session",
+  );
+  broadcastSession(context.state, {
+    realtimeNotice: { message: "实时转写连接失败，会话自动结束。" },
+  });
+  await endActiveSession(context, { reason: "realtimeGaveUp" });
+}
+
 // ============================================================
 // REALTIME TRANSCRIPTION PIPELINE (#46 offscreen client, #47 handling)
 // ============================================================
@@ -1855,12 +1866,15 @@ async function handleCaptureEnded(message, _sender) {
 // pipeline activity: a partial is a lightweight panel-only broadcast (the
 // panel owns the draft display), a finalized utterance feeds the state
 // machine as an utteranceCaptured event — a plain Transcript record, no
-// Segment — and an error surfaces loudly. Topic ticks run on the same
-// content thresholds as segment mode: isTopicTickDue reads
-// transcriptRecords coverage, which utterance records grow like any other,
-// and a check runs right after each utterance (the 60s summary timer stays
-// armed as the backstop). Without an active capture the events are
-// dropped: the offscreen document cannot outlive its Session.
+// Segment, failed: true for a failed utterance so it lands as the segment
+// path's failure-marker record — an error surfaces loudly, and a final
+// give-up (every reconnect attempt failed) auto-ends the Session honestly
+// like captureEnded does. Topic ticks run on the same content thresholds
+// as segment mode: isTopicTickDue reads transcriptRecords coverage, which
+// utterance records grow like any other, and a check runs right after each
+// utterance (the 60s summary timer stays armed as the backstop). Without
+// an active capture the events are dropped: the offscreen document cannot
+// outlive its Session.
 
 async function handleRealtimePartial(message) {
   const context = await ensureCaptureResumed();
@@ -1894,6 +1908,7 @@ async function handleRealtimeUtterance(message) {
     text: message?.text,
     start: message?.start,
     duration: message?.duration,
+    failed: message?.failed === true,
   });
   // An invalid payload is a pipeline no-op: nothing to persist or broadcast.
   if (next === context.state) return;
@@ -1918,6 +1933,16 @@ async function handleRealtimeError(message) {
     realtimeNotice: { message: String(message?.message || "实时转写出现错误") },
   });
 }
+
+// The router's dispatch map for the offscreen realtime events: unsolicited,
+// fire-and-forget. Connection-level failures alert (realtimeError); a final
+// give-up auto-ends the Session (realtimeGaveUp).
+const REALTIME_EVENT_HANDLERS = {
+  realtimePartial: handleRealtimePartial,
+  realtimeUtterance: handleRealtimeUtterance,
+  realtimeError: handleRealtimeError,
+  realtimeGaveUp: handleRealtimeGaveUp,
+};
 
 async function endActiveSession(context, { reason } = {}) {
   if (context.ended) return { success: true, reason, state: context.state };

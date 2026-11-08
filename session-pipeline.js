@@ -89,8 +89,9 @@ var YTD_SESSION_PIPELINE = (() => {
    *   (a failed segmentId retries that Segment: its marker is replaced, #48)
    * - {type: "transcribeFailed", segmentId}
    * - {type: "gapSkipped", start, duration} - seek-forward hole marker (#48)
-   * - {type: "utteranceCaptured", text, start, duration} - one finalized
-   *   realtime utterance (#47); appends a plain Transcript record
+ * - {type: "utteranceCaptured", text, start, duration, failed?} - one
+ *   finalized realtime utterance (#47); appends a plain Transcript record
+ *   (failed: true lands the segment path's failure-marker shape)
    * - {type: "topicsAppended", topics: [{start, end, title, text, continuation?}]}
    * - {type: "titleCaptured", title: string} - the page title (#32)
    * - {type: "sessionEnd"}
@@ -262,6 +263,12 @@ var YTD_SESSION_PIPELINE = (() => {
    * tolerant on purpose — the events arrive unsolicited from the ASR
    * server, so an empty (whitespace-only) text or a non-finite timing is a
    * no-op that leaves the state untouched instead of an error.
+   *
+   * A failed utterance rides the same event with `failed: true`: the
+   * record lands with the flag set, the same shape as failureChunkRecord
+   * records, so the existing failure-marker styling and the
+   * allSegmentsFailed check treat it exactly like a failed Segment's
+   * [语音转录失败] annotation.
    */
   function onUtteranceCaptured(state, event) {
     const text = typeof event?.text === "string" ? event.text.trim() : "";
@@ -270,9 +277,11 @@ var YTD_SESSION_PIPELINE = (() => {
     if (!text || !Number.isFinite(start) || !Number.isFinite(duration)) {
       return state;
     }
+    const record = { text, start, duration };
+    if (event?.failed === true) record.failed = true;
     return {
       ...state,
-      transcriptRecords: [...state.transcriptRecords, { text, start, duration }],
+      transcriptRecords: [...state.transcriptRecords, record],
     };
   }
 

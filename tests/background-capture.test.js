@@ -241,6 +241,31 @@ test("qwen realtime mode on a replay Session stays on segment transcription", as
   assert.equal(readStored("ytd_active_capture").transcribeMode, "segment");
 });
 
+// The third timestampKind (review finding): a COURSE page is video-kind
+// like a replay, so it must never go realtime either — the branch test pins
+// the whole non-wallclock family.
+const COURSE_URL =
+  "https://apptdemenwi8039.pc.xiaoe-tech.com/p/t_pc/goods_pc_detail/goods_detail/term_5f4380290ac80_9unBs1";
+
+test("qwen realtime mode on a course Session stays on segment transcription", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, readStored } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+
+  const result = await handleStartLearning({ url: COURSE_URL, tabId: 7 });
+
+  assert.equal(result.success, true);
+  const start = sentMessages.find((message) => message.action === "captureStart");
+  assert.ok(start, "captureStart reached the offscreen recorder");
+  // Video-kind Sessions never realtime in v1: the wallclock-only gate wins.
+  assert.equal(start.transcribeMode, "segment");
+  assert.equal(start.mode, "video");
+  assert.equal(result.transcribeMode, "segment");
+  assert.equal(readStored("ytd_active_capture").transcribeMode, "segment");
+});
+
 test("qwen segment mode on a wallclock Session stays on segment transcription", async () => {
   const sentMessages = [];
   const { handleStartLearning } = loadBackgroundHelpers({
@@ -368,6 +393,47 @@ test("a realtime utterance appends a Transcript record, persists and broadcasts"
     .pop();
   assert.ok(update, "the panel receives the grown state");
   assert.equal(update.state.transcriptRecords.length, 1);
+});
+
+test("a failed realtime utterance lands as a failure-marker record", async () => {
+  const sentMessages = [];
+  const { handleStartLearning, handleRealtimeUtterance, readStored } =
+    loadBackgroundHelpers({
+      settings: qwenSettings("realtime"),
+      sentMessages,
+    });
+  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.success, true);
+
+  // The offscreen tracker places the failed utterance via its
+  // speech_started/stopped pairing and marks the record failed; the
+  // worker must carry the flag into the pipeline untouched.
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "[实时转写失败]",
+    start: 12.5,
+    duration: 5.5,
+    failed: true,
+  });
+  await handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "之后恢复的一句。",
+    start: 20,
+    duration: 3,
+  });
+
+  const snapshot = readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(snapshot.transcriptRecords, [
+    { text: "[实时转写失败]", start: 12.5, duration: 5.5, failed: true },
+    { text: "之后恢复的一句。", start: 20, duration: 3 },
+  ]);
+  // The broadcast carries the marker too: the panel's failure styling keys
+  // off the flag alone, via the normal row path.
+  const update = sentMessages
+    .filter((message) => message.action === "sessionUpdate" && message.state)
+    .pop();
+  assert.ok(update, "the panel receives the grown state");
+  assert.equal(update.state.transcriptRecords[0].failed, true);
 });
 
 test("realtime utterances trigger a Topic tick once coverage crosses the threshold", async () => {
@@ -509,7 +575,7 @@ test("realtime events with no active capture are dropped without broadcasting", 
 
 test("a resumed realtime Session keeps its transcribeMode from the capture pointer", async () => {
   const sentMessages = [];
-  const { handleGetSessionState } = loadBackgroundHelpers({
+  const { handleGetSessionState, readStored } = loadBackgroundHelpers({
     // Settings say segment; the Session's persisted start decision wins.
     settings: qwenSettings("segment"),
     // The offscreen document died with the browser: the restart path re-sends
@@ -541,6 +607,11 @@ test("a resumed realtime Session keeps its transcribeMode from the capture point
   assert.ok(start, "the restarted capture receives captureStart");
   assert.equal(start.transcribeMode, "realtime");
   assert.equal(start.mode, "wallclock");
+  // The restart payload is the fresh start's payload, built by the same
+  // builder: the Qwen key rides along for the WS handshake exactly like on
+  // a fresh start (message-only, the pointer stays key-free).
+  assert.equal(start.apiKey, "qwen-key");
+  assert.equal(readStored("ytd_active_capture").apiKey, undefined);
 });
 
 test("action click on an unrecognized page only opens the panel", async () => {
@@ -1159,6 +1230,91 @@ test("captureEnded on a Session with no Transcript skips the digest without cras
   // Property assertion only: the skipped payload object is created inside
   // the background VM context, so a cross-realm deepEqual never matches.
   assert.equal(ended.report.skipped, "noTranscript");
+});
+
+// WS give-up (#46 reconnect, honest end since 0.1.48): after 5 backoff
+// attempts fail, the offscreen client releases the realtime path and sends
+// one realtimeGaveUp. The worker handles it like captureEnded — loud log,
+// notice broadcast, auto-end — so the learner keeps the transcript collected
+// so far and an honest end instead of a zombie Session with a dead stream.
+
+function seededRealtimeCapture(sessionId) {
+  let state = sessionPipeline.createSession({ sessionId });
+  for (let i = 0; i < 4; i += 1) {
+    state = sessionPipeline.applyEvent(state, {
+      type: "utteranceCaptured",
+      text: `第 ${i + 1} 句`,
+      start: i * 30,
+      duration: 30,
+    });
+  }
+  return JSON.parse(JSON.stringify(state));
+}
+
+test("a realtimeGaveUp notice auto-ends the Session and broadcasts the reason", async () => {
+  const requests = [];
+  const sentMessages = [];
+  const sessionId = "s_rt_gave_up";
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    sentMessages,
+    stored: {
+      ytd_active_capture: {
+        ...capturePointer(sessionId),
+        kind: "live",
+        timestampKind: "wallclock",
+        transcribeMode: "realtime",
+      },
+      [`ytd_session_${sessionId}`]: seededRealtimeCapture(sessionId),
+    },
+  });
+  await helpers.handleGetSessionState();
+
+  await helpers.handleRealtimeGaveUp({ action: "realtimeGaveUp" });
+
+  // Nothing stays resumable: the Session ended and the pointer is cleared.
+  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined);
+  // The panel learns the reason immediately, then sees the ended state with
+  // the digest built from the transcript collected so far.
+  const notice = sentMessages.find((message) => message.realtimeNotice);
+  assert.ok(notice, "the notice broadcast reaches the panel");
+  assert.equal(notice.realtimeNotice.message, "实时转写连接失败，会话自动结束。");
+  const ended = sentMessages.find(
+    (message) =>
+      message.action === "sessionUpdate" && message.state?.status === "ended",
+  );
+  assert.ok(ended, "the end broadcast reaches the panel");
+  assert.deepEqual(ended.report, REPORT_BODY);
+  assert.equal(requests.length, 1, "exactly one global pass over what exists");
+
+  // Death is final: a repeated notice finds the ended context, a no-op.
+  const updatesBefore = sentMessages.filter(
+    (message) => message.action === "sessionUpdate",
+  ).length;
+  await helpers.handleRealtimeGaveUp({ action: "realtimeGaveUp" });
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    updatesBefore,
+    "a second realtimeGaveUp is a no-op",
+  );
+});
+
+test("a realtimeGaveUp notice with no active capture is a no-op", async () => {
+  const sentMessages = [];
+  const { handleRealtimeGaveUp } = loadBackgroundHelpers({
+    settings: qwenSettings("realtime"),
+    sentMessages,
+  });
+
+  await handleRealtimeGaveUp({ action: "realtimeGaveUp" });
+
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    0,
+    "no broadcast without an active capture",
+  );
 });
 
 // --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>

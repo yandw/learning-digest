@@ -205,6 +205,29 @@ var YTD_REALTIME_PROTOCOL = (() => {
         endMs = null;
         return utterance;
       },
+      /**
+       * Consumes one transcription.failed event: the utterance's audio is
+       * lost for good, but its speech_started/stopped pairing still places
+       * the hole on the timeline, so the caller can land a failure-marker
+       * record with the same timing onCompleted would have produced. The
+       * pairing resets exactly like onCompleted. Returns null when no
+       * markers were pending (nothing was ever started, or an earlier
+       * completion already consumed them) — the caller cannot place a
+       * record then, and inventing one at 0 would be a lie.
+       */
+      onFailed() {
+        if (startMs === null && endMs === null) return null;
+        const start = startMs === null ? 0 : startMs;
+        const end = endMs === null ? lastKnownEndMs : endMs;
+        const pairing = {
+          startSeconds: start / 1000,
+          durationSeconds: Math.max(0.5, (end - start) / 1000),
+        };
+        if (endMs !== null) lastKnownEndMs = endMs;
+        startMs = null;
+        endMs = null;
+        return pairing;
+      },
     };
   }
 

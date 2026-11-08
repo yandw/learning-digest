@@ -323,6 +323,38 @@ test("utteranceCaptured appends one Transcript record without creating a Segment
   assert.equal(state.status, "active");
 });
 
+test("utteranceCaptured with failed:true appends a failure-marker record", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "[实时转写失败]",
+    start: 30,
+    duration: 4,
+    failed: true,
+  });
+
+  // Same shape as the segment path's failureChunkRecord records: the
+  // failed flag alone drives the panel's failure styling and the
+  // allSegmentsFailed "no real transcript" check.
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "[实时转写失败]", start: 30, duration: 4, failed: true },
+  ]);
+  assert.deepEqual(state.segments, []);
+
+  // Without the flag the record stays plain (the normal utterance path).
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "一句正常的话。",
+    start: 40,
+    duration: 5,
+  });
+  assert.deepEqual(state.transcriptRecords[1], {
+    text: "一句正常的话。",
+    start: 40,
+    duration: 5,
+  });
+});
+
 test("utteranceCaptured is a no-op on empty text or non-finite timing", () => {
   const state = sessionPipeline.createSession({ sessionId: "s1" });
 

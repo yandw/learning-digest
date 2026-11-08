@@ -1289,3 +1289,20 @@ test("a worker restart mid-session rebuilds the title from the capture pointer",
     "the rebuilt context's pageTitle reaches the report meta",
   );
 });
+
+test("the settings blob is stamped with the version on the first read", async () => {
+  const { handleStartLearning, readStored } = loadBackgroundHelpers({
+    settings: baseSettings({
+      speechProviders: { groq: { apiKey: "" } },
+      segmentLengthSeconds: 120,
+    }),
+  });
+
+  // The start gate reads settings (and persists the migrated blob) before
+  // it fails on the missing credential — enough to assert the migration.
+  await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  const blob = readStored("ytd_settings");
+  assert.equal(blob.settingsVersion, 2);
+  assert.equal(blob.segmentLengthSeconds, 30);
+});

@@ -142,8 +142,32 @@ var YTD_SETTINGS = (() => {
     return clampIntegerSetting(value, 5, 180, DEFAULTS.summaryIntervalMinutes);
   }
 
+  /**
+   * v2 migration (0.1.41): the Segment length has no options UI, so a stored
+   * 120 is always the pre-0.1.39 default, never a user choice — force the
+   * new default on unstamped blobs. Blobs stamped with the current version
+   * (or hand-tuned to a non-default value before stamping) pass through.
+   */
+  function migrateSegmentLength(source) {
+    if (Number(source?.settingsVersion) >= SETTINGS_VERSION) {
+      return source.segmentLengthSeconds;
+    }
+    const stored = Number(source?.segmentLengthSeconds);
+    if (!Number.isFinite(stored) || stored === LEGACY_SEGMENT_DEFAULT) {
+      return DEFAULTS.segmentLengthSeconds;
+    }
+    return stored;
+  }
+
+  // Settings blobs are stamped with a version so default changes can reach
+  // installs that saved settings under an older default (see the v2 Segment
+  // migration below). Callers persist the stamped object once after migrate.
+  const SETTINGS_VERSION = 2;
+  const LEGACY_SEGMENT_DEFAULT = 120;
+
   function normalize(input = {}) {
     return {
+      settingsVersion: SETTINGS_VERSION,
       provider: DEFAULTS.provider,
       aiApiKey: isLegacyCustom(input)
         ? ""
@@ -169,7 +193,9 @@ var YTD_SETTINGS = (() => {
           ? input.speechProvider.trim()
           : DEFAULTS.speechProvider,
       speechProviders: normalizeSpeechProviders(input.speechProviders),
-      segmentLengthSeconds: normalizeSegmentLengthSeconds(input.segmentLengthSeconds),
+      segmentLengthSeconds: normalizeSegmentLengthSeconds(
+        migrateSegmentLength(input),
+      ),
       summaryIntervalMinutes: normalizeSummaryIntervalMinutes(
         input.summaryIntervalMinutes,
       ),

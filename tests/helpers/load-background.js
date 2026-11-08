@@ -111,7 +111,7 @@ function loadBackgroundHelpers({
         onMessage: listeners,
         onConnect: listeners,
         openOptionsPage() {},
-        getManifest: () => ({ version: "0.1.20" }),
+        getManifest: () => ({ version: "0.1.41" }),
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
         sendMessage: (msg) => {
           if (sentMessages) sentMessages.push(msg);
@@ -128,12 +128,10 @@ function loadBackgroundHelpers({
     YTD_SOURCE_PLATFORMS: require("../../source-platforms.js"),
     YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
     YTD_REPORT_RENDER: require("../../report-render.js"),
-    YTD_SETTINGS: {
-      STORAGE_KEY: "ytd_settings",
-      normalize: (value) => value,
-      chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
-      sttTranscriptionsUrl: (baseUrl) => `${baseUrl}/audio/transcriptions`,
-    },
+    // The real settings module (require-able, pure): the identity stub this
+    // used to be predated the versioned migration in normalize() and hid it
+    // from every orchestration test.
+    YTD_SETTINGS: require("../../settings.js"),
   };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("background.js"), sandbox);

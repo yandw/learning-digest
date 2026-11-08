@@ -221,3 +221,28 @@ test("malformed Topic timeline interval falls back to the default", () => {
     );
   }
 });
+
+test("a legacy blob with the old default Segment length migrates to 30", () => {
+  // 0.1.41: stored 120s blobs predate the 0.1.39 default change and the
+  // field has no options UI, so the stored value is never a user choice.
+  const normalized = settings.normalize({ segmentLengthSeconds: 120 });
+
+  assert.equal(normalized.segmentLengthSeconds, 30);
+  assert.equal(normalized.settingsVersion, 2);
+});
+
+test("a stamped blob keeps a hand-tuned Segment length", () => {
+  const normalized = settings.normalize({
+    settingsVersion: 2,
+    segmentLengthSeconds: 600,
+  });
+
+  assert.equal(normalized.segmentLengthSeconds, 600);
+  assert.equal(normalized.settingsVersion, 2);
+});
+
+test("an unstamped blob with a hand-tuned Segment length keeps it", () => {
+  const normalized = settings.normalize({ segmentLengthSeconds: 600 });
+
+  assert.equal(normalized.segmentLengthSeconds, 600);
+});

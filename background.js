@@ -47,7 +47,20 @@ chrome.storage.local
 
 async function getSettings() {
   const stored = await chrome.storage.local.get(YTD_SETTINGS.STORAGE_KEY);
-  return YTD_SETTINGS.normalize(stored[YTD_SETTINGS.STORAGE_KEY]);
+  const normalized = YTD_SETTINGS.normalize(stored[YTD_SETTINGS.STORAGE_KEY]);
+  // Persist the (possibly migrated) blob once so the version stamp lands in
+  // storage and every later read stays on the fast path.
+  if (stored[YTD_SETTINGS.STORAGE_KEY]?.settingsVersion !== normalized.settingsVersion) {
+    await chrome.storage.local
+      .set({ [YTD_SETTINGS.STORAGE_KEY]: normalized })
+      .catch((error) =>
+        console.error(
+          "[Learning Digest] settings migration persist failed:",
+          error?.message || error,
+        ),
+      );
+  }
+  return normalized;
 }
 
 const promptFileCache = new Map();

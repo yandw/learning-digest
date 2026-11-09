@@ -304,6 +304,174 @@ test("gapSkipped rejects malformed ranges instead of corrupting the Transcript",
   assert.deepEqual(state.transcriptRecords, []);
 });
 
+// --- gapFilled: the hole-fill marker shrink (#48) ---------------------------
+
+// A hole [60, 600] with one first-pass record before it, the shared fixture
+// of the gapFilled tests below.
+function holeState() {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "开头",
+    start: 0,
+    duration: 60,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 60,
+    duration: 540,
+  });
+  return state;
+}
+
+test("gapFilled shrinks the marker to the remaining head when the fill starts past it", () => {
+  const before = holeState();
+  // Playback entered the hole at 5:00 and filled through 7:00: the unfilled
+  // remainder is the head [1:00, 5:00], exactly the issue's marker shape.
+  const state = sessionPipeline.applyEvent(before, {
+    type: "gapFilled",
+    filledStart: 300,
+    filledEnd: 420,
+  });
+
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+    { text: "[已跳过 1:00–5:00]", start: 60, duration: 240, failed: true },
+  ]);
+  // Transitions never mutate their input (the snapshot contract).
+  assert.deepEqual(before.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+  ]);
+});
+
+test("gapFilled keeps shrinking the head marker as later fills of the pass land", () => {
+  let state = holeState();
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapFilled",
+    filledStart: 300,
+    filledEnd: 420,
+  });
+  // The next fill starts exactly at the shrunk marker's end: the head
+  // remainder is unchanged, and the marker never covers fill records.
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapFilled",
+    filledStart: 300,
+    filledEnd: 540,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+    { text: "[已跳过 1:00–5:00]", start: 60, duration: 240, failed: true },
+  ]);
+});
+
+test("gapFilled advances the marker's tail while the fill consumes it from the head", () => {
+  let state = holeState();
+  // Playback entered the hole at its very start (1:00): the head is gone,
+  // so the marker's start moves to the fill frontier after each fill.
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapFilled",
+    filledStart: 60,
+    filledEnd: 180,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+    { text: "[已跳过 3:00–10:00]", start: 180, duration: 420, failed: true },
+  ]);
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapFilled",
+    filledStart: 60,
+    filledEnd: 300,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+    { text: "[已跳过 5:00–10:00]", start: 300, duration: 300, failed: true },
+  ]);
+});
+
+test("gapFilled removes the marker once the fill covers the whole hole", () => {
+  let state = holeState();
+  // Filled from the head through the hole's end: no marker survives.
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapFilled",
+    filledStart: 60,
+    filledEnd: 600,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+  ]);
+
+  // A one-fill hole (entry at the head, fill reaching the end) is removed
+  // by its single event.
+  let short = sessionPipeline.createSession({ sessionId: "s1" });
+  short = sessionPipeline.applyEvent(short, {
+    type: "gapSkipped",
+    start: 60,
+    duration: 120,
+  });
+  short = sessionPipeline.applyEvent(short, {
+    type: "gapFilled",
+    filledStart: 60,
+    filledEnd: 180,
+  });
+  assert.deepEqual(short.transcriptRecords, []);
+});
+
+test("gapFilled picks the covering marker when several holes are on the timeline", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 60,
+    duration: 540,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 600,
+    duration: 600,
+  });
+  // The fill of the second hole must shrink the second marker, not the
+  // first (whose range ends exactly at the fill's start).
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapFilled",
+    filledStart: 600,
+    filledEnd: 720,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+    { text: "[已跳过 12:00–20:00]", start: 720, duration: 480, failed: true },
+  ]);
+});
+
+test("gapFilled rejects malformed ranges and a missing covering marker", () => {
+  const state = holeState();
+  for (const bad of [
+    { filledStart: -5, filledEnd: 10 },
+    { filledStart: 100, filledEnd: 100 },
+    { filledStart: 100, filledEnd: 90 },
+    { filledStart: Number.NaN, filledEnd: 200 },
+  ]) {
+    assert.throws(
+      () => sessionPipeline.applyEvent(state, { type: "gapFilled", ...bad }),
+      /gapFilled requires/,
+    );
+  }
+  // No marker covers [2000, 2100] — the background only emits gapFilled for
+  // a range derived from a live marker, so a miss is corruption.
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(state, {
+        type: "gapFilled",
+        filledStart: 2000,
+        filledEnd: 2100,
+      }),
+    /covering gapSkipped marker/,
+  );
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "开头", start: 0, duration: 60 },
+    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+  ]);
+});
+
 // --- utteranceCaptured: realtime utterances are plain Transcript records (#47)
 
 test("utteranceCaptured appends one Transcript record without creating a Segment", () => {

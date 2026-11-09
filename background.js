@@ -1035,6 +1035,17 @@ function createCaptureContext({
     // #48 retry watch: the failed Segment whose range playback is currently
     // re-covering, {segmentId, start, end}; the retry cut fires at end.
     retryWatch: null,
+    // #48 hole-fill watch: the gapSkipped hole playback is currently
+    // re-watching, {filledStart, windowStart, windowEnd, holeEnd} — the fill
+    // Segment over [windowStart, windowEnd] dispatches when playback crosses
+    // windowEnd, and holeEnd rides the watch because the marker shrinks as
+    // fills land and no longer reports the hole's extent. Memory-only like
+    // retryWatch: a rebuilt context re-arms on the next below-cursor
+    // position inside the (shrunken) marker.
+    fillWatch: null,
+    // True while a fill Segment's cut/transcription is in flight; bridge
+    // ticks arriving meanwhile must not arm an overlapping fill pass.
+    fillInFlight: false,
     // One Topic tick at a time; a fresh or resumed Session simply waits for
     // the first timer fire, where the content-driven trigger decides.
     summaryInFlight: false,
@@ -1708,8 +1719,11 @@ async function handleSeekForward(context, position) {
   }
   // A seek invalidates any in-progress re-listen pass: the buffered audio
   // no longer maps to what playback covered, so the retry watch re-arms on
-  // the next position if the seek landed inside a failed range.
+  // the next position if the seek landed inside a failed range — and any
+  // hole-fill pass stops (the marker keeps its shrunken remainder; the
+  // seek machinery owns the new hole/jump).
   context.retryWatch = null;
+  context.fillWatch = null;
   // (a) The pre-seek audio lands as a tail record stamped with its pre-seek
   // coverage — flush() emits the trailing partial Segment, when audible.
   const tail = context.segmenter.flush(previous);
@@ -1739,8 +1753,8 @@ async function handleSeekForward(context, position) {
 /**
  * #48 Plan A re-listen bookkeeping, run on every video position BEFORE the
  * scheduler sees it. Below the cursor nothing new is ever recorded (the
- * no-backward rule keeps one record set per position range), with two
- * on-demand cuts at the range boundaries:
+ * no-backward rule keeps one record set per position range), with on-demand
+ * cuts at the range boundaries:
  *
  * - entering the re-listen (or a failed Segment's range): the buffered
  *   audio is first-pass material that must not duplicate or smear into the
@@ -1748,6 +1762,10 @@ async function handleSeekForward(context, position) {
  * - playback re-covering a failed Segment's full range: the buffered
  *   re-watched audio is dispatched as that Segment's retry, replacing its
  *   [语音转录失败] marker exactly once;
+ * - playback inside a gapSkipped hole (#48 hole-fill): the hole has no
+ *   Segments to retry, so the re-watched audio is dispatched as fresh fill
+ *   Segments at Segment-length boundaries, each shrinking the hole's
+ *   marker via gapFilled;
  * - playback passing the old cursor frontier again: the re-watched buffer
  *   is discarded so the next Segment's cut holds only new audio.
  */
@@ -1769,6 +1787,31 @@ async function updateRelisten(context, position) {
     }
     return;
   }
+  // #48 hole-fill: a pending fill Segment dispatches at its window
+  // boundary — which can BE the frontier (a hole may end exactly at the
+  // cursor), so the fill check runs before the below-cursor gate.
+  if (context.fillWatch && !context.fillInFlight) {
+    const watch = context.fillWatch;
+    if (position < watch.windowStart) {
+      // Sought backward out of the hole mid-fill: stop filling — the
+      // marker keeps its shrunken remainder, and a re-entry arms a fresh
+      // pass from wherever playback landed.
+      context.fillWatch = null;
+    } else if (
+      position - watch.windowEnd >
+      context.segmentLengthSeconds + SEEK_JUMP_TOLERANCE_SECONDS
+    ) {
+      // Playback jumped deep past the window's boundary within one tick (a
+      // drag below the cursor is invisible to the seek cut): the buffered
+      // audio no longer maps to the window, so its fill is skipped and the
+      // buffer discarded before the pass re-arms at the new position.
+      context.fillWatch = null;
+      await discardRecordedAudio(context);
+      armFillWatch(context, position);
+    } else if (position >= watch.windowEnd) {
+      await dispatchFillSegment(context, watch);
+    }
+  }
   if (position < cursor) {
     if (!context.relisten) {
       context.relisten = { frontier: cursor, attempted: new Set() };
@@ -1787,12 +1830,22 @@ async function updateRelisten(context, position) {
       // last cut so the retry cut holds only this range's re-watched audio.
       await discardRecordedAudio(context);
     }
+    // #48 hole-fill: a position inside a gapSkipped marker's range is
+    // fill-eligible — the hole has no Segments, so the failed-retry check
+    // above never fires for it. Arm the first fill window at the entry
+    // position; the discard keeps pre-entry audio out of the fill cut.
+    if (!context.fillWatch && !context.fillInFlight && !context.retryWatch) {
+      if (armFillWatch(context, position)) {
+        await discardRecordedAudio(context);
+      }
+    }
     return;
   }
   if (context.relisten) {
     // Playback passed the old cursor frontier: new content resumes.
     context.relisten = null;
     context.retryWatch = null;
+    context.fillWatch = null;
     await discardRecordedAudio(context);
   }
 }
@@ -1835,6 +1888,92 @@ async function dispatchRetrySegment(context, segmentId) {
     { start: segment.start, duration: segment.duration },
     segmentId,
   );
+}
+
+/**
+ * The gapSkipped marker whose skipped range contains the position, derived
+ * from the transcript records at check time (#48 hole-fill) — no extra
+ * state: the marker record IS the hole.
+ */
+function findGapSkippedMarkerAt(context, position) {
+  return context.state.transcriptRecords.find(
+    (record) =>
+      YTD_SESSION_PIPELINE.isGapSkippedRecord(record) &&
+      position >= record.start &&
+      position < record.start + record.duration,
+  );
+}
+
+/**
+ * Arms the #48 hole-fill watch when the position sits inside a gapSkipped
+ * marker's range: the pass fills [entry, entry + segmentLength] first
+ * (capped at the hole's end) and that Segment dispatches when playback
+ * crosses the boundary. The hole's end rides the watch because the marker
+ * shrinks as fills dispatch and no longer reports the hole's extent.
+ *
+ * @returns {boolean} true when a fill watch was armed
+ */
+function armFillWatch(context, position) {
+  const marker = findGapSkippedMarkerAt(context, position);
+  if (!marker) return false;
+  const entry = Math.floor(position);
+  const holeEnd = marker.start + marker.duration;
+  context.fillWatch = {
+    filledStart: entry,
+    windowStart: entry,
+    windowEnd: Math.min(entry + context.segmentLengthSeconds, holeEnd),
+    holeEnd,
+  };
+  return true;
+}
+
+/**
+ * Dispatches one hole-fill Segment (#48): the re-watched audio buffered
+ * since the window's entry cut is transcribed as a NORMAL Segment over
+ * [windowStart, windowEnd] — real hole audio, stamped at its in-hole
+ * positions — and the covering gapSkipped marker shrinks via gapFilled so
+ * it never coexists with the fill records. The next window re-arms at this
+ * one's end until the hole is fully filled. fillInFlight keeps concurrent
+ * bridge ticks from arming an overlapping pass while the transcription is
+ * in the air; the marker lookup for the shrink tolerates the shapes every
+ * shrink leaves behind (head remainder, advancing tail, removal).
+ */
+async function dispatchFillSegment(context, watch) {
+  context.fillWatch = null;
+  context.fillInFlight = true;
+  try {
+    await dispatchSegment(
+      context,
+      {
+        start: watch.windowStart,
+        duration: watch.windowEnd - watch.windowStart,
+      },
+      `seg-fill-${watch.windowStart}`,
+    );
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "gapFilled",
+      filledStart: watch.filledStart,
+      filledEnd: watch.windowEnd,
+    });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+      chrome.storage.local,
+      context.state,
+    );
+    broadcastSession(context.state);
+    if (watch.windowEnd < watch.holeEnd) {
+      context.fillWatch = {
+        filledStart: watch.filledStart,
+        windowStart: watch.windowEnd,
+        windowEnd: Math.min(
+          watch.windowEnd + context.segmentLengthSeconds,
+          watch.holeEnd,
+        ),
+        holeEnd: watch.holeEnd,
+      };
+    }
+  } finally {
+    context.fillInFlight = false;
+  }
 }
 
 /**

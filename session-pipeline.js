@@ -2,7 +2,8 @@
  * Session pipeline: a pure, event-driven state machine over Session state.
  *
  * Events (segmentCaptured, transcribeOk, transcribeFailed, gapSkipped,
- * utteranceCaptured, topicsAppended, titleCaptured, sessionEnd) drive
+ * gapFilled, utteranceCaptured, topicsAppended, titleCaptured, sessionEnd)
+ * drive
  * transitions over state
  * { sessionId, segments, transcriptRecords, topics, title?, status }.
  * Segments carry their own lifecycle (pending → done / failed).
@@ -89,6 +90,8 @@ var YTD_SESSION_PIPELINE = (() => {
    *   (a failed segmentId retries that Segment: its marker is replaced, #48)
    * - {type: "transcribeFailed", segmentId}
    * - {type: "gapSkipped", start, duration} - seek-forward hole marker (#48)
+ * - {type: "gapFilled", filledStart, filledEnd} - a re-watched hole range
+ *   was filled; shrinks the covering gapSkipped marker (#48)
  * - {type: "utteranceCaptured", text, start, duration, failed?} - one
  *   finalized realtime utterance (#47); appends a plain Transcript record
  *   (failed: true lands the segment path's failure-marker shape)
@@ -113,6 +116,8 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTranscribeFailed(state, event);
       case "gapSkipped":
         return onGapSkipped(state, event);
+      case "gapFilled":
+        return onGapFilled(state, event);
       case "utteranceCaptured":
         return onUtteranceCaptured(state, event);
       case "topicsAppended":
@@ -227,6 +232,30 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
+   * The shape test for a seek-forward's gap marker (#48): failed: true like
+   * the failure markers, carrying the [已跳过 …] text the gapSkipped event
+   * stamps. The background derives fill-eligible holes from the transcript
+   * records at check time through this same predicate, so the worker and
+   * the state machine can never drift on what counts as a hole.
+   */
+  function isGapSkippedRecord(record) {
+    return (
+      !!record &&
+      typeof record === "object" &&
+      record.failed === true &&
+      typeof record.text === "string" &&
+      record.text.startsWith("[已跳过 ") &&
+      Number.isFinite(Number(record.start)) &&
+      Number.isFinite(Number(record.duration))
+    );
+  }
+
+  /** The one gap-marker text builder: [已跳过 m:ss–m:ss]. */
+  function gapMarkerText(start, end) {
+    return `[已跳过 ${speechTranscription.formatTimestamp(start)}–${speechTranscription.formatTimestamp(end)}]`;
+  }
+
+  /**
    * Appends the one visible marker record for a seek-forward's skipped
    * range (#48): the Digest stays honest about the hole without inventing
    * Segments for audio that was never recorded. The marker shape mirrors
@@ -247,12 +276,92 @@ var YTD_SESSION_PIPELINE = (() => {
       );
     }
     const marker = {
-      text: `[已跳过 ${speechTranscription.formatTimestamp(start)}–${speechTranscription.formatTimestamp(start + duration)}]`,
+      text: gapMarkerText(start, start + duration),
       start,
       duration,
       failed: true,
     };
     return { ...state, transcriptRecords: [...state.transcriptRecords, marker] };
+  }
+
+  /**
+   * Shrinks the gapSkipped marker covering a filled range (#48 hole-fill):
+   * re-watching a skipped hole dispatches fill Segments forward through it,
+   * and each gapFilled event hands the covered range over to the fill
+   * records — the marker must never coexist with fill records for the same
+   * range. The event carries the fill pass's cumulative covered range
+   * {filledStart, filledEnd}: filledStart is where playback entered the
+   * hole, filledEnd the end of the most recently dispatched fill Segment.
+   * The marker keeps whichever side of the hole is still unfilled:
+   *
+   * - the fill covers the whole marker → the marker is removed;
+   * - the fill started past the marker's head → the remainder is the head
+   *   [marker.start, filledStart] (fills proceed forward, so the marker's
+   *   end tracks back to the fill frontier);
+   * - the fill started at the marker's head → the head is consumed and the
+   *   remainder is the tail [filledEnd, marker end], whose start advances
+   *   with each fill until the hole is fully filled and the marker drops.
+   *
+   * A covering marker is required: the background only emits gapFilled for
+   * a range it derived from a live marker, so a miss means corruption.
+   */
+  function onGapFilled(state, event) {
+    const filledStart = Math.floor(Number(event.filledStart));
+    const filledEnd = Math.floor(Number(event.filledEnd));
+    if (
+      !Number.isFinite(filledStart) ||
+      filledStart < 0 ||
+      !Number.isFinite(filledEnd) ||
+      filledEnd <= filledStart
+    ) {
+      throw new Error(
+        "gapFilled requires a non-negative filledStart and a filledEnd past it",
+      );
+    }
+    const markers = state.transcriptRecords.filter(isGapSkippedRecord);
+    const covers = (marker, point) =>
+      marker.start <= point && point <= marker.start + marker.duration;
+    // A boundary-inclusive containment test: later fills of one pass start
+    // exactly at the shrunk marker's end, and the final fill ends exactly at
+    // the marker's end. When the filled range straddles the seam between two
+    // adjacent holes, the marker containing the whole range wins.
+    const marker =
+      markers.find((candidate) => covers(candidate, filledStart) && covers(candidate, filledEnd)) ||
+      markers.find((candidate) => covers(candidate, filledStart)) ||
+      markers.find((candidate) => covers(candidate, filledEnd));
+    if (!marker) {
+      throw new Error("gapFilled requires a covering gapSkipped marker");
+    }
+    const markerEnd = marker.start + marker.duration;
+    let transcriptRecords;
+    if (filledStart <= marker.start && filledEnd >= markerEnd) {
+      // Fully covered: the hole is gone, and so is its marker.
+      transcriptRecords = state.transcriptRecords.filter(
+        (record) => record !== marker,
+      );
+    } else if (filledStart > marker.start) {
+      // The unfilled remainder is the marker's head; its start stands.
+      transcriptRecords = replaceRecord(state.transcriptRecords, marker, {
+        text: gapMarkerText(marker.start, filledStart),
+        start: marker.start,
+        duration: filledStart - marker.start,
+        failed: true,
+      });
+    } else {
+      // The fill consumed the marker's head: the remainder is the tail.
+      transcriptRecords = replaceRecord(state.transcriptRecords, marker, {
+        text: gapMarkerText(filledEnd, markerEnd),
+        start: filledEnd,
+        duration: markerEnd - filledEnd,
+        failed: true,
+      });
+    }
+    return { ...state, transcriptRecords };
+  }
+
+  /** In-place record replacement that never mutates the input array. */
+  function replaceRecord(records, original, replacement) {
+    return records.map((record) => (record === original ? replacement : record));
   }
 
   /**
@@ -405,6 +514,7 @@ var YTD_SESSION_PIPELINE = (() => {
     resumeFromSnapshot,
     settleInterruptedSegments,
     allSegmentsFailed,
+    isGapSkippedRecord,
   };
 })();
 

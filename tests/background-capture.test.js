@@ -2283,6 +2283,281 @@ test("re-listening a failed Segment retries it once and replaces the marker with
   assert.equal(snapshot.transcriptRecords.filter((record) => record.failed).length, 0);
 });
 
+// --- Hole-fill: re-watching a skipped range transcribes it (#48 defect) ----
+
+test("an anchored l_ Session re-watching its skipped hole fills it and removes the fully filled marker", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [120, 120, 120] }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  // The probe anchors at 1:00; dragging to 5:00 cuts no tail (the anchor
+  // consumed the probe audio) and marks the hole [1:00, 5:00].
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => record.text),
+    ["[已跳过 1:00–5:00]"],
+  );
+
+  // Dragging back into the hole at its start arms the first fill window.
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  // Crossing the first boundary dispatches fill Segment [60, 180] with the
+  // re-watched hole audio, stamped at the in-hole position; the marker
+  // shrinks to the unfilled tail.
+  await helpers.handleMediaPosition(mediaPositionMessage(180), { tab: { id: 7 } });
+  await drain();
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      id: segment.id,
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [{ id: "seg-fill-60", start: 60, duration: 120 }],
+  );
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "[已跳过 3:00–5:00]", start: 180, failed: true },
+      { text: "转写内容", start: 60, failed: false },
+    ],
+  );
+
+  // The second fill completes the hole: the marker is gone entirely, and
+  // crossing the old cursor frontier resumes the normal Segment flow.
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(420), { tab: { id: 7 } });
+  await drain();
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 60, duration: 120 },
+      { start: 180, duration: 120 },
+      { start: 300, duration: 120 },
+    ],
+  );
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 60, failed: false },
+      { text: "转写内容", start: 180, failed: false },
+      { text: "转写内容", start: 300, failed: false },
+    ],
+  );
+});
+
+test("re-watching into a hole from its middle fills it and leaves the remaining head as the shrunken marker", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [60, 120, 120, 60, 120] }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  // One minute played, then the drag to 10:00 marks the hole [1:00, 10:00].
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+
+  // The defect scenario: dragging back INTO the hole (5:00) starts
+  // transcription there — one fill per Segment-length boundary.
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(420), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(540), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(720), { tab: { id: 7 } });
+  await drain();
+
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 0, duration: 60 },
+      { start: 300, duration: 120 },
+      { start: 420, duration: 120 },
+      { start: 540, duration: 60 },
+      { start: 600, duration: 120 },
+    ],
+  );
+  // The unfilled head [1:00, 5:00) remains visible as the shrunken marker;
+  // the fill records are plain transcript rows, never duplicates.
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 0, failed: false },
+      { text: "[已跳过 1:00–5:00]", start: 60, failed: true },
+      { text: "转写内容", start: 300, failed: false },
+      { text: "转写内容", start: 420, failed: false },
+      { text: "转写内容", start: 540, failed: false },
+      { text: "转写内容", start: 600, failed: false },
+    ],
+  );
+
+  // Re-watching the now-COVERED range produces nothing (Plan A unchanged).
+  await helpers.handleMediaPosition(mediaPositionMessage(350), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(400), { tab: { id: 7 } });
+  await drain();
+  const reread = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(reread.segments, snapshot.segments);
+  assert.deepEqual(reread.transcriptRecords, snapshot.transcriptRecords);
+});
+
+test("seeking out of a hole mid-fill stops filling and re-entering the unfilled head refills it", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [60, 120, 100] }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+
+  // Fill [5:00, 7:00], then drag out of the hole to 0:30 mid-window.
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(420), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(30), { tab: { id: 7 } });
+  await drain();
+  // Filling stopped: the shrunken marker keeps the unfilled head intact and
+  // no further records land for the abandoned window.
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      duration: record.duration,
+    })),
+    [
+      { text: "转写内容", start: 0, duration: 60 },
+      { text: "[已跳过 1:00–5:00]", start: 60, duration: 240 },
+      { text: "转写内容", start: 300, duration: 120 },
+    ],
+  );
+
+  // Re-entering the unfilled head refills it, capped at the hole's end.
+  await helpers.handleMediaPosition(mediaPositionMessage(200), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 0, duration: 60 },
+      { start: 300, duration: 120 },
+      { start: 200, duration: 100 },
+    ],
+  );
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 0, failed: false },
+      { text: "[已跳过 1:00–3:20]", start: 60, failed: true },
+      { text: "转写内容", start: 300, failed: false },
+      { text: "转写内容", start: 200, failed: false },
+    ],
+  );
+});
+
+test("a drag deep through a hole skips the unwatched window's fill and resumes at the new position", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [60, 20] }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+
+  // Arm the fill at 5:00, then drag deep past the window's boundary within
+  // one tick: the buffered audio no longer maps to [5:00, 7:00], so its
+  // fill is skipped and the pass resumes where playback actually is.
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(350), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(580), { tab: { id: 7 } });
+  await drain();
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 0, duration: 60 },
+      { start: 580, duration: 20 },
+    ],
+  );
+  // The marker shrinks to the head before the resumed fill's entry point.
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 0, failed: false },
+      { text: "[已跳过 1:00–9:40]", start: 60, failed: true },
+      { text: "转写内容", start: 580, failed: false },
+    ],
+  );
+});
+
 test("a worker restart keeps the anchored video timeline and its cursor", async () => {
   const sentMessages = [];
   const first = loadBackgroundHelpers({

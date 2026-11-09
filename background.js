@@ -378,12 +378,22 @@ async function handleActionClicked(tab) {
   try {
     streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
   } catch (error) {
-    // handleStartLearning retries and maps the failure to the actionable
-    // instruction the panel shows; this log keeps the early path loud.
-    console.error(
-      "[Learning Digest] early streamId fetch failed:",
-      error?.message || error,
-    );
+    const message = error?.message || String(error);
+    // Re-clicking while this tab is already being captured is an EXPECTED
+    // state (the flow continues into "a Session is already active"), not a
+    // failure — keep it off the extension error page. Everything else stays
+    // loud: handleStartLearning retries and maps real failures to the
+    // actionable instruction the panel shows.
+    if (/active stream/i.test(message)) {
+      console.log(
+        "[Learning Digest] early streamId fetch skipped — this tab is already being captured by the active Session.",
+      );
+    } else {
+      console.error(
+        "[Learning Digest] early streamId fetch failed:",
+        message,
+      );
+    }
   }
   await panelOpening;
 

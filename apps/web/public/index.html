@@ -126,8 +126,12 @@
           <ul id="detailSources" class="source-list"></ul>
 
           <h2 class="detail-subheading">笔记</h2>
+          <!-- Notes read-back (P12): round 1 only shows the notes the
+               extension wrote; timestamps jump back when the platform
+               supports a seek parameter. -->
           <div id="detailNotes" class="notes-block">
-            <p class="hint">笔记功能即将上线，这里将展示学习笔记。</p>
+            <ul id="detailNotesList" class="notes-list"></ul>
+            <p id="notesEmpty" class="hint">这条资料还没有笔记；在插件侧边栏写下的笔记会出现在这里。</p>
           </div>
         </section>
       </main>

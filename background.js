@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "contracts/platform-video-id.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -226,6 +226,103 @@ async function handleLinkCodeCaptured(tabId, code) {
   return { success: true };
 }
 
+/**
+ * P7 linked logout, capture side: the credential group was revoked (a
+ * logout on any device), so the capture stream and the local Session
+ * advancement stop now. The Session ends WITHOUT the end-of-session AI
+ * pass — the learner is logged out; the panel's 开始总结 retry can still
+ * produce the digest after a re-login. Snapshots and storage breadcrumbs
+ * are kept, only the live pipeline stops.
+ *
+ * Boundary with the P6 gate semantics: the gate decides whether a capture
+ * may START (and an in-progress Session's resume is deliberately not
+ * gated); this path is only for a credential the server has definitively
+ * rejected (401) or an explicit logout — never for
+ * unreachable/unconfigured probes, whose verdicts must not log the
+ * learner out.
+ *
+ * @returns {Promise<string|null>} the stopped Session's id, null when no
+ *   capture was running
+ */
+async function stopActiveCaptureForCredentials(reason) {
+  const context = await ensureCaptureResumed();
+  if (!context) return null;
+  await endActiveSession(context, { reason, report: false });
+  return context.state.sessionId;
+}
+
+/**
+ * P7 linked logout, push path: the server rejected the credential with a
+ * 401 — its whole group was revoked by a logout on the Web (or another
+ * device). Stops a running capture and pushes the panel back to the
+ * guide. Live 401 sources today: the gate probe (handleCheckAuth) and
+ * P8's collect/resolve calls; P10's progress writes will route here too.
+ */
+async function handleCredentialsInvalidated(reason = "unauthorized") {
+  const stoppedSessionId = await stopActiveCaptureForCredentials("credentialsInvalidated");
+  if (stoppedSessionId) {
+    console.log(
+      `[Learning Digest] 凭据已被联动撤销，采集已停止: ${stoppedSessionId}`,
+    );
+  }
+  await notifyPanel({ action: "authState", authorized: false, reason });
+  return { success: true, stoppedSessionId };
+}
+
+/**
+ * P7 linked logout, explicit action: the panel's 退出登录 entry. Revokes
+ * the whole credential group server-side (the Web session dies with it —
+ * contract §1: 401 = expired OR linked-revoked), clears the stored
+ * extension credential, stops a running capture, and lets the panel
+ * return to the guide. Best effort: a network failure must not trap the
+ * learner in the panel, so the local cleanup happens regardless.
+ */
+async function handleLogout() {
+  const stoppedSessionId = await stopActiveCaptureForCredentials("logout");
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  if (credential) {
+    const url = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, "/v1/auth/logout");
+    if (url) {
+      try {
+        await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${credential.token}`,
+          },
+          body: "{}",
+        });
+      } catch (_error) {
+        // Server unreachable: the local logout still happens; the group
+        // stays live until a connected surface logs out.
+      }
+    }
+  }
+  await chrome.storage.local.remove(YTD_AUTH_GATE.CREDENTIAL_STORAGE_KEY);
+  authCache = { authorized: false, checkedAtMs: Date.now() };
+  recordAuthBreadcrumb("ytd_last_auth_logout", {
+    outcome: "loggedOut",
+    hadCredential: !!credential,
+    stoppedSessionId,
+  });
+  return { success: true };
+}
+
+/**
+ * The panel's gate check (the checkAuth message): probe, and on a
+ * DEFINITIVE 401 verdict (the group was revoked elsewhere) drive the
+ * invalidated path above. "unreachable"/"unconfigured" verdicts never
+ * stop a capture — only the server itself can.
+ */
+async function handleCheckAuth() {
+  const verdict = await checkAuthNow();
+  if (!verdict.authorized && verdict.reason === "unauthorized") {
+    await handleCredentialsInvalidated(verdict.reason);
+  }
+  return verdict;
+}
+
 // The link completion watcher: only tabs this worker opened for linking are
 // inspected, and only the success address's ?link= parameter is extracted.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -298,11 +395,17 @@ function collectTargetFromTab(tab) {
 async function collectTabTarget(target) {
   const auth = await checkAuthNow();
   if (!auth.authorized) {
-    void notifyPanel({
-      action: "authState",
-      authorized: false,
-      reason: auth.reason || "unauthorized",
-    });
+    // P7: a definitive 401 verdict (group revoked elsewhere) also stops a
+    // running capture; unreachable/unconfigured only point at the guide.
+    if (auth.reason === "unauthorized") {
+      void handleCredentialsInvalidated(auth.reason);
+    } else {
+      void notifyPanel({
+        action: "authState",
+        authorized: false,
+        reason: auth.reason || "unauthorized",
+      });
+    }
     return {
       ok: false,
       message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再收藏当前页。",
@@ -367,11 +470,10 @@ async function collectTabTarget(target) {
     detail: result.message,
   });
   if (response.status === 401) {
-    void notifyPanel({
-      action: "authState",
-      authorized: false,
-      reason: "unauthorized",
-    });
+    // P7 linked logout: the credential died mid-action (group revoked
+    // elsewhere) — stop any running capture too, not just the panel view.
+    // Awaited so the guide push lands before the action's result does.
+    await handleCredentialsInvalidated("unauthorized");
   }
   return { ok: false, message: result.message };
 }
@@ -395,13 +497,30 @@ async function handleCollectCurrentPage() {
 async function handleResolveCurrentSource() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const target = collectTargetFromTab(tab);
+  return resolveSourceForTab({ tabId: tab?.id ?? null, target });
+}
+
+/**
+ * The resolve probe for one already-queried tab (shared by the panel's
+ * pre-collect announcement and the P12 note entry, which needs BOTH the
+ * matched source and the tab's media position from one consistent page).
+ * Same read-only semantics as handleResolveCurrentSource.
+ *
+ * The P8 announcement keeps its quiet local miss for pages without a
+ * confirmable identity (an ordinary panel open never calls the service);
+ * a deliberate note save passes requireIdentity:false so a favorited
+ * PLAIN WEBPAGE still resolves by its normalized address (contract §3.4
+ * matches those server-side) and can take notes.
+ */
+async function resolveSourceForTab({ target, requireIdentity = true }) {
   const identityPresent = !!(
     target &&
     YTD_COLLECT.isCollectableUrl(target.url) &&
     target.identity
   );
   const miss = { ok: true, matched: false, identityPresent, resource: null, source: null };
-  if (!identityPresent) return miss;
+  if (requireIdentity && !identityPresent) return miss;
+  if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) return miss;
   const settings = await getSettings();
   const credential = await readStoredAuthCredential();
   if (!credential) return miss;
@@ -435,11 +554,8 @@ async function handleResolveCurrentSource() {
       detail: result.message,
     });
     if (response.status === 401) {
-      void notifyPanel({
-        action: "authState",
-        authorized: false,
-        reason: "unauthorized",
-      });
+      // P7 linked logout: same stop semantics as the collect 401 above.
+      await handleCredentialsInvalidated("unauthorized");
     }
     return { ok: false, matched: false, identityPresent, message: result.message };
   }
@@ -455,6 +571,227 @@ async function handleResolveCurrentSource() {
     resource: result.resource,
     source: result.source,
   };
+}
+
+// --- Library notes (P12, #61) ----------------------------------------------
+
+/**
+ * Sample the tab's media position at click time through the page-bridge
+ * (the same primary-media source the per-second stream reads). Returns
+ * null when nothing answers — the note then goes out as a plain note
+ * without a timestamp instead of guessing.
+ */
+async function readTabMediaPosition(tabId) {
+  if (typeof tabId !== "number") return null;
+  try {
+    const answer = await chrome.tabs.sendMessage(tabId, { action: "getMediaPosition" });
+    return answer && answer.success ? answer.position : null;
+  } catch (_error) {
+    // No receiver (non-xiaoe page) or the tab navigated away mid-click.
+    return null;
+  }
+}
+
+/**
+ * POST /v1/resources/{id}/notes for the learner's current page (contract
+ * §3.6; ticket #61). Shape mirrors handleCollectCurrentPage: authoritative
+ * gate first, then the pure module builds the request, and a 401 routes
+ * the panel back through the P6 authorization guide.
+ *
+ * Timestamp rule: when the current page resolves to a library Source, the
+ * note is stamped with the tab's current media position (a video page);
+ * when the position cannot be read (no bridged media, or a plain webpage),
+ * it goes out as a plain note without sourceId/positionMs.
+ *
+ * Draft policy (YTD_NOTES): the request is stashed locally BEFORE the
+ * first send attempt; a network failure keeps it and the panel offers a
+ * retry that resends the SAME clientRequestId (重发不换). A send success
+ * (201 or 200) clears it; a 400-style rejection clears it too (the request
+ * itself is poison; the learner rewrites the note). A 401 keeps it for the
+ * re-linked session.
+ */
+async function handleSaveNoteToLibrary({ text } = {}) {
+  const auth = await checkAuthNow();
+  if (!auth.authorized) {
+    // Same split as collect: a definitive 401 verdict stops a running
+    // capture; unreachable/unconfigured only point at the guide.
+    if (auth.reason === "unauthorized") {
+      void handleCredentialsInvalidated(auth.reason);
+    } else {
+      void notifyPanel({
+        action: "authState",
+        authorized: false,
+        reason: auth.reason || "unauthorized",
+      });
+    }
+    return {
+      ok: false,
+      message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再保存笔记。",
+    };
+  }
+
+  // A retry (the panel pre-fills the draft text) resends the stored draft
+  // verbatim instead of building a new request: same clientRequestId, same
+  // source/position, so the idempotent resend collapses into one note.
+  const trimmedText = typeof text === "string" ? text.trim() : "";
+  const draft = await YTD_NOTES.readDraft(chrome.storage.local);
+  const retrying = Boolean(draft) && draft.text === trimmedText;
+
+  let resourceId;
+  let sourceId = null;
+  let positionMs = null;
+  let clientRequestId;
+
+  if (retrying) {
+    resourceId = draft.resourceId;
+    sourceId = draft.sourceId;
+    positionMs = draft.positionMs;
+    clientRequestId = draft.clientRequestId;
+  } else {
+    // The note must attach to a Resource: resolve the current page the way
+    // collect does (read-only). requireIdentity:false — a favorited plain
+    // webpage resolves by its normalized address too. A miss sends the
+    // learner to 收藏当前页 first — there is nothing to attach a note to.
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const target = collectTargetFromTab(tab);
+    const resolution = await resolveSourceForTab({ target, requireIdentity: false });
+    if (!resolution.ok) {
+      return { ok: false, message: resolution.message || YTD_NOTES.GENERIC_NOTE_ERROR };
+    }
+    if (!resolution.matched) {
+      recordAuthBreadcrumb("ytd_last_note", {
+        outcome: "unresolved",
+        url: target ? target.url : null,
+      });
+      return {
+        ok: false,
+        message: "当前网页还没有进入学习库：先点「收藏当前页」，再保存笔记。",
+      };
+    }
+    resourceId = resolution.resource.id;
+    // A resolved Source rides with the tab's media position when one is
+    // readable; anything else (plain webpage, no bridged media yet) is a
+    // note without a timestamp.
+    if (resolution.source && resolution.source.id) {
+      const seconds = await readTabMediaPosition(tab?.id ?? null);
+      const mapped = YTD_NOTES.positionMsFromSeconds(seconds);
+      if (mapped !== null) {
+        sourceId = resolution.source.id;
+        positionMs = mapped;
+      }
+    }
+    clientRequestId = YTD_NOTES.createClientRequestId();
+  }
+
+  const requestBody = YTD_NOTES.buildNoteRequest({
+    clientRequestId,
+    text: trimmedText,
+    sourceId,
+    positionMs,
+  });
+  if (!requestBody) {
+    return { ok: false, message: "先写点笔记内容，再保存。" };
+  }
+
+  // Draft before the send attempt: the note survives a network drop.
+  const draftRecord = YTD_NOTES.buildDraft({
+    resourceId,
+    sourceId,
+    positionMs,
+    text: requestBody.text,
+    clientRequestId: requestBody.clientRequestId,
+    savedAt: Date.now(),
+  });
+  await YTD_NOTES.writeDraft(chrome.storage.local, draftRecord);
+
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_NOTES.buildNotesPath(resourceId),
+  );
+  if (!apiUrl || !credential) {
+    recordAuthBreadcrumb("ytd_last_note", { outcome: "failed", detail: "unconfigured" });
+    return {
+      ok: false,
+      draftKept: true,
+      message: "学习服务地址未配置或账号未关联：笔记已保留为草稿，配置好后可重试。",
+    };
+  }
+
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_error) {
+    recordAuthBreadcrumb("ytd_last_note", {
+      outcome: "unreachable",
+      resourceId,
+      clientRequestId: requestBody.clientRequestId,
+    });
+    return {
+      ok: false,
+      draftKept: true,
+      message: "无法连接学习服务：笔记已保留为草稿，稍后点「保存笔记」即可重试。",
+    };
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  const result = YTD_NOTES.parseNoteResponse({ status: response.status, data });
+  if (result.ok) {
+    // 201 created or 200 idempotent resend: the note is in the library.
+    await YTD_NOTES.clearDraft(chrome.storage.local);
+    recordAuthBreadcrumb("ytd_last_note", {
+      outcome: result.outcome,
+      resourceId,
+      noteId: result.note.id,
+      sourceId,
+      positionMs,
+    });
+    return { ok: true, outcome: result.outcome, note: result.note };
+  }
+  recordAuthBreadcrumb("ytd_last_note", {
+    outcome: "failed",
+    resourceId,
+    status: response.status,
+    detail: result.message,
+  });
+  if (result.unauthorized) {
+    // The credential died mid-action: the draft survives for the
+    // re-linked session; the panel flips to the guide on its own.
+    await handleCredentialsInvalidated("unauthorized");
+    return {
+      ok: false,
+      draftKept: true,
+      message: result.message || YTD_NOTES.UNAUTHORIZED_MESSAGE,
+    };
+  }
+  // A 4xx/5xx verdict on the request itself: the draft is poison, drop it
+  // so a retry cannot hammer the same rejected request.
+  await YTD_NOTES.clearDraft(chrome.storage.local);
+  return { ok: false, draftKept: false, message: result.message };
+}
+
+/** The panel's draft status line: what a retry would resend, if any. */
+async function handleGetNoteDraft() {
+  const draft = await YTD_NOTES.readDraft(chrome.storage.local);
+  return { ok: true, draft };
+}
+
+/** The learner's explicit discard: the draft is gone for good. */
+async function handleDiscardNoteDraft() {
+  await YTD_NOTES.clearDraft(chrome.storage.local);
+  return { ok: true };
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -559,11 +896,8 @@ async function resolveSourceForTarget(target) {
   const result = YTD_COLLECT.parseResolveResponse({ status: response.status, data });
   if (!result.ok) {
     if (response.status === 401) {
-      void notifyPanel({
-        action: "authState",
-        authorized: false,
-        reason: "unauthorized",
-      });
+      // P7 handoff: same routing as collect/notes mid-action 401s.
+      await handleCredentialsInvalidated("unauthorized");
     }
     return {
       ok: false,
@@ -846,20 +1180,16 @@ async function releaseLearningTarget(context) {
  * stop-capture semantics from here.
  */
 async function handleProgressAuthLoss() {
+  // P7 handoff: the writer stops here; the capture stop, the session end
+  // and the panel's guide re-route ride the shared credentialsInvalidated
+  // path (stopActiveCaptureForCredentials ends the Session without the AI
+  // pass and pushes the authState broadcast).
   stopProgressTicker();
   if (learningProgressWriter) {
     learningProgressWriter.stop();
     learningProgressWriter = null;
   }
-  await notifyPanel({
-    action: "authState",
-    authorized: false,
-    reason: "unauthorized",
-  });
-  const context = await ensureCaptureResumed();
-  if (context && !context.ended) {
-    await endActiveSession(context, { reason: "authInvalidated", report: false });
-  }
+  await handleCredentialsInvalidated("unauthorized");
 }
 
 /**
@@ -1367,14 +1697,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  // --- Authorization gate (P6) ---
+  // --- Authorization gate (P6) and linked logout (P7) ---
 
   if (message.action === "checkAuth") {
-    checkAuthNow()
+    handleCheckAuth()
       .then(sendResponse)
       .catch((error) =>
         sendResponse({ authorized: false, reason: "unreachable", error: error.message }),
       );
+    return true;
+  }
+
+  if (message.action === "logout") {
+    // P7: the panel's 退出登录 — group-wide revocation, local credential
+    // cleanup, capture stop. The panel flips to the guide from the response.
+    handleLogout()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
@@ -1407,6 +1746,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "getCourseTabs") {
     handleGetCourseTabs()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
+    return true;
+  }
+
+  // --- Library notes (P12, #61) ---
+
+  if (message.action === "saveNoteToLibrary") {
+    handleSaveNoteToLibrary(message)
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({ ok: false, message: err.message }),
+      );
+    return true;
+  }
+
+  if (message.action === "getNoteDraft") {
+    handleGetNoteDraft()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, draft: null, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "discardNoteDraft") {
+    handleDiscardNoteDraft()
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, message: err.message }));
     return true;
@@ -1739,6 +2103,12 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   checkAuthNow,
   handleOpenAuthPage,
   handleLinkCodeCaptured,
+  // Linked logout (P7): the explicit 退出登录, the credentialsInvalidated
+  // stop path (P10's progress-write 401s will drive it) and the gate-check
+  // composition — see tests/plugin-logout.test.js.
+  handleLogout,
+  handleCredentialsInvalidated,
+  handleCheckAuth,
   // Collect current page (P8, #58): the favorite POST and the read-only
   // resolve probe for the learner's active tab — see
   // tests/plugin-collect-flow.test.js.

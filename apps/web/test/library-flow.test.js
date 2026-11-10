@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { createLibraryFlow, presentListItem, presentDetail, formatPosition } from "../public/js/library.js";
+import { createLibraryFlow, presentListItem, presentDetail, presentNote, buildNoteJumpUrl, formatPosition } from "../public/js/library.js";
 
 // The library flow (pure module, P5): paste-to-collect inside the login
 // shell, the learning list, and the resource detail with retitle. It owns
@@ -256,6 +256,81 @@ test("presentDetail maps the detail to display data", () => {
   assert.equal(presented.sources[0].platformLabel, "B站");
   assert.equal(presented.sources[0].progressText, "上次学到 4:10");
   assert.equal(presented.notesCount, 1);
+});
+
+// --- notes read-back (P12, issue #61) ------------------------------------------
+
+const FIXTURE_NOTE = apiExampleById.get("api-resources-detail-with-notes").response.body.notes[0];
+
+test("presentNote maps a timestamped note: text plus the mm:ss stamp", () => {
+  const presented = presentNote(FIXTURE_NOTE);
+  assert.equal(presented.id, "note_01JABC0021");
+  assert.equal(presented.text, "3:20 起的例子值得回看");
+  // 200000ms -> 3:20, same formatting as the progress line.
+  assert.equal(presented.stamp, "3:20");
+  assert.equal(presented.sourceId, "src_01JABC0002");
+  assert.equal(presented.positionMs, 200000);
+});
+
+test("presentNote leaves the stamp null for a plain webpage note", () => {
+  const note = apiExampleById.get("api-note-create-webpage").response.body.note;
+  const presented = presentNote(note);
+  assert.equal(presented.stamp, null);
+  assert.equal(presented.sourceId, null);
+  assert.equal(presented.text, "这篇的复利概念可以整理进学习计划");
+});
+
+test("presentNote tolerates a broken positionMs (no stamp, no crash)", () => {
+  assert.equal(presentNote({ id: "n", text: "x", sourceId: null, positionMs: "200000" }).stamp, null);
+  assert.equal(presentNote({ id: "n", text: "x", sourceId: null, positionMs: -5 }).stamp, null);
+});
+
+test("buildNoteJumpUrl adds the platform seek parameter for bilibili (best effort)", () => {
+  const sources = apiExampleById.get("api-resources-detail-with-notes").response.body.sources;
+  const url = buildNoteJumpUrl(FIXTURE_NOTE, sources);
+  // The p=2 episode param is kept; t carries the note's seconds.
+  assert.equal(url, "https://www.bilibili.com/video/BV1ab411L78c?p=2&t=200");
+});
+
+test("buildNoteJumpUrl adds the youtube seek parameter as seconds-with-s", () => {
+  const note = { id: "n1", sourceId: "src_yt", positionMs: 65000, text: "x" };
+  const sources = [
+    { id: "src_yt", url: "https://www.youtube.com/watch?v=abc123", platformId: "youtube" },
+  ];
+  assert.equal(buildNoteJumpUrl(note, sources), "https://www.youtube.com/watch?v=abc123&t=65s");
+});
+
+test("buildNoteJumpUrl returns null when there is no platform seek support (只展示时间戳)", () => {
+  const note = { id: "n1", sourceId: "src_xe", positionMs: 65000, text: "x" };
+  const sources = [
+    {
+      id: "src_xe",
+      url: "https://shop.xiaoe-tech.com/v_abc",
+      platformId: "xiaoe-tech",
+    },
+    { id: "src_none", url: "https://www.example.com/a", platformId: null },
+  ];
+  assert.equal(buildNoteJumpUrl(note, sources), null);
+});
+
+test("buildNoteJumpUrl returns null for a plain webpage note or an unknown source", () => {
+  const sources = apiExampleById.get("api-resources-detail-with-notes").response.body.sources;
+  assert.equal(buildNoteJumpUrl({ id: "n", sourceId: null, positionMs: 1000, text: "x" }, sources), null);
+  assert.equal(buildNoteJumpUrl({ id: "n", sourceId: "src_missing", positionMs: 1000, text: "x" }, sources), null);
+  assert.equal(buildNoteJumpUrl(null, sources), null);
+});
+
+test("buildNoteJumpUrl returns null for a source url it cannot parse", () => {
+  const note = { id: "n1", sourceId: "src_broken", positionMs: 1000, text: "x" };
+  const sources = [{ id: "src_broken", url: "::not a url::", platformId: "bilibili" }];
+  assert.equal(buildNoteJumpUrl(note, sources), null);
+});
+
+test("presentDetail maps the notes through presentNote", () => {
+  const detail = apiExampleById.get("api-resources-detail-with-notes").response.body;
+  const presented = presentDetail(detail);
+  assert.equal(presented.notes.length, 1);
+  assert.deepEqual(presented.notes[0], presentNote(FIXTURE_NOTE));
 });
 
 test("backToList returns to the list view", async () => {

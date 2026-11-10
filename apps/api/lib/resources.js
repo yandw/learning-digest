@@ -16,6 +16,7 @@
  */
 const { ApiError, validationFailed, notFoundResource } = require("./errors");
 const { generateId } = require("./ids");
+const { notesForResource } = require("./notes");
 const { normalizeUrl, extractVideoIdentity } = require("../../../contracts/platform-video-id");
 
 // platformVideoId formats from platform-video-id-rules.md §1.
@@ -298,7 +299,8 @@ function listResources({ store, accountId }) {
 /**
  * Contract §3.3: one account resource with sources and notes. Reads run
  * with the accountId in the query (D2): other accounts' ids and unknown
- * ids are the same 404. Notes stay empty until P12 lands.
+ * ids are the same 404. Notes are the real read-back (P12): the account's
+ * notes on this resource, oldest first.
  */
 function getResourceDetail({ store, accountId, id }) {
   const resource =
@@ -313,7 +315,7 @@ function getResourceDetail({ store, accountId, id }) {
       sources: sourcesForResource({ store, accountId, resourceId: resource.id }).map(
         (source) => serializeSource({ store, source }),
       ),
-      notes: [],
+      notes: notesForResource({ store, accountId, resourceId: resource.id }),
     },
   };
 }

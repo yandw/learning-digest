@@ -6,7 +6,7 @@ const { validationFailed, unauthorizedMissing, unauthorizedExpired } = require("
 const { normalizeEmail, isInvited } = require("./invites");
 const { issueCode } = require("./codes");
 const { openOrLogin } = require("./accounts");
-const { authenticate, revokeCredential, issueCredential } = require("./credentials");
+const { authenticate, findCredentialByToken, revokeCredentialGroup, issueCredential } = require("./credentials");
 const { createLinkCode, consumeLinkCode } = require("./link-codes");
 const {
   parseSourceRequest,
@@ -18,6 +18,7 @@ const {
   retitleResource,
 } = require("./resources");
 const { saveProgress } = require("./progress");
+const { createNote } = require("./notes");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -116,19 +117,22 @@ function registerRoutes(ctx) {
     };
   });
 
-  // POST /v1/auth/logout — round 1 revokes the presented credential only.
-  // The group-revocation primitive (revokeCredentialGroup) is the seam P7
-  // wires linked logout (Web + extension exiting together) through.
+  // POST /v1/auth/logout — linked logout (P7, decision 3 of #49): the
+  // presented credential's WHOLE credential group is revoked, so the Web
+  // session and the extension credential die together (contract §1: 401 =
+  // expired OR linked-revoked). A repeat logout with an already-revoked
+  // credential stays a 200 no-op; a token the server never issued is still
+  // the expired-token 401 body.
   router.add("POST", "/v1/auth/logout", async ({ req }) => {
     const token = bearerToken(req);
     if (!token) {
       throw unauthorizedMissing();
     }
-    const credential = authenticate({ store, token });
-    if (!credential) {
+    const record = findCredentialByToken({ store, token });
+    if (!record) {
       throw unauthorizedExpired();
     }
-    revokeCredential({ store, token, now });
+    revokeCredentialGroup({ store, groupId: record.credentialGroupId, now });
     return { status: 200, body: { ok: true } };
   });
 
@@ -157,6 +161,21 @@ function registerRoutes(ctx) {
   router.add("GET", "/v1/resources/:id", async ({ req, params }) => {
     const credential = requireCredential(req);
     return getResourceDetail({ store, accountId: credential.accountId, id: params.id });
+  });
+
+  // POST /v1/resources/:id/notes — add a note (contract §3.6; P12): a
+  // clientRequestId dedupes resends (201 creates, 200 returns the original
+  // note); an optional sourceId + positionMs pair stamps the note onto one
+  // of the resource's own sources. Cross-account resources are 404 (D2).
+  router.add("POST", "/v1/resources/:id/notes", async ({ req, params, body }) => {
+    const credential = requireCredential(req);
+    return createNote({
+      store,
+      accountId: credential.accountId,
+      resourceId: params.id,
+      body,
+      now,
+    });
   });
 
   // PATCH /v1/resources/:id — manual retitle (contract §3.7, round-1

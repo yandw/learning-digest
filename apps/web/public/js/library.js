@@ -97,10 +97,12 @@ export function presentListItem(item) {
 
 /**
  * View model for the detail page: the editable title, each source as an
- * openable original address with its progress, and the note count for the
- * notes block (the notes themselves arrive with P12).
+ * openable original address with its progress, and the notes read-back
+ * (P12) as presentNote view models. Round 1 reads notes only — the Web
+ * never writes them.
  */
 export function presentDetail(detail) {
+  const notes = (detail.notes || []).map(presentNote);
   return {
     id: detail.resource.id,
     title: detail.resource.title,
@@ -111,8 +113,76 @@ export function presentDetail(detail) {
       platformLabel: platformLabel(source.platformId),
       progressText: progressLabel(source),
     })),
-    notesCount: (detail.notes || []).length,
+    notes,
+    notesCount: notes.length,
   };
+}
+
+/**
+ * View model for one read-back note (contract §2.4): the text plus, for a
+ * timestamped note, the mm:ss stamp (same formatting as the progress
+ * line). A plain webpage note carries sourceId/positionMs null and has no
+ * stamp.
+ */
+export function presentNote(note) {
+  return {
+    id: note.id,
+    text: note.text,
+    stamp: formatPosition(note.positionMs),
+    sourceId: note.sourceId === undefined || note.sourceId === null ? null : note.sourceId,
+    positionMs:
+      typeof note.positionMs === "number" && Number.isFinite(note.positionMs) && note.positionMs >= 0
+        ? note.positionMs
+        : null,
+  };
+}
+
+/**
+ * Best-effort jump-back to the note's position on the original platform
+ * (ticket #61: 回原平台对应位置按平台能力尽力实现). Only platforms with a
+ * documented seek parameter get a URL — bilibili appends `t=<seconds>` to
+ * the source address (keeping its `p=` episode param), youtube appends
+ * `t=<seconds>s`. xiaoe-tech has no documented seek parameter and plain
+ * webpages have nothing to seek: both return null, and the page then
+ * shows the timestamp without a jump affordance.
+ *
+ * @param {object} note a contract §2.4 note (sourceId + positionMs)
+ * @param {Array} sources the detail's sources (with platformId and url)
+ * @returns {string|null} the seek URL, or null when no jump is possible
+ */
+const SEEK_PARAM_BUILDERS = {
+  bilibili: (seconds) => ({ t: String(seconds) }),
+  youtube: (seconds) => ({ t: `${seconds}s` }),
+};
+
+export function buildNoteJumpUrl(note, sources) {
+  if (
+    !note ||
+    typeof note.positionMs !== "number" ||
+    !Number.isFinite(note.positionMs) ||
+    note.positionMs < 0 ||
+    !note.sourceId
+  ) {
+    return null;
+  }
+  const source = (sources || []).find((s) => s && s.id === note.sourceId);
+  if (!source || typeof source.url !== "string") {
+    return null;
+  }
+  const buildParams = SEEK_PARAM_BUILDERS[source.platformId];
+  if (!buildParams) {
+    return null;
+  }
+  try {
+    const url = new URL(source.url);
+    const params = buildParams(Math.floor(note.positionMs / 1000));
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+    return url.toString();
+  } catch (_error) {
+    return null;
+  }
 }
 
 /**

@@ -81,9 +81,11 @@ function authenticate({ store, token }) {
 }
 
 /**
- * Revoke ONE credential (round-1 logout semantics). Siblings in the same
- * group stay valid; use revokeCredentialGroup for the linked-logout
- * primitive. Unknown tokens are a no-op (idempotent logout).
+ * Revoke ONE credential. Siblings in the same group stay valid. Round 1
+ * wired logout through this; since P7 the logout ENDPOINT drives
+ * revokeCredentialGroup instead (linked logout), and this primitive stays
+ * part of the model for tests and future single-credential needs. Unknown
+ * or already-revoked tokens are a no-op.
  * @returns {boolean} true when a live credential was revoked
  */
 function revokeCredential({ store, token, now }) {
@@ -94,6 +96,17 @@ function revokeCredential({ store, token, now }) {
   record.revokedAt = now();
   store.set("credentials", record.tokenHash, record);
   return true;
+}
+
+/**
+ * Resolve a credential record by token WITHOUT the revocation checks.
+ * P7's logout endpoint needs the record of an already-revoked credential
+ * so a repeated logout stays an idempotent 200 instead of a 401; unknown
+ * tokens (never issued) still return null.
+ * @returns {object|null} the credential record, live or revoked
+ */
+function findCredentialByToken({ store, token }) {
+  return store.get("credentials", hashToken(token));
 }
 
 /**
@@ -117,6 +130,7 @@ module.exports = {
   findActiveGroup,
   hashToken,
   authenticate,
+  findCredentialByToken,
   revokeCredential,
   revokeCredentialGroup,
 };

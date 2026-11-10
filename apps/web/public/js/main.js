@@ -6,9 +6,10 @@
  * only builds elements from their snapshots and view models.
  */
 import { createLoginFlow } from "./login-flow.js";
-import { createLibraryFlow, presentListItem, presentDetail } from "./library.js";
+import { createLibraryFlow, presentListItem, presentDetail, presentNote, buildNoteJumpUrl } from "./library.js";
 import { createApiClient } from "./api-client.js";
 import { createCredentialStore } from "./credentials.js";
+import { createSessionRevalidator } from "./session-revalidate.js";
 
 function byId(id) {
   return document.getElementById(id);
@@ -68,6 +69,8 @@ const elements = {
   saveTitleBtn: byId("saveTitleBtn"),
   cancelTitleBtn: byId("cancelTitleBtn"),
   detailSources: byId("detailSources"),
+  detailNotesList: byId("detailNotesList"),
+  notesEmpty: byId("notesEmpty"),
 };
 
 function setMessage(element, text) {
@@ -139,6 +142,38 @@ function renderDetailSource(presented) {
   return item;
 }
 
+/**
+ * One read-back note row (P12): the text plus the mm:ss stamp for a
+ * timestamped note. The stamp is a button only when the platform offers a
+ * seek parameter (bilibili/youtube); otherwise it stays plain text —
+ * the jump decision lives in the pure module, this only renders it.
+ */
+function renderDetailNote(note, sources) {
+  const presented = presentNote(note);
+  const item = el("li", "note-item");
+
+  item.appendChild(el("p", "note-text", presented.text));
+
+  const meta = el("div", "note-meta");
+  if (presented.stamp) {
+    const jumpUrl = buildNoteJumpUrl(note, sources);
+    if (jumpUrl) {
+      const stamp = el("button", "link-btn note-stamp", presented.stamp);
+      stamp.type = "button";
+      stamp.title = "回到原视频的这个位置";
+      stamp.addEventListener("click", () => {
+        window.open(jumpUrl, "_blank", "noopener");
+      });
+      meta.appendChild(stamp);
+    } else {
+      meta.appendChild(el("span", "badge badge-progress", presented.stamp));
+    }
+  }
+  item.appendChild(meta);
+
+  return item;
+}
+
 function renderList(state) {
   elements.resourceList.replaceChildren(
     ...state.resources.map((item) => renderListItem(presentListItem(item))),
@@ -159,6 +194,13 @@ function renderDetail(state) {
   elements.detailSources.replaceChildren(
     ...presented.sources.map((source) => renderDetailSource(source)),
   );
+  // The notes read-back renders from the RAW detail (the jump URLs need
+  // each source's platformId); the view models come from presentNote.
+  const rawNotes = state.detail.notes || [];
+  elements.detailNotesList.replaceChildren(
+    ...rawNotes.map((note) => renderDetailNote(note, state.detail.sources || [])),
+  );
+  elements.notesEmpty.hidden = rawNotes.length > 0;
 }
 
 // The library loads once per authenticated session: on resume, after a
@@ -323,6 +365,23 @@ async function refreshAccount() {
   // view; other failures just leave the stored email displayed.
   render();
 }
+
+// P7 linked logout, pull side: a logout on the extension (same credential
+// group) cannot push to this page. While logged in, the next visibility or
+// focus event silently re-checks GET /v1/me; a 401 routes through the
+// shared interceptor (credential cleared, flow reset) and the page
+// re-renders back to the login view.
+const sessionRevalidator = createSessionRevalidator({
+  api,
+  isAuthenticated: () => flow.getState().state === "authenticated",
+  onInvalidated: () => render(),
+});
+document.addEventListener("visibilitychange", () => {
+  void sessionRevalidator.onPageVisible(document.visibilityState === "visible");
+});
+window.addEventListener("focus", () => {
+  void sessionRevalidator.onPageVisible(true);
+});
 
 flow.resume().then(() => {
   render();

@@ -27,6 +27,15 @@
           >
             设置
           </button>
+          <button
+            class="settings-btn"
+            id="logoutBtn"
+            type="button"
+            title="退出登录：学习库账号在网页和插件上同时退出"
+            aria-label="退出登录"
+          >
+            退出登录
+          </button>
         </div>
       </div>
 
@@ -104,6 +113,34 @@
             收藏当前页
           </button>
           <div class="collect-status" id="collectStatus" aria-live="polite" style="display: none"></div>
+        </div>
+        <!-- Library note entry (P12, #61): a plain-text note about the
+             current page, saved to that library resource (a recognized
+             video page also carries the current playback position). Lives
+             inside the welcome state like the collect entry above, so the
+             authorization gate hides it until the panel unlocks. -->
+        <div class="note-entry">
+          <textarea
+            id="libraryNoteInput"
+            class="note-input"
+            rows="3"
+            placeholder="写一条学习笔记，保存到这条资料的笔记区；视频页会自动带上当前播放位置"
+            aria-label="学习笔记内容"
+          ></textarea>
+          <div class="note-entry-actions">
+            <button class="session-btn auth-gate-btn" id="saveNoteBtn" type="button">
+              保存笔记
+            </button>
+            <button
+              class="link-btn"
+              id="discardNoteDraftBtn"
+              type="button"
+              style="display: none"
+            >
+              放弃未发送的草稿
+            </button>
+          </div>
+          <div class="note-entry-status" id="noteStatus" aria-live="polite" style="display: none"></div>
         </div>
       </div>
 

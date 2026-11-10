@@ -16,6 +16,9 @@ A specific webpage or playable version on the original platform through which a 
 The identifier assigned to a video by its original platform. Its scope is that platform.
 _Avoid_: Clean ID
 
+**Note**:
+A learner-written remark attached to a Resource. A note can be pinned to a position on one of the Resource's Sources (a timestamped note); a plain webpage note has no position.
+
 **Session**:
 One continuous act of learning from a Source. A learner can return to the same Source in multiple Sessions.
 _Avoid_: Lesson, class, recording

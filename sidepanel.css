@@ -1,11 +1,11 @@
 /*
- * SIDE PANEL STYLES — "Calm Terracotta" (Light Mode)
+ * SIDE PANEL STYLES — "Brand Blue" (Light Mode)
  *
  * Design philosophy:
  * - Warm, editorial, unhurried. The opposite of shouty.
  * - Soft cream paper background; white cards float on it with gentle shadows.
  * - Rounded corners everywhere (no sharp brutalist edges).
- * - Terracotta is the single warm accent, used sparingly; sage is a quiet
+ * - Brand blue is the single accent, used sparingly; sage is a quiet blue
  *   secondary. Red is gone.
  * - Fully sans-serif, using system fonts so the extension makes no font
  *   requests to third parties.
@@ -16,28 +16,29 @@
    ============================================================ */
 :root {
   /* Surfaces & ink — all warm-toned, never pure grey */
-  --bg: #f7f3ec;
+  --bg: #f2f6fc;
   --surface: #ffffff;
-  --surface-raised: #fbf8f2;
-  --border: #ece5d9;
-  --border-heavy: #ddd4c4;
-  --text: #2e2a24;
-  --text-secondary: #6b6258;
-  --text-muted: #a39a8d;
+  --surface-raised: #f7fafd;
+  --border: #dce5f0;
+  --border-heavy: #c3d0e0;
+  --text: #1f2733;
+  --text-secondary: #5b6b80;
+  --text-muted: #93a1b3;
 
   /* Accents */
-  --accent: #c8674f; /* terracotta */
-  --accent-hover: #b25742;
-  --accent-dim: rgba(200, 103, 79, 0.1);
-  --sage: #7c8b6f; /* quiet secondary */
-  --sage-dim: rgba(124, 139, 111, 0.14);
-  --success: #7c8b6f;
-  --highlight: #d99a5b;
+  --accent: #1b72e8; /* brand blue */
+  --accent-hover: #155cc4;
+  --accent-dim: rgba(27, 114, 232, 0.1);
+  --accent-deep: #16406b; /* deep brand blue: the 核心要点 card */
+  --sage: #4f7fa8; /* quiet secondary blue */
+  --sage-dim: rgba(79, 127, 168, 0.14);
+  --success: #4f7fa8;
+  --highlight: #d9a441;
 
   /* Soft shadows give depth instead of heavy borders */
-  --shadow-sm: 0 1px 3px rgba(90, 80, 60, 0.06);
-  --shadow-md: 0 4px 16px rgba(90, 80, 60, 0.1);
-  --shadow-lg: 0 16px 48px rgba(50, 42, 32, 0.22);
+  --shadow-sm: 0 1px 3px rgba(45, 65, 95, 0.06);
+  --shadow-md: 0 4px 16px rgba(45, 65, 95, 0.1);
+  --shadow-lg: 0 16px 48px rgba(25, 40, 65, 0.22);
 
   /* Rounding scale */
   --r-sm: 8px;
@@ -155,7 +156,7 @@ body {
 /* ============================================================
    TAB NAVIGATION — pill tabs on the white header.
    No background "track": the header is white and the content below is cream,
-   so the only thing in this strip is the muted labels + one terracotta pill.
+   so the only thing in this strip is the muted labels + one blue pill.
    That keeps the menu visually separate from the content area below it.
    ============================================================ */
 .tabs {
@@ -191,7 +192,7 @@ body {
   background: var(--surface-raised);
 }
 
-/* Active pill — terracotta fill on the white header */
+/* Active pill — blue fill on the white header */
 .tab.active {
   color: #fff;
   background: var(--accent);
@@ -548,161 +549,128 @@ body {
 }
 
 /* ============================================================
-   CHAPTERS
+   OVERVIEW TAB (Session Digest view, #31)
    ============================================================ */
-.chapter-list {
-  list-style: none;
-}
 
-.chapter-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 13px 15px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  margin-bottom: 9px;
-  transition: all 0.18s ease;
-  background: var(--surface);
-  cursor: pointer;
-}
-
-.chapter-item:hover {
-  border-color: var(--accent);
-  box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
-}
-
-.chapter-timestamp {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--accent);
-  min-width: 46px;
-  padding: 3px 8px;
-  background: var(--accent-dim);
-  border-radius: var(--r-sm);
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.chapter-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.chapter-title {
-  font-family: var(--font-reading);
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.chapter-summary {
-  font-family: var(--font-reading);
-  font-size: 12.5px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
-.localized-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.localized-original,
-.localized-translation {
-  display: block;
-}
-
-.localized-original + .localized-translation {
-  padding-top: 5px;
-  border-top: 1px solid var(--border);
-}
-
-.localized-translation .translation-pending {
+.overview-empty {
   color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 4px 0 12px;
 }
 
-/* ============================================================
-   KEY QUOTES
-   ============================================================ */
-.quote-item {
-  border-left: 4px solid var(--accent);
-  border-radius: var(--r-md);
-  padding: 16px 18px;
-  margin-bottom: 14px;
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
-  cursor: pointer;
-  transition: all 0.18s ease;
+.overview-topics,
+.overview-quotes {
+  margin: 0;
+  padding: 0;
 }
 
-.quote-item:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-1px);
-}
-
-.quote-text {
-  font-family: var(--font-reading);
-  font-size: 14px;
-  line-height: 1.65;
-  color: var(--text);
-  margin-bottom: 10px;
-}
-
-.quote-text::before {
-  content: "\201C";
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 34px;
-  color: var(--accent);
-  line-height: 0;
-  vertical-align: -10px;
-  margin-right: 4px;
-}
-
-.quote-meta {
+/* The Overview timeline mirrors the report page's step bar: numbered dots on
+   a shared vertical line, one stop per Topic. */
+.overview-topic {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  position: relative;
 }
 
-.quote-actions {
+.overview-topic + .overview-topic {
+  padding-top: 12px;
+}
+
+.overview-topic-step {
+  align-items: flex-start;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex: 0 0 auto;
+  justify-content: center;
+  position: relative;
+  width: 22px;
 }
 
-/* One-click copy and save-note buttons on each quote */
-.quote-copy-btn,
-.quote-save-note-btn {
-  font-family: var(--font-body);
-  font-weight: 600;
+.overview-topic-step::after {
+  background: var(--border);
+  bottom: -12px;
+  content: "";
+  left: 50%;
+  position: absolute;
+  top: 20px;
+  transform: translateX(-50%);
+  width: 2px;
+}
+
+.overview-topic:last-child .overview-topic-step::after {
+  display: none;
+}
+
+.overview-topic-dot {
+  background: var(--accent);
+  border-radius: 50%;
+  color: #ffffff;
+  flex: 0 0 auto;
   font-size: 11px;
-  padding: 4px 11px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  width: 18px;
+  z-index: 1;
+}
+
+.overview-topic-content {
+  min-width: 0;
+}
+
+.overview-topic-title {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+  margin: 0 0 2px;
+}
+
+.overview-topic-summary {
   color: var(--text-secondary);
-  cursor: pointer;
-  transition: all 0.18s ease;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
-.quote-copy-btn:hover,
-.quote-save-note-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+.overview-quote {
   background: var(--accent-dim);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
 }
 
-.quote-save-note-btn:disabled {
-  opacity: 0.7;
-  cursor: default;
+.overview-quote:last-child {
+  margin-bottom: 0;
+}
+
+.overview-quote-text {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Clickable [m:ss] timestamps: they jump into the Session transcript. */
+.overview-time {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0;
+}
+
+.overview-time:hover {
+  text-decoration: underline;
+}
+
+.overview-time:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* ============================================================
@@ -732,7 +700,7 @@ body {
 .transcript-search-highlight {
   padding: 1px 0;
   border-radius: 3px;
-  background: #f5d9a8;
+  background: #bcd7f7;
   color: inherit;
 }
 
@@ -878,42 +846,7 @@ body {
 }
 
 /* Active playback highlight */
-.transcript-entry.active-playback {
-  background: var(--accent-dim);
-  border-left: 3px solid var(--accent);
-}
-
-.transcript-entry.active-playback .transcript-time {
-  color: var(--accent);
-  font-weight: 600;
-}
-
 /* Follow playback button — floating pill */
-.follow-playback-btn {
-  position: fixed;
-  bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
-  background: var(--accent);
-  color: white;
-  border: none;
-  padding: 10px 22px;
-  border-radius: var(--r-pill);
-  font-family: var(--font-body);
-  font-weight: 600;
-  font-size: 12px;
-  letter-spacing: 0.3px;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  box-shadow: 0 6px 18px rgba(200, 103, 79, 0.4);
-}
-
-.follow-playback-btn:hover {
-  background: var(--accent-hover);
-  transform: translateX(-50%) translateY(-1px);
-}
-
 /* ============================================================
    LOADING STATE
    ============================================================ */
@@ -954,12 +887,6 @@ body {
   100% {
     left: 100%;
   }
-}
-
-/* Speech Transcription reports real progress, so it swaps the ::after
-   indeterminate sweep for a real percentage fill driven by JS. */
-.loading-bar--determinate::after {
-  content: none;
 }
 
 .loading-bar-fill {
@@ -1068,12 +995,12 @@ body {
   padding: 40px 24px;
 }
 
-/* A soft terracotta tile with a CSS play mark, matching the brand. */
+/* A soft blue tile with a CSS play mark, matching the brand. */
 .welcome-icon {
   width: 84px;
   height: 84px;
   border-radius: var(--r-xl);
-  background: linear-gradient(145deg, #d2735a, #bd5740);
+  background: linear-gradient(145deg, #3b9df2, #1b72e8);
   box-shadow: 0 12px 30px rgba(200, 103, 79, 0.35);
   display: flex;
   align-items: center;
@@ -1515,4 +1442,535 @@ body {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-dim);
+}
+
+/* Session capture (xiaoe-tech Source Platform) */
+.session-bar {
+  align-items: center;
+  background: #f2f4f8;
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+}
+
+.session-status {
+  color: #5a6472;
+  font-size: 12px;
+}
+
+.session-btn {
+  background: #1a73e8;
+  border: none;
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 12px;
+}
+
+.session-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.session-btn-end {
+  background: #d93025;
+}
+
+.session-btn-clear {
+  background: #5a6472;
+}
+
+/* Start hint: the panel cannot start the capture itself (Chrome only allows
+   tabCapture from a toolbar-icon invocation), so the idle state shows this
+   actionable-looking pointer at the real entry point instead of a dead
+   button. */
+.session-start-hint {
+  align-items: center;
+  background: #e8f0fe;
+  border: 1px dashed #1a73e8;
+  border-radius: 6px;
+  color: #174ea6;
+  cursor: default;
+  display: flex;
+  flex: 1;
+  font-size: 12px;
+  gap: 6px;
+  justify-content: center;
+  line-height: 1.5;
+  padding: 6px 10px;
+  text-align: center;
+}
+
+.session-start-hint-dot {
+  animation: session-start-hint-pulse 1.6s ease-in-out infinite;
+  background: #1a73e8;
+  border-radius: 50%;
+  flex-shrink: 0;
+  height: 8px;
+  width: 8px;
+}
+
+@keyframes session-start-hint-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.session-pending .session-record-text {
+  color: #8a93a1;
+}
+
+.session-pending-spinner {
+  animation: session-pending-spin 0.8s linear infinite;
+  border: 2px solid #d2e3fc;
+  border-radius: 50%;
+  border-top-color: #1a73e8;
+  flex-shrink: 0;
+  height: 12px;
+  margin-top: 3px;
+  width: 12px;
+}
+
+@keyframes session-pending-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.session-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The realtime draft box (#47): the live partial the ASR server is still
+   revising, pinned above the transcript rows during realtime Sessions. */
+.session-realtime {
+  align-items: flex-start;
+  background: #e8f1fc;
+  border-radius: 8px;
+  display: flex;
+  gap: 8px;
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+}
+
+.session-realtime-badge {
+  background: #1a73e8;
+  border-radius: 4px;
+  color: #fff;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 6px;
+}
+
+.session-realtime-draft {
+  color: #5a6472;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 纪要 tab (#30): the compact report fragment, the tab's hint/error states
+   and the open/download actions. The fragment reuses the full report's class
+   names, restyled here for the narrow panel column. */
+.report-tab-hint {
+  color: var(--text-muted);
+  display: flex;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 0;
+}
+
+.report-tab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 0 10px;
+}
+
+.report-tab-error {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--highlight);
+  border-radius: var(--r-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 10px 12px;
+}
+
+.report-tab-error-text {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.report-compact-host {
+  overflow-y: auto;
+}
+
+.report-compact {
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 4px 0 12px;
+  /* Schema v2 (0.1.38): the compact fragment cycles the full report's flat
+     category palette (see REPORT_STYLE in report-render.js); the tokens are
+     duplicated here so the panel stylesheet stays self-contained. */
+  --cat-blue-bg: #e8f1fc;
+  --cat-blue-border: #1b72e8;
+  --cat-green-bg: #e9f5ef;
+  --cat-green-border: #3e8e6d;
+  --cat-amber-bg: #fdf3e3;
+  --cat-amber-border: #d9a441;
+  --cat-purple-bg: #f1edf9;
+  --cat-purple-border: #7a5fb8;
+}
+
+.report-compact .report-header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.report-compact .report-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.report-compact .report-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.report-compact .report-section-title {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+/* The compact step bar mirrors the full report's timeline: numbered dots on
+   a shared vertical line, one stop per Topic. */
+.report-compact .topic-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .report-topic {
+  display: flex;
+  gap: 10px;
+  position: relative;
+}
+
+.report-compact .report-topic + .report-topic {
+  padding-top: 12px;
+}
+
+.report-compact .topic-step {
+  align-items: flex-start;
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  position: relative;
+  width: 22px;
+}
+
+.report-compact .topic-step::after {
+  background: var(--border);
+  bottom: -12px;
+  content: "";
+  left: 50%;
+  position: absolute;
+  top: 20px;
+  transform: translateX(-50%);
+  width: 2px;
+}
+
+.report-compact .report-topic:last-child .topic-step::after {
+  display: none;
+}
+
+.report-compact .topic-step-dot {
+  background: var(--accent);
+  border-radius: 50%;
+  color: #ffffff;
+  flex: 0 0 auto;
+  font-size: 11px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  width: 18px;
+  z-index: 1;
+}
+
+/* Schema v2 (0.1.38): the compact fragment mirrors the full report's flat
+   cards — the 核心要点 deep-blue card, Topic bullets on the tinted card, and
+   the 主题归纳 category grid cycling the palette above. */
+.report-compact .topic-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.report-compact .topic-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+
+.report-compact .topic-time {
+  background: var(--accent-dim);
+  border-radius: 999px;
+  color: var(--accent);
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+.report-compact .topic-summary {
+  color: var(--text-secondary);
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.report-compact .overview-card {
+  background: var(--accent-deep);
+  border-radius: 10px;
+  color: #eef5ff;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.report-compact .overview-card li {
+  padding-left: 14px;
+  position: relative;
+}
+
+.report-compact .overview-card li::before {
+  background: #7db4f5;
+  border-radius: 50%;
+  content: "";
+  height: 6px;
+  left: 0;
+  position: absolute;
+  top: 0.7em;
+  width: 6px;
+}
+
+.report-compact .topic-bullets {
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .topic-bullets li {
+  padding-left: 12px;
+  position: relative;
+}
+
+.report-compact .topic-bullets li::before {
+  background: var(--accent);
+  border-radius: 50%;
+  content: "";
+  height: 5px;
+  left: 0;
+  opacity: 0.55;
+  position: absolute;
+  top: 0.7em;
+  width: 5px;
+}
+
+.report-compact .category-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-compact .category-card {
+  background: var(--cat-bg, var(--cat-blue-bg));
+  border: 1px solid var(--cat-border, var(--cat-blue-border));
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+
+.report-compact .category-card.cat-0 { --cat-bg: var(--cat-blue-bg); --cat-border: var(--cat-blue-border); }
+.report-compact .category-card.cat-1 { --cat-bg: var(--cat-green-bg); --cat-border: var(--cat-green-border); }
+.report-compact .category-card.cat-2 { --cat-bg: var(--cat-amber-bg); --cat-border: var(--cat-amber-border); }
+.report-compact .category-card.cat-3 { --cat-bg: var(--cat-purple-bg); --cat-border: var(--cat-purple-border); }
+
+.report-compact .category-chip {
+  background: var(--cat-border, var(--cat-blue-border));
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  padding: 0 8px;
+}
+
+.report-compact .category-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .category-points li {
+  padding-left: 12px;
+  position: relative;
+}
+
+.report-compact .category-points li::before {
+  background: var(--cat-border, var(--cat-blue-border));
+  border-radius: 50%;
+  content: "";
+  height: 5px;
+  left: 0;
+  position: absolute;
+  top: 0.7em;
+  width: 5px;
+}
+
+.report-compact .report-footer {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.report-compact .quote-item {
+  background: var(--accent-dim);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  margin: 0 0 8px;
+  padding: 6px 10px;
+}
+
+.report-compact .quote-item:last-child {
+  margin-bottom: 0;
+}
+
+.report-compact .quote-time {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.report-compact .todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.report-compact .todo-item {
+  padding: 2px 0;
+}
+
+.report-compact .todo-item label {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+
+.report-compact .todo-item input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.report-compact .todo-text {
+  color: var(--text);
+}
+
+.report-compact .report-empty {
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.session-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding: 12px;
+  width: 100%;
+}
+
+.session-record {
+  display: flex;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.session-record-stamp {
+  color: #8a93a1;
+  flex-shrink: 0;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.session-record-text {
+  font-size: 13px;
+}
+
+.session-record-failed .session-record-text {
+  color: #d93025;
+}
+
+/* A record the Overview jumped to, highlighted like the search's current
+   match; the class is removed again after a short pause. */
+.session-record-jump {
+  background: var(--surface-raised);
+  border-radius: var(--r-sm);
+  box-shadow: inset 3px 0 0 var(--highlight);
+}
+
+
+.recording-toast {
+  background: #1d4ed8;
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(29, 78, 216, 0.35);
+  color: #fff;
+  font-size: 13px;
+  left: 50%;
+  opacity: 0;
+  padding: 8px 16px;
+  pointer-events: none;
+  position: fixed;
+  top: 12px;
+  transform: translateX(-50%) translateY(-8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 100;
+}
+
+.recording-toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }

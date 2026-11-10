@@ -1,221 +1,140 @@
-# Learning Digest (transitioning from YouTube Digest)
-
-> **Status: transitioning.** This repo was seeded from [youtube-digest](https://github.com/yandw/youtube-digest) and is being rebuilt as a multi-platform learning tool (first platform: xiaoe-tech.com) with segment transcription, rolling summaries, and a full-session digest. The docs below still describe the original YouTube Digest and will be rewritten. See [GLOSSARY.md](GLOSSARY.md) and [docs/adr/](docs/adr/) for the new domain model.
+# Learning Digest
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Turn every YouTube video into a resource for deep learning. YouTube Digest brings transcripts, bilingual translation, AI overviews, explanations, and timestamped notes into one Chrome side panel, so you can study ideas and language without losing your place.
+Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest.
 
-- Turn captions into a readable, searchable learning resource.
-- Learn languages with the original transcript, a Simplified Chinese translation, or an aligned bilingual view.
-- Build understanding with an AI overview, chapters, key quotes, and selected-text explanations.
-- Navigate long videos by clicking timestamps in the transcript, overview, or notes.
-- Save polished timestamped notes for later study.
-- Keep control of your data with your own API keys, local Chrome storage, and no analytics or telemetry.
+Learning Digest is a Chrome side panel for studying long course lessons on learning platforms. You open a lesson, start a Session, and the extension captures the lesson audio in fixed-length Segments, transcribes each Segment exactly once through your chosen Speech Provider, keeps a rolling summary up to date, and builds a full-session digest when the Session ends. A Session is one continuous learning act, typically one lesson of two to three hours.
 
-YouTube Digest is a bring-your-own-key project installed locally from GitHub. It is not available through the Chrome Web Store, does not include API credits, and does not run a developer-operated server.
+- Capture lesson audio on supported course platforms (first platform: xiaoe-tech.com) and turn it into a searchable, timestamped Transcript.
+- Follow along with a Rolling Summary that is refreshed as new Segments are transcribed.
+- Finish with a Session Digest built from the rolling summary and the full transcript.
+- Study in the original language, Simplified Chinese, or an aligned bilingual view.
+- Save timestamped notes from selected transcript text, and explain selected terms with your own AI key.
 
-![YouTube Digest demo](YouTube%20Digest%20demo.png)
+Learning Digest is a bring-your-own-key project installed locally from GitHub. It is not available through the Chrome Web Store, does not include API credits, and does not run a developer-operated server.
 
-## New in v1.2.0
+## Project status
 
-- Search transcript words or phrases and move through every match.
-- Use one Original, Chinese, or bilingual setting across Transcript, Overview, and Notes. New videos stay in Original by default.
-- Translate visible Overview and Notes content progressively in small cached batches.
-- Explain selected transcript text or save it directly as a timestamped note.
-- Keep your transcript position across navigation, with the panel closing automatically outside YouTube video pages.
+This repository is an early proof of concept. The platform and provider seams are in place:
+
+- the Session pipeline state machine and per-session persistence;
+- the Speech Provider registry with three providers: Groq, Tencent Cloud ASR, and Qwen (Bailian) ASR;
+- the AI Provider features (analysis, explanation, translation, notes) inherited from the seed project.
+
+Source Platform capture for xiaoe-tech.com and all three Speech Providers (Groq, Tencent Cloud ASR, Qwen ASR) are implemented. Transcription quality, latency, and cost on real lessons are not measured yet; the PoC evaluation report ([docs/poc-evaluation.md](docs/poc-evaluation.md)) records what is verified in code and the manual measurements needed for the go/no-go decision.
 
 ## Install with your coding agent
 
 You do not need to understand the code or use the command line. Send this message to your coding agent:
 
-> Download or clone this project into a permanent folder I choose, tell me its exact full path, and use that same folder for Chrome's Load unpacked step. If I need a suggestion during this first installation, offer `~/Documents/youtube-digest` on macOS or Linux, or `%USERPROFILE%\Documents\youtube-digest` on Windows, but do not assume either path. Walk me through installation and setup in simple terms. https://github.com/zarazhangrui/youtube-digest
+> Download or clone this project into a permanent folder I choose, tell me its exact full path, and use that same folder for Chrome's Load unpacked step. If I need a suggestion during this first installation, offer `~/Documents/learning-digest` on macOS or Linux, or `%USERPROFILE%\Documents\learning-digest` on Windows, but do not assume either path. Walk me through installation and setup in simple terms. https://github.com/yandw/learning-digest
 
 Your agent should:
 
-1. Ask where you want to keep the project, download or clone it there, and tell you the exact full path. If you want a suggestion, it can offer `~/Documents/youtube-digest` on macOS or Linux, or `%USERPROFILE%\Documents\youtube-digest` on Windows.
-2. Open the official DeepSeek page below and help you create your own account.
+1. Ask where you want to keep the project, download or clone it there, and tell you the exact full path. If you want a suggestion, it can offer `~/Documents/learning-digest` on macOS or Linux, or `%USERPROFILE%\Documents\learning-digest` on Windows.
+2. Open the official Alibaba Cloud Bailian page below and help you create your own account.
 3. Walk you through selecting the exact project folder you chose in Chrome with **Load unpacked**.
 4. Show you where to enter your API keys in the extension's **Settings** page.
-5. Open a YouTube video with captions and confirm the transcript and translation work.
+5. Explain how the side panel, Session pipeline, and Speech Provider settings fit together.
 
-Keep this folder in the same place after installation. If you move or delete it, Chrome's unpacked extension stops working until you load the extension again from its new permanent folder.
+Keep this folder in the same place after installation. Moving or deleting the source folder breaks the unpacked extension until you load it again from its new permanent folder.
 
-Never paste an API key into an AI chat, source file, screenshot, or public message. Enter keys yourself, directly in the YouTube Digest Settings page. Your coding agent can point to the correct field without seeing the key.
+Never paste an API key into an AI chat, source file, screenshot, or public message. Enter keys yourself, directly in the Learning Digest Settings page. Your coding agent can point to the correct field without seeing the key.
 
 ## Install manually
 
 If you prefer to do it yourself:
 
-1. Open [github.com/zarazhangrui/youtube-digest](https://github.com/zarazhangrui/youtube-digest).
+1. Open [github.com/yandw/learning-digest](https://github.com/yandw/learning-digest).
 2. Choose **Code**, then **Download ZIP**.
-3. Choose a permanent folder and unzip the project there. Optional suggestions are `~/Documents/youtube-digest` on macOS or Linux, or `%USERPROFILE%\Documents\youtube-digest` on Windows. You may use a different folder.
+3. Choose a permanent folder and unzip the project there. Optional suggestions are `~/Documents/learning-digest` on macOS or Linux, or `%USERPROFILE%\Documents\learning-digest` on Windows. You may use a different folder.
 4. In Chrome, open `chrome://extensions`.
 5. Turn on **Developer mode**.
 6. Click **Load unpacked**.
 7. Select the exact project folder you chose, which must contain `manifest.json`.
-8. Pin YouTube Digest from Chrome's Extensions menu if you want quick access.
+8. Pin Learning Digest from Chrome's Extensions menu if you want quick access.
 
-Because this is an unpacked extension, it does not update automatically. After downloading an update or changing local files, click **Reload** on the YouTube Digest card at `chrome://extensions`, then refresh open YouTube tabs. Moving or deleting the source folder breaks the unpacked extension until you load it again from the new location.
+Because this is an unpacked extension, it does not update automatically. After downloading an update or changing local files, click **Reload** on the Learning Digest card at `chrome://extensions`, then refresh open course tabs. Moving or deleting the source folder breaks the unpacked extension until you load it again from the new location.
 
 ## Set up your API keys
 
-YouTube Digest uses your own DeepSeek API key for overviews, explanations, translation, and automatic note polishing.
+Learning Digest uses your own AI provider API key (Alibaba Cloud Bailian by default) for summaries, explanations, translation, and note features. Session transcription uses a Speech Provider, Qwen ASR on Bailian by default, with its own key.
 
-### Get a DeepSeek API key
+### Get an AI provider API key
 
-1. Open the official [DeepSeek API Keys page](https://platform.deepseek.com/api_keys).
-2. Sign in or create a DeepSeek Platform account when prompted.
-3. Choose **Create new API key**, give it a recognizable name such as `YouTube Digest`, and create it.
+1. Open the official [Alibaba Cloud Bailian console](https://bailian.console.aliyun.com/).
+2. Sign in or create an Alibaba Cloud account when prompted, and activate Bailian (Model Studio) if asked.
+3. Create an API key, give it a recognizable name such as `Learning Digest`, and create it.
 4. Copy the key immediately. The full key may only be shown once.
-5. Paste it into **DeepSeek API key** in YouTube Digest Settings.
-6. If DeepSeek reports insufficient balance, add credit in your DeepSeek Platform account and try again.
+5. Paste it into **AI API key** in Learning Digest Settings.
+6. If Bailian reports insufficient quota, top up in your Bailian account and try again.
 
-See the [official DeepSeek API documentation](https://api-docs.deepseek.com/) for current account and API details.
+See the [official Alibaba Cloud Model Studio documentation](https://help.aliyun.com/zh/model-studio/) for current account and API details.
 
-Open **Settings** from the side panel. You can also open the YouTube Digest **Options** page from its card at `chrome://extensions` or by right-clicking its toolbar icon. Paste keys only into these Settings fields. Never paste a key into an AI chat, repository file, screenshot, or public message.
+Open **Settings** from the side panel. You can also open the Learning Digest **Options** page from its card at `chrome://extensions` or by right-clicking its toolbar icon. Paste keys only into these Settings fields. Never paste a key into an AI chat, repository file, screenshot, or public message.
 
-The published version supports DeepSeek V4 Flash as its only AI provider:
+The published version uses Alibaba Cloud Bailian with the qwen3.8-flash model as its AI provider:
 
 ```text
-Base URL: https://api.deepseek.com
-Model: deepseek-v4-flash
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+Model: qwen3.8-flash
 ```
 
-YouTube Digest sends every DeepSeek request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your DeepSeek API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
+Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your Bailian API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
+
+### Speech Provider key
+
+Session transcription defaults to Qwen ASR on Alibaba Cloud Bailian:
+
+```text
+Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+Model: qwen3-asr-flash
+```
+
+Add a Bailian API key in the Speech Provider section of Settings. Groq Whisper and Tencent Cloud ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
 
 Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 
-### Caption selection order
+## Use Learning Digest
 
-YouTube Digest tries Simplified Chinese (`zh-Hans`, including regional tracks such as `zh-CN`), Traditional Chinese (`zh-Hant`, including tracks such as `zh-TW`), YouTube auto-translated Chinese, English, then YouTube auto-translated English. Within a direct language group, native captions take precedence over auto-generated captions.
-
-Empty or failed caption responses fall through to the next candidate. If none of these five groups yields a transcript, the side panel reports that no suitable captions could be fetched. This version does not perform audio transcription.
-
-## Use YouTube Digest
-
-1. Open a standard YouTube watch page with captions.
-2. Click the YouTube Digest extension icon to open the side panel.
-3. Read the timestamped transcript, or choose **Original**, **中文**, or **双语**.
-4. Open **Overview** when you want AI-generated chapters and key quotes.
-5. Select transcript text when you want an AI explanation.
-6. Save a note from the player or a key quote, then revisit it from **Notes**.
+1. Open a lesson page on a supported course platform (xiaoe-tech.com today).
+2. Start a Session from the side panel.
+3. Read the timestamped Transcript as Segments are transcribed, or choose **Original**, **中文**, or **双语**.
+4. Watch the Rolling Summary refresh as the Session progresses.
+5. Open **Overview** for AI-generated chapters and key quotes.
+6. Select transcript text when you want an AI explanation, or save it directly as a timestamped note.
+7. End the Session to generate the Session Digest.
 
 ## What works today
 
 - Google Chrome 116 or newer, using the Side Panel API.
-- Standard `youtube.com/watch` video pages.
-- Standard YouTube caption tracks (native or auto-generated). YouTube Digest prefers Chinese over English when available.
-- Original, Simplified Chinese, and aligned bilingual transcript views.
-- AI overviews, selected-text explanations, translation, and automatic note polishing.
+- The Session pipeline state machine with per-session persistence (resume after closing the tab mid-lesson).
+- The Speech Provider registry with Groq, Tencent Cloud ASR, and Qwen ASR.
+- AI overviews, selected-text explanations, translation, and local notes against transcripts already in the cache.
 - Local notes and a local cache for recent transcript and digest results.
-- DeepSeek V4 Flash for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
+- Alibaba Cloud Bailian (qwen3.8-flash) for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
 
-Shorts, live streams, private or access-restricted videos, and videos without an available native transcript may not work. Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
+Source Platform capture for xiaoe-tech.com is implemented; real-lesson provider evaluation is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 
-YouTube Digest reads caption tracks directly from YouTube pages, works with both native and auto-generated captions, and does not perform audio transcription.
+## AI pricing
 
-## DeepSeek
-## DeepSeek V4 Flash pricing
+Bailian uses tiered pricing for `qwen3.8-flash`: the per-million-token rate depends on the input token size of each request. Current rates are listed on the [official model pricing page](https://help.aliyun.com/zh/model-studio/model-pricing). Check the official page before relying on these prices.
 
-As of August 27, 2026, DeepSeek lists these USD prices per 1 million tokens on its official [pricing page](https://api-docs.deepseek.com/quick_start/pricing/):
-
-| Token type | Off-peak | Peak |
-| --- | ---: | ---: |
-| Cache-hit input | $0.007 | $0.014 |
-| Cache-miss input | $0.22 | $0.44 |
-| Output | $0.66 | $1.32 |
-
-Peak hours are 01:00–04:00 and 06:00–10:00 UTC, Monday through Friday. All other hours use off-peak rates.
-
-A measured 20-minute English talk used about **32,600 input tokens** and an estimated **3,500 to 4,500 output tokens** across 43 small translation batches. At current prices, translating the full video costs approximately:
-
-- **Off-peak: $0.003 to $0.010 USD**.
-- **Peak: $0.005 to $0.020 USD**.
-
-The lower end assumes most repeated input hits DeepSeek's cache. The upper end assumes cache misses. Translation is lazy and cached, so translating only part of a video costs less. Check the official page before relying on these prices.
+Session transcription is billed by your Speech Provider. Groq's current Whisper pricing is listed on Groq's official pricing page; a typical lesson costs a small fraction of a cent per hour of audio.
 
 ## Remix it with your coding agent
 
 This is a personal remix project. Upstream issues and pull requests are not accepted. If something breaks or you want a new feature, download or fork your own copy and ask your coding agent to fix, remix, or personalize it for you.
 
-YouTube Digest uses plain HTML, CSS, and JavaScript with no build step, so it is a friendly starting point for agent-assisted projects. Ideas to try:
+Learning Digest uses plain HTML, CSS, and JavaScript with no build step, so it is a friendly starting point for agent-assisted projects. Ideas to try:
 
-- Add more translation languages and let each person choose a learning language.
-- Create customized summary templates for lectures, interviews, tutorials, reviews, or research talks.
-- Build a vocabulary notebook that saves a word, its sentence, meaning, and video timestamp.
-- Export notes and vocabulary to Markdown, CSV, Anki, or another study tool.
-- Add personal topic filters that highlight the chapters most relevant to a goal.
-- Add optional local-model support for a different privacy and cost tradeoff.
-- Improve accessibility with keyboard navigation, font controls, and higher-contrast themes.
+- Add more translation languages and let each person choose.
+- Build customized summary templates per course or topic.
+- Turn saved notes into a spaced-repetition vocabulary notebook.
+- Add another Source Platform adapter (the registry seam is ready).
+- Tune Segment length and summary cadence per provider (start from [docs/poc-evaluation.md](docs/poc-evaluation.md)).
 
-Ask your agent to preserve the bring-your-own-key model, keep secrets out of source files, run the checks below, and test the remix on real videos.
+When you remix, first open the exact Learning Digest project folder that Chrome loaded through **Load unpacked** in your coding agent. Working on a guessed or copied folder silently changes nothing in the extension Chrome actually runs.
 
-If you want another AI provider or model, first open the exact YouTube Digest project folder that Chrome loaded through **Load unpacked** in your coding agent. Then open YouTube Digest Settings and use **Copy customization prompt**. Replace the `[PROVIDER]` and `[MODEL]` placeholders before sending it. Do not include any API key in the prompt or chat. After the agent updates your local copy, enter the key yourself in the Settings field it identifies.
-
-## Privacy and data flow
-
-YouTube Digest makes provider requests directly from the extension:
-
-1. It reads caption tracks directly from the YouTube page you are viewing.
-2. It sends the transcript and relevant video metadata to DeepSeek when you request AI features.
-3. Focused features send only the content they need, such as selected text with context or small transcript batches for translation.
-4. It stores keys, settings, notes, and recent cache entries locally in Chrome.
-
-There is no YouTube Digest account system, advertising, analytics, or telemetry. DeepSeek still receives data under its own terms and privacy policy. See [PRIVACY.md](PRIVACY.md) for details.
-
-## Troubleshooting
-
-### The Digest button is missing on a YouTube video
-
-- At `chrome://extensions`, find YouTube Digest and click **Reload**, then refresh the YouTube tab.
-- Confirm that you are on a standard `https://www.youtube.com/watch?...` page, not a Short, embed, or live page.
-- The current version automatically follows YouTube when its responsive action bar changes. Wait a moment after the page finishes loading.
-- If you have an older downloaded copy, resizing the YouTube window horizontally once may reveal the button. Then download the latest version so resizing is no longer required.
-- If it is still missing, ask your coding agent to inspect the content script on that exact video page.
-
-### The side panel does not open
-
-- Confirm that you are on a standard `https://www.youtube.com/watch?...` page.
-- At `chrome://extensions`, confirm YouTube Digest is enabled and click **Reload**.
-- Refresh the YouTube tab after reloading the extension.
-- Ask your coding agent to inspect the extension if the problem continues.
-
-### YouTube Digest asks for setup
-
-- Open **Settings** and save your DeepSeek API key.
-- This published version uses the fixed DeepSeek V4 Flash endpoint and model. There are no Base URL or Model fields to configure.
-- If Settings says a legacy custom provider was removed, enter a DeepSeek key.
-
-### No transcript is found
-
-- Confirm the video is public and has captions (native or auto-generated).
-- Wait for the YouTube player to fully load before opening the side panel.
-- Refresh the page and try again if the player API is not ready.
-
-YouTube Digest does not perform audio transcription.
-
-### AI requests fail
-
-- A `401` or `403` usually means the DeepSeek key or account access is invalid.
-- A `429` usually means a DeepSeek rate or spending limit was reached.
-- Confirm the key was created in the DeepSeek Platform account linked above and that the account has available credit.
-- If you adapted a local copy for another model, use the Settings customization prompt again and ask your coding agent to inspect that local implementation.
-
-Never share API keys, private transcripts, or personal notes in chats, screenshots, or logs.
-
-## Checks for coding agents
-
-Ask your coding agent to run these commands after changing the project:
-
-```bash
-npm test
-npm run check
-npm run package
-```
-
-The agent should also reload the unpacked extension in Chrome and test several real YouTube videos. Automated checks do not prove that live provider requests and YouTube interactions work.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Read [PRIVACY.md](PRIVACY.md) for the complete data-flow description and [GLOSSARY.md](GLOSSARY.md) for the domain vocabulary (Session, Segment, Transcript, Rolling Summary, Session Digest, Source Platform, Speech Provider, AI Provider).

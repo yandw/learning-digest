@@ -1,0 +1,1532 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light"><title>实时 AI 会议纪要系统｜完整技术研究</title><meta name="description" content="完整的实时会议纪要技术研究：音频采集、VAD、动态语义分段、事件提取、增量状态、全局总结、评估与 PoC 参数。"><style>
+:root{--bg:#f7f9fc;--paper:#fff;--ink:#1c2838;--muted:#60728a;--border:#dfe7f0;--blue:#326fb3;--soft:#edf4fb;--shadow:0 10px 34px rgba(29,56,90,.05);--code:#182334;--accent:#dfefff}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:35px}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei','Noto Sans CJK SC',system-ui,sans-serif;font-size:15px;line-height:1.88;-webkit-font-smoothing:antialiased}
+a{color:#2267aa;text-decoration:none}a:hover{text-decoration:underline}::selection{background:#c9e3ff;color:#18324e}
+.progress{position:fixed;z-index:100;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,#91b9ed,#2a72b6)}
+.layout{display:grid;grid-template-columns:268px minmax(0,1fr);max-width:1530px;margin:0 auto;min-height:100vh}
+.sidebar{border-right:1px solid var(--border);height:100vh;position:sticky;top:0;overflow-y:auto;padding:34px 20px 40px 26px;background:#f9fbfe}
+.brand{display:flex;gap:10px;align-items:center;color:#213c58;font-weight:750;font-size:15px;margin-bottom:36px;letter-spacing:-.3px}.brand-icon{height:31px;width:31px;display:grid;place-items:center;background:#e3eefb;border:1px solid #c3d9f4;border-radius:9px;color:#225990}
+.sidebar-meta{font-size:11px;font-weight:700;letter-spacing:1.2px;color:#8fa0b3;margin:10px 0 11px 9px;text-transform:uppercase}.navlink{display:flex;gap:9px;align-items:baseline;color:#536985;font-size:12.5px;line-height:1.5;padding:8px 9px;border-radius:8px;margin:2px 0;transition:background .2s,color .2s}.navlink:hover,.navlink.active{background:#e9f2fd;color:#185991;text-decoration:none}.navbullet{flex:0 0 5px;width:5px;height:5px;border-radius:50%;background:#bdcadd;transform:translateY(-2px)}.navlink.active .navbullet{background:#2678c6}
+.sidebar-footer{font-size:11px;color:#9cabbc;line-height:1.7;margin-top:28px;padding:18px 8px;border-top:1px solid var(--border)}
+.main{min-width:0;padding:0 42px 90px}.reading{max-width:920px;margin:0 auto}
+.hero{padding:64px 0 38px;border-bottom:1px solid var(--border);margin-bottom:33px}.eyebrow{font-weight:700;color:#477aa6;font-size:12px;letter-spacing:2.3px;text-transform:uppercase;display:flex;align-items:center;gap:9px}.eyebrow:before{content:'';width:17px;height:2px;background:#477aa6}
+h1{font-size:clamp(29px,3.05vw,45px);line-height:1.24;letter-spacing:-1.2px;margin:18px 0 20px;font-weight:760;color:#1e3047}.hero-subtitle{font-size:16px;color:#65798e;line-height:1.9;max-width:800px;margin:0}.hero-tags{display:flex;flex-wrap:wrap;gap:9px;margin-top:28px}.hero-tags span{font-size:12px;padding:5px 12px;border:1px solid #dce6f1;background:#fff;border-radius:40px;color:#54708b}.hero-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}.hero-actions button{border:1px solid #d5e0ec;padding:9px 14px;border-radius:9px;color:#345b7c;background:#fff;font:inherit;font-size:13px;font-weight:600;cursor:pointer}.hero-actions button:hover{background:#e8f3ff}
+article{background:var(--paper);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:22px 52px 52px;margin-top:24px}article>:first-child{margin-top:10px}article h2{font-size:23px;line-height:1.42;letter-spacing:-.4px;margin:52px 0 22px;color:#1c3249;border-top:1px solid #e8edf4;padding-top:40px}article h2:first-of-type{border-top:none}article h3{font-size:17.5px;line-height:1.5;margin:32px 0 14px;color:#2b415b}article h4{font-size:16px;line-height:1.5}article p{margin:13px 0;color:#324256}article strong{font-weight:700;color:#21354e}article ul,article ol{padding-left:24px;margin:13px 0}article li{padding-left:2px;margin:5px 0;color:#34485c}article li::marker{color:#81a1c1}article hr{border:0;border-top:1px solid #e7edf4;margin:43px 0}
+article blockquote{margin:19px 0;padding:16px 20px;border-left:3px solid #7bb2e4;background:#f3f8fe;border-radius:0 10px 10px 0;color:#365c7a}article blockquote p{margin:5px 0;color:inherit}article blockquote.core-idea{font-weight:600;background:#eaf3ff}article blockquote.transcript-example,article blockquote.segment-example{border:1px solid #dae6f3;border-left:4px solid #7caee2;background:#fcfdff;padding:18px 23px;border-radius:11px;box-shadow:0 3px 18px #45698a0a}article blockquote.transcript-example p,article blockquote.segment-example p{line-height:2.05}
+.table-wrap{overflow:auto;border:1px solid #e3eaf2;border-radius:11px;margin:18px 0 24px}table{border-collapse:collapse;width:100%;min-width:540px;font-size:13px;line-height:1.7}th{background:#f2f6fb;color:#3d5671;font-size:12.5px;text-align:left;font-weight:700;white-space:nowrap}th,td{border-bottom:1px solid #e7edf3;padding:11px 14px;vertical-align:top}tr:last-child td{border-bottom:0}tbody tr:nth-child(even){background:#fafcff}tbody tr:hover{background:#eff6ff}td strong{color:#17588f}
+pre{margin:18px 0 24px;background:var(--code);color:#e6f0ff;padding:20px 23px;overflow:auto;border-radius:12px;font-size:12.5px;line-height:1.75;white-space:pre}code{font-family:'SFMono-Regular',Consolas,'Noto Sans Mono CJK SC',monospace;font-size:.88em}p code,li code,td code{color:#245d95;background:#eef4fb;border-radius:5px;padding:2px 5px}pre code{background:none;color:inherit;font-size:inherit;padding:0}.diagram{margin:26px 0 27px;border:1px solid #dde7f1;background:linear-gradient(160deg,#fbfdff,#f4f8fd);border-radius:13px;padding:14px 15px 18px}.diagram figcaption{font-size:12px;color:#65819c;letter-spacing:.25px;font-weight:700;text-align:center;margin-bottom:8px}.svg-frame{overflow:auto;display:flex;justify-content:center;align-items:center}.diagram svg{width:100%;max-width:830px;height:auto;display:block;min-width:360px}.diagram svg text{font-family:'Noto Sans CJK SC','PingFang SC',sans-serif!important}
+.widget{margin:24px 0;background:#f7faff;border:1px solid #dce8f5;padding:23px;border-radius:14px}.widget-top{display:flex;justify-content:space-between;gap:14px;align-items:center}.widget-top h4{margin:5px 0 0}.widget-top>strong{font-size:23px;color:#2d659d;white-space:nowrap}.widget-eyebrow{text-transform:uppercase;letter-spacing:1px;font-size:11px;color:#668aa9;font-weight:700}.range{width:100%;margin:20px 0 5px;accent-color:#387cba;cursor:pointer}.range-labels{display:flex;justify-content:space-between;color:#8ea1b6;font-size:11px}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:17px}.metric{border:1px solid #e3eaf5;background:#fff;border-radius:10px;padding:15px 19px}.metric span{display:block;color:#6d8399;font-size:12px}.metric strong{display:block;font-size:30px;line-height:1.4;font-variant-numeric:tabular-nums;color:#244565}.widget .widget-desc{font-size:13px;color:#4d7496;margin:15px 0 0}.widget .fineprint{font-size:11.5px;color:#8ea0b2;margin:8px 0 0}
+.heading-with-action{display:flex;align-items:center;justify-content:space-between;gap:15px}.heading-with-action h3{margin:34px 0 15px}.small-button{border:1px solid #bfd7ee;color:#306393;background:white;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:650;cursor:pointer;white-space:nowrap}.small-button:hover{background:#e9f4fe}
+.choices{display:grid;gap:8px;margin-top:15px}.choices label{display:flex;gap:12px;align-items:center;padding:13px 15px;border:1px solid #dfe8f2;background:#fff;border-radius:10px;cursor:pointer}.choices label.chosen{border-color:#84b8e9;background:#eef7ff}.choices label input{accent-color:#2c73b4}.choices label span{display:flex;flex-direction:column;gap:2px}.choices label b{font-size:13px}.choices label small{color:#7c91a8;font-size:11.5px}
+.footer{color:#9aabbc;text-align:center;font-size:12px;line-height:1.9;margin:30px 0 0}.mobile-nav{display:none}.equation{font-family:Georgia,serif;font-size:20px;text-align:center;margin:20px 0;padding:16px;background:#f7faff;border-radius:10px;color:#355b7a}.math{font-family:Georgia,serif}
+@media(max-width:1060px){.layout{grid-template-columns:230px minmax(0,1fr)}.sidebar{padding-left:15px;padding-right:13px}.main{padding:0 25px 70px}article{padding:25px 33px 44px}}
+@media(max-width:760px){.layout{display:block}.sidebar{display:none}.main{padding:0 15px 55px}.hero{padding:37px 6px 24px}.hero-tags{gap:6px}article{border-radius:14px;padding:20px 19px 32px}article h2{font-size:20px;margin-top:38px;padding-top:27px}article h3{font-size:17px}table{min-width:485px}th,td{padding:9px 11px}.diagram{padding:12px 6px}.diagram svg{min-width:310px}.mobile-nav{display:block;margin:18px 0;color:#365e83;background:#fff;border:1px solid var(--border);border-radius:9px;padding:11px;width:100%;font:inherit}.metrics{grid-template-columns:1fr 1fr}.metric{padding:13px}.metric strong{font-size:26px}}
+@media print{body{background:#fff}.sidebar,.progress,.hero-actions,.mobile-nav,.small-button{display:none!important}.layout{display:block}.main{padding:0}article{border:none;box-shadow:none;padding:0;margin:0}.hero{padding:0 0 18px}.diagram{break-inside:avoid}h2,h3{break-after:avoid}.table-wrap{overflow:visible}table{min-width:0}a{color:#1e5d92}.widget{break-inside:avoid}}
+</style></head>
+<body><div id="progress" class="progress"></div><div class="layout">
+<aside class="sidebar" aria-label="章节目录"><div class="brand"><span class="brand-icon">◈</span><span>MEETING INTELLIGENCE</span></div><div class="sidebar-meta">CONTENTS · 章节目录</div><nav><a class="navlink" href="#chapter-1" data-target="chapter-1"><span class="navbullet"></span>一、研究结论：采用多时间尺度的分层处理架构</a>
+<a class="navlink" href="#chapter-2" data-target="chapter-2"><span class="navbullet"></span>二、语音采集与采样策略：怎样既实时又不丢信息？</a>
+<a class="navlink" href="#chapter-3" data-target="chapter-3"><span class="navbullet"></span>三、分段策略：到底多少分钟一段最合理？</a>
+<a class="navlink" href="#chapter-4" data-target="chapter-4"><span class="navbullet"></span>四、语句完整性：如何避免断句导致 AI 理解错误？</a>
+<a class="navlink" href="#chapter-5" data-target="chapter-5"><span class="navbullet"></span>五、分段总结：不要直接把一段转写压缩成一段文字</a>
+<a class="navlink" href="#chapter-6" data-target="chapter-6"><span class="navbullet"></span>六、阶段总结：如何把多个分段组合成连贯的讨论？</a>
+<a class="navlink" href="#chapter-7" data-target="chapter-7"><span class="navbullet"></span>七、最终总结：如何生成高质量的整场会议纪要？</a>
+<a class="navlink" href="#chapter-8" data-target="chapter-8"><span class="navbullet"></span>八、内容采样策略：哪些内容应该送给 AI？</a>
+<a class="navlink" href="#chapter-9" data-target="chapter-9"><span class="navbullet"></span>九、实际开发时，应该用几个 AI Agent？</a>
+<a class="navlink" href="#chapter-10" data-target="chapter-10"><span class="navbullet"></span>十、如何验证这些策略到底有没有效果？</a>
+<a class="navlink" href="#chapter-11" data-target="chapter-11"><span class="navbullet"></span>十一、推荐的 PoC 参数配置</a>
+<a class="navlink" href="#chapter-12" data-target="chapter-12"><span class="navbullet"></span>十二、我的最终架构建议</a>
+<a class="navlink" href="#chapter-13" data-target="chapter-13"><span class="navbullet"></span>接下来最值得明确的一个产品问题</a></nav><div class="sidebar-footer">研究整理版 v1.0<br>2026-11-08<br>完整内容 · 离线可用</div></aside>
+<main class="main"><div class="reading">
+<header class="hero"><div class="eyebrow">DEEP RESEARCH · TECHNICAL BLUEPRINT</div><h1>实时 AI 会议纪要系统<br>从音频采集到高质量总结</h1><p class="hero-subtitle">一套可复用的流式会议理解架构：从音频帧、ASR 和语义分段，到结构化事件、会议状态、分层纪要与原文证据校验。</p><div class="hero-tags"><span>12 个章节</span><span>5 张内嵌流程图</span><span>完整数据示例</span><span>PoC 参数建议</span><span>交互式分段估算</span></div><div class="hero-actions"><button id="print-page" type="button">打印 / 保存为 PDF</button><button id="top-page" type="button">回到顶部</button></div></header>
+<select class="mobile-nav" id="mobile-select" aria-label="跳转到章节"><option value="">跳转到章节…</option><option value="chapter-1">一、研究结论：采用多时间尺度的分层处理架构</option><option value="chapter-2">二、语音采集与采样策略：怎样既实时又不丢信息？</option><option value="chapter-3">三、分段策略：到底多少分钟一段最合理？</option><option value="chapter-4">四、语句完整性：如何避免断句导致 AI 理解错误？</option><option value="chapter-5">五、分段总结：不要直接把一段转写压缩成一段文字</option><option value="chapter-6">六、阶段总结：如何把多个分段组合成连贯的讨论？</option><option value="chapter-7">七、最终总结：如何生成高质量的整场会议纪要？</option><option value="chapter-8">八、内容采样策略：哪些内容应该送给 AI？</option><option value="chapter-9">九、实际开发时，应该用几个 AI Agent？</option><option value="chapter-10">十、如何验证这些策略到底有没有效果？</option><option value="chapter-11">十一、推荐的 PoC 参数配置</option><option value="chapter-12">十二、我的最终架构建议</option><option value="chapter-13">接下来最值得明确的一个产品问题</option></select>
+<article id="article">
+<blockquote>
+<p><strong>文档主题：</strong> 实时采集录制、语音转写、动态分段、增量摘要、全局纪要与证据校验<br/>
+<strong>版本：</strong> 研究整理版 v1.0｜2026-11-08<br/>
+<strong>适用场景：</strong> 线上会议、线下会议、通用会议助手<br/>
+<strong>说明：</strong> 本文完整整理此前讨论的 12 个章节、流程图、参数表、示例及验证建议。图形采用 Mermaid，支持 GitHub 等兼容 Mermaid 的 Markdown 阅读器。所有参数均为待验证的工程初始值，不代表研究已证明的最优值。</p>
+</blockquote>
+<p>我建议把这个问题当成一个 <strong>实时语音理解与会议知识提炼系统（Streaming Meeting Intelligence）</strong> 来研究，而不是简单的“录音 → 语音转文字 → 大模型总结”。</p>
+<p>因为真正决定会议纪要质量的，不只是大模型能力，而是整条处理链路的设计：</p>
+<ol>
+<li><strong>采集层</strong>：如何持续录音、实时转写，避免丢失信息。</li>
+<li><strong>分段层</strong>：如何把连续讲话切分为语义完整的片段。</li>
+<li><strong>理解层</strong>：如何识别讨论主题、观点、决策、行动项。</li>
+<li><strong>记忆层</strong>：如何保留跨片段上下文，避免前后矛盾和信息遗失。</li>
+<li><strong>总结层</strong>：如何持续生成阶段总结，并在会议结束时形成完整纪要。</li>
+<li><strong>校验层</strong>：如何追溯总结中的结论，避免 AI 编造、误解或遗漏。</li>
+</ol>
+<p>本文重点讨论 <strong>分段时长、语句完整性、分段总结、全局总结、采样与总结策略</strong>，并给出可用于实际开发的架构与参数建议。</p>
+<p><strong>核心设计判断：不要采用“每隔 N 分钟截断音频，然后独立总结”的方案。</strong></p>
+<blockquote class="core-idea">
+<p>音频连续采集，转写以语音边界为单位，语义分段以主题为单位，总结以事件和证据为单位，最终纪要以整场会议的决策演进为主线。</p>
+</blockquote>
+<p>这几个层次应当使用不同的时间窗口和触发条件。</p>
+<hr/>
+<h2 id="chapter-1">一、研究结论：采用多时间尺度的分层处理架构</h2>
+<p>从现有研究看，有几项结论值得作为架构设计依据。</p>
+<ul>
+<li>2025 年关于实时会议摘要的研究采用了议程跟踪、增量摘要、历史记忆和最终摘要修订的组合，而非简单的固定时间切块。<a href="https://link.springer.com/article/10.1007/s44443-025-00304-y">研究论文</a>。</li>
+<li>SIGDIAL 2021 的增量会议摘要研究发现，纳入历史上下文有助于改善摘要质量。<a href="https://aclanthology.org/2021.sigdial-1.55/">研究论文</a>。</li>
+<li>2025 年 ACL 的 MISP-Meeting 研究显示，语音识别质量与摘要连贯性密切相关。因此，不能把 ASR 视为一个无关紧要的前置模块。<a href="https://aclanthology.org/2025.acl-long.753/">研究论文</a>。</li>
+<li>2025 年 COLING 的研究表明，大模型会议摘要仍然存在遗漏、无关内容和幻觉问题，引入错误检测与修订可以改善结果。<a href="https://aclanthology.org/2025.coling-main.143/">研究论文</a>。</li>
+</ul>
+<p>这些研究支持分层、增量、可校验的架构，但并没有证明某一个固定分段时长在所有会议中都是最优的。</p>
+<h3 id="sub-1">1.1 推荐的时间窗口</h3>
+<p>以下是我建议用于第一版 PoC 的 <strong>工程初始参数</strong>，不是论文已经验证的最优值。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>层次</th>
+<th>推荐窗口</th>
+<th>触发机制</th>
+<th>主要目的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>音频采集</td>
+<td>20–100ms 帧</td>
+<td>持续</td>
+<td>低延迟采集、缓冲</td>
+</tr>
+<tr>
+<td>ASR 输出</td>
+<td>0.5–2 秒</td>
+<td>流式更新</td>
+<td>实时字幕</td>
+</tr>
+<tr>
+<td>话语定稿</td>
+<td>约 1–15 秒</td>
+<td>停顿及语义完整性</td>
+<td>完整发言</td>
+</tr>
+<tr>
+<td>微批处理</td>
+<td>30–60 秒</td>
+<td>时间 + 稳定文本</td>
+<td>纠错、事件提取</td>
+</tr>
+<tr>
+<td>语义分段</td>
+<td>3–5 分钟为目标</td>
+<td>主题变化 + 长度</td>
+<td>局部总结</td>
+</tr>
+<tr>
+<td>阶段总结</td>
+<td>10–15 分钟</td>
+<td>主题完成或时间</td>
+<td>累积阶段成果</td>
+</tr>
+<tr>
+<td>全局总结</td>
+<td>会议结束</td>
+<td>全量信息校验</td>
+<td>正式会议纪要</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>这里最关键的是区分三个概念：</strong></p>
+<ul>
+<li>话语切分：一句话什么时候说完？</li>
+<li>语义切分：一个讨论单元什么时候结束？</li>
+<li>摘要切分：什么时候值得调用 LLM 生成或更新摘要？</li>
+</ul>
+<p>它们不应该共用一个定时器。</p>
+<h3 id="sub-2">1.2 系统整体架构</h3>
+<figure class="diagram"><figcaption>图 1 · 实时 AI 会议纪要整体处理架构</figcaption><div class="svg-frame">
+<!-- Generated by graphviz version 2.42.4 (0)
+ -->
+<!-- Title: G Pages: 1 -->
+<svg aria-label="图 1 · 实时 AI 会议纪要整体处理架构" role="img" viewbox="0.00 0.00 435.42 575.92" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g class="graph" id="graph0" transform="scale(1 1) rotate(0) translate(12.96 562.96)">
+<title>G</title>
+<!-- audio -->
+<g class="node" id="node1">
+<title>audio</title>
+<path d="M309,-550C309,-550 123,-550 123,-550 117,-550 111,-544 111,-538 111,-538 111,-504 111,-504 111,-498 117,-492 123,-492 123,-492 309,-492 309,-492 315,-492 321,-498 321,-504 321,-504 321,-538 321,-538 321,-544 315,-550 309,-550" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-526">连续音频采集</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-509">原始录音 · 时间戳 · 缓冲</text>
+</g>
+<!-- asr -->
+<g class="node" id="node2">
+<title>asr</title>
+<path d="M193,-468C193,-468 43,-468 43,-468 37,-468 31,-462 31,-456 31,-456 31,-422 31,-422 31,-416 37,-410 43,-410 43,-410 193,-410 193,-410 199,-410 205,-416 205,-422 205,-422 205,-456 205,-456 205,-462 199,-468 193,-468" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="118" y="-444">流式 ASR</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="118" y="-427">临时转写 · 最终转写</text>
+</g>
+<!-- audio&#45;&gt;asr -->
+<g class="edge" id="edge1">
+<title>audio-&gt;asr</title>
+<path d="M158,-491.86C158,-491.86 158,-475.25 158,-475.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="160.52,-475.25 158,-468.05 155.48,-475.25 160.52,-475.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- vad -->
+<g class="node" id="node3">
+<title>vad</title>
+<path d="M389,-468C389,-468 239,-468 239,-468 233,-468 227,-462 227,-456 227,-456 227,-422 227,-422 227,-416 233,-410 239,-410 239,-410 389,-410 389,-410 395,-410 401,-416 401,-422 401,-422 401,-456 401,-456 401,-462 395,-468 389,-468" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="314" y="-444">VAD / 说话人识别</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="314" y="-427">语音边界 · 发言轮次</text>
+</g>
+<!-- audio&#45;&gt;vad -->
+<g class="edge" id="edge2">
+<title>audio-&gt;vad</title>
+<path d="M274,-491.86C274,-491.86 274,-475.25 274,-475.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="276.52,-475.25 274,-468.05 271.48,-475.25 276.52,-475.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- rebuild -->
+<g class="node" id="node4">
+<title>rebuild</title>
+<path d="M306,-386C306,-386 126,-386 126,-386 120,-386 114,-380 114,-374 114,-374 114,-340 114,-340 114,-334 120,-328 126,-328 126,-328 306,-328 306,-328 312,-328 318,-334 318,-340 318,-340 318,-374 318,-374 318,-380 312,-386 306,-386" fill="#dfeeff" stroke="#6ba7e2" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-362">话语重建与语义分段</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-345">语句完整性 · 跨段上下文</text>
+</g>
+<!-- asr&#45;&gt;rebuild -->
+<g class="edge" id="edge3">
+<title>asr-&gt;rebuild</title>
+<path d="M159.5,-409.86C159.5,-409.86 159.5,-393.25 159.5,-393.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="162.02,-393.25 159.5,-386.05 156.98,-393.25 162.02,-393.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- vad&#45;&gt;rebuild -->
+<g class="edge" id="edge4">
+<title>vad-&gt;rebuild</title>
+<path d="M272.5,-409.86C272.5,-409.86 272.5,-393.25 272.5,-393.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="275.02,-393.25 272.5,-386.05 269.98,-393.25 275.02,-393.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- extract -->
+<g class="node" id="node5">
+<title>extract</title>
+<path d="M204,-304C204,-304 12,-304 12,-304 6,-304 0,-298 0,-292 0,-292 0,-258 0,-258 0,-252 6,-246 12,-246 12,-246 204,-246 204,-246 210,-246 216,-252 216,-258 216,-258 216,-292 216,-292 216,-298 210,-304 204,-304" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="108" y="-280">事件提取器</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="108" y="-263">观点 · 决策 · 待办 · 风险</text>
+</g>
+<!-- rebuild&#45;&gt;extract -->
+<g class="edge" id="edge5">
+<title>rebuild-&gt;extract</title>
+<path d="M165,-327.86C165,-327.86 165,-311.25 165,-311.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="167.52,-311.25 165,-304.05 162.48,-311.25 167.52,-311.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- local -->
+<g class="node" id="node6">
+<title>local</title>
+<path d="M397.5,-304C397.5,-304 250.5,-304 250.5,-304 244.5,-304 238.5,-298 238.5,-292 238.5,-292 238.5,-258 238.5,-258 238.5,-252 244.5,-246 250.5,-246 250.5,-246 397.5,-246 397.5,-246 403.5,-246 409.5,-252 409.5,-258 409.5,-258 409.5,-292 409.5,-292 409.5,-298 403.5,-304 397.5,-304" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="324" y="-280">局部摘要器</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="324" y="-263">3–5 分钟 · 主题摘要</text>
+</g>
+<!-- rebuild&#45;&gt;local -->
+<g class="edge" id="edge6">
+<title>rebuild-&gt;local</title>
+<path d="M278.25,-327.86C278.25,-327.86 278.25,-311.25 278.25,-311.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="280.77,-311.25 278.25,-304.05 275.73,-311.25 280.77,-311.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- state -->
+<g class="node" id="node7">
+<title>state</title>
+<path d="M323,-222C323,-222 109,-222 109,-222 103,-222 97,-216 97,-210 97,-210 97,-176 97,-176 97,-170 103,-164 109,-164 109,-164 323,-164 323,-164 329,-164 335,-170 335,-176 335,-176 335,-210 335,-210 335,-216 329,-222 323,-222" fill="#dfeeff" stroke="#6ba7e2" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-198">会议状态记忆 · Meeting State</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-181">议题 · 决策演进 · 证据索引</text>
+</g>
+<!-- extract&#45;&gt;state -->
+<g class="edge" id="edge7">
+<title>extract-&gt;state</title>
+<path d="M156.5,-245.86C156.5,-245.86 156.5,-229.25 156.5,-229.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="159.02,-229.25 156.5,-222.05 153.98,-229.25 159.02,-229.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- local&#45;&gt;state -->
+<g class="edge" id="edge8">
+<title>local-&gt;state</title>
+<path d="M286.75,-245.86C286.75,-245.86 286.75,-229.25 286.75,-229.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="289.27,-229.25 286.75,-222.05 284.23,-229.25 289.27,-229.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- overall -->
+<g class="node" id="node8">
+<title>overall</title>
+<path d="M316.5,-140C316.5,-140 115.5,-140 115.5,-140 109.5,-140 103.5,-134 103.5,-128 103.5,-128 103.5,-94 103.5,-94 103.5,-88 109.5,-82 115.5,-82 115.5,-82 316.5,-82 316.5,-82 322.5,-82 328.5,-88 328.5,-94 328.5,-94 328.5,-128 328.5,-128 328.5,-134 322.5,-140 316.5,-140" fill="#dfeeff" stroke="#6ba7e2" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-116">全局综合 + 原文校验</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-99">去重 · 矛盾解决 · 事实核查</text>
+</g>
+<!-- state&#45;&gt;overall -->
+<g class="edge" id="edge9">
+<title>state-&gt;overall</title>
+<path d="M216,-163.86C216,-163.86 216,-147.25 216,-147.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="218.52,-147.25 216,-140.05 213.48,-147.25 218.52,-147.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- output -->
+<g class="node" id="node9">
+<title>output</title>
+<path d="M327,-58C327,-58 105,-58 105,-58 99,-58 93,-52 93,-46 93,-46 93,-12 93,-12 93,-6 99,0 105,0 105,0 327,0 327,0 333,0 339,-6 339,-12 339,-12 339,-46 339,-46 339,-52 333,-58 327,-58" fill="#e7f4eb" stroke="#79bd91" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-34">最终会议纪要</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="216" y="-17">结论 · 决策 · 行动项 · 待确认</text>
+</g>
+<!-- overall&#45;&gt;output -->
+<g class="edge" id="edge10">
+<title>overall-&gt;output</title>
+<path d="M216,-81.86C216,-81.86 216,-65.25 216,-65.25" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="218.52,-65.25 216,-58.05 213.48,-65.25 218.52,-65.25" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+</g>
+</svg>
+</div></figure>
+<p>我建议把它实现成一条持续运行的处理流水线，而不是让一个 Agent 从头到尾承担全部工作。Agent 或 LLM 负责语义理解、摘要和校验；音频采集、缓冲、切分、版本管理和任务调度由确定性程序负责。</p>
+<hr/>
+<h2 id="chapter-2">二、语音采集与采样策略：怎样既实时又不丢信息？</h2>
+<p>这里要区分两种完全不同的“采样”：</p>
+<p><strong>音频采样（Audio Sampling）</strong> 是音频信号的采样率与编码；<strong>内容采样（Content Sampling）</strong> 是哪些转写内容需要进入 AI 的处理窗口。</p>
+<h3 id="sub-4">2.1 音频采样策略</h3>
+<p>建议优先采用以下配置：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>参数</th>
+<th>推荐配置</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始采集</td>
+<td>48kHz，16-bit PCM</td>
+<td>适合常见设备采集与后续处理</td>
+</tr>
+<tr>
+<td>ASR 输入</td>
+<td>16kHz 单声道 PCM（按模型要求调整）</td>
+<td>常见语音识别输入格式</td>
+</tr>
+<tr>
+<td>音频帧</td>
+<td>20–40ms</td>
+<td>便于流式处理</td>
+</tr>
+<tr>
+<td>网络传输</td>
+<td>100–200ms 聚合包</td>
+<td>减少请求开销</td>
+</tr>
+<tr>
+<td>原始音频存储</td>
+<td>连续录音，分文件持久化</td>
+<td>可回放、可重新识别</td>
+</tr>
+<tr>
+<td>文件滚动</td>
+<td>每 5 分钟左右</td>
+<td>便于容错和恢复</td>
+</tr>
+<tr>
+<td>时间戳</td>
+<td>单调时钟 + 会议时间基准</td>
+<td>防止时间漂移</td>
+</tr>
+</tbody>
+</table></div>
+<p>48kHz 是建议的本地采集配置，并不意味着所有 ASR 模型都接受 48kHz。发送前应根据模型要求重采样。例如，部分 Realtime API 的 PCM 音频输入有特定采样率限制；不能假设 16kHz 或 48kHz 可直接用于所有服务。</p>
+<p>另外，<strong>存储文件滚动不等于语义分段</strong>。即使每 5 分钟保存一个录音文件，也不应该在文件边界截断说话内容。</p>
+<p>对于线上会议，如果系统允许，优先分别采集本地麦克风和远端系统音频；对于线下多人会议，尽可能保留多声道或独立麦克风信息。这对后续说话人识别和串音处理很有价值。</p>
+<h3 id="sub-5">2.2 使用 VAD，但不要把 VAD 当作完整句子识别器</h3>
+<p>VAD（Voice Activity Detection）负责检测声音活动及静音边界。</p>
+<p>例如：</p>
+<blockquote>
+<p>“我觉得这个项目……（停顿 0.8 秒）……可以先做一个小程序验证。”</p>
+</blockquote>
+<p>如果系统将 0.8 秒的停顿直接认定为一句话结束，后续摘要就可能拿到两个不完整的片段。</p>
+<p>OpenAI 的实时 API 文档区分了基于静音的 <code>server_vad</code> 和结合语义判断发言是否结束的 <code>semantic_vad</code>，说明单纯静音检测与语义完整性检测确实是不同的问题。<strong>不同转写模型对这些模式的支持不同</strong>，例如文档提示某些 Realtime 转写模型须关闭服务端 turn detection。<a href="https://developers.openai.com/api/docs/guides/realtime-vad">官方文档</a>。</p>
+<p>我建议第一版采用双层边界判断：</p>
+<ul>
+<li><strong>声学层</strong>：约 500–800ms 静音作为候选结束信号。</li>
+<li><strong>语义层</strong>：判断当前发言是否已经形成完整意思；若尚未完成，则等待后续内容。</li>
+<li><strong>保护层</strong>：持续发言达到 15–20 秒时允许产生中间话语单元，但保持可拼接状态。</li>
+</ul>
+<p>这些阈值应针对中文会议录音进行测试，尤其是口头禅较多、停顿较长、多人抢话的情况。</p>
+<h3 id="sub-6">2.3 实时转写必须支持两种状态</h3>
+<blockquote class="transcript-example">
+<p><strong>临时文本（Partial）· 可变</strong><br/>
+00:12:08 · 发言人 A<br/>
+“我们下周可能先把用户端的……”</p>
+<p><strong>定稿文本（Finalized）· 稳定</strong><br/>
+00:12:08–00:12:16 · 发言人 A<br/>
+“我们下周先把用户端的登录和课程列表做出来，支付功能暂时不做。”</p>
+</blockquote>
+<p>临时文本用于实时字幕和交互展示，定稿文本才进入正式语义处理。</p>
+<p>原因是流式 ASR 可能不断修改前面的识别结果。如果将临时文本直接加入摘要，就可能出现重复计算、错误结论以及版本混乱。</p>
+<p>但还需要注意：ASR 标记为 Final，并不代表识别内容一定正确。系统应该允许后续纠错，并通过版本号触发受影响的摘要重新计算。</p>
+<hr/>
+<h2 id="chapter-3">三、分段策略：到底多少分钟一段最合理？</h2>
+<p>这是整个系统的第一个核心设计点。</p>
+<p>我建议：<strong>以 3–5 分钟作为语义段目标区间，2 分钟作为常规最小长度参考，8 分钟作为强制检查上限。</strong></p>
+<p>不是 5 分钟到点立即切断，而是进入一个允许寻找合适边界的窗口。</p>
+<h3 id="sub-8">3.1 三种分段方案对比</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>策略</th>
+<th>优点</th>
+<th>问题</th>
+<th>建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>固定时间分段</td>
+<td>简单、可预测</td>
+<td>容易截断语义</td>
+<td>仅作为基线</td>
+</tr>
+<tr>
+<td>纯语义分段</td>
+<td>主题完整</td>
+<td>段长不可控、延迟不稳定</td>
+<td>不宜单独使用</td>
+</tr>
+<tr>
+<td>时间 + 语义混合</td>
+<td>平衡完整性、延迟和成本</td>
+<td>实现稍复杂</td>
+<td><strong>推荐</strong></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="sub-9">3.2 推荐的分段决策逻辑</h3>
+<figure class="diagram"><figcaption>图 2 · 时间窗口与语义边界的混合决策</figcaption><div class="svg-frame">
+<!-- Generated by graphviz version 2.42.4 (0)
+ -->
+<!-- Title: G Pages: 1 -->
+<svg aria-label="图 2 · 时间窗口与语义边界的混合决策" role="img" viewbox="0.00 0.00 489.92 527.92" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g class="graph" id="graph0" transform="scale(1 1) rotate(0) translate(12.96 514.96)">
+<title>G</title>
+<!-- start -->
+<g class="node" id="node1">
+<title>start</title>
+<path d="M255,-502C255,-502 111,-502 111,-502 105,-502 99,-496 99,-490 99,-490 99,-473 99,-473 99,-467 105,-461 111,-461 111,-461 255,-461 255,-461 261,-461 267,-467 267,-473 267,-473 267,-490 267,-490 267,-496 261,-502 255,-502" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="183" y="-478">语义段持续累积转写</text>
+</g>
+<!-- t -->
+<g class="node" id="node2">
+<title>t</title>
+<path d="M171.42,-432.83C171.42,-432.83 66.58,-404.17 66.58,-404.17 60.79,-402.58 60.79,-399.42 66.58,-397.83 66.58,-397.83 171.42,-369.17 171.42,-369.17 177.21,-367.58 188.79,-367.58 194.58,-369.17 194.58,-369.17 299.42,-397.83 299.42,-397.83 305.21,-399.42 305.21,-402.58 299.42,-404.17 299.42,-404.17 194.58,-432.83 194.58,-432.83 188.79,-434.42 177.21,-434.42 171.42,-432.83" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="183" y="-397.5">判断段长与边界</text>
+</g>
+<!-- start&#45;&gt;t -->
+<g class="edge" id="edge1">
+<title>start-&gt;t</title>
+<path d="M183,-460.77C183,-460.77 183,-443.22 183,-443.22" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="185.52,-443.22 183,-436.02 180.48,-443.22 185.52,-443.22" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- short -->
+<g class="node" id="node3">
+<title>short</title>
+<path d="M137,-257C137,-257 23,-257 23,-257 17,-257 11,-251 11,-245 11,-245 11,-211 11,-211 11,-205 17,-199 23,-199 23,-199 137,-199 137,-199 143,-199 149,-205 149,-211 149,-211 149,-245 149,-245 149,-251 143,-257 137,-257" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="80" y="-233">＜ 2 分钟</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="80" y="-216">原则上继续累积</text>
+</g>
+<!-- t&#45;&gt;short -->
+<g class="edge" id="edge2">
+<title>t-&gt;short</title>
+<path d="M84.5,-392.66C84.5,-392.66 84.5,-264.37 84.5,-264.37" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="87.02,-264.37 84.5,-257.17 81.98,-264.37 87.02,-264.37" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+<text font-family="Noto Sans CJK SC" font-size="14.00" text-anchor="middle" x="87.5" y="-342.8">短</text>
+</g>
+<!-- mid -->
+<g class="node" id="node4">
+<title>mid</title>
+<path d="M240,-327C240,-327 126,-327 126,-327 120,-327 114,-321 114,-315 114,-315 114,-281 114,-281 114,-275 120,-269 126,-269 126,-269 240,-269 240,-269 246,-269 252,-275 252,-281 252,-281 252,-315 252,-315 252,-321 246,-327 240,-327" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="183" y="-303">2–5 分钟</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="183" y="-286">寻找议题结束点</text>
+</g>
+<!-- t&#45;&gt;mid -->
+<g class="edge" id="edge3">
+<title>t-&gt;mid</title>
+<path d="M183,-365.84C183,-365.84 183,-334.38 183,-334.38" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="185.52,-334.38 183,-327.18 180.48,-334.38 185.52,-334.38" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+<text font-family="Noto Sans CJK SC" font-size="14.00" text-anchor="middle" x="197.5" y="-342.8">目标</text>
+</g>
+<!-- long -->
+<g class="node" id="node5">
+<title>long</title>
+<path d="M385.5,-327C385.5,-327 286.5,-327 286.5,-327 280.5,-327 274.5,-321 274.5,-315 274.5,-315 274.5,-281 274.5,-281 274.5,-275 280.5,-269 286.5,-269 286.5,-269 385.5,-269 385.5,-269 391.5,-269 397.5,-275 397.5,-281 397.5,-281 397.5,-315 397.5,-315 397.5,-321 391.5,-327 385.5,-327" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="336" y="-303">5–8 分钟</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="336" y="-286">优先安全切分</text>
+</g>
+<!-- t&#45;&gt;long -->
+<g class="edge" id="edge4">
+<title>t-&gt;long</title>
+<path d="M292.75,-395.75C292.75,-395.75 292.75,-334.32 292.75,-334.32" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="295.27,-334.32 292.75,-327.12 290.23,-334.32 295.27,-334.32" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+<text font-family="Noto Sans CJK SC" font-size="14.00" text-anchor="middle" x="301.5" y="-342.8">上限</text>
+</g>
+<!-- no -->
+<g class="node" id="node8">
+<title>no</title>
+<path d="M156,-58C156,-58 12,-58 12,-58 6,-58 0,-52 0,-46 0,-46 0,-12 0,-12 0,-6 6,0 12,0 12,0 156,0 156,0 162,0 168,-6 168,-12 168,-12 168,-46 168,-46 168,-52 162,-58 156,-58" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="84" y="-34">继续累积或逻辑子段</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="84" y="-17">保留同一个 Topic ID</text>
+</g>
+<!-- short&#45;&gt;no -->
+<g class="edge" id="edge7">
+<title>short-&gt;no</title>
+<path d="M62.5,-198.64C62.5,-198.64 62.5,-65.36 62.5,-65.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="65.02,-65.36 62.5,-58.16 59.98,-65.36 65.02,-65.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- decision -->
+<g class="node" id="node6">
+<title>decision</title>
+<path d="M277.5,-183.58C277.5,-183.58 125.5,-138.42 125.5,-138.42 119.75,-136.71 119.75,-133.29 125.5,-131.58 125.5,-131.58 277.5,-86.42 277.5,-86.42 283.25,-84.71 294.75,-84.71 300.5,-86.42 300.5,-86.42 452.5,-131.58 452.5,-131.58 458.25,-133.29 458.25,-136.71 452.5,-138.42 452.5,-138.42 300.5,-183.58 300.5,-183.58 294.75,-185.29 283.25,-185.29 277.5,-183.58" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="289" y="-140">话语完成？议题变化？</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="289" y="-123">决策或讨论结束？</text>
+</g>
+<!-- mid&#45;&gt;decision -->
+<g class="edge" id="edge5">
+<title>mid-&gt;decision</title>
+<path d="M200.5,-268.86C200.5,-268.86 200.5,-168.13 200.5,-168.13" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="203.02,-168.13 200.5,-160.93 197.98,-168.13 203.02,-168.13" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- long&#45;&gt;decision -->
+<g class="edge" id="edge6">
+<title>long-&gt;decision</title>
+<path d="M336,-268.86C336,-268.86 336,-180.29 336,-180.29" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="338.52,-180.29 336,-173.09 333.48,-180.29 338.52,-180.29" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- yes -->
+<g class="node" id="node7">
+<title>yes</title>
+<path d="M371.5,-58C371.5,-58 206.5,-58 206.5,-58 200.5,-58 194.5,-52 194.5,-46 194.5,-46 194.5,-12 194.5,-12 194.5,-6 200.5,0 206.5,0 206.5,0 371.5,0 371.5,0 377.5,0 383.5,-6 383.5,-12 383.5,-12 383.5,-46 383.5,-46 383.5,-52 377.5,-58 371.5,-58" fill="#e7f4eb" stroke="#79bd91" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="289" y="-34">安全切分</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="289" y="-17">封存语义段 · 启动摘要</text>
+</g>
+<!-- decision&#45;&gt;yes -->
+<g class="edge" id="edge8">
+<title>decision-&gt;yes</title>
+<path d="M289,-82.93C289,-82.93 289,-65.46 289,-65.46" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="291.52,-65.46 289,-58.26 286.48,-65.46 291.52,-65.46" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- decision&#45;&gt;no -->
+<g class="edge" id="edge9">
+<title>decision-&gt;no</title>
+<path d="M141,-126.68C141,-126.68 141,-65.51 141,-65.51" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="143.52,-65.51 141,-58.31 138.48,-65.51 143.52,-65.51" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+</g>
+</svg>
+</div></figure>
+<p>如果 8 分钟仍在持续讨论同一议题，不应为了凑时间把议题标记为结束。可以将其拆为多个<strong>逻辑子段</strong>，共同指向同一个 Topic ID。</p>
+<p>如果一个议题在 90 秒内明确结束，也应允许提前切分。因此 2 分钟不是硬性下限。</p>
+<h3 id="sub-10">3.3 语义边界应该看什么？</h3>
+<p>建议至少使用以下信号：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>信号</th>
+<th>示例</th>
+<th>重要程度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>明确切换议题</td>
+<td>“接下来讨论支付”</td>
+<td>高</td>
+</tr>
+<tr>
+<td>讨论达成结论</td>
+<td>“那就这么定了”</td>
+<td>高</td>
+</tr>
+<tr>
+<td>话题语义变化</td>
+<td>从需求讨论转为报价</td>
+<td>高</td>
+</tr>
+<tr>
+<td>发言轮次变化</td>
+<td>A 说完换 B</td>
+<td>低</td>
+</tr>
+<tr>
+<td>明显长停顿</td>
+<td>全场静音 3 秒</td>
+<td>中</td>
+</tr>
+<tr>
+<td>时间达到上限</td>
+<td>已持续 8 分钟</td>
+<td>兜底</td>
+</tr>
+</tbody>
+</table></div>
+<p>尤其需要避免：<strong>把说话人变化直接等同于主题变化。</strong> 多人讨论时，一个议题可能持续几十轮对话。</p>
+<p>对于更复杂的版本，可以结合文本 Embedding 相似度、话题分类器和 LLM 边界判断。会议主题分段实践还要注意：简短附和、口语噪声以及信息密度不均会干扰传统分段方法。</p>
+<h3 id="sub-11">3.4 交互实验：感受分段时长的差异</h3>
+<p>以 60 分钟会议为例，目标分段长度为 2–10 分钟时，摘要任务数量大致如下：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>目标分段</th>
+<th style="text-align:right">估计分段数</th>
+<th style="text-align:right">每段摘要调用次数（不含重试）</th>
+<th>典型影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2 分钟</td>
+<td style="text-align:right">30</td>
+<td style="text-align:right">30</td>
+<td>更新更快，但碎片化严重</td>
+</tr>
+<tr>
+<td>3 分钟</td>
+<td style="text-align:right">20</td>
+<td style="text-align:right">20</td>
+<td>粒度较细，跨段合并较多</td>
+</tr>
+<tr>
+<td>5 分钟</td>
+<td style="text-align:right">12</td>
+<td style="text-align:right">12</td>
+<td><strong>建议优先验证</strong>，平衡语义完整性与成本</td>
+</tr>
+<tr>
+<td>8 分钟</td>
+<td style="text-align:right">8</td>
+<td style="text-align:right">8</td>
+<td>延迟更长，一段中可能有多个议题</td>
+</tr>
+<tr>
+<td>10 分钟</td>
+<td style="text-align:right">6</td>
+<td style="text-align:right">6</td>
+<td>调用更少，但摘要负担较重</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>估算公式：</strong> <code>段数 = ceil(会议总时长 / 目标分段分钟数)</code>。</p>
+<blockquote>
+<p>注意：仅用于容量估算。真实系统采用动态语义切分，实际段数不会严格等于会议时长除以目标时长。配套 HTML 页面保留了可操作的分段时长滑块。
+<section aria-label="分段时长交互估算" class="widget" id="segment-calculator">
+<div class="widget-top"><div><span class="widget-eyebrow">互动实验 · 60 分钟会议</span><h4>调整目标语义分段时长</h4></div><strong><span id="minute-label">5</span> 分钟</strong></div>
+<input aria-label="目标语义分段时长" class="range" id="segment-minutes" max="10" min="2" step="1" type="range" value="5"/>
+<div class="range-labels"><span>2 分钟</span><span>5 分钟</span><span>10 分钟</span></div>
+<div class="metrics"><div class="metric"><span>估计分段数</span><strong id="count-label">12</strong></div><div class="metric"><span>分段摘要调用（不含重试）</span><strong id="calls-label">12</strong></div></div>
+<p class="widget-desc" id="segment-tip">建议优先验证的区间：平衡主题完整性、摘要频率与上下文规模。</p>
+<p class="fineprint">仅用于容量估算；实际语义分段会根据话题边界动态调整。</p>
+</section></p>
+</blockquote>
+<hr/>
+<h2 id="chapter-4">四、语句完整性：如何避免断句导致 AI 理解错误？</h2>
+<p>比分钟数更重要的是 <strong>完整话语重建（Utterance Reconstruction）</strong>。</p>
+<p>会议中的讲话通常不是书面语。一个人可能反复修正自己的表达：</p>
+<blockquote>
+<p>“这个项目我们先做支付……不对，支付先不做，先把课程展示和预约流程跑通，支付等第二期。”</p>
+</blockquote>
+<p>如果只截取前半段，AI 可能生成一个完全错误的行动项：“第一期完成支付”。</p>
+<h3 id="sub-13">4.1 建议建立三层文本表示</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>层次</th>
+<th>内容</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Raw Transcript</td>
+<td>ASR 原始输出</td>
+<td>审计、纠错</td>
+</tr>
+<tr>
+<td>Normalized Transcript</td>
+<td>标点、断句、术语修正</td>
+<td>检索、阅读</td>
+</tr>
+<tr>
+<td>Semantic Units</td>
+<td>重建后的完整观点</td>
+<td>事件提取与总结</td>
+</tr>
+</tbody>
+</table></div>
+<p>这里有一个重要原则：</p>
+<p><strong>语句整理可以改善可读性，但不能悄悄修改原意。</strong></p>
+<p>比如可以去掉无意义的“嗯、啊”，但不能删除“不是、暂时不、可能、需要再确认”这样的关键限定词。</p>
+<h3 id="sub-14">4.2 语句重建使用滚动上下文</h3>
+<p>每当获得一批新的稳定转写，可以让语句整理模块看到：</p>
+<ul>
+<li>前面约 2–3 个已完成话语单元；</li>
+<li>当前尚未完成的发言；</li>
+<li>最新 1–2 个话语单元；</li>
+<li>说话人、时间戳和原始文本位置。</li>
+</ul>
+<p>不必每次都重新处理整场会议。</p>
+<p>对于语义分段的边界，可以保留约 20–40 秒上下文供下一段理解，但这些重叠内容只作为上下文，不再次计入事件提取和摘要。</p>
+<h3 id="sub-15">4.3 采用“所有权 + 上下文”机制避免重复</h3>
+<p>假设在 04:55 处切分：</p>
+<ul>
+<li>Segment A 拥有 00:00–04:55 的正式内容。</li>
+<li>Segment B 拥有 04:55 之后的正式内容。</li>
+<li>Segment B 可以读取 Segment A 末尾的上下文。</li>
+</ul>
+<p>每个话语单元只有一个正式归属段。跨段关联通过 <code>utterance_id</code> 和 <code>topic_id</code> 表达。</p>
+<p>这样既能保留上下文，又不会因为窗口重叠而重复生成决策或行动项。</p>
+<hr/>
+<h2 id="chapter-5">五、分段总结：不要直接把一段转写压缩成一段文字</h2>
+<p>这是第二个核心设计点。</p>
+<p>我的建议是采用：</p>
+<p><strong>事实与事件提取（Extract）→ 结构化更新（Update）→ 局部摘要（Summarize）</strong></p>
+<p>而不是每 5 分钟直接让大模型“总结以下会议内容”。</p>
+<h3 id="sub-17">5.1 先提取事件，再生成摘要</h3>
+<p>每个语义段需要识别以下信息：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>事件类型</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Topic</td>
+<td>讨论后台管理功能</td>
+</tr>
+<tr>
+<td>Proposal</td>
+<td>建议第一期只做课程 CRUD</td>
+</tr>
+<tr>
+<td>Concern</td>
+<td>担心支付接入增加交付周期</td>
+</tr>
+<tr>
+<td>Decision</td>
+<td>第一阶段暂不接入支付</td>
+</tr>
+<tr>
+<td>Action</td>
+<td>开发人员提供接口设计</td>
+</tr>
+<tr>
+<td>Open Question</td>
+<td>支付是否需要第二期上线</td>
+</tr>
+<tr>
+<td>Correction</td>
+<td>原先计划本周交付，改为下周</td>
+</tr>
+<tr>
+<td>Evidence</td>
+<td>对应原文及时间戳</td>
+</tr>
+</tbody>
+</table></div>
+<p>其中 <code>Proposal</code> 和 <code>Decision</code> 必须严格区分。</p>
+<p>例如“我建议先不上支付”只是提议，不代表团队已经决定不上支付。</p>
+<h3 id="sub-18">5.2 推荐的数据结构</h3>
+<pre><code class="language-json">{
+  "segment_id": "seg_003",
+  "start_ms": 600000,
+  "end_ms": 895000,
+  "topic_id": "topic_payment",
+  "summary": "讨论第一期支付功能范围",
+  "events": [
+    {
+      "event_id": "evt_021",
+      "type": "decision",
+      "content": "第一期暂不接入支付",
+      "status": "confirmed",
+      "speaker_id": "speaker_A",
+      "evidence_utterance_ids": ["utt_120", "utt_126"]
+    }
+  ],
+  "open_questions": [
+    {
+      "content": "第二期是否接入微信支付",
+      "status": "unresolved"
+    }
+  ]
+}
+</code></pre>
+<p>这里的 <code>confirmed</code> 代表有足够明确的会议证据，而不是模型自认为置信度很高。</p>
+<p>实际系统还应该保留：</p>
+<ul>
+<li><code>extractor_version</code>：事件提取器版本。</li>
+<li><code>transcript_revision</code>：对应转写版本。</li>
+<li><code>supersedes_event_id</code>：被后续结论替代的事件。</li>
+<li><code>speaker_confidence</code>：说话人识别可靠性。</li>
+<li><code>review_required</code>：是否需要人工核实。</li>
+</ul>
+<h3 id="sub-19">5.3 分段摘要应该输出什么？</h3>
+<p>我建议分段摘要尽量简短，通常为 100–250 个汉字左右，但不设置硬性上限；重要决策可以更详细。</p>
+<blockquote class="segment-example">
+<p><strong>Segment 03 · 支付功能讨论（10:00–14:55）</strong><br/>
+<strong>讨论概况：</strong> 团队讨论了第一期是否接入微信支付。主要担忧是支付流程增加接口、测试和验收成本，影响当前交付周期。<br/>
+<strong>已确认决策：</strong> 第一阶段暂不接入支付，优先完成课程展示与预约流程。<br/>
+<strong>待确认事项：</strong> 第二期支付方式和上线时间尚未确定。<br/>
+<strong>后续行动：</strong> 产品负责人整理第一期功能边界，并与甲方再次确认。<br/>
+<strong>证据：</strong> 每条决策和行动项均应关联原始发言及时间戳。以上为示例数据。</p>
+</blockquote>
+<p>这类结构化摘要比单纯自然语言段落更适合后续增量合并。</p>
+<hr/>
+<h2 id="chapter-6">六、阶段总结：如何把多个分段组合成连贯的讨论？</h2>
+<p>每 10–15 分钟可以执行一次阶段性综合，但 <strong>不建议简单地把三个分段摘要拼接起来再摘要一次</strong>。</p>
+<p>原因在于：会议讨论是一个持续变化的过程。</p>
+<p>例如：</p>
+<ul>
+<li>第 3 分钟：建议第一期做支付。</li>
+<li>第 8 分钟：开发认为成本过高。</li>
+<li>第 12 分钟：提出使用第三方支付。</li>
+<li>第 18 分钟：最终决定第一期不做支付。</li>
+</ul>
+<p>如果每段都独立总结，最终可能出现四个相互冲突的结论。</p>
+<h3 id="sub-21">6.1 使用可更新的会议状态</h3>
+<p>我建议维护一个独立的 <code>Meeting State</code>：</p>
+<pre><code class="language-text">Meeting State
+├── Topics
+│   ├── 当前议题
+│   ├── 已完成议题
+│   └── 重新打开的议题
+├── Decisions
+│   ├── 已确认
+│   ├── 暂定
+│   ├── 被替代
+│   └── 已撤销
+├── Action Items
+│   ├── 负责人
+│   ├── 截止时间
+│   └── 执行状态
+├── Open Questions
+├── Risks
+└── Evidence Index
+</code></pre>
+<p>新的分段不直接覆盖旧摘要，而是产生状态更新操作，例如：</p>
+<ul>
+<li><code>ADD_DECISION</code></li>
+<li><code>SUPERSEDE_DECISION</code></li>
+<li><code>REOPEN_TOPIC</code></li>
+<li><code>RESOLVE_QUESTION</code></li>
+<li><code>UPDATE_ACTION</code></li>
+</ul>
+<p>这样就能记录一个决策从提出、讨论到最终确定的全过程。</p>
+<h3 id="sub-22">6.2 阶段总结采用增量更新</h3>
+<p>每次阶段总结输入：</p>
+<ol>
+<li>上一版 Meeting State；</li>
+<li>最近新增的结构化事件；</li>
+<li>本阶段相关的原始发言；</li>
+<li>会议议程或项目背景（如果有）。</li>
+</ol>
+<p>输出新的状态版本和阶段性摘要。</p>
+<p>可表示为：</p>
+<div class="equation">M<sub>t</sub> = Update(M<sub>t−1</sub>, E<sub>t</sub>, C<sub>t</sub>)</div>
+<p>其中：</p>
+<ul>
+<li><code>M_t</code>：当前会议状态；</li>
+<li><code>E_t</code>：新增事件；</li>
+<li><code>C_t</code>：相关上下文和原始证据。</li>
+</ul>
+<p>这种方式可以控制上下文长度，同时避免反复总结导致的信息损失。</p>
+<p>需要特别强调：<strong>Meeting State 是工作记忆，不是事实的唯一来源。</strong> 原始音频、稳定转写和事件证据仍然是最终校验依据。</p>
+<hr/>
+<h2 id="chapter-7">七、最终总结：如何生成高质量的整场会议纪要？</h2>
+<p>我不建议使用最简单的 Map-Reduce Summarization：</p>
+<figure class="diagram"><figcaption>图 3 · 不建议直接使用的简单 Map-Reduce 摘要</figcaption><div class="svg-frame">
+<!-- Generated by graphviz version 2.42.4 (0)
+ -->
+<!-- Title: G Pages: 1 -->
+<svg aria-label="图 3 · 不建议直接使用的简单 Map-Reduce 摘要" role="img" viewbox="0.00 0.00 384.92 196.92" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g class="graph" id="graph0" transform="scale(1 1) rotate(0) translate(12.96 183.96)">
+<title>G</title>
+<!-- a -->
+<g class="node" id="node1">
+<title>a</title>
+<path d="M93,-171C93,-171 12,-171 12,-171 6,-171 0,-165 0,-159 0,-159 0,-142 0,-142 0,-136 6,-130 12,-130 12,-130 93,-130 93,-130 99,-130 105,-136 105,-142 105,-142 105,-159 105,-159 105,-165 99,-171 93,-171" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="52.5" y="-147">分段摘要 A</text>
+</g>
+<!-- llm -->
+<g class="node" id="node4">
+<title>llm</title>
+<path d="M229.5,-106C229.5,-106 129.5,-106 129.5,-106 123.5,-106 117.5,-100 117.5,-94 117.5,-94 117.5,-77 117.5,-77 117.5,-71 123.5,-65 129.5,-65 129.5,-65 229.5,-65 229.5,-65 235.5,-65 241.5,-71 241.5,-77 241.5,-77 241.5,-94 241.5,-94 241.5,-100 235.5,-106 229.5,-106" fill="#fff1e4" stroke="#e4b88b" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="179.5" y="-82">LLM 再次压缩</text>
+</g>
+<!-- a&#45;&gt;llm -->
+<g class="edge" id="edge1">
+<title>a-&gt;llm</title>
+<path d="M105.01,-150C114.92,-150 122.25,-150 122.25,-150 122.25,-150 122.25,-113.46 122.25,-113.46" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="124.77,-113.46 122.25,-106.26 119.73,-113.46 124.77,-113.46" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- b -->
+<g class="node" id="node2">
+<title>b</title>
+<path d="M220,-171C220,-171 139,-171 139,-171 133,-171 127,-165 127,-159 127,-159 127,-142 127,-142 127,-136 133,-130 139,-130 139,-130 220,-130 220,-130 226,-130 232,-136 232,-142 232,-142 232,-159 232,-159 232,-165 226,-171 220,-171" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="179.5" y="-147">分段摘要 B</text>
+</g>
+<!-- b&#45;&gt;llm -->
+<g class="edge" id="edge2">
+<title>b-&gt;llm</title>
+<path d="M179.5,-129.93C179.5,-129.93 179.5,-113.36 179.5,-113.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="182.02,-113.36 179.5,-106.16 176.98,-113.36 182.02,-113.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- c -->
+<g class="node" id="node3">
+<title>c</title>
+<path d="M347,-171C347,-171 266,-171 266,-171 260,-171 254,-165 254,-159 254,-159 254,-142 254,-142 254,-136 260,-130 266,-130 266,-130 347,-130 347,-130 353,-130 359,-136 359,-142 359,-142 359,-159 359,-159 359,-165 353,-171 347,-171" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="306.5" y="-147">分段摘要 C</text>
+</g>
+<!-- c&#45;&gt;llm -->
+<g class="edge" id="edge3">
+<title>c-&gt;llm</title>
+<path d="M253.99,-150C244.08,-150 236.75,-150 236.75,-150 236.75,-150 236.75,-113.46 236.75,-113.46" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="239.27,-113.46 236.75,-106.26 234.23,-113.46 239.27,-113.46" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- result -->
+<g class="node" id="node5">
+<title>result</title>
+<path d="M229,-41C229,-41 130,-41 130,-41 124,-41 118,-35 118,-29 118,-29 118,-12 118,-12 118,-6 124,0 130,0 130,0 229,0 229,0 235,0 241,-6 241,-12 241,-12 241,-29 241,-29 241,-35 235,-41 229,-41" fill="#fff1e4" stroke="#e4b88b" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="179.5" y="-17">最终会议纪要</text>
+</g>
+<!-- llm&#45;&gt;result -->
+<g class="edge" id="edge4">
+<title>llm-&gt;result</title>
+<path d="M179.5,-64.93C179.5,-64.93 179.5,-48.36 179.5,-48.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="182.02,-48.36 179.5,-41.16 176.98,-48.36 182.02,-48.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+</g>
+</svg>
+</div></figure>
+<p>这种方法适合一般文章摘要，但对会议纪要存在明显风险：早期分段摘要遗漏的信息无法恢复；反复压缩会丢失细节；跨段发生的决策变化也容易被误判。</p>
+<p>更推荐采用 <strong>Hierarchical Summarization + Event Sourcing + Evidence Verification</strong>，即分层摘要、事件溯源与证据校验相结合。</p>
+<h3 id="sub-24">7.1 最终总结的四个阶段</h3>
+<figure class="diagram"><figcaption>图 4 · 最终会议纪要的四阶段生成流程</figcaption><div class="svg-frame">
+<!-- Generated by graphviz version 2.42.4 (0)
+ -->
+<!-- Title: G Pages: 1 -->
+<svg aria-label="图 4 · 最终会议纪要的四阶段生成流程" role="img" viewbox="0.00 0.00 229.92 397.92" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g class="graph" id="graph0" transform="scale(1 1) rotate(0) translate(12.96 384.96)">
+<title>G</title>
+<!-- t -->
+<g class="node" id="node1">
+<title>t</title>
+<path d="M176,-372C176,-372 28,-372 28,-372 22,-372 16,-366 16,-360 16,-360 16,-309 16,-309 16,-303 22,-297 28,-297 28,-297 176,-297 176,-297 182,-297 188,-303 188,-309 188,-309 188,-360 188,-360 188,-366 182,-372 176,-372" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-348">① 全局议题重组</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-331">Topic Consolidation</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-314">同主题跨时间段聚合</text>
+</g>
+<!-- e -->
+<g class="node" id="node2">
+<title>e</title>
+<path d="M181.5,-273C181.5,-273 22.5,-273 22.5,-273 16.5,-273 10.5,-267 10.5,-261 10.5,-261 10.5,-210 10.5,-210 10.5,-204 16.5,-198 22.5,-198 22.5,-198 181.5,-198 181.5,-198 187.5,-198 193.5,-204 193.5,-210 193.5,-210 193.5,-261 193.5,-261 193.5,-267 187.5,-273 181.5,-273" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-249">② 决策与事件归并</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-232">Event Reconciliation</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-215">追踪重复、撤销和替代</text>
+</g>
+<!-- t&#45;&gt;e -->
+<g class="edge" id="edge1">
+<title>t-&gt;e</title>
+<path d="M102,-296.79C102,-296.79 102,-280.31 102,-280.31" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="104.52,-280.31 102,-273.11 99.48,-280.31 104.52,-280.31" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- g -->
+<g class="node" id="node3">
+<title>g</title>
+<path d="M189,-174C189,-174 15,-174 15,-174 9,-174 3,-168 3,-162 3,-162 3,-111 3,-111 3,-105 9,-99 15,-99 15,-99 189,-99 189,-99 195,-99 201,-105 201,-111 201,-111 201,-162 201,-162 201,-168 195,-174 189,-174" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-150">③ 分层纪要生成</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-133">Hierarchical Generation</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-116">概览、议题、决策与任务</text>
+</g>
+<!-- e&#45;&gt;g -->
+<g class="edge" id="edge2">
+<title>e-&gt;g</title>
+<path d="M102,-197.79C102,-197.79 102,-181.31 102,-181.31" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="104.52,-181.31 102,-174.11 99.48,-181.31 104.52,-181.31" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- v -->
+<g class="node" id="node4">
+<title>v</title>
+<path d="M192,-75C192,-75 12,-75 12,-75 6,-75 0,-69 0,-63 0,-63 0,-12 0,-12 0,-6 6,0 12,0 12,0 192,0 192,0 198,0 204,-6 204,-12 204,-12 204,-63 204,-63 204,-69 198,-75 192,-75" fill="#e7f4eb" stroke="#79bd91" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-51">④ 原文证据校验</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-34">Grounding &amp; Verification</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="102" y="-17">核对金额、时间、负责人</text>
+</g>
+<!-- g&#45;&gt;v -->
+<g class="edge" id="edge3">
+<title>g-&gt;v</title>
+<path d="M102,-98.79C102,-98.79 102,-82.31 102,-82.31" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="104.52,-82.31 102,-75.11 99.48,-82.31 104.52,-82.31" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+</g>
+</svg>
+</div></figure>
+<p><strong>1. 全局议题重组（Topic Consolidation）</strong></p>
+<p>不按照录音的时间顺序简单拼接，而是把同一主题在不同时间段的讨论聚合起来。比如第 5 分钟和第 45 分钟都讨论支付功能，应当关联到同一个议题。</p>
+<p><strong>2. 决策与事件归并（Event Reconciliation）</strong></p>
+<p>识别重复事件、观点变化、被推翻的决定和最终有效结论。不能把某个提议误写为最终决策。</p>
+<p><strong>3. 分层纪要生成（Hierarchical Generation）</strong></p>
+<p>根据议题和事件生成会议概览、讨论要点、最终决策、行动项、风险和待确认事项。不同内容使用不同详细程度。</p>
+<p><strong>4. 证据回查与修订（Grounding &amp; Verification）</strong></p>
+<p>将关键结论逐条映射到原始转写，核对人名、金额、日期、责任人、否定词和最终决策状态。无法确认的内容应标记待核实，而不是猜测。</p>
+<p>这与微软研究中提出的“重要内容摘要 + 分层结构化纪要”两种互补呈现形式有相似思路。<a href="https://www.microsoft.com/en-us/research/publication/summaries-highlights-and-action-items-design-implementation-and-evaluation-of-an-llm-powered-meeting-recap-system/">微软研究</a>。</p>
+<h3 id="sub-25">7.2 最终会议纪要建议采用双层结构</h3>
+<p><strong>第一层：管理层摘要（Executive Summary）</strong></p>
+<p>面向只想用 1–2 分钟了解会议结果的人，包含会议目的、核心结论、关键决策和最重要的下一步行动。</p>
+<p><strong>第二层：完整会议纪要（Detailed Minutes）</strong></p>
+<p>面向参与者和项目执行者，包含各议题的背景、主要观点、分歧、决策演进、待办、风险及证据引用。</p>
+<p>不建议要求 LLM 无论会议内容多少，都必须输出固定 500 字或 1000 字。应当根据 <strong>有效信息密度</strong> 动态调整输出长度。</p>
+<p>例如，一场 60 分钟的会议可能只有三个重要结论，也可能包含十几个决策和二十个行动项。二者不应该使用同样的摘要预算。</p>
+<hr/>
+<h2 id="chapter-8">八、内容采样策略：哪些内容应该送给 AI？</h2>
+<p>这部分容易被忽略，但直接影响成本和摘要质量。</p>
+<p>我建议区分三个层级。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>处理层</th>
+<th>内容采样方式</th>
+<th>信息保留</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原始转写</td>
+<td>全量保留</td>
+<td>100%，不主动丢弃</td>
+</tr>
+<tr>
+<td>事件提取</td>
+<td>全量稳定话语逐批处理</td>
+<td>所有片段都有机会被识别</td>
+</tr>
+<tr>
+<td>阶段及最终摘要</td>
+<td>重要事件 + 相关原文检索</td>
+<td>按信息价值分配上下文</td>
+</tr>
+</tbody>
+</table></div>
+<p>也就是说，<strong>不要为了降低 Token 消耗，在输入阶段随机丢掉 30% 或 50% 的会议内容。</strong></p>
+<h3 id="sub-27">8.1 按事件价值分配处理资源</h3>
+<p>可以建立事件优先级：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>事件</th>
+<th>优先级</th>
+<th>处理方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已确认决策</td>
+<td>P0</td>
+<td>必须提取、保留原文、最终核验</td>
+</tr>
+<tr>
+<td>行动项、负责人、截止日期</td>
+<td>P0</td>
+<td>必须提取、逐项核验</td>
+</tr>
+<tr>
+<td>金额、报价、合同条件</td>
+<td>P0</td>
+<td>保留精确原文及时间戳</td>
+</tr>
+<tr>
+<td>关键分歧、风险</td>
+<td>P1</td>
+<td>保留上下文与主要论据</td>
+</tr>
+<tr>
+<td>方案建议、重要问题</td>
+<td>P1</td>
+<td>保留事件及状态</td>
+</tr>
+<tr>
+<td>一般讨论与背景</td>
+<td>P2</td>
+<td>可以压缩</td>
+</tr>
+<tr>
+<td>寒暄、重复、无意义附和</td>
+<td>P3</td>
+<td>摘要可忽略，原文仍保留</td>
+</tr>
+</tbody>
+</table></div>
+<p>重要性可以辅助排序，但不应该只靠一个简单分数决定是否删除内容。</p>
+<p>尤其是一个原本不重要的观点，可能在 30 分钟后成为最终决策的关键依据。</p>
+<h3 id="sub-28">8.2 事件驱动优于纯时间驱动</h3>
+<p>推荐采用混合触发：</p>
+<ul>
+<li><strong>时间触发</strong>：每 30–60 秒运行一次微批处理，避免长时间没有输出。</li>
+<li><strong>事件触发</strong>：检测到明确决策、任务分配、议题结束时，优先更新结构化状态。</li>
+<li><strong>上下文触发</strong>：当某议题累积信息较多时，生成阶段摘要。</li>
+<li><strong>结束触发</strong>：会议结束后，进行全局重组与校验。</li>
+</ul>
+<p>这样的系统既能提供实时反馈，也能控制成本。</p>
+<hr/>
+<h2 id="chapter-9">九、实际开发时，应该用几个 AI Agent？</h2>
+<p>我的建议是：<strong>不要一开始就使用多个自治 Agent 相互对话。</strong></p>
+<p>对这个场景，更适合一个确定性编排器管理多个专用 AI 处理任务。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>是否需要 LLM</th>
+<th>主要职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Audio Collector</td>
+<td>否</td>
+<td>连续录音、时间戳、容错</td>
+</tr>
+<tr>
+<td>Streaming ASR</td>
+<td>语音模型</td>
+<td>实时转写</td>
+</tr>
+<tr>
+<td>Utterance Normalizer</td>
+<td>可选小模型</td>
+<td>断句、纠错、规范化</td>
+</tr>
+<tr>
+<td>Segmenter</td>
+<td>规则 + 小模型</td>
+<td>语义分段</td>
+</tr>
+<tr>
+<td>Event Extractor</td>
+<td>是</td>
+<td>提取结构化事件</td>
+</tr>
+<tr>
+<td>State Manager</td>
+<td>规则为主</td>
+<td>事件合并、版本管理</td>
+</tr>
+<tr>
+<td>Segment Summarizer</td>
+<td>是</td>
+<td>局部摘要</td>
+</tr>
+<tr>
+<td>Global Summarizer</td>
+<td>是</td>
+<td>整场纪要</td>
+</tr>
+<tr>
+<td>Verifier</td>
+<td>是 + 规则</td>
+<td>证据核查</td>
+</tr>
+</tbody>
+</table></div>
+<p>其中 Event Extractor、Segment Summarizer 和 Global Summarizer 完全可以共用同一个 LLM，只使用不同的 Prompt、Schema 和上下文。</p>
+<p>第一版不需要九个独立 Agent，也不需要引入复杂的多智能体框架。</p>
+<h3 id="sub-30">9.1 推荐的系统技术架构</h3>
+<figure class="diagram"><figcaption>图 5 · 基于事件存储与版本修订的技术架构</figcaption><div class="svg-frame">
+<!-- Generated by graphviz version 2.42.4 (0)
+ -->
+<!-- Title: G Pages: 1 -->
+<svg aria-label="图 5 · 基于事件存储与版本修订的技术架构" role="img" viewbox="0.00 0.00 371.42 815.92" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g class="graph" id="graph0" transform="scale(1 1) rotate(0) translate(12.96 802.96)">
+<title>G</title>
+<!-- audio -->
+<g class="node" id="node1">
+<title>audio</title>
+<path d="M206,-790C206,-790 116,-790 116,-790 110,-790 104,-784 104,-778 104,-778 104,-761 104,-761 104,-755 110,-749 116,-749 116,-749 206,-749 206,-749 212,-749 218,-755 218,-761 218,-761 218,-778 218,-778 218,-784 212,-790 206,-790" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-766">Audio Input</text>
+</g>
+<!-- record -->
+<g class="node" id="node2">
+<title>record</title>
+<path d="M239,-725C239,-725 83,-725 83,-725 77,-725 71,-719 71,-713 71,-713 71,-679 71,-679 71,-673 77,-667 83,-667 83,-667 239,-667 239,-667 245,-667 251,-673 251,-679 251,-679 251,-713 251,-713 251,-719 245,-725 239,-725" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-701">Audio Buffer</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-684">+ Persistent Recorder</text>
+</g>
+<!-- audio&#45;&gt;record -->
+<g class="edge" id="edge1">
+<title>audio-&gt;record</title>
+<path d="M161,-748.63C161,-748.63 161,-732.35 161,-732.35" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-732.35 161,-725.15 158.48,-732.35 163.52,-732.35" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- asr -->
+<g class="node" id="node3">
+<title>asr</title>
+<path d="M217,-643C217,-643 105,-643 105,-643 99,-643 93,-637 93,-631 93,-631 93,-614 93,-614 93,-608 99,-602 105,-602 105,-602 217,-602 217,-602 223,-602 229,-608 229,-614 229,-614 229,-631 229,-631 229,-637 223,-643 217,-643" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-619">Streaming ASR</text>
+</g>
+<!-- record&#45;&gt;asr -->
+<g class="edge" id="edge2">
+<title>record-&gt;asr</title>
+<path d="M161,-666.95C161,-666.95 161,-650.61 161,-650.61" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-650.61 161,-643.41 158.48,-650.61 163.52,-650.61" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- transcript -->
+<g class="node" id="node4">
+<title>transcript</title>
+<path d="M226.5,-578C226.5,-578 95.5,-578 95.5,-578 89.5,-578 83.5,-572 83.5,-566 83.5,-566 83.5,-532 83.5,-532 83.5,-526 89.5,-520 95.5,-520 95.5,-520 226.5,-520 226.5,-520 232.5,-520 238.5,-526 238.5,-532 238.5,-532 238.5,-566 238.5,-566 238.5,-572 232.5,-578 226.5,-578" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-554">Transcript Store</text>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-537">append + revision</text>
+</g>
+<!-- asr&#45;&gt;transcript -->
+<g class="edge" id="edge3">
+<title>asr-&gt;transcript</title>
+<path d="M161,-601.63C161,-601.63 161,-585.35 161,-585.35" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-585.35 161,-578.15 158.48,-585.35 163.52,-585.35" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- normalized -->
+<g class="node" id="node5">
+<title>normalized</title>
+<path d="M239.5,-496C239.5,-496 82.5,-496 82.5,-496 76.5,-496 70.5,-490 70.5,-484 70.5,-484 70.5,-467 70.5,-467 70.5,-461 76.5,-455 82.5,-455 82.5,-455 239.5,-455 239.5,-455 245.5,-455 251.5,-461 251.5,-467 251.5,-467 251.5,-484 251.5,-484 251.5,-490 245.5,-496 239.5,-496" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-472">Utterance Normalizer</text>
+</g>
+<!-- transcript&#45;&gt;normalized -->
+<g class="edge" id="edge4">
+<title>transcript-&gt;normalized</title>
+<path d="M161,-519.95C161,-519.95 161,-503.61 161,-503.61" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-503.61 161,-496.41 158.48,-503.61 163.52,-503.61" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- segment -->
+<g class="node" id="node6">
+<title>segment</title>
+<path d="M238.5,-431C238.5,-431 83.5,-431 83.5,-431 77.5,-431 71.5,-425 71.5,-419 71.5,-419 71.5,-402 71.5,-402 71.5,-396 77.5,-390 83.5,-390 83.5,-390 238.5,-390 238.5,-390 244.5,-390 250.5,-396 250.5,-402 250.5,-402 250.5,-419 250.5,-419 250.5,-425 244.5,-431 238.5,-431" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-407">Semantic Segmenter</text>
+</g>
+<!-- normalized&#45;&gt;segment -->
+<g class="edge" id="edge5">
+<title>normalized-&gt;segment</title>
+<path d="M161,-454.93C161,-454.93 161,-438.36 161,-438.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-438.36 161,-431.16 158.48,-438.36 163.52,-438.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- event -->
+<g class="node" id="node7">
+<title>event</title>
+<path d="M126,-366C126,-366 12,-366 12,-366 6,-366 0,-360 0,-354 0,-354 0,-337 0,-337 0,-331 6,-325 12,-325 12,-325 126,-325 126,-325 132,-325 138,-331 138,-337 138,-337 138,-354 138,-354 138,-360 132,-366 126,-366" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="69" y="-342">Event Extractor</text>
+</g>
+<!-- segment&#45;&gt;event -->
+<g class="edge" id="edge6">
+<title>segment-&gt;event</title>
+<path d="M104.75,-389.93C104.75,-389.93 104.75,-373.36 104.75,-373.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="107.27,-373.36 104.75,-366.16 102.23,-373.36 107.27,-373.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- summary -->
+<g class="node" id="node9">
+<title>summary</title>
+<path d="M333.5,-366C333.5,-366 172.5,-366 172.5,-366 166.5,-366 160.5,-360 160.5,-354 160.5,-354 160.5,-337 160.5,-337 160.5,-331 166.5,-325 172.5,-325 172.5,-325 333.5,-325 333.5,-325 339.5,-325 345.5,-331 345.5,-337 345.5,-337 345.5,-354 345.5,-354 345.5,-360 339.5,-366 333.5,-366" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="253" y="-342">Segment Summarizer</text>
+</g>
+<!-- segment&#45;&gt;summary -->
+<g class="edge" id="edge9">
+<title>segment-&gt;summary</title>
+<path d="M205.5,-389.93C205.5,-389.93 205.5,-373.36 205.5,-373.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="208.02,-373.36 205.5,-366.16 202.98,-373.36 208.02,-373.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- store -->
+<g class="node" id="node8">
+<title>store</title>
+<path d="M160,-301C160,-301 72,-301 72,-301 66,-301 60,-295 60,-289 60,-289 60,-272 60,-272 60,-266 66,-260 72,-260 72,-260 160,-260 160,-260 166,-260 172,-266 172,-272 172,-272 172,-289 172,-289 172,-295 166,-301 160,-301" fill="#f0f6ff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="116" y="-277">Event Store</text>
+</g>
+<!-- event&#45;&gt;store -->
+<g class="edge" id="edge7">
+<title>event-&gt;store</title>
+<path d="M99,-324.93C99,-324.93 99,-308.36 99,-308.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="101.52,-308.36 99,-301.16 96.48,-308.36 101.52,-308.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- state -->
+<g class="node" id="node10">
+<title>state</title>
+<path d="M212.5,-236C212.5,-236 109.5,-236 109.5,-236 103.5,-236 97.5,-230 97.5,-224 97.5,-224 97.5,-207 97.5,-207 97.5,-201 103.5,-195 109.5,-195 109.5,-195 212.5,-195 212.5,-195 218.5,-195 224.5,-201 224.5,-207 224.5,-207 224.5,-224 224.5,-224 224.5,-230 218.5,-236 212.5,-236" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-212">Meeting State</text>
+</g>
+<!-- store&#45;&gt;state -->
+<g class="edge" id="edge8">
+<title>store-&gt;state</title>
+<path d="M134.75,-259.93C134.75,-259.93 134.75,-243.36 134.75,-243.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="137.27,-243.36 134.75,-236.16 132.23,-243.36 137.27,-243.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- summary&#45;&gt;state -->
+<g class="edge" id="edge10">
+<title>summary-&gt;state</title>
+<path d="M198.25,-324.9C198.25,-324.9 198.25,-243.2 198.25,-243.2" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="200.77,-243.2 198.25,-236 195.73,-243.2 200.77,-243.2" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- global -->
+<g class="node" id="node11">
+<title>global</title>
+<path d="M233,-171C233,-171 89,-171 89,-171 83,-171 77,-165 77,-159 77,-159 77,-142 77,-142 77,-136 83,-130 89,-130 89,-130 233,-130 233,-130 239,-130 245,-136 245,-142 245,-142 245,-159 245,-159 245,-165 239,-171 233,-171" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-147">Global Summarizer</text>
+</g>
+<!-- state&#45;&gt;global -->
+<g class="edge" id="edge11">
+<title>state-&gt;global</title>
+<path d="M161,-194.93C161,-194.93 161,-178.36 161,-178.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-178.36 161,-171.16 158.48,-178.36 163.52,-178.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- verify -->
+<g class="node" id="node12">
+<title>verify</title>
+<path d="M206.5,-106C206.5,-106 115.5,-106 115.5,-106 109.5,-106 103.5,-100 103.5,-94 103.5,-94 103.5,-77 103.5,-77 103.5,-71 109.5,-65 115.5,-65 115.5,-65 206.5,-65 206.5,-65 212.5,-65 218.5,-71 218.5,-77 218.5,-77 218.5,-94 218.5,-94 218.5,-100 212.5,-106 206.5,-106" fill="#dfeeff" stroke="#b9cee5" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-82">Fact Verifier</text>
+</g>
+<!-- global&#45;&gt;verify -->
+<g class="edge" id="edge12">
+<title>global-&gt;verify</title>
+<path d="M161,-129.93C161,-129.93 161,-113.36 161,-113.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-113.36 161,-106.16 158.48,-113.36 163.52,-113.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+<!-- final -->
+<g class="node" id="node13">
+<title>final</title>
+<path d="M211.5,-41C211.5,-41 110.5,-41 110.5,-41 104.5,-41 98.5,-35 98.5,-29 98.5,-29 98.5,-12 98.5,-12 98.5,-6 104.5,0 110.5,0 110.5,0 211.5,0 211.5,0 217.5,0 223.5,-6 223.5,-12 223.5,-12 223.5,-29 223.5,-29 223.5,-35 217.5,-41 211.5,-41" fill="#e7f4eb" stroke="#79bd91" stroke-width="1.3"></path>
+<text fill="#173e68" font-family="Noto Sans CJK SC" font-size="15.00" text-anchor="middle" x="161" y="-17">Final Minutes</text>
+</g>
+<!-- verify&#45;&gt;final -->
+<g class="edge" id="edge13">
+<title>verify-&gt;final</title>
+<path d="M161,-64.93C161,-64.93 161,-48.36 161,-48.36" fill="none" stroke="#8aa8c8" stroke-width="1.3"></path>
+<polygon fill="#8aa8c8" points="163.52,-48.36 161,-41.16 158.48,-48.36 163.52,-48.36" stroke="#8aa8c8" stroke-width="1.3"></polygon>
+</g>
+</g>
+</svg>
+</div></figure>
+<p>建议采用事件驱动的异步任务架构，让 ASR 不必等待 LLM 总结完成。</p>
+<p>还需要加入以下工程机制：</p>
+<ul>
+<li>每个处理任务拥有唯一 ID，支持幂等重试。</li>
+<li>每个摘要记录所依赖的转写版本。</li>
+<li>ASR 修订时，只重新计算受影响的片段。</li>
+<li>会议中断或服务重启后，可以从最后的稳定转写恢复。</li>
+<li>录音与转写数据加密保存，并支持保留期限与删除策略。</li>
+<li>录制前确保满足参会者告知、同意和适用法律要求。</li>
+</ul>
+<hr/>
+<h2 id="chapter-10">十、如何验证这些策略到底有没有效果？</h2>
+<p>这部分我认为非常重要。</p>
+<p>我们不能仅仅因为某个分段策略听起来合理，就认定它效果最好。应该用真实会议数据进行对照实验。</p>
+<h3 id="sub-32">10.1 建议先比较四组策略</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>实验组</th>
+<th>分段策略</th>
+<th>总结策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A（基线）</td>
+<td>固定 5 分钟</td>
+<td>分段摘要直接合并</td>
+</tr>
+<tr>
+<td>B</td>
+<td>动态语义分段</td>
+<td>分段摘要直接合并</td>
+</tr>
+<tr>
+<td>C</td>
+<td>动态语义分段</td>
+<td>结构化事件 + 增量状态</td>
+</tr>
+<tr>
+<td>D</td>
+<td>动态语义分段</td>
+<td>结构化事件 + 增量状态 + 最终原文校验</td>
+</tr>
+</tbody>
+</table></div>
+<p>我预期 C、D 的决策追踪和事实完整性会更好，但这属于需要通过实验验证的假设，不能直接当成结果。</p>
+<h3 id="sub-33">10.2 核心评估指标</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>指标</th>
+<th>衡量内容</th>
+<th>PoC 建议目标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>决策召回率</td>
+<td>人工标注的关键决策有多少被找出</td>
+<td>≥95%</td>
+</tr>
+<tr>
+<td>行动项召回率</td>
+<td>任务是否遗漏</td>
+<td>≥95%</td>
+</tr>
+<tr>
+<td>关键事实准确率</td>
+<td>人名、金额、日期等是否正确</td>
+<td>≥98%</td>
+</tr>
+<tr>
+<td>无证据断言率</td>
+<td>无法从原文支持的事实比例</td>
+<td>≤2%</td>
+</tr>
+<tr>
+<td>主题边界质量</td>
+<td>分段是否合理</td>
+<td>人工评分</td>
+</tr>
+<tr>
+<td>实时摘要延迟</td>
+<td>分段结束到摘要可用</td>
+<td>P95 ≤15 秒</td>
+</tr>
+<tr>
+<td>最终纪要延迟</td>
+<td>会议结束到生成纪要</td>
+<td>目标 ≤60 秒</td>
+</tr>
+</tbody>
+</table></div>
+<p>以上是建议的产品验收目标，不是现有系统已经达到的性能。</p>
+<p>测试时还需要把 ASR 错误与摘要错误分开评估。例如，原始录音说的是“十五万”，ASR 识别为“五十万”，最终摘要沿用错误数字，根因首先是转写，而不完全是摘要器。</p>
+<h3 id="sub-34">10.3 设计一套覆盖真实问题的测试语料</h3>
+<p>建议第一轮收集 10–20 场经过授权的会议，覆盖需求讨论、方案评审、客户沟通、项目例会、多人争论和长时间单人发言。</p>
+<p>重点构造以下测试场景：</p>
+<ul>
+<li>讲话在固定时间边界被截断。</li>
+<li>同一个议题在会议中反复出现。</li>
+<li>先提出方案，后续又否决。</li>
+<li>参会者用模糊语言表达意向。</li>
+<li>任务分配没有明确负责人。</li>
+<li>会议最后一分钟突然改变关键决策。</li>
+<li>ASR 对专有名词、金额、数字识别错误。</li>
+</ul>
+<p>这些比只看摘要是否流畅更能判断系统是否真正可用。</p>
+<hr/>
+<h2 id="chapter-11">十一、推荐的 PoC 参数配置</h2>
+<p>我把前面的研究结论整理成一个可以直接用于开发实验的参数表。</p>
+<div class="heading-with-action"><h3 id="sub-36">Meeting Intelligence · PoC v0.1</h3><button class="small-button" id="copy-params" title="复制参数配置" type="button">复制参数配置</button></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>参数</th>
+<th>初始值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>VAD 候选静音阈值</td>
+<td>700ms</td>
+</tr>
+<tr>
+<td>ASR 稳定文本处理</td>
+<td>事件驱动</td>
+</tr>
+<tr>
+<td>微批处理间隔</td>
+<td>45 秒</td>
+</tr>
+<tr>
+<td>目标语义段</td>
+<td>5 分钟</td>
+</tr>
+<tr>
+<td>常规最小语义段</td>
+<td>2 分钟</td>
+</tr>
+<tr>
+<td>语义段检查上限</td>
+<td>8 分钟</td>
+</tr>
+<tr>
+<td>跨段上下文</td>
+<td>30 秒</td>
+</tr>
+<tr>
+<td>阶段总结间隔</td>
+<td>15 分钟</td>
+</tr>
+<tr>
+<td>最终总结策略</td>
+<td>议题聚合 + 事件归并 + 证据校验</td>
+</tr>
+</tbody>
+</table></div>
+<p>以上参数用于第一轮基线实验。建议保留可配置能力，并通过实际会议样本调整。</p>
+<hr/>
+<h2 id="chapter-12">十二、我的最终架构建议</h2>
+<p>对于希望开发的实时会议纪要能力，我会将设计重点放在三个核心机制上。</p>
+<p><strong>第一，完整转写优先于实时总结。</strong> 实时字幕可以不完美，但原始录音必须可追溯，稳定转写必须可修订。所有后续理解都建立在这个基础上。</p>
+<p><strong>第二，事件状态优先于摘要文本。</strong> 系统真正需要记住的不是每五分钟写出的一段漂亮文字，而是会议正在讨论什么、提出了哪些方案、做出了什么决定、哪些决定被推翻、还有什么需要执行。</p>
+<p><strong>第三，最终综合必须能够回到原始证据。</strong> 最终纪要不是把若干摘要再次压缩，而是利用议题结构和事件状态重新组织内容，并对关键事实进行回查。</p>
+<p>如果只允许优先实现一个差异化能力，我会选择 <strong>“决策演进追踪 + 原文证据定位”</strong>。它比普通 AI 会议纪要更难实现，但也更有实际价值。</p>
+<h3 id="sub-38">12.1 参考研究与技术资料</h3>
+<ul>
+<li><a href="https://developers.openai.com/api/docs/guides/realtime-vad">OpenAI — Voice Activity Detection</a>：声学与语义话语边界，以及不同模型的支持限制。</li>
+<li><a href="https://link.springer.com/article/10.1007/s44443-025-00304-y">Dynamic Agenda-Aware Real-Time Meeting Summarization（2025）</a>：增量会议摘要与议程记忆。</li>
+<li><a href="https://aclanthology.org/2021.sigdial-1.55/">Incremental Temporal Summarization in Multi-party Meetings（SIGDIAL 2021）</a>：增量生成中保留历史上下文的价值。</li>
+<li><a href="https://aclanthology.org/2025.acl-long.753/">MISP-Meeting（ACL 2025）</a>：真实会议语音识别与摘要质量。</li>
+<li><a href="https://aclanthology.org/2023.findings-acl.377.pdf">MeetingBank（ACL Findings 2023）</a>：主题分段、多粒度摘要和关键语句提取。</li>
+<li><a href="https://aclanthology.org/2025.coling-main.143/">What's Wrong? Refining Meeting Summaries with LLM Feedback（COLING 2025）</a>：会议摘要错误识别与修订。</li>
+<li><a href="https://www.microsoft.com/en-us/research/publication/summaries-highlights-and-action-items-design-implementation-and-evaluation-of-an-llm-powered-meeting-recap-system/">Summaries, Highlights, and Action Items（Microsoft Research）</a>：重要内容摘要与层级化会议纪要的互补设计。</li>
+</ul>
+<hr/>
+<h2 id="chapter-13">接下来最值得明确的一个产品问题</h2>
+<p>你希望这个实时会议纪要系统主要服务于哪种场景？</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>关键技术重点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>线下会议录音</td>
+<td>单台设备采集多人讲话；说话人识别、噪声和语义完整性</td>
+</tr>
+<tr>
+<td>线上会议采集</td>
+<td>电脑系统音频或会议软件音频；多音轨、低延迟与会议上下文</td>
+</tr>
+<tr>
+<td><strong>通用会议助手（推荐）</strong></td>
+<td>兼顾线上和线下；形成可复用的会议智能处理引擎</td>
+</tr>
+</tbody>
+</table></div>
+<p>场景确定后，可以进一步把这套研究转成可开发的 <strong>技术设计文档（Technical Design）</strong>，包括状态机、完整数据 Schema、分段算法、Prompt 模板、异步任务编排和测试用例。</p>
+<blockquote>
+<p><strong>导出说明：</strong> 本文件中的 Mermaid 流程图可在 GitHub、Obsidian 或支持 Mermaid 的 Markdown 渲染器中显示。若阅读器不支持 Mermaid，仍可查看图形的源代码。配套 HTML 文件将图形内嵌为 SVG，可离线直接查看，并保留交互式分段估算、参数复制与场景选择。</p>
+</blockquote>
+<section aria-labelledby="scenario-label" class="widget selector">
+<div class="widget-eyebrow">产品场景选择</div><h4 id="scenario-label">下一阶段优先考虑的会议环境</h4>
+<div aria-label="会议环境" class="choices" role="radiogroup">
+<label><input name="scenario" type="radio" value="offline"/><span><b>线下会议录音</b><small>说话人识别 · 噪声 · 语句完整性</small></span></label>
+<label><input name="scenario" type="radio" value="online"/><span><b>线上会议采集</b><small>系统音频 · 多音轨 · 低延迟</small></span></label>
+<label class="chosen"><input checked="" name="scenario" type="radio" value="mixed"/><span><b>通用会议助手</b><small>线上线下通用 · 可复用的处理引擎</small></span></label>
+</div>
+<p class="widget-desc" id="scenario-desc">当前选择：通用会议助手。建议从统一转写事件格式与可插拔音频采集适配器切入。</p>
+</section></article>
+<footer class="footer">Meeting Intelligence · 研究整理版 v1.0 · 2026-11-08<br>单文件 HTML，无外部脚本、字体或图表依赖。</footer>
+</div></main></div><script>
+(()=>{
+'use strict';
+const r=document.getElementById('segment-minutes');
+const update=()=>{const m=Number(r.value),n=Math.ceil(60/m);document.getElementById('minute-label').textContent=m;document.getElementById('count-label').textContent=n;document.getElementById('calls-label').textContent=n;document.getElementById('segment-tip').textContent=m<=3?'短段能够更快更新摘要，但容易产生碎片，需要更多跨段合并。':m<=6?'这是建议优先验证的区间：兼顾主题完整性、摘要频率与上下文规模。':'长段减少调用次数，但反馈更慢，可能同时包含多个议题。'};
+r?.addEventListener('input',update);update();
+const lines=['VAD 候选静音阈值: 700ms','ASR 稳定文本处理: 事件驱动','微批处理间隔: 45 秒','目标语义段: 5 分钟','常规最小语义段: 2 分钟','语义段检查上限: 8 分钟','跨段上下文: 30 秒','阶段总结间隔: 15 分钟','最终总结策略: 议题聚合 + 事件归并 + 证据校验'].join('\n');
+const cp=document.getElementById('copy-params');cp?.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(lines);cp.textContent='已复制';setTimeout(()=>cp.textContent='复制参数配置',1500)}catch(e){const t=document.createElement('textarea');t.value=lines;document.body.append(t);t.select();document.execCommand('copy');t.remove();cp.textContent='已复制';setTimeout(()=>cp.textContent='复制参数配置',1500)}});
+const scenarios={offline:'当前选择：线下会议。优先验证远场语音、多说话人分离、串音与断句恢复。',online:'当前选择：线上会议。优先验证本机麦克风与系统声音的独立采集、时钟对齐和多音轨转写。',mixed:'当前选择：通用会议助手。建议从统一转写事件格式与可插拔音频采集适配器切入。'};
+document.querySelectorAll('[name=scenario]').forEach(el=>el.addEventListener('change',()=>{document.querySelectorAll('.choices label').forEach(x=>x.classList.toggle('chosen',x.querySelector('input').checked));document.getElementById('scenario-desc').textContent=scenarios[el.value]}));
+const getProgress=()=>{const d=document.documentElement;document.getElementById('progress').style.width=Math.max(0,Math.min(100,100*d.scrollTop/(d.scrollHeight-d.clientHeight||1)))+'%'};document.addEventListener('scroll',getProgress,{passive:true});getProgress();
+const links=[...document.querySelectorAll('.navlink')];const obs=new IntersectionObserver(entries=>{const visible=entries.filter(e=>e.isIntersecting).sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top);if(!visible.length)return;const id=visible[0].target.id;links.forEach(a=>a.classList.toggle('active',a.dataset.target===id));},{rootMargin:'-8% 0px -74% 0px',threshold:0});document.querySelectorAll('article h2').forEach(h=>obs.observe(h));
+const select=document.getElementById('mobile-select');select?.addEventListener('change',()=>{if(select.value)document.getElementById(select.value)?.scrollIntoView({behavior:'smooth'})});
+document.getElementById('print-page')?.addEventListener('click',()=>window.print());
+document.getElementById('top-page')?.addEventListener('click',()=>window.scrollTo({top:0,behavior:'smooth'}));
+})();
+</script></body></html>

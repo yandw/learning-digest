@@ -15,10 +15,67 @@ test("manifest uses minimized install-time permissions", () => {
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.options_ui.page, "options.html");
   assert.ok(!manifest.permissions.includes("activeTab"));
-  assert.ok(manifest.host_permissions.includes("https://api.deepseek.com/*"));
-  assert.ok(manifest.host_permissions.includes("https://openrouter.ai/*"));
+  // Capture plumbing: tabCapture feeds the offscreen recorder; the bridge
+  // content script reads media position on xiaoe-tech pages only.
+  for (const permission of ["tabCapture", "offscreen"]) {
+    assert.ok(
+      manifest.permissions.includes(permission),
+      `permissions must include ${permission}`,
+    );
+  }
+  assert.deepEqual(manifest.content_scripts, [
+    {
+      matches: ["https://*.xiaoe-tech.com/*"],
+      js: ["page-bridge.js"],
+      run_at: "document_idle",
+      // 0.1.64: xiaoe players can live inside iframes — the bridge must
+      // reach them or position reporting and playback control both fail.
+      all_frames: true,
+    },
+  ]);
+  for (const host of [
+    "https://api.deepseek.com/*",
+    "https://openrouter.ai/*",
+    "https://api.groq.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://*.xiaoe-tech.com/*",
+  ]) {
+    assert.ok(
+      manifest.host_permissions.includes(host),
+      `host_permissions must include ${host}`,
+    );
+  }
+  assert.ok(
+    !manifest.host_permissions.some((host) => /youtube|youtu\.be/i.test(host)),
+    "host_permissions must not include YouTube",
+  );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "1.4.4");
+  assert.equal(manifest.version, "0.1.66");
+  assert.equal(manifest.name, "Learning Digest");
+  assert.equal(packageJson.name, "learning-digest");
+  assert.equal(manifest.optional_permissions, undefined);
+});
+
+test("no YouTube-specific runtime code remains", () => {
+  const runtime = [
+    "manifest.json",
+    "background.js",
+    "sidepanel.js",
+    "options.js",
+    "settings.js",
+  ]
+    .map(read)
+    .join("\n");
+
+  assert.doesNotMatch(runtime, /youtube|youtu\.be|timedtext|movie_player/i);
+  assert.doesNotMatch(runtime, /captionTrack|caption track/i);
+  for (const removed of ["captions.js", "content.js"]) {
+    assert.equal(
+      fs.existsSync(path.join(root, removed)),
+      false,
+      `${removed} must be removed`,
+    );
+  }
 });
 
 test("release copy documents current scope without em dashes", () => {
@@ -32,23 +89,44 @@ test("release copy documents current scope without em dashes", () => {
   assert.doesNotMatch(manifest.description, /—/);
   assert.doesNotMatch(packageJson.description, /—/);
 
-  assert.equal(manifest.name, "YouTube Digest");
-  assert.equal(packageJson.name, "youtube-digest");
-  assert.match(read("scripts/package-extension.sh"), /youtube-digest-v\$version\.zip/);
+  assert.equal(manifest.name, "Learning Digest");
+  assert.equal(packageJson.name, "learning-digest");
+  assert.match(
+    read("scripts/package-extension.sh"),
+    /learning-digest-v\$version\.zip/,
+  );
   assert.doesNotMatch(
     [readme, chineseReadme, read("PRIVACY.md"), read("SECURITY.md")].join("\n"),
     /\bYT Digest\b/,
   );
-  assert.match(readme, /^# YouTube Digest$/m);
+  assert.doesNotMatch(
+    [readme, chineseReadme, read("PRIVACY.md"), read("SECURITY.md")].join("\n"),
+    /youtube/i,
+  );
+  assert.match(readme, /^# Learning Digest$/m);
   assert.match(
     readme,
-    /Turn every YouTube video into a resource for deep learning\./,
+    /Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest\./,
   );
-  assert.doesNotMatch(readme, /before deciding how much of it to watch/i);
+  assert.match(chineseReadme, /^# Learning Digest$/m);
+  assert.match(
+    chineseReadme,
+    /把课程音频逐段转写成学习资料：分段转写、滚动摘要和整节 Digest。/,
+  );
+
+  // New scope: course platforms, Session/Segment pipeline, first platform.
+  for (const doc of [readme, chineseReadme]) {
+    assert.match(doc, /Session/);
+    assert.match(doc, /Segment/);
+    assert.match(doc, /xiaoe-tech\.com/);
+    assert.match(doc, /Speech Provider/);
+  }
+
+  // Install-from-GitHub, agent-assisted flow with explicit path choice.
   assert.match(readme, /^## Install with your coding agent$/m);
   assert.match(
     readme,
-    /permanent folder I choose[\s\S]*tell me its exact full path[\s\S]*If I need a suggestion during this first installation[\s\S]*`~\/Documents\/youtube-digest`[\s\S]*`%USERPROFILE%\\Documents\\youtube-digest`[\s\S]*do not assume either path/,
+    /permanent folder I choose[\s\S]*tell me its exact full path[\s\S]*If I need a suggestion during this first installation[\s\S]*`~\/Documents\/learning-digest`[\s\S]*`%USERPROFILE%\\Documents\\learning-digest`[\s\S]*do not assume either path/,
   );
   assert.match(
     readme,
@@ -64,12 +142,10 @@ test("release copy documents current scope without em dashes", () => {
   );
   assert.match(readme, /upstream issues and pull requests are not accepted/i);
   assert.doesNotMatch(readme, /^## Contributing$/m);
-  assert.match(chineseReadme, /^# YouTube Digest$/m);
-  assert.match(chineseReadme, /把每个 YouTube 视频变成一份可以深入学习的资料/);
   assert.match(chineseReadme, /^## 让你的编程 Agent 帮你安装$/m);
   assert.match(
     chineseReadme,
-    /我选择的长期保留文件夹[\s\S]*告诉我准确的完整路径[\s\S]*第一次安装时需要位置建议[\s\S]*`~\/Documents\/youtube-digest`[\s\S]*`%USERPROFILE%\\Documents\\youtube-digest`[\s\S]*不要假设我一定使用这些路径/,
+    /我选择的长期保留文件夹[\s\S]*告诉我准确的完整路径[\s\S]*第一次安装时需要位置建议[\s\S]*`~\/Documents\/learning-digest`[\s\S]*`%USERPROFILE%\\Documents\\learning-digest`[\s\S]*不要假设我一定使用这些路径/,
   );
   assert.match(
     chineseReadme,
@@ -84,43 +160,33 @@ test("release copy documents current scope without em dashes", () => {
     /选择你刚才确定的那个准确项目文件夹，其中必须包含 `manifest\.json`/,
   );
   assert.match(chineseReadme, /不接受上游 Issue 或 Pull Request/);
-  assert.match(chineseReadme, /增加更多翻译语言/);
 
-  assert.match(readme, /platform\.deepseek\.com\/api_keys/i);
-  assert.match(readme, /api-docs\.deepseek\.com/i);
-  assert.match(readme, /api-docs\.deepseek\.com\/quick_start\/pricing/i);
-  assert.doesNotMatch(readme, /supadata/i);
-  assert.doesNotMatch(chineseReadme, /supadata/i);
-  assert.match(readme, /\$0\.007[\s\S]*\$0\.014/);
-  assert.match(readme, /\$0\.22[\s\S]*\$0\.44/);
-  assert.match(readme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(readme, /01:00–04:00[\s\S]*06:00–10:00 UTC/);
-  assert.match(readme, /20-minute English talk/i);
-  assert.match(readme, /32,600 input tokens/i);
-  assert.match(readme, /\$0\.003[^\n]*\$0\.010 USD/i);
-  assert.match(readme, /\$0\.005[^\n]*\$0\.020 USD/i);
-  assert.match(chineseReadme, /api-docs\.deepseek\.com\/quick_start\/pricing/i);
-  assert.match(chineseReadme, /\$0\.007[\s\S]*\$0\.014/);
-  assert.match(chineseReadme, /\$0\.22[\s\S]*\$0\.44/);
-  assert.match(chineseReadme, /\$0\.66[\s\S]*\$1\.32/);
-  assert.match(chineseReadme, /UTC 01:00–04:00[\s\S]*06:00–10:00/);
-  assert.match(chineseReadme, /20 \u5206\u949f\u82f1\u6587\u89c6\u9891/);
-  assert.match(chineseReadme, /32,600 \u4e2a\u8f93\u5165 token/);
-  assert.match(chineseReadme, /\$0\.003[^\n]*\$0\.010 USD/);
-  assert.match(chineseReadme, /\$0\.005[^\n]*\$0\.020 USD/);
-  assert.match(chineseReadme, /platform\.deepseek\.com\/api_keys/i);
-  assert.match(readme, /^### The Digest button is missing on a YouTube video$/m);
+  // Bring-your-own-key spirit: AI key setup docs stay, now pointing at the
+  // Bailian default (0.1.51) with tiered pricing per the official price page.
+  assert.match(readme, /bailian\.console\.aliyun\.com/i);
+  assert.match(readme, /help\.aliyun\.com\/zh\/model-studio/i);
+  assert.match(readme, /qwen3\.8-flash/);
+  assert.match(readme, /tiered pricing/i);
+  assert.match(
+    readme,
+    /help\.aliyun\.com\/zh\/model-studio\/model-pricing/i,
+  );
+  assert.match(chineseReadme, /bailian\.console\.aliyun\.com/i);
+  assert.match(chineseReadme, /qwen3\.8-flash/);
+  assert.match(chineseReadme, /阶梯计价/);
   assert.match(
     chineseReadme,
-    /^### YouTube 视频页面没有显示 Digest 按钮$/m,
+    /help\.aliyun\.com\/zh\/model-studio\/model-pricing/i,
   );
+  assert.match(readme, /published version uses Alibaba Cloud Bailian with the qwen3\.8-flash model as its AI provider/i);
+  assert.match(chineseReadme, /发布版本通过阿里云百炼使用 qwen3\.8-flash 模型/);
+  assert.match(readme, /bring-your-own-key/i);
 
   const optionsPage = read("options.html");
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
-  assert.doesNotMatch(optionsPage, /supadata/i);
-  assert.match(optionsPage, /platform\.deepseek\.com\/api_keys/i);
-  assert.doesNotMatch(optionsPage, /<select\b/i);
+  assert.match(optionsPage, /bailian\.console\.aliyun\.com/i);
+  assert.doesNotMatch(optionsPage, /<select\b[^>]*\bid="provider"/);
   assert.doesNotMatch(optionsPage, /id="provider"/);
   assert.match(optionsPage, /id="aiBaseUrl"/);
   assert.match(optionsPage, /id="aiModel"/);
@@ -131,29 +197,35 @@ test("release copy documents current scope without em dashes", () => {
   assert.doesNotMatch(detailsTag[0], /\sopen(?:\s|=|>)/i);
   assert.match(
     optionsPage,
-    /<summary class="customization-summary">[\s\S]*Want to use another AI model\?[\s\S]*Edit and copy a safe prompt for your coding agent[\s\S]*<\/summary>/,
+    /<summary class="customization-summary">[\s\S]*想使用其他 AI 模型？[\s\S]*编辑并复制一段可安全交给编程 Agent 的提示词[\s\S]*<\/summary>/,
   );
   assert.match(
     optionsPage,
-    /class="customization-steps"[\s\S]*Open the extracted YouTube Digest project folder in your coding[\s\S]*Replace \[PROVIDER\] and \[MODEL\][\s\S]*Never include API keys[\s\S]*<\/ol>/,
+    /class="customization-steps"[\s\S]*在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。[\s\S]*把 \[PROVIDER\] 和 \[MODEL\] 替换成你想使用的服务和模型。[\s\S]*不要在提示词或聊天中加入 API 密钥[\s\S]*<\/ol>/,
   );
   assert.match(
     optionsPage,
-    /class="prompt-reminder"[\s\S]*Before copying, replace \[PROVIDER\] and \[MODEL\]/,
+    /class="prompt-reminder"[\s\S]*复制前，请先把 \[PROVIDER\] 和 \[MODEL\] 替换成你想使用的服务和模型。/,
   );
   assert.doesNotMatch(optionsPage, /~\/Documents\/youtube-digest/);
-  assert.doesNotMatch(optionsPage, /%USERPROFILE%\\Documents\\youtube-digest/);
+  assert.doesNotMatch(optionsPage, /%USERPROFILE%\\Documents\/youtube-digest/);
   assert.match(optionsPage, /id="copyCustomizationPromptBtn"/);
+  // normalize() reads YTD_SEGMENTER at call time; the options page must
+  // load the segmenter before settings.js or the browser falls into the
+  // Node-only require() path (\u201crequire is not defined\u201d).
+  assert.match(
+    optionsPage,
+    /<script src="session-segmenter\.js"><\/script>\s*<script src="settings\.js">/,
+  );
   assert.match(optionsStyles, /\.customization-summary:hover\s*\{/);
   assert.match(optionsStyles, /\.customization-summary:focus-visible\s*\{/);
   assert.match(optionsStyles, /\.data-card\s*\{[^}]*margin-top:\s*36px;/);
   assert.match(optionsScript, /clipboard\.writeText/);
-  assert.match(optionsScript, /Edited prompt copied\./);
+  assert.match(optionsScript, /已复制编辑后的提示词。/);
   assert.match(optionsScript, /migration\.migrated[\s\S]*storage\.set/);
 
-  const customizationPrompt = `Customize this local YouTube Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is YouTube Digest. If verification fails, stop and ask me to open the extracted YouTube Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and test it on a real YouTube video.`;
-  assert.ok(optionsPage.includes(`>${customizationPrompt}</textarea>`));
-  assert.doesNotMatch(customizationPrompt, /Documents|USERPROFILE/);
+  assert.ok(optionsPage.includes(">请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。</textarea>"));
+  assert.doesNotMatch(optionsPage, /Documents|USERPROFILE/);
 
   assert.match(readme, /^## Remix it with your coding agent$/m);
   assert.match(readme, /more translation languages/i);
@@ -161,11 +233,11 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(readme, /vocabulary notebook/i);
   assert.match(
     readme,
-    /first open the exact YouTube Digest project folder that Chrome loaded through \*\*Load unpacked\*\* in your coding agent/,
+    /first open the exact Learning Digest project folder that Chrome loaded through \*\*Load unpacked\*\* in your coding agent/,
   );
   assert.match(
     chineseReadme,
-    /先在编程 Agent 中打开 Chrome 通过“加载已解压的扩展程序”使用的那个准确的 YouTube Digest 项目文件夹/,
+    /先在编程 Agent 中打开 Chrome 通过“加载已解压的扩展程序”使用的那个准确的 Learning Digest 项目文件夹/,
   );
 
   const publishedDocs = [
@@ -178,15 +250,12 @@ test("release copy documents current scope without em dashes", () => {
   assert.doesNotMatch(publishedDocs, /optional custom-origin/i);
   assert.doesNotMatch(publishedDocs, /chosen AI provider/i);
   assert.doesNotMatch(publishedDocs, /configure a different OpenAI-compatible/i);
-  assert.match(readme, /published version supports DeepSeek V4 Flash as its only AI provider/i);
-  assert.match(chineseReadme, /发布版本只支持 DeepSeek V4 Flash/);
 });
 
 test("product UI contains no emoji or emoji-like pictographs", () => {
   const productUi = [
     read("sidepanel.html"),
     read("sidepanel.js"),
-    read("content.js"),
     read("options.html"),
     read("options.js"),
   ].join("\n");
@@ -225,7 +294,7 @@ test("note delete is an accessible SVG action at the end of the action row", () 
 
   assert.match(
     js,
-    /<div class="note-actions">[\s\S]*class="[^"]*note-play[^"]*"[\s\S]*class="note-delete"[\s\S]*aria-label="Delete note"[\s\S]*<svg viewBox="0 0 24 24" aria-hidden="true">/,
+    /<div class="note-actions">[\s\S]*class="[^"]*note-copy-text[^"]*"[\s\S]*class="note-delete"[\s\S]*aria-label="删除笔记"[\s\S]*<svg viewBox="0 0 24 24" aria-hidden="true">/,
   );
   assert.doesNotMatch(js, /class="note-delete"[^>]*>Delete<\/button>/);
   assert.match(
@@ -242,11 +311,11 @@ test("notes filters preserve selected contrast and expose pressed state", () => 
 
   assert.match(
     html,
-    /id="notesFilterThis"[\s\S]*?aria-pressed="true"[\s\S]*?>[\s\S]*?This Video/,
+    /id="notesFilterThis"[\s\S]*?aria-pressed="true"[\s\S]*?>[\s\S]*?本会话/,
   );
   assert.match(
     html,
-    /id="notesFilterAll"[\s\S]*?aria-pressed="false"[\s\S]*?>[\s\S]*?All Notes/,
+    /id="notesFilterAll"[\s\S]*?aria-pressed="false"[\s\S]*?>[\s\S]*?全部笔记/,
   );
   assert.match(
     css,
@@ -257,8 +326,8 @@ test("notes filters preserve selected contrast and expose pressed state", () => 
     /\.notes-filter \.enhance-btn:hover:not\(:disabled\)\s*\{[^}]*background:\s*transparent;[^}]*color:\s*var\(--text-secondary\);/,
   );
   assert.match(css, /\.notes-filter \.enhance-btn:focus-visible\s*\{[^}]*outline:/);
-  assert.match(js, /setNotesFilter\(false\)/);
-  assert.match(js, /setNotesFilter\(true\)/);
+  assert.match(js, /applyNotesFilter\(false\)/);
+  assert.match(js, /applyNotesFilter\(true\)/);
   assert.match(js, /setAttribute\("aria-pressed", String\(!showAll\)\)/);
   assert.match(js, /setAttribute\("aria-pressed", String\(showAll\)\)/);
 });
@@ -266,7 +335,6 @@ test("notes filters preserve selected contrast and expose pressed state", () => 
 test("runtime has no source-file credential dependency or retired model", () => {
   const runtime = [
     "background.js",
-    "content.js",
     "sidepanel.js",
     "options.js",
     "settings.js",
@@ -277,36 +345,22 @@ test("runtime has no source-file credential dependency or retired model", () => 
   assert.doesNotMatch(runtime, /\bCONFIG\./);
   assert.doesNotMatch(runtime, /importScripts\(["']config\.js/);
   assert.doesNotMatch(runtime, /\bdeepseek-chat\b/);
-  assert.match(runtime, /deepseek-v4-flash/);
+  // The shipped default model (0.1.51): one aiModel field drives every AI
+  // call. The old OpenRouter model string survives only in settings.js as
+  // the v3 migration's legacy marker, never as a runtime choice.
+  assert.match(runtime, /qwen3\.8-flash/);
 });
 
-test("background reconciles side-panel state after navigation commits", () => {
-  const background = read("background.js");
-
-  assert.match(
-    background,
-    /function getNavigationUrl\(changeInfo, tab\)[\s\S]*changeInfo\.status !== "loading"[\s\S]*changeInfo\.status !== "complete"[\s\S]*tab\.pendingUrl \|\| tab\.url/,
-  );
-  assert.match(
-    background,
-    /chrome\.tabs\.onUpdated\.addListener\(\(tabId, changeInfo, tab\)[\s\S]*getNavigationUrl\(changeInfo, tab\)[\s\S]*updatePanelForTab\(tabId, url, tab\.windowId\)/,
-  );
-  assert.match(
-    background,
-    /function closePanelForTab\(tabId, windowId\)[\s\S]*chrome\.sidePanel\.close\(\{ tabId \}\)[\s\S]*chrome\.sidePanel\.close\(\{ windowId \}\)/,
-  );
-  assert.match(
-    background,
-    /await closePanelForTab\(tabId, windowId\);[\s\S]*setOptions\(\{ tabId, enabled: false \}\)/,
-  );
-});
-
-test("retired Remix and reader files are absent", () => {
+test("retired files are absent", () => {
   for (const file of [
     "reader.html",
     "reader.js",
     "remix-prompts.js",
     "config.example.js",
+    "captions.js",
+    "content.js",
+    "prompts/note-cleanup.md",
+    "prompts/analysis.md",
   ]) {
     assert.equal(fs.existsSync(path.join(root, file)), false, file);
   }
@@ -314,14 +368,31 @@ test("retired Remix and reader files are absent", () => {
 
 test("published prompt files contain runtime sections", () => {
   const expectedSections = {
-    "prompts/analysis.md": ["System prompt", "User prompt"],
     "prompts/explain.md": ["System prompt", "User prompt"],
-    "prompts/note-cleanup.md": ["System prompt", "User prompt"],
-    "prompts/translation.md": [
-      "Shared base rules",
-      "Chinese rules",
-      "Transcript batch translation",
+    // The Topic tick and Session Digest templates (#33): the system contract
+    // plus the user-prompt variants the builders pick between (with prior
+    // Topics / first batch, with live Topics / without).
+    "prompts/topic-tick.md": [
+      "System prompt",
+      "User prompt",
+      "First batch user prompt",
     ],
+    "prompts/session-report.md": [
+      "System prompt",
+      "User prompt",
+      "User prompt without topics",
+    ],
+  };
+  // The placeholders the pure builders fill (session-summary.js); each must
+  // occur in the file so a renamed variable breaks this test, not a Session.
+  const expectedPlaceholders = {
+    "prompts/topic-tick.md": [
+      "existingTopicTitlesLines",
+      "lastTopicTitle",
+      "contextTranscriptText",
+      "newTranscriptText",
+    ],
+    "prompts/session-report.md": ["liveTopicsLines", "transcriptText"],
   };
 
   for (const [file, sections] of Object.entries(expectedSections)) {
@@ -329,14 +400,48 @@ test("published prompt files contain runtime sections", () => {
     for (const section of sections) {
       assert.match(markdown, new RegExp(`^## ${section}$`, "m"));
     }
+    for (const placeholder of expectedPlaceholders[file] || []) {
+      assert.ok(
+        markdown.includes(`{${placeholder}}`),
+        `${file} must carry {${placeholder}}`,
+      );
+    }
   }
 });
 
-test("captions.js and speech-transcription.js ship in the release and load in the service worker", () => {
-  assert.match(read("scripts/check-release.sh"), /"captions\.js"/);
-  assert.match(read("scripts/check-release.sh"), /"speech-transcription\.js"/);
+test("core Learning Digest modules ship in the release and load in the service worker", () => {
+  const checkRelease = read("scripts/check-release.sh");
+  for (const module of [
+    "speech-transcription.js",
+    "speech-providers.js",
+    "session-pipeline.js",
+    "session-timeline.js",
+    "session-persistence.js",
+    "source-platforms.js",
+    "session-segmenter.js",
+    "session-summary.js",
+    "page-bridge.js",
+    "offscreen.js",
+    "offscreen.html",
+    // The report surfaces (#30): the pure renderer, the full report page and
+    // its controller.
+    "report-render.js",
+    "report.html",
+    "report.js",
+  ]) {
+    assert.match(checkRelease, new RegExp(`"${module}"`), module);
+  }
+  // The prompt files ship with the release too: the loader wraps them behind
+  // a variable, so check-release.sh's literal scan cannot pin them itself.
+  for (const promptFile of [
+    "prompts/explain.md",
+    "prompts/topic-tick.md",
+    "prompts/session-report.md",
+  ]) {
+    assert.match(checkRelease, new RegExp(`"${promptFile}"`), promptFile);
+  }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "captions\.js", "speech-transcription\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js"\)/,
   );
 });

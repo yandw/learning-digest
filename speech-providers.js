@@ -1,0 +1,737 @@
+/**
+ * Speech Provider registry and the Groq Speech Provider.
+ *
+ * A Speech Provider turns one Segment's audio into Transcript records
+ * ({ text, start, duration, language? }) — the same record shape
+ * captions.js and speech-transcription.js produce, so downstream code
+ * cannot tell providers apart.
+ *
+ * Pure logic with no browser dependencies, so it can be tested in Node and
+ * loaded by the service worker with importScripts. Future providers
+ * (Tencent Cloud ASR, Aliyun ASR) register themselves with
+ * registerSpeechProvider and plug into the same seam.
+ */
+var YTD_SPEECH_PROVIDERS = (() => {
+  const registry = new Map();
+
+  function registerSpeechProvider(definition) {
+    if (!definition || typeof definition.id !== "string" || !definition.id) {
+      throw new Error("Speech Provider requires an id");
+    }
+    if (typeof definition.transcribe !== "function") {
+      throw new Error(`Speech Provider ${definition.id} requires transcribe`);
+    }
+    registry.set(definition.id, definition);
+    return definition;
+  }
+
+  function getSpeechProvider(id) {
+    return registry.get(id);
+  }
+
+  function listSpeechProviders() {
+    return [...registry.values()];
+  }
+
+  /**
+   * Transcribes one Segment through the registered Speech Provider matching
+   * providerId.
+   *
+   * @returns {Promise<Array<{text: string, start: number, duration: number, language?: string}>>}
+   */
+  async function transcribeSegment(providerId, segmentAudio, credentials) {
+    const provider = getSpeechProvider(providerId);
+    if (!provider) {
+      throw new Error(`Unknown Speech Provider: ${providerId}`);
+    }
+    return provider.transcribe(segmentAudio, credentials);
+  }
+
+  /**
+   * The credential fields a Speech Provider requires before it can run:
+   * every field declared with type "password" (the same rule the options
+   * page enforces at save time). Returns the keys whose trimmed value is
+   * missing from the given credentials.
+   *
+   * @param {string} providerId
+   * @param {object} [credentials]
+   * @returns {string[]} missing field keys, in declaration order
+   */
+  function missingProviderCredentials(providerId, credentials = {}) {
+    const provider = getSpeechProvider(providerId);
+    if (!provider) {
+      throw new Error(`Unknown Speech Provider: ${providerId}`);
+    }
+    return (provider.credentialFields || [])
+      .filter((field) => field.type === "password")
+      .filter(
+        (field) =>
+          typeof credentials?.[field.key] !== "string" ||
+          !credentials[field.key].trim(),
+      )
+      .map((field) => field.key);
+  }
+
+  return {
+    registerSpeechProvider,
+    getSpeechProvider,
+    listSpeechProviders,
+    transcribeSegment,
+    missingProviderCredentials,
+  };
+})();
+
+/**
+ * Builds the Error for a non-OK provider response, including a truncated
+ * copy of the response body. The body is where the service says WHY
+ * (unsupported audio format, invalid key, model not enabled) — dropping it
+ * leaves a failed Segment with only an HTTP status, undiagnosable from the
+ * panel's [语音转录失败] marker alone.
+ *
+ * @param {string} label - provider label used in the message prefix
+ * @param {Response} response - the failed fetch response (body unconsumed)
+ * @returns {Promise<Error>}
+ */
+async function providerHttpError(label, response) {
+  // Response.text() is guarded: test stubs (and some polyfills) hand back a
+  // minimal { ok, status } shape with no body reader at all.
+  const body =
+    typeof response?.text === "function"
+      ? await response.text().catch(() => "")
+      : "";
+  const detail = body ? `: ${body.slice(0, 500)}` : "";
+  return new Error(
+    `${label} Speech Provider request failed with HTTP ${response.status}${detail}`,
+  );
+}
+
+// --- Groq Speech Provider (OpenAI-compatible audio transcription) ---------
+//
+// The configurable base URL also covers local faster-whisper-style servers
+// that speak the same /audio/transcriptions endpoint.
+
+var YTD_SPEECH_PROVIDER_GROQ = (() => {
+  // Shared pure helpers live in speech-transcription.js; in Node tests we
+  // require them, in the service worker both globals arrive via importScripts.
+  const speechTranscription =
+    typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
+      ? YTD_SPEECH_TRANSCRIPTION
+      : require("./speech-transcription.js");
+
+  const ID = "groq";
+  const LABEL = "Groq Whisper";
+
+  const CREDENTIAL_FIELDS = [
+    { key: "apiKey", type: "password" },
+    { key: "baseUrl", type: "text" },
+    { key: "model", type: "text" },
+  ];
+
+  const DEFAULTS = Object.freeze({
+    apiKey: "",
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "whisper-large-v3-turbo",
+  });
+
+  function normalizeBaseUrl(baseUrl) {
+    const trimmed = typeof baseUrl === "string" ? baseUrl.trim() : "";
+    return (trimmed || DEFAULTS.baseUrl).replace(/\/+$/, "");
+  }
+
+  function normalizeModel(model) {
+    const trimmed = typeof model === "string" ? model.trim() : "";
+    return trimmed || DEFAULTS.model;
+  }
+
+  /**
+   * Transcribes one Segment's audio through the OpenAI-compatible audio
+   * transcription endpoint (Groq, or any compatible host such as a local
+   * faster-whisper server).
+   *
+   * @param {Blob} segmentAudio - the Segment's audio
+   * @param {{apiKey?: string, baseUrl?: string, model?: string}} credentials
+   * @param {typeof fetch} [fetchImpl] - injectable for tests; defaults to fetch
+   * @returns {Promise<Array<{text: string, start: number, duration: number, language?: string}>>}
+   */
+  async function transcribe(segmentAudio, credentials = {}, fetchImpl = fetch) {
+    const apiKey = typeof credentials.apiKey === "string" ? credentials.apiKey.trim() : "";
+    if (!apiKey) {
+      throw new Error("Groq Speech Provider requires an API key");
+    }
+
+    const formData = new FormData();
+    const fileName = segmentAudio?.name || "segment.webm";
+    formData.append("file", segmentAudio, fileName);
+    formData.append("model", normalizeModel(credentials.model));
+    formData.append("response_format", "verbose_json");
+    // Chinese-only product: force Whisper's output language so an
+    // English-heavy lesson cannot come back as English Transcript records.
+    formData.append("language", "zh");
+
+    const response = await fetchImpl(
+      `${normalizeBaseUrl(credentials.baseUrl)}/audio/transcriptions`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: formData,
+      },
+    );
+    if (!response.ok) {
+      throw await providerHttpError("Groq", response);
+    }
+
+    const verboseJson = await response.json();
+    // Reuse the shared pure helper so verbose_json segments always become
+    // Transcript records the same way, whichever provider produced them.
+    return speechTranscription.alignChunkSegments(verboseJson, 0, verboseJson?.language);
+  }
+
+  return { id: ID, label: LABEL, credentialFields: CREDENTIAL_FIELDS, defaults: DEFAULTS, transcribe };
+})();
+
+YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_GROQ);
+
+// --- Tencent Cloud ASR (一句话识别 / SentenceRecognition) ------------------
+//
+// Tencent's one-sentence recognition REST API accepts a recorded audio
+// segment over HTTP POST (JSON body, base64 audio), which fits the Speech
+// Provider seam: one Segment's audio becomes exactly one signed request.
+// Limits per the published API contract (cloud.tencent.com/document/
+// product/1093/35646, updated 2025-12-30): audio ≤ 60 s and ≤ 3 MB after
+// base64 — shorter than the default Segment length, so the capture layer
+// must slice smaller Segments for this provider (Segment length is
+// provider-dependent per the glossary). Documented VoiceFormat values:
+// wav, pcm, ogg-opus, speex, silk, mp3, m4a, aac, amr.
+//
+// Requests are signed with TC3-HMAC-SHA256 (signature method v3,
+// cloud.tencent.com/document/product/213/30654). The signing core below is
+// a pure function over strings plus an injectable SHA-256/HMAC seam so it
+// runs on both node:crypto (tests, Node) and Web Crypto (service worker).
+
+var YTD_SPEECH_PROVIDER_TENCENT = (() => {
+  // Shared pure helpers (crypto loader, base64, region, audio-format
+  // cascade) live in speech-transcription.js; in Node tests we require
+  // them, in the service worker both globals arrive via importScripts.
+  const speechTranscription =
+    typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
+      ? YTD_SPEECH_TRANSCRIPTION
+      : require("./speech-transcription.js");
+
+  const ID = "tencent";
+  const LABEL = "Tencent Cloud ASR";
+
+  const HOST = "asr.tencentcloudapi.com";
+  const SERVICE = "asr";
+  const ACTION = "SentenceRecognition";
+  const VERSION = "2019-06-14";
+  const CONTENT_TYPE = "application/json; charset=utf-8";
+
+  const CREDENTIAL_FIELDS = [
+    // Both halves of the Tencent key pair are masked and required on save;
+    // see the options page's password-field requirement.
+    { key: "secretId", type: "password" },
+    { key: "secretKey", type: "password" },
+    { key: "region", type: "text" },
+    { key: "engineModelType", type: "text" },
+  ];
+
+  const DEFAULTS = Object.freeze({
+    secretId: "",
+    secretKey: "",
+    region: "ap-guangzhou",
+    engineModelType: "16k_zh",
+  });
+
+  // --- crypto seam ---------------------------------------------------------
+
+  const nodeCrypto = speechTranscription.loadNodeCrypto();
+
+  function bytesToHex(bytes) {
+    let hex = "";
+    for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+    return hex;
+  }
+
+  /**
+   * Platform SHA-256/HMAC-256 primitives. The HMAC signature is
+   * hmacSha256Bytes(key, message) — key first, message second, matching the
+   * TC3 pseudocode (and RFC 4231). Keys may be strings or byte arrays, so
+   * the derived-key chain can feed one digest into the next.
+   */
+  const crypto = (() => {
+    if (nodeCrypto) {
+      return {
+        sha256Hex(string) {
+          return nodeCrypto
+            .createHash("sha256")
+            .update(string, "utf8")
+            .digest("hex");
+        },
+        hmacSha256Bytes(key, string) {
+          return nodeCrypto
+            .createHmac("sha256", key)
+            .update(string, "utf8")
+            .digest();
+        },
+      };
+    }
+    // globalThis.crypto, NOT the bare name `crypto`: this IIFE is the
+    // initializer of `const crypto` below, so a bare reference here would
+    // hit the temporal dead zone in the service worker (node:crypto exists
+    // in Node tests and masks it — the SW load path is what must work).
+    const webCrypto = globalThis.crypto;
+    if (webCrypto && webCrypto.subtle) {
+      const subtle = webCrypto.subtle;
+      const encoder = new TextEncoder();
+      return {
+        async sha256Hex(string) {
+          const digest = await subtle.digest(
+            "SHA-256",
+            encoder.encode(string),
+          );
+          return bytesToHex(new Uint8Array(digest));
+        },
+        async hmacSha256Bytes(key, string) {
+          const keyBytes =
+            typeof key === "string" ? encoder.encode(key) : key;
+          const cryptoKey = await subtle.importKey(
+            "raw",
+            keyBytes,
+            { name: "HMAC", hash: "SHA-256" },
+            false,
+            ["sign"],
+          );
+          const signature = await subtle.sign(
+            "HMAC",
+            cryptoKey,
+            encoder.encode(string),
+          );
+          return new Uint8Array(signature);
+        },
+      };
+    }
+    throw new Error(
+      "Tencent Speech Provider needs node:crypto or Web Crypto (crypto.subtle)",
+    );
+  })();
+
+  // --- TC3-HMAC-SHA256 signing (pure composition over the crypto seam) -----
+
+  /** UTC calendar date (yyyy-MM-dd) for a UNIX timestamp. */
+  function tc3Date(timestamp) {
+    const date = new Date(Number(timestamp) * 1000);
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * CanonicalRequest per signature method v3: method, URI ("/"), query
+   * string (empty for POST), canonical headers (lowercased names, trimmed
+   * values, ASCII-sorted, "name:value\n"), signed header list, and the
+   * lowercase hex SHA-256 of the payload.
+   */
+  function buildCanonicalRequest({ payloadHash, signedHeaders }) {
+    const canonicalHeaders = signedHeaders.names
+      .map((name) => `${name}:${signedHeaders.values[name]}\n`)
+      .join("");
+    return [
+      "POST",
+      "/",
+      "",
+      // canonicalHeaders already ends with "\n"; the separator before the
+      // signed-header list supplies the required blank line.
+      `${canonicalHeaders}\n${signedHeaders.names.join(";")}`,
+      payloadHash,
+    ].join("\n");
+  }
+
+  /**
+   * StringToSign per signature method v3.
+   */
+  function buildStringToSign({ timestamp, credentialScope, canonicalRequestHash }) {
+    return [
+      "TC3-HMAC-SHA256",
+      String(timestamp),
+      credentialScope,
+      canonicalRequestHash,
+    ].join("\n");
+  }
+
+  /**
+   * Signs one Tencent Cloud API 3.0 JSON POST request with
+   * TC3-HMAC-SHA256. Pure composition: every stage is observable in the
+   * returned object, and the official documentation's worked example is
+   * pinned in tests/tencent-asr.test.js. NOTE: the doc's published final
+   * signature uses a masked key, so the HMAC chain is verified via RFC 4231
+   * vectors instead — re-verify end to end (e.g. with API Explorer 签名串
+   * 生成) against live Tencent docs before a real release.
+   *
+   * By default only content-type and host are signed, matching the ASR API
+   * call examples; pass signAction: true to also sign x-tc-action (the
+   * style of the signature-method doc's own worked example).
+   *
+   * @param {object} options
+   * @param {string} options.secretId
+   * @param {string} options.secretKey
+   * @param {string} options.service - product name, e.g. "asr"
+   * @param {string} options.host - product endpoint, e.g. "asr.tencentcloudapi.com"
+   * @param {string} options.action - e.g. "SentenceRecognition"
+   * @param {string} options.version - API version, e.g. "2019-06-14"
+   * @param {string} options.region - e.g. "ap-guangzhou"
+   * @param {string} [options.payload] - exact JSON body that will be sent
+   * @param {number} [options.timestamp] - UNIX seconds; defaults to now
+   * @param {boolean} [options.signAction] - include x-tc-action in the signature
+   * @returns {Promise<object>} signing stages plus the headers to send
+   */
+  async function signRequest(options) {
+    const {
+      secretId,
+      secretKey,
+      service,
+      host,
+      action,
+      version,
+      region,
+      payload = "",
+      timestamp = Math.floor(Date.now() / 1000),
+      signAction = false,
+    } = options;
+
+    const values = {
+      "content-type": CONTENT_TYPE,
+      host,
+    };
+    if (signAction) values["x-tc-action"] = String(action).toLowerCase();
+    const names = Object.keys(values).sort();
+    const signedHeaders = { names, values };
+
+    const date = tc3Date(timestamp);
+    const credentialScope = `${date}/${service}/tc3_request`;
+    const payloadHash = await crypto.sha256Hex(payload);
+    const canonicalRequest = buildCanonicalRequest({ payloadHash, signedHeaders });
+    const canonicalRequestHash = await crypto.sha256Hex(canonicalRequest);
+    const stringToSign = buildStringToSign({
+      timestamp,
+      credentialScope,
+      canonicalRequestHash,
+    });
+
+    // Derived signing key: TC3+SecretKey → date → service → "tc3_request".
+    const secretDate = await crypto.hmacSha256Bytes(`TC3${secretKey}`, date);
+    const secretService = await crypto.hmacSha256Bytes(secretDate, service);
+    const secretSigning = await crypto.hmacSha256Bytes(secretService, "tc3_request");
+    const signature = bytesToHex(
+      await crypto.hmacSha256Bytes(secretSigning, stringToSign),
+    );
+
+    const authorization =
+      `TC3-HMAC-SHA256 Credential=${secretId}/${credentialScope}, ` +
+      `SignedHeaders=${names.join(";")}, Signature=${signature}`;
+
+    return {
+      date,
+      credentialScope,
+      hashedRequestPayload: payloadHash,
+      canonicalRequest,
+      hashedCanonicalRequest: canonicalRequestHash,
+      stringToSign,
+      signature,
+      authorization,
+      headers: {
+        Authorization: authorization,
+        "Content-Type": CONTENT_TYPE,
+        Host: host,
+        "X-TC-Action": action,
+        "X-TC-Timestamp": String(timestamp),
+        "X-TC-Version": version,
+        "X-TC-Region": region,
+      },
+    };
+  }
+
+  // --- audio helpers -------------------------------------------------------
+
+  function normalizeRegion(region) {
+    return speechTranscription.normalizeRegion(region, DEFAULTS.region);
+  }
+
+  function normalizeEngineModelType(engineModelType) {
+    const trimmed = typeof engineModelType === "string" ? engineModelType.trim() : "";
+    return trimmed || DEFAULTS.engineModelType;
+  }
+
+  /**
+   * Maps the Segment audio's MIME type / file name to a documented
+   * VoiceFormat value (wav, pcm, ogg-opus, speex, silk, mp3, m4a, aac,
+   * amr). MediaRecorder's default webm/opus output is an EBML container
+   * that is NOT in Tencent's documented list; it is optimistically labeled
+   * "ogg-opus" here, and the capture layer must produce a documented
+   * container for real calls (needs validation against the live API).
+   */
+  function detectVoiceFormat(segmentAudio) {
+    return speechTranscription.detectCloudAudioFormat(segmentAudio, {
+      opusFormat: "ogg-opus",
+      fallback: "wav",
+    });
+  }
+
+  async function bytesToBase64(bytes) {
+    return speechTranscription.bytesToBase64(bytes);
+  }
+
+  /**
+   * Transcribes one Segment's audio through Tencent Cloud SentenceRecognition
+   * (one sentence per request, so one Segment becomes one request). The
+   * single Transcript record starts at 0 (segment-relative, like Groq
+   * records) and its duration covers the Segment: the capture layer may set
+   * `ytdSegmentDuration` (seconds) on the audio Blob; otherwise the
+   * provider-reported AudioDuration (ms) is used; otherwise 0. The #11
+   * interface has no way to pass the Segment duration explicitly — this
+   * Blob-property convention is documented here rather than changing the
+   * frozen seam. Tencent's response carries no language, so records omit it.
+   *
+   * @param {Blob} segmentAudio - the Segment's audio
+   * @param {{secretId?: string, secretKey?: string, region?: string, engineModelType?: string}} credentials
+   * @param {typeof fetch} [fetchImpl] - injectable for tests; defaults to fetch
+   * @returns {Promise<Array<{text: string, start: number, duration: number}>>}
+   */
+  async function transcribe(segmentAudio, credentials = {}, fetchImpl = fetch) {
+    const secretId =
+      typeof credentials.secretId === "string" ? credentials.secretId.trim() : "";
+    const secretKey =
+      typeof credentials.secretKey === "string" ? credentials.secretKey.trim() : "";
+    if (!secretId || !secretKey) {
+      throw new Error("Tencent Speech Provider requires SecretId and SecretKey");
+    }
+
+    const audioBytes = new Uint8Array(await segmentAudio.arrayBuffer());
+    const payload = JSON.stringify({
+      ProjectId: 0,
+      SubServiceType: 2,
+      EngSerViceType: normalizeEngineModelType(credentials.engineModelType),
+      SourceType: 1,
+      VoiceFormat: detectVoiceFormat(segmentAudio),
+      Data: await bytesToBase64(audioBytes),
+      DataLen: audioBytes.byteLength,
+    });
+
+    const signed = await signRequest({
+      secretId,
+      secretKey,
+      service: SERVICE,
+      host: HOST,
+      action: ACTION,
+      version: VERSION,
+      region: normalizeRegion(credentials.region),
+      payload,
+    });
+
+    const response = await fetchImpl(`https://${HOST}/`, {
+      method: "POST",
+      headers: signed.headers,
+      body: payload,
+    });
+    if (!response.ok) {
+      throw await providerHttpError("Tencent", response);
+    }
+
+    const json = await response.json();
+    const error = json?.Response?.Error;
+    if (error) {
+      throw new Error(
+        `Tencent Speech Provider error ${error.Code}: ${error.Message}`,
+      );
+    }
+
+    const text = String(json?.Response?.Result || "").trim();
+    if (!text) return [];
+
+    const segmentHint = Number(segmentAudio?.ytdSegmentDuration);
+    const audioDurationMs = Number(json?.Response?.AudioDuration);
+    const duration =
+      Number.isFinite(segmentHint) && segmentHint > 0
+        ? Math.floor(segmentHint)
+        : Number.isFinite(audioDurationMs) && audioDurationMs > 0
+          ? Math.floor(audioDurationMs / 1000)
+          : 0;
+
+    return [{ text, start: 0, duration }];
+  }
+
+  return {
+    id: ID,
+    label: LABEL,
+    credentialFields: CREDENTIAL_FIELDS,
+    defaults: DEFAULTS,
+    helpLink: "https://console.cloud.tencent.com/cam/capi",
+    transcribe,
+    // Exposed for unit tests and debugging: the pure TC3 signing stages.
+    signRequest,
+    crypto,
+  };
+})();
+
+YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_TENCENT);
+
+
+// --- Aliyun Bailian Qwen ASR (qwen3-asr-flash, OpenAI-compatible) ----------
+//
+// Bailian's Qwen ASR model accepts one audio segment per chat-completions
+// call (input_audio content part with a base64 Data URI), which fits the
+// Speech Provider seam: one Segment's audio becomes exactly one request.
+// Per the published API contract (help.aliyun.com/zh/model-studio/
+// qwen-asr-api-reference): audio <= 5 minutes and <= 10 MB after base64 —
+// longer than the one-sentence cloud ASR APIs, so Segments for this
+// provider may be sliced larger. Auth is a single service-scoped Bailian
+// API key (Authorization: Bearer), no request signing and no token dance.
+
+var YTD_SPEECH_PROVIDER_QWEN = (() => {
+  // Shared pure helpers (base64) live in speech-transcription.js; in Node
+  // tests we require them, in the service worker both globals arrive via
+  // importScripts.
+  const speechTranscription =
+    typeof YTD_SPEECH_TRANSCRIPTION !== "undefined"
+      ? YTD_SPEECH_TRANSCRIPTION
+      : require("./speech-transcription.js");
+
+  const ID = "qwen";
+  const LABEL = "阿里云百炼 Qwen ASR";
+
+  const MAX_ENCODED_AUDIO_BYTES = 10 * 1024 * 1024;
+
+  const CREDENTIAL_FIELDS = [
+    // One service-scoped key, like Groq; masked and required on save.
+    { key: "apiKey", type: "password" },
+    { key: "baseUrl", type: "text" },
+    { key: "model", type: "text" },
+    // Transcription mode (#45): the default Segment cutting, or the realtime
+    // WebSocket stream for live Sessions (spec #44). The options page
+    // renders radio-typed fields as an option group; the value persists
+    // inside speechProviders.qwen.mode via the shared draft/save flow.
+    {
+      key: "mode",
+      type: "radio",
+      options: [
+        { value: "segment", label: "分段转写（默认）" },
+        { value: "realtime", label: "实时转写（直播）" },
+      ],
+    },
+  ];
+
+  const DEFAULTS = Object.freeze({
+    apiKey: "",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen3-asr-flash",
+    mode: "segment",
+  });
+
+  function normalizeBaseUrl(baseUrl) {
+    const trimmed = typeof baseUrl === "string" ? baseUrl.trim() : "";
+    return (trimmed || DEFAULTS.baseUrl).replace(/\/+$/, "");
+  }
+
+  function normalizeModel(model) {
+    const trimmed = typeof model === "string" ? model.trim() : "";
+    return trimmed || DEFAULTS.model;
+  }
+
+  /**
+   * Transcribes one Segment's audio through Bailian's OpenAI-compatible
+   * chat-completions endpoint with an input_audio content part. The audio
+   * rides as a base64 Data URI in the JSON body (documented input forms are
+   * a public URL or a Data URI; a Segment's freshly recorded Blob has no
+   * public URL, so Data URI it is). One Segment becomes one request, and
+   * the single Transcript record starts at 0 (segment-relative, like the
+   * other providers); its duration covers the Segment via the
+   * `ytdSegmentDuration` Blob hint, else the provider-reported
+   * `usage.seconds`. Language is pinned to zh per this product's
+   * Chinese-only contract; the response's audio_info annotation is copied
+   * onto the record when present.
+   *
+   * @param {Blob} segmentAudio - the Segment's audio
+   * @param {{apiKey?: string, baseUrl?: string, model?: string}} credentials
+   * @param {typeof fetch} [fetchImpl] - injectable for tests; defaults to fetch
+   * @returns {Promise<Array<{text: string, start: number, duration: number, language?: string}>>}
+   */
+  async function transcribe(segmentAudio, credentials = {}, fetchImpl = fetch) {
+    const apiKey =
+      typeof credentials.apiKey === "string" ? credentials.apiKey.trim() : "";
+    if (!apiKey) {
+      throw new Error("Qwen Speech Provider requires a Bailian API key");
+    }
+
+    const audioBytes = new Uint8Array(await segmentAudio.arrayBuffer());
+    const encoded = await speechTranscription.bytesToBase64(audioBytes);
+    if (encoded.length > MAX_ENCODED_AUDIO_BYTES) {
+      throw new Error(
+        `Qwen Speech Provider audio exceeds the 10 MB encoded limit (${encoded.length} bytes)`,
+      );
+    }
+    const mediaType = segmentAudio?.type || "audio/mpeg";
+    const dataUri = `data:${mediaType};base64,${encoded}`;
+
+    const response = await fetchImpl(
+      `${normalizeBaseUrl(credentials.baseUrl)}/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: normalizeModel(credentials.model),
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "input_audio", input_audio: { data: dataUri } },
+              ],
+            },
+          ],
+          asr_options: { language: "zh", enable_itn: true },
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw await providerHttpError("Qwen", response);
+    }
+
+    const json = await response.json();
+    const message = json?.choices?.[0]?.message;
+    const text = String(message?.content || "").trim();
+    if (!text) return [];
+
+    const segmentHint = Number(segmentAudio?.ytdSegmentDuration);
+    const reportedSeconds = Number(json?.usage?.seconds);
+    const duration =
+      Number.isFinite(segmentHint) && segmentHint > 0
+        ? Math.floor(segmentHint)
+        : Number.isFinite(reportedSeconds) && reportedSeconds > 0
+          ? Math.floor(reportedSeconds)
+          : 0;
+
+    const record = { text, start: 0, duration };
+    const language = Array.isArray(message?.annotations)
+      ? message.annotations.find((item) => item?.type === "audio_info")?.language
+      : undefined;
+    if (typeof language === "string" && language) record.language = language;
+    return [record];
+  }
+
+  return {
+    id: ID,
+    label: LABEL,
+    credentialFields: CREDENTIAL_FIELDS,
+    defaults: DEFAULTS,
+    helpLink: "https://bailian.console.aliyun.com/",
+    transcribe,
+  };
+})();
+
+YTD_SPEECH_PROVIDERS.registerSpeechProvider(YTD_SPEECH_PROVIDER_QWEN);
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = YTD_SPEECH_PROVIDERS;
+}

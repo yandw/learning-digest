@@ -1,141 +1,63 @@
 const YTD_OPTIONS = (() => {
   const LANGUAGE_STORAGE_KEY = "ytd_options_language";
-  const PREVIEW_STORAGE_PREFIX = "youtubeDigestPreview:";
-  const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN"]);
+  const PREVIEW_STORAGE_PREFIX = "learningDigestPreview:";
+  const SUPPORTED_LANGUAGES = new Set(["zh-CN"]);
 
   const COPY = {
-    en: {
-      pageTitle: "YouTube Digest Settings",
-      languageGroupLabel: "Interface language",
-      heading: "Bring your own API keys",
-      lede:
-        "Keys stay in this Chrome profile and are sent only to DeepSeek. This open-source extension has no developer server or analytics.",
-      aiProvider: "AI provider",
-      providerSummaryLabel: "Supported AI provider",
-      providerBadge: "Supported in this version",
-      deepseekApiKeyLabel: "DeepSeek API key",
-      deepseekHelp:
-        "YouTube Digest uses DeepSeek V4 Flash for overviews, explanations, translation, and note polishing. ",
-      deepseekLink: "Create a DeepSeek API key",
-      deepseekHelpSuffix: ".",
-      aiBaseUrlLabel: "API base URL",
-      aiModelLabel: "Model",
-      customEndpointHelp:
-        "Leave both fields empty to keep the DeepSeek defaults. A custom endpoint must speak the OpenAI chat-completions API. If its host is not api.deepseek.com, add that host to host_permissions in manifest.json and reload the extension.",
-      invalidBaseUrl:
-        "The API base URL is not a valid https URL (http is allowed only for localhost).",
-      privacyNote:
-        "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
-      sttProvider: "Speech Transcription provider",
-      sttProviderSummaryLabel: "Speech Transcription provider",
-      sttOptionalBadge: "Currently disabled",
-      sttApiKeyLabel: "Speech Transcription API key",
-      sttHelp:
-        "Reserved for a possible future version. Transcript fetching currently uses captions only and never records audio. ",
-      sttLink: "Create a Groq API key",
-      sttHelpSuffix: ".",
-      sttBaseUrlLabel: "API base URL",
-      sttModelLabel: "Model",
-      sttCustomEndpointHelp:
-        "These fields are preserved for compatibility but are not used in this version.",
-      sttInvalidBaseUrl:
-        "The Speech Transcription base URL is not a valid https URL (http is allowed only for localhost).",
-      sttPrivacyNote:
-        "This version does not record or send audio. Speech Transcription settings remain stored locally but are not used.",
-      saveSettings: "Save settings",
-      localRemix: "Local remix",
-      customizationTitle: "Want to use another AI model?",
-      customizationPurpose: "Edit and copy a safe prompt for your coding agent",
-      agentBadge: "Coding agent ready",
-      customizationIntro:
-        "You can edit the prompt directly. Complete these three steps before copying:",
-      customizationStepFolder:
-        "Open the extracted YouTube Digest project folder in your coding agent.",
-      customizationStepReplace:
-        "Replace [PROVIDER] and [MODEL] with the service and model you want to use.",
-      customizationStepKeys:
-        "Never include API keys in the prompt or chat. Enter them yourself after the code is ready.",
-      customizationPromptLabel: "Editable customization prompt",
-      customizationReminderLabel: "Prompt reminder",
-      customizationReminder:
-        "Before copying, replace [PROVIDER] and [MODEL] with the provider and model you want to use.",
-      customizationPrompt:
-        "Customize this local YouTube Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is YouTube Digest. If verification fails, stop and ask me to open the extracted YouTube Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and test it on a real YouTube video.",
-      copyCustomizationPrompt: "Copy edited prompt",
-      localData: "Local data",
-      localDataHelp:
-        "Digests, translations, and notes are stored only in this Chrome profile. You can remove them at any time.",
-      clearCache: "Clear cached digests",
-      deleteNotes: "Delete all notes",
-      resetData: "Reset extension data",
-      footer:
-        'Read <a href="PRIVACY.md" target="_blank">PRIVACY.md</a> in the repository for the complete data-flow description.',
-      migrationWarning:
-        "Custom provider settings were removed safely. The AI key was cleared. Enter a DeepSeek API key to continue.",
-      saving: "Saving…",
-      verifying: "Saved. Verifying API connections…",
-      savedVerified:
-        "Saved and verified. Reopen YouTube Digest to use these settings.",
-      verifyFailed: ({ detail }) =>
-        `Saved, but the connection check failed: ${detail}`,
-      aiKeyRejected: "the AI API key was rejected",
-      aiNotFound:
-        "the AI endpoint or model was not found (check the base URL and model name)",
-      aiHttpError: ({ status }) => `the AI endpoint returned HTTP ${status}`,
-      aiUnreachable:
-        "the AI endpoint could not be reached (check the base URL and manifest host_permissions)",
-      addDeepseekKey: "Add a DeepSeek API key.",
-      saveFailed: "Could not save settings. Please try again.",
-      copying: "Copying…",
-      promptCopied: "Edited prompt copied.",
-      copyFailed:
-        "Could not copy the prompt. Select the prompt text and copy it manually.",
-      clearedDigests: ({ count }) =>
-        `Cleared ${count} cached digest${count === 1 ? "" : "s"}.`,
-      notesDeleted: "Deleted all saved notes.",
-      resetConfirm:
-        "Delete API keys, cached digests, translations, and saved notes from this Chrome profile?",
-      allDataDeleted: "All YouTube Digest data was deleted.",
-      settingsLoadFailed:
-        "Could not load saved settings. You can still preview this page.",
-    },
     "zh-CN": {
-      pageTitle: "YouTube Digest 设置",
+      pageTitle: "Learning Digest 设置",
       languageGroupLabel: "界面语言",
       heading: "使用你自己的 API 密钥",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
+        "密钥仅保存在当前 Chrome 个人资料中，只会发送给你配置的 AI 服务。本开源扩展没有开发者服务器，也不使用分析服务。",
       aiProvider: "AI 服务",
       providerSummaryLabel: "支持的 AI 服务",
       providerBadge: "当前版本支持",
-      deepseekApiKeyLabel: "DeepSeek API 密钥",
+      deepseekApiKeyLabel: "AI API 密钥",
       deepseekHelp:
-        "YouTube Digest 使用 DeepSeek V4 Flash 生成概览、解释内容、翻译字幕和润色笔记。",
-      deepseekLink: "创建 DeepSeek API 密钥",
+        "Learning Digest 通过 OpenAI 兼容接口调用大模型（默认阿里云百炼 qwen3.8-flash），生成话题时间轴、学习纪要、翻译和润色笔记。",
+      deepseekLink: "创建百炼 API 密钥",
       deepseekHelpSuffix: "。",
       aiBaseUrlLabel: "API 基础 URL",
       aiModelLabel: "模型",
       customEndpointHelp:
-        "两个字段都留空则保持 DeepSeek 默认值。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 api.deepseek.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
+        "两个字段都留空则保持默认值（阿里云百炼）。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 dashscope.aliyuncs.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
       invalidBaseUrl:
         "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
-        "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
-      sttProvider: "语音转录服务",
-      sttProviderSummaryLabel: "语音转录服务",
-      sttOptionalBadge: "当前未启用",
-      sttApiKeyLabel: "语音转录 API 密钥",
-      sttHelp:
-        "这些设置仅为可能的后续版本保留。当前版本只抓取字幕，不会录制音频。",
-      sttLink: "创建 Groq API 密钥",
-      sttHelpSuffix: "。",
-      sttBaseUrlLabel: "API 基础 URL",
-      sttModelLabel: "模型",
-      sttCustomEndpointHelp: "这些字段仅为兼容旧设置而保留，当前版本不会使用。",
-      sttInvalidBaseUrl:
-        "语音转录 API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
-      sttPrivacyNote:
-        "当前版本不会录制或发送音频。语音转录设置仅保存在本地，不会被使用。",
+        "使用 AI 功能时，你配置的 AI 服务会收到逐字稿及相关会话上下文（默认为阿里云百炼）。保存前请查看该服务的服务条款和价格。",
+      speechProvider: "语音转录服务",
+      speechProviderSummaryLabel: "语音转录服务",
+      speechProviderBadge: "将课程音频转录为 Transcript 记录",
+      speechProviderLabel: "语音转录服务",
+      speechProviderHelp:
+        "将每个 Segment 的音频转录为 Transcript 记录。凭证仅保存在本地，只发送给你选择的服务。",
+      speechProviderLink: "创建 Groq API 密钥",
+      speechProviderHelpSuffix: "。",
+      speechProviderFieldApiKey: "API 密钥",
+      speechProviderFieldBaseUrl: "API 基础 URL",
+      speechProviderFieldModel: "模型",
+      speechProviderFieldSecretId: "SecretId",
+      speechProviderFieldSecretKey: "SecretKey",
+      speechProviderFieldRegion: "地域",
+      speechProviderFieldEngineModelType: "引擎模型类型（如 16k_zh）",
+      speechProviderFieldMode: "转写模式",
+      speechProviderLinkTencent: "创建腾讯云凭证",
+      speechProviderLinkQwen: "创建百炼 API Key",
+      speechProviderCustomEndpointHelp:
+        "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。已知限制：本版本未声明可选权限，Chrome 无法在运行时授予自定义域名，手动修改 manifest 目前是唯一方式。",
+      speechProviderInvalidBaseUrl:
+        "语音转录服务的基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
+      speechProviderKeyRequired: "请为选中的语音转录服务填写 API 密钥。",
+      speechProviderPrivacyNote:
+        "进行转录时，语音转录服务会收到 Segment 的音频。凭证仅保存在当前 Chrome 个人资料中，只发送给你配置的服务。",
+      sessionSettings: "会话",
+      summaryIntervalLabel: "话题段触发的最小新内容时长（分钟）",
+      summaryIntervalHelp:
+        "会话进行中，每当新产生的 Transcript 达到该时长（且至少 10 条记录），AI 服务就会总结出新的话题段并追加到时间轴（每分钟检查一次）。内容阈值越短费用越高；一般课程 15 分钟即可。",
+      segmentLengthLabel: "分段长度（秒）",
+      segmentLengthHelp:
+        "分段转写模式下每段采集的音频时长，改小可更快看到逐字稿（默认 30 秒）；可填范围 5～60 秒；实时转写模式下此字段不生效；拖拽落点会对齐到该时长的整数倍边界，时长越短，拖拽可能放弃的音频也越少。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -143,7 +65,7 @@ const YTD_OPTIONS = (() => {
       agentBadge: "可交给编程 Agent",
       customizationIntro: "你可以直接编辑提示词。复制前完成以下三步：",
       customizationStepFolder:
-        "在编程 Agent 中打开 YouTube Digest 解压后的项目文件夹。",
+        "在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。",
       customizationStepReplace:
         "把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。",
       customizationStepKeys:
@@ -153,7 +75,7 @@ const YTD_OPTIONS = (() => {
       customizationReminder:
         "复制前，请先把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。",
       customizationPrompt:
-        "请把当前本地 YouTube Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 YouTube Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 YouTube Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。DeepSeek 专用的请求参数和重试逻辑继续只用于 DeepSeek。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，并在真实 YouTube 视频上测试。",
+        "请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。",
       copyCustomizationPrompt: "复制编辑后的提示词",
       localData: "本地数据",
       localDataHelp:
@@ -164,18 +86,18 @@ const YTD_OPTIONS = (() => {
       footer:
         '完整数据流说明请参阅仓库中的 <a href="PRIVACY.md" target="_blank">PRIVACY.md</a>。',
       migrationWarning:
-        "已安全移除自定义服务设置。AI 密钥已清除。请输入 DeepSeek API 密钥以继续使用。",
+        "已安全移除自定义服务设置。AI 密钥已清除。请输入 AI API 密钥以继续使用。",
       saving: "正在保存…",
       verifying: "已保存。正在校验 API 连接…",
       savedVerified:
-        "已保存，AI 连接校验通过。请重新打开 YouTube Digest 以使用这些设置。",
+        "已保存，AI 连接校验通过。请重新打开 Learning Digest 以使用这些设置。",
       verifyFailed: ({ detail }) => `已保存，但连接校验未通过：${detail}`,
       aiKeyRejected: "AI API 密钥被拒绝",
       aiNotFound: "找不到 AI 端点或模型（请检查基础 URL 和模型名称）",
       aiHttpError: ({ status }) => `AI 端点返回 HTTP ${status}`,
       aiUnreachable:
         "无法连接 AI 端点（请检查基础 URL 和 manifest 的 host_permissions）",
-      addDeepseekKey: "请添加 DeepSeek API 密钥。",
+      addDeepseekKey: "请添加 AI API 密钥。",
       saveFailed: "无法保存设置，请重试。",
       copying: "正在复制…",
       promptCopied: "已复制编辑后的提示词。",
@@ -184,18 +106,18 @@ const YTD_OPTIONS = (() => {
       notesDeleted: "已删除全部已保存的笔记。",
       resetConfirm:
         "要从当前 Chrome 个人资料中删除 API 密钥、缓存摘要、翻译和已保存的笔记吗？",
-      allDataDeleted: "已删除全部 YouTube Digest 数据。",
+      allDataDeleted: "已删除全部 Learning Digest 数据。",
       settingsLoadFailed: "无法加载已保存的设置，但你仍可预览此页面。",
     },
   };
 
   function normalizeLanguage(language) {
-    return SUPPORTED_LANGUAGES.has(language) ? language : "en";
+    return SUPPORTED_LANGUAGES.has(language) ? language : "zh-CN";
   }
 
   function translate(language, key, params = {}) {
     const normalizedLanguage = normalizeLanguage(language);
-    const value = COPY[normalizedLanguage][key] ?? COPY.en[key] ?? "";
+    const value = COPY[normalizedLanguage][key] ?? "";
     return typeof value === "function" ? value(params) : value;
   }
 
@@ -348,7 +270,6 @@ const YTD_OPTIONS = (() => {
 
   function createPromptDrafts() {
     return {
-      en: translate("en", "customizationPrompt"),
       "zh-CN": translate("zh-CN", "customizationPrompt"),
     };
   }
@@ -435,9 +356,16 @@ const YTD_OPTIONS = (() => {
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
     const aiModelInput = doc.getElementById("aiModel");
-    const sttApiKeyInput = doc.getElementById("sttApiKey");
-    const sttBaseUrlInput = doc.getElementById("sttBaseUrl");
-    const sttModelInput = doc.getElementById("sttModel");
+    const summaryIntervalInput = doc.getElementById("summaryIntervalMinutes");
+    const segmentLengthInput = doc.getElementById("segmentLengthSeconds");
+    const speechProviderSelect = doc.getElementById("speechProvider");
+    const speechProviderFields = doc.getElementById("speechProviderFields");
+    const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
+    const speechProviderLoadError = doc.getElementById("speechProviderLoadError");
+    const providersApi = root.YTD_SPEECH_PROVIDERS;
+    // Per-provider credential drafts, keyed by Speech Provider id, so
+    // switching providers never loses what the user already typed.
+    const speechProviderDrafts = new Map();
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -448,7 +376,7 @@ const YTD_OPTIONS = (() => {
     const languageButtons = [...doc.querySelectorAll("[data-language]")];
     const statusStates = new Map();
     const promptDrafts = createPromptDrafts();
-    let currentLanguage = "en";
+    let currentLanguage = "zh-CN";
 
     function renderStatus(element) {
       const state = statusStates.get(element);
@@ -500,6 +428,166 @@ const YTD_OPTIONS = (() => {
       for (const element of statusStates.keys()) renderStatus(element);
     }
 
+    function listAvailableSpeechProviders() {
+      return providersApi ? providersApi.listSpeechProviders() : [];
+    }
+
+    function getSelectedSpeechProvider() {
+      const providers = listAvailableSpeechProviders();
+      return (
+        providers.find((provider) => provider.id === speechProviderSelect.value) ||
+        providers[0]
+      );
+    }
+
+    function getSpeechProviderDraft(providerId) {
+      if (!speechProviderDrafts.has(providerId)) speechProviderDrafts.set(providerId, {});
+      return speechProviderDrafts.get(providerId);
+    }
+
+    function renderSpeechProviderSelect() {
+      const providers = listAvailableSpeechProviders();
+      speechProviderSelect.replaceChildren();
+      for (const provider of providers) {
+        const option = doc.createElement("option");
+        option.value = provider.id;
+        option.textContent = provider.label;
+        speechProviderSelect.append(option);
+      }
+      speechProviderSelect.disabled = providers.length === 0;
+      showSpeechProviderLoadError(providers.length);
+      if (providers[0] && !providers.some((p) => p.id === speechProviderSelect.value)) {
+        speechProviderSelect.value = providers[0].id;
+      }
+    }
+
+    // Fail-loud: an empty provider list means one of the shared module
+    // scripts (speech-transcription.js / speech-providers.js) failed during
+    // page load. Surface the captured error and the running extension
+    // version instead of leaving a silently disabled dropdown.
+    function showSpeechProviderLoadError(providerCount) {
+      if (!speechProviderLoadError) return;
+      // Only a non-empty provider list is healthy. When the list is empty
+      // the registry global may still exist (a provider module can throw
+      // mid-file after the registry IIFE ran), so never hide on providersApi.
+      if (providerCount > 0) {
+        speechProviderLoadError.hidden = true;
+        return;
+      }
+      const errors = Array.isArray(root.__ytdScriptErrors)
+        ? root.__ytdScriptErrors
+        : [];
+      const version = root.chrome?.runtime?.getManifest?.().version || "?";
+      speechProviderLoadError.textContent =
+        "Speech Provider 模块加载失败（服务商列表为空），下拉框不可用。" +
+        "当前扩展版本 " + version + "。" +
+        (providersApi
+          ? " providersApi 存在但注册表为空：某个服务商模块加载时抛错。"
+          : " providersApi 不存在：speech-providers.js 整体未加载。") +
+        (errors.length
+          ? " 捕获的脚本错误：" + errors.join("；") + "。"
+          : " 未捕获到脚本错误。") +
+        " 请把这段文字反馈给开发者。";
+      speechProviderLoadError.hidden = false;
+    }
+
+    function fieldLabelKey(providerId, fieldKey) {
+      // e.g. speechProviderFieldApiKey; future providers add their own keys.
+      const suffix = fieldKey.charAt(0).toUpperCase() + fieldKey.slice(1);
+      return `speechProviderField${suffix}`;
+    }
+
+    function linkLabelKey(providerId) {
+      // e.g. speechProviderLinkTencent; falls back to the generic Groq copy.
+      const suffix = providerId.charAt(0).toUpperCase() + providerId.slice(1);
+      return `speechProviderLink${suffix}`;
+    }
+
+    function updateSpeechProviderHelpLink(provider) {
+      // Providers may carry a helpLink (e.g. the Tencent Cloud CAM console);
+      // without one the link keeps the generic Groq copy from the markup.
+      if (provider?.helpLink) {
+        speechProviderHelpLink.href = provider.helpLink;
+        const label = translate(currentLanguage, linkLabelKey(provider.id));
+        speechProviderHelpLink.textContent =
+          label || translate(currentLanguage, "speechProviderLink");
+      }
+    }
+
+    // The transcription-mode radio group (#45): rendered from the provider
+    // definition's radio-typed field. The choice lands in the draft like any
+    // text field's value, so the shared normalize/save flow persists it.
+    function renderSpeechProviderRadioGroup(provider, field, draft) {
+      const groupLabel = doc.createElement("label");
+      groupLabel.textContent = translate(
+        currentLanguage,
+        fieldLabelKey(provider.id, field.key),
+      );
+      const group = doc.createElement("div");
+      group.className = "speech-radio-options";
+      const current =
+        draft[field.key] ??
+        provider.defaults?.[field.key] ??
+        field.options?.[0]?.value;
+      for (const option of field.options || []) {
+        const optionLabel = doc.createElement("label");
+        optionLabel.className = "speech-radio-option";
+        const input = doc.createElement("input");
+        input.id = `speech-${provider.id}-${field.key}-${option.value}`;
+        input.name = `speech-${provider.id}-${field.key}`;
+        input.type = "radio";
+        input.value = option.value;
+        input.checked = current === option.value;
+        input.autocomplete = "off";
+        input.addEventListener("change", () => {
+          draft[field.key] = option.value;
+        });
+        optionLabel.append(input, option.label);
+        group.append(optionLabel);
+      }
+      speechProviderFields.append(groupLabel, group);
+    }
+
+    function renderSpeechProviderFields() {
+      const provider = getSelectedSpeechProvider();
+      speechProviderFields.replaceChildren();
+      if (!provider) return;
+      updateSpeechProviderHelpLink(provider);
+
+      const draft = getSpeechProviderDraft(provider.id);
+      for (const field of provider.credentialFields || []) {
+        if (field.type === "radio") {
+          renderSpeechProviderRadioGroup(provider, field, draft);
+          continue;
+        }
+        const label = doc.createElement("label");
+        label.setAttribute("for", `speech-${provider.id}-${field.key}`);
+        label.textContent = translate(
+          currentLanguage,
+          fieldLabelKey(provider.id, field.key),
+        );
+        const input = doc.createElement("input");
+        input.id = `speech-${provider.id}-${field.key}`;
+        input.name = `speech-${provider.id}-${field.key}`;
+        input.type = field.type === "password" ? "password" : "text";
+        input.autocomplete = "off";
+        input.spellcheck = false;
+        input.placeholder = provider.defaults?.[field.key] || "";
+        input.value = draft[field.key] ?? "";
+        input.addEventListener("input", () => {
+          draft[field.key] = input.value;
+        });
+        speechProviderFields.append(label, input);
+      }
+    }
+
+    function collectSpeechProviderSettings() {
+      return {
+        speechProvider: speechProviderSelect.value,
+        speechProviders: Object.fromEntries(speechProviderDrafts.entries()),
+      };
+    }
+
     async function loadSettings() {
       try {
         const stored = await storage.get(settingsApi.STORAGE_KEY);
@@ -511,15 +599,55 @@ const YTD_OPTIONS = (() => {
         aiApiKeyInput.value = settings.aiApiKey;
         aiBaseUrlInput.value = settings.aiBaseUrl;
         aiModelInput.value = settings.aiModel;
-        sttApiKeyInput.value = settings.sttApiKey;
-        sttBaseUrlInput.value = settings.sttBaseUrl;
-        sttModelInput.value = settings.sttModel;
+        if (summaryIntervalInput) {
+          summaryIntervalInput.value = settings.summaryIntervalMinutes;
+        }
+        if (segmentLengthInput) {
+          segmentLengthInput.value = settings.segmentLengthSeconds;
+        }
+
+        // Speech Provider: seed per-provider drafts from stored credentials,
+        // pre-filling Groq from the legacy stt* fields when the new slot is
+        // still empty so existing users keep their configured endpoint.
+        speechProviderDrafts.clear();
+        for (const [providerId, credentials] of Object.entries(
+          settings.speechProviders || {},
+        )) {
+          speechProviderDrafts.set(providerId, { ...credentials });
+        }
+        const groqDraft = getSpeechProviderDraft("groq");
+        if (!groqDraft.apiKey && settings.sttApiKey) {
+          groqDraft.apiKey = settings.sttApiKey;
+          groqDraft.baseUrl = groqDraft.baseUrl || settings.sttBaseUrl || "";
+          groqDraft.model = groqDraft.model || settings.sttModel || "";
+        }
+        renderSpeechProviderSelect();
+        speechProviderSelect.value = settings.speechProvider;
+        if (
+          !listAvailableSpeechProviders().some(
+            (provider) => provider.id === speechProviderSelect.value,
+          )
+        ) {
+          const first = listAvailableSpeechProviders()[0];
+          if (first) speechProviderSelect.value = first.id;
+        }
+        renderSpeechProviderFields();
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
         }
-      } catch (_error) {
+      } catch (error) {
         setStatus(saveStatus, "settingsLoadFailed");
+        // Fail-loud: loadSettings is the only place that populates the
+        // Speech Provider dropdown, so a swallowed throw here leaves a
+        // silently empty select. Surface the real message on the page.
+        if (speechProviderLoadError) {
+          speechProviderLoadError.textContent =
+            "设置加载失败：" +
+            (error && error.message ? error.message : String(error)) +
+            "（语音转录服务下拉框因此未初始化，请把这段文字反馈给开发者。）";
+          speechProviderLoadError.hidden = false;
+        }
       }
     }
 
@@ -527,7 +655,7 @@ const YTD_OPTIONS = (() => {
       try {
         applyLanguage(await readPreferredLanguage(storage));
       } catch (_error) {
-        applyLanguage("en");
+        applyLanguage("zh-CN");
       }
       await loadSettings();
     }
@@ -543,27 +671,42 @@ const YTD_OPTIONS = (() => {
         return;
       }
 
-      const sttBaseUrlValue = sttBaseUrlInput.value.trim();
-      if (sttBaseUrlValue && !settingsApi.isValidBaseUrl(sttBaseUrlValue)) {
-        setStatus(saveStatus, "sttInvalidBaseUrl");
-        return;
+      const selectedProvider = getSelectedSpeechProvider();
+      if (selectedProvider) {
+        const draft = getSpeechProviderDraft(selectedProvider.id);
+        for (const field of selectedProvider.credentialFields || []) {
+          if (field.key !== "baseUrl") continue;
+          const baseUrlValue = String(draft.baseUrl || "").trim();
+          if (baseUrlValue && !settingsApi.isValidBaseUrl(baseUrlValue)) {
+            setStatus(saveStatus, "speechProviderInvalidBaseUrl");
+            return;
+          }
+        }
+        // Every credential field typed as a password (e.g. Groq's apiKey,
+        // Tencent's SecretId/SecretKey) is required on save; text fields
+        // such as baseUrl/region stay optional and fall back to defaults.
+        const missingSecret = (selectedProvider.credentialFields || [])
+          .filter((field) => field.type === "password")
+          .some((field) => !String(draft[field.key] || "").trim());
+        if (missingSecret) {
+          setStatus(saveStatus, "speechProviderKeyRequired");
+          return;
+        }
       }
 
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         aiBaseUrl: baseUrlValue,
         aiModel: aiModelInput.value,
-        sttApiKey: sttApiKeyInput.value,
-        sttBaseUrl: sttBaseUrlValue,
-        sttModel: sttModelInput.value,
+        summaryIntervalMinutes: summaryIntervalInput?.value,
+        segmentLengthSeconds: segmentLengthInput?.value,
+        ...collectSpeechProviderSettings(),
       });
 
       if (!settings.aiApiKey) {
         setStatus(saveStatus, "addDeepseekKey");
         return;
       }
-      // Speech Transcription settings are preserved for compatibility, but
-      // the current transcript-fetching flow does not use them.
 
       try {
         await storage.set({ [settingsApi.STORAGE_KEY]: settings });
@@ -631,6 +774,7 @@ const YTD_OPTIONS = (() => {
     }
 
     form.addEventListener("submit", saveSettings);
+    speechProviderSelect.addEventListener("change", renderSpeechProviderFields);
     copyCustomizationPromptBtn.addEventListener(
       "click",
       copyCustomizationPrompt,
@@ -640,13 +784,6 @@ const YTD_OPTIONS = (() => {
       .addEventListener("click", clearCachedDigests);
     doc.getElementById("clearNotesBtn").addEventListener("click", clearNotes);
     doc.getElementById("resetBtn").addEventListener("click", resetAllData);
-    for (const button of languageButtons) {
-      button.addEventListener("click", async () => {
-        const language = button.dataset.language;
-        applyLanguage(language);
-        await persistPreferredLanguage(storage, language);
-      });
-    }
 
     if (doc.readyState === "loading") {
       doc.addEventListener("DOMContentLoaded", loadOptions, { once: true });

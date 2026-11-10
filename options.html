@@ -1,45 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YouTube Digest Settings</title>
+    <title>Learning Digest 设置</title>
     <link rel="stylesheet" href="options.css" />
+    <!-- External file (not inline): extension pages forbid inline scripts
+         under script-src 'self'. This collector must load before the
+         shared module scripts it watches. -->
+    <script src="options-diagnostics.js"></script>
   </head>
   <body>
     <main class="settings-shell">
       <header>
         <div class="settings-heading-row">
-          <div class="eyebrow">YouTube Digest</div>
-          <div
-            class="language-switch"
-            role="group"
-            aria-label="Interface language"
-            data-i18n-aria-label="languageGroupLabel"
-          >
-            <button
-              class="language-option"
-              type="button"
-              data-language="en"
-              aria-pressed="true"
-            >
-              English
-            </button>
-            <button
-              class="language-option"
-              type="button"
-              data-language="zh-CN"
-              aria-pressed="false"
-            >
-              中文
-            </button>
-          </div>
+          <div class="eyebrow">Learning Digest</div>
         </div>
         <h1 data-i18n="heading">Bring your own API keys</h1>
         <p class="lede" data-i18n="lede">
-          Keys stay in this Chrome profile and are sent only to
-          DeepSeek. This open-source extension has no developer server or
-          analytics.
+          Keys stay in this Chrome profile and are sent only to your
+          configured AI provider. This open-source extension has no developer
+          server or analytics.
         </p>
       </header>
 
@@ -51,14 +32,14 @@
             aria-label="Supported AI provider"
             data-i18n-aria-label="providerSummaryLabel"
           >
-            <span class="provider-name">DeepSeek V4 Flash</span>
+            <span class="provider-name">阿里云百炼 · qwen3.8-flash</span>
             <span class="provider-badge" data-i18n="providerBadge"
               >Supported in this version</span
             >
           </div>
 
           <label for="aiApiKey" data-i18n="deepseekApiKeyLabel"
-            >DeepSeek API key</label
+            >AI API key</label
           >
           <input
             id="aiApiKey"
@@ -66,19 +47,21 @@
             type="password"
             autocomplete="off"
             spellcheck="false"
-            placeholder="Paste your DeepSeek key"
+            placeholder="Paste your Bailian key"
           />
           <p class="help">
             <span data-i18n="deepseekHelp"
-              >YouTube Digest uses DeepSeek V4 Flash for overviews,
-              explanations, translation, and note polishing.</span
+              >Learning Digest calls a large model through an OpenAI-compatible
+              endpoint (by default Alibaba Cloud Bailian qwen3.8-flash) for
+              rolling summaries, the session digest, translation, and note
+              polishing.</span
             >
             <a
-              href="https://platform.deepseek.com/api_keys"
+              href="https://bailian.console.aliyun.com/"
               target="_blank"
               rel="noreferrer"
               data-i18n="deepseekLink"
-              >Create a DeepSeek API key</a
+              >Create a Bailian API key</a
             ><span data-i18n="deepseekHelpSuffix">.</span>
           </p>
 
@@ -89,7 +72,7 @@
             type="text"
             autocomplete="off"
             spellcheck="false"
-            placeholder="https://api.deepseek.com"
+            placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
           />
           <label for="aiModel" data-i18n="aiModelLabel">Model</label>
           <input
@@ -98,87 +81,108 @@
             type="text"
             autocomplete="off"
             spellcheck="false"
-            placeholder="deepseek-v4-flash"
+            placeholder="qwen3.8-flash"
           />
           <p class="help" data-i18n="customEndpointHelp">
-            Leave both fields empty to keep the DeepSeek defaults. A custom
+            Leave both fields empty to keep the Bailian defaults. A custom
             endpoint must speak the OpenAI chat-completions API. If its host is
-            not api.deepseek.com, add that host to host_permissions in
+            not dashscope.aliyuncs.com, add that host to host_permissions in
             manifest.json and reload the extension.
           </p>
           <div class="privacy-note" data-i18n="privacyNote">
-            When you use AI features, DeepSeek receives the video transcript
-            and relevant video context. Review DeepSeek's terms and pricing
-            before saving.
+            When you use AI features, your configured AI provider (Alibaba
+            Cloud Bailian by default) receives the transcript and relevant
+            session context. Review its terms and pricing before saving.
           </div>
         </section>
 
         <section class="card">
-          <h2 data-i18n="sttProvider">Speech Transcription provider</h2>
+          <h2 data-i18n="speechProvider">Speech Provider</h2>
           <div
             class="provider-summary"
-            aria-label="Speech Transcription provider"
-            data-i18n-aria-label="sttProviderSummaryLabel"
+            aria-label="Speech Provider"
+            data-i18n-aria-label="speechProviderSummaryLabel"
           >
-            <span class="provider-name">Groq Whisper</span>
-            <span class="provider-badge" data-i18n="sttOptionalBadge"
-              >Currently disabled</span
+            <span class="provider-badge" data-i18n="speechProviderBadge"
+              >Transcribes lesson audio into Transcript records</span
             >
           </div>
 
-          <label for="sttApiKey" data-i18n="sttApiKeyLabel"
-            >Speech Transcription API key</label
+          <label for="speechProvider" data-i18n="speechProviderLabel"
+            >Speech Provider</label
           >
-          <input
-            id="sttApiKey"
-            name="sttApiKey"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Paste your Speech Transcription key"
-          />
+          <select id="speechProvider" name="speechProvider"></select>
+          <p id="speechProviderLoadError" class="help" hidden></p>
+
+          <div id="speechProviderFields"></div>
+
           <p class="help">
-            <span data-i18n="sttHelp"
-              >Reserved for a possible future version. Transcript fetching
-              currently uses captions only and never records audio. </span
-            >
+            <span data-i18n="speechProviderHelp"></span>
             <a
+              id="speechProviderHelpLink"
               href="https://console.groq.com/keys"
               target="_blank"
               rel="noreferrer"
-              data-i18n="sttLink"
+              data-i18n="speechProviderLink"
               >Create a Groq API key</a
-            ><span data-i18n="sttHelpSuffix">.</span>
+            ><span data-i18n="speechProviderHelpSuffix">.</span>
           </p>
+          <p class="help" data-i18n="speechProviderCustomEndpointHelp">
+            A custom base URL must speak the OpenAI audio transcriptions API;
+            local faster-whisper servers work through the same slot. If its
+            host is not api.groq.com, add that host to host_permissions in
+            manifest.json and reload the extension. Known limitation: this
+            release declares no optional permissions, so Chrome cannot grant
+            a custom host at runtime and the manual manifest edit is the only
+            way to reach one.
+          </p>
+          <div class="privacy-note" data-i18n="speechProviderPrivacyNote">
+            When you transcribe, the Speech Provider receives the Segment's
+            audio. Credentials stay in this Chrome profile and are sent only
+            to the provider you configured.
+          </div>
+        </section>
 
-          <label for="sttBaseUrl" data-i18n="sttBaseUrlLabel"
-            >API base URL</label
+        <section class="card">
+          <h2 data-i18n="sessionSettings">Session</h2>
+          <label for="summaryIntervalMinutes" data-i18n="summaryIntervalLabel"
+            >New content before a Topic tick (minutes)</label
           >
           <input
-            id="sttBaseUrl"
-            name="sttBaseUrl"
-            type="text"
+            id="summaryIntervalMinutes"
+            name="summaryIntervalMinutes"
+            type="number"
+            min="5"
+            max="180"
+            step="5"
             autocomplete="off"
-            spellcheck="false"
-            placeholder="https://api.groq.com/openai/v1"
           />
-          <label for="sttModel" data-i18n="sttModelLabel">Model</label>
-          <input
-            id="sttModel"
-            name="sttModel"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="whisper-large-v3-turbo"
-          />
-          <p class="help" data-i18n="sttCustomEndpointHelp">
-            These fields are preserved for compatibility but are not used in
-            this version.
+          <p class="help" data-i18n="summaryIntervalHelp">
+            While a Session is active, the AI Provider appends new Topics to
+            the timeline whenever new Transcript reaches this length (and at
+            least 10 records). Lower values cost more; 15 minutes suits a
+            typical lesson.
           </p>
-          <div class="privacy-note" data-i18n="sttPrivacyNote">
-            This version does not record or send audio. Speech Transcription
-            settings remain stored locally but are not used.
-          </div>
+          <label for="segmentLengthSeconds" data-i18n="segmentLengthLabel"
+            >Segment length (seconds)</label
+          >
+          <input
+            id="segmentLengthSeconds"
+            name="segmentLengthSeconds"
+            type="number"
+            min="5"
+            max="60"
+            step="5"
+            autocomplete="off"
+          />
+          <p class="help" data-i18n="segmentLengthHelp">
+            How much audio each Segment captures in segment transcription
+            mode; smaller values surface the transcript sooner (default 30
+            seconds). Allowed range is 5-60 seconds. This field has no effect
+            in realtime transcription mode. Drag landings snap up to the next
+            multiple of this length, so shorter lengths also shorten the audio
+            a drag can skip.
+          </p>
         </section>
 
         <div class="form-actions">
@@ -192,55 +196,50 @@
       <details class="card customization-card">
         <summary class="customization-summary">
           <span class="customization-summary-copy">
-            <span class="eyebrow" data-i18n="localRemix">Local remix</span>
+            <span class="eyebrow" data-i18n="localRemix">本地改造</span>
             <span class="customization-title" data-i18n="customizationTitle"
-              >Want to use another AI model?</span
+              >想使用其他 AI 模型？</span
             >
             <span
               class="customization-purpose"
               data-i18n="customizationPurpose"
-              >Edit and copy a safe prompt for your coding agent</span
+              >编辑并复制一段可安全交给编程 Agent 的提示词</span
             >
           </span>
           <span class="agent-badge" data-i18n="agentBadge"
-            >Coding agent ready</span
+            >可交给编程 Agent</span
           >
         </summary>
         <div class="customization-content">
           <p class="help customization-intro" data-i18n="customizationIntro">
-            You can edit the prompt directly. Complete these three steps before
-            copying:
+            你可以直接编辑提示词。复制前完成以下三步：
           </p>
           <ol class="customization-steps">
             <li data-i18n="customizationStepFolder">
-              Open the extracted YouTube Digest project folder in your coding
-              agent.
+              在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。
             </li>
             <li data-i18n="customizationStepReplace">
-              Replace [PROVIDER] and [MODEL] with the service and model you want
-              to use.
+              把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。
             </li>
             <li data-i18n="customizationStepKeys">
-              Never include API keys in the prompt or chat. Enter them yourself
-              after the code is ready.
+              不要在提示词或聊天中加入 API 密钥。代码准备好后，请自行填写。
             </li>
           </ol>
           <label for="customizationPrompt" data-i18n="customizationPromptLabel"
-            >Editable customization prompt</label
+            >可编辑的自定义提示词</label
           >
           <div
             id="customizationPromptReminder"
             class="prompt-reminder"
             role="note"
-            aria-label="Prompt reminder"
+            aria-label="提示词提醒"
             data-i18n-aria-label="customizationReminderLabel"
           >
             <span data-i18n="customizationReminder"
-              >Before copying, replace [PROVIDER] and [MODEL] with the provider
-              and model you want to use.</span
+              >复制前，请先把 [PROVIDER] 和 [MODEL] 替换成你想使用的服务和模型。</span
             >
           </div>
-          <textarea id="customizationPrompt" rows="12" aria-describedby="customizationPromptReminder">Customize this local YouTube Digest workspace to use [PROVIDER] with [MODEL]. Work only in the current workspace. Before editing, verify that it contains manifest.json and that the manifest name is YouTube Digest. If verification fails, stop and ask me to open the extracted YouTube Digest project folder in my coding agent. Do not search other folders, edit a guessed copy, assume an installation path, or claim Chrome can reveal the absolute OS source path. Update the provider's API endpoint, request format, and minimum Chrome host permissions. Preserve bring-your-own-key and local Chrome storage. Never put API keys in source code, commits, logs, screenshots, this prompt, or chat; after the code is ready, tell me where to enter the key myself. Keep DeepSeek-only request fields and retry behavior isolated to DeepSeek. Handle provider-specific rules separately so one provider does not affect another. Update README.md, README.zh-CN.md, PRIVACY.md, SECURITY.md, and tests. Run npm test, npm run check, and npm run package. Then explain how to reload the unpacked extension and test it on a real YouTube video.</textarea>
+          <textarea id="customizationPrompt" rows="12" aria-describedby="customizationPromptReminder">请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。</textarea>
           <div class="copy-actions">
             <button
               id="copyCustomizationPromptBtn"
@@ -285,7 +284,10 @@
       </footer>
     </main>
 
+    <script src="session-segmenter.js"></script>
     <script src="settings.js"></script>
+    <script src="speech-transcription.js"></script>
+    <script src="speech-providers.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

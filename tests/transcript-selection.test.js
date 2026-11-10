@@ -8,39 +8,22 @@ const source = fs.readFileSync(
   "utf8",
 );
 
-test("all timestamped transcript row clicks use the selection-aware seek helper", () => {
-  assert.match(
-    source,
-    /function hasNonCollapsedTextSelection\(\)[\s\S]*?selection\.rangeCount > 0 && !selection\.isCollapsed/,
-  );
-  assert.match(
-    source,
-    /function seekFromTranscriptEntryClick\(event, seconds\)[\s\S]*?if \(hasNonCollapsedTextSelection\(\)\) \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?event\.stopPropagation\(\);[\s\S]*?return;[\s\S]*?\}[\s\S]*?seekTo\(seconds\);/,
-  );
-
-  const guardedRowHandlers = source.match(
-    /div\.addEventListener\("click", \(event\) =>\s+seekFromTranscriptEntryClick\(event, group\.start\),\s+\);/g,
-  );
-  assert.equal(
-    guardedRowHandlers?.length,
-    1,
-    "raw transcript rows must use the guard",
-  );
-  assert.match(
-    source,
-    /div\.addEventListener\("click", \(event\) =>\s+seekFromTranscriptEntryClick\(event, segment\.start\),\s+\);/,
-    "translated-only and bilingual rows must use the guard",
-  );
-  assert.doesNotMatch(
-    source,
-    /div\.addEventListener\("click", \(\) => seekTo\(group\.start\)\);/,
-  );
-});
-
 test("the selection toolbar preserves selection and contains pointer events", () => {
+  // The toolbar serves both transcript surfaces (legacy rows and session
+  // records); the end-to-end behavior lives in tests/panel-ia.test.js.
   assert.match(
     source,
-    /class="explain-btn"[\s\S]*?>Explain<[\s\S]*class="selection-note-btn"[\s\S]*?>Note</,
+    /function setupExplainFeature\(\) \{[\s\S]*?getElementById\("transcriptList"\);[\s\S]*?getElementById\("sessionTranscript"\);/,
+    "the selection wiring covers both transcript surfaces",
+  );
+  assert.match(
+    source,
+    /closest\(\s*"\.transcript-entry, \.session-record",?\s*\)/,
+    "a selection's timestamp comes from either row shape",
+  );
+  assert.match(
+    source,
+    /className = "explain-btn";[\s\S]*?textContent = "解释";[\s\S]*?className = "selection-note-btn";[\s\S]*?textContent = "笔记";/,
   );
   assert.match(
     source,
@@ -52,11 +35,12 @@ test("the selection toolbar preserves selection and contains pointer events", ()
   );
   assert.match(
     source,
-    /\.addEventListener\("click", async \(event\) => \{\s+event\.preventDefault\(\);\s+event\.stopPropagation\(\);/,
+    /noteButton\.addEventListener\("click", async \(event\) => \{\s+event\.preventDefault\(\);\s+event\.stopPropagation\(\);/,
   );
   assert.match(
     source,
-    /querySelector\("\.selection-note-btn"\)[\s\S]*action: "saveNote"[\s\S]*timestamp: selectedTimestamp[\s\S]*selectedText/,
+    /action: "saveNote"[\s\S]*?videoId: target\.videoId[\s\S]*?timestamp: selectedTimestamp[\s\S]*?selectedText,/,
+    "the note save targets the resolved video or session id",
   );
   assert.match(
     source,
@@ -87,22 +71,14 @@ test("Notes opens at its newest item and Transcript keeps its position", () => {
   );
 });
 
-test("the transcript view restores without resuming automatic scrolling", () => {
-  assert.match(
-    source,
-    /void saveCurrentTranscriptViewState\(\);\s+window\.close\(\);/,
-  );
+test("the transcript view restores its saved reading position", () => {
   assert.match(
     source,
     /pendingTranscriptViewState = await loadTranscriptViewState\(videoId\)/,
   );
   assert.match(
     source,
-    /function restorePendingTranscriptViewState\(videoId\)[\s\S]*autoScrollEnabled = false;[\s\S]*contentArea\.scrollTop = state\.scrollTop;/,
-  );
-  assert.match(
-    source,
-    /willRestoreReadingPosition[\s\S]*autoScrollEnabled = !willRestoreReadingPosition/,
+    /function restorePendingTranscriptViewState\(videoId\)[\s\S]*contentArea\.scrollTop = state\.scrollTop;[\s\S]*lastTranscriptScrollTop = state\.scrollTop;/,
   );
   assert.match(
     source,
@@ -111,31 +87,5 @@ test("the transcript view restores without resuming automatic scrolling", () => 
   assert.match(
     source,
     /tabName !== "transcript" && transcriptTabIsActive\(\)[\s\S]*captureCurrentTranscriptScrollTop\(\)/,
-  );
-});
-
-test("the first non-YouTube navigation is checked again after commit", () => {
-  assert.match(
-    source,
-    /function getNavigationUrl\(changeInfo, tab\)[\s\S]*changeInfo\.status !== "loading"[\s\S]*changeInfo\.status !== "complete"[\s\S]*tab\.pendingUrl \|\| tab\.url/,
-  );
-  assert.match(
-    source,
-    /chrome\.tabs\.onUpdated\.addListener\(\(tabId, changeInfo, tab\)[\s\S]*getNavigationUrl\(changeInfo, tab\)[\s\S]*handleFrontTabUrl\(url\)/,
-  );
-});
-
-test("the panel never borrows a background YouTube tab", () => {
-  assert.match(
-    source,
-    /const tabs = await chrome\.tabs\.query\(\{\s*active: true,\s*lastFocusedWindow: true,\s*\}\);/,
-  );
-  assert.match(
-    source,
-    /if \(!tab\.url\.startsWith\("https:\/\/www\.youtube\.com"\)\) \{\s*handleFrontTabUrl\(tab\.url\);\s*return;/,
-  );
-  assert.doesNotMatch(
-    source,
-    /chrome\.tabs\.query\(\{ url: "https:\/\/www\.youtube\.com\/\*" \}\)/,
   );
 });

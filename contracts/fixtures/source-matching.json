@@ -1,0 +1,194 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "来源匹配与去重样例（决策 1）。每条样例给出一个收藏输入 URL 与期望的匹配结果：platform-identity 表示按「平台 + Platform Video ID + 分集标识」匹配；url-exact 表示按归一化后的网页地址匹配。normalizedUrl 为去掉追踪/分享参数后的地址。matchesSameSourceAs / differsFromSourceOf 引用其他样例 id，声明期望的同源或异源关系。",
+  "samples": [
+    {
+      "id": "match-generic-webpage-blog",
+      "description": "通用网页：无可识别平台身份，按归一化地址匹配",
+      "url": "https://www.example.com/articles/building-a-learning-habit",
+      "title": "如何建立学习习惯",
+      "expect": {
+        "matchStrategy": "url-exact",
+        "normalizedUrl": "https://www.example.com/articles/building-a-learning-habit"
+      }
+    },
+    {
+      "id": "match-generic-webpage-utm-variant",
+      "description": "同一网页带 utm 追踪参数：归一化后与第一条匹配同一 Source",
+      "url": "https://www.example.com/articles/building-a-learning-habit?utm_source=newsletter&utm_medium=email",
+      "title": "如何建立学习习惯",
+      "expect": {
+        "matchStrategy": "url-exact",
+        "normalizedUrl": "https://www.example.com/articles/building-a-learning-habit",
+        "matchesSameSourceAs": "match-generic-webpage-blog"
+      }
+    },
+    {
+      "id": "match-xiaoe-video-lesson",
+      "description": "小鹅通 v_ 视频课节：身份 = 商店子域 + 资源 token",
+      "url": "https://appdemo.xiaoe-tech.com/v_66a1b2c3d4e5",
+      "title": "第 3 讲：注意力机制与 Transformer",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "xiaoe-tech",
+        "platformScopeId": "appdemo",
+        "platformVideoId": "v_66a1b2c3d4e5",
+        "episodeId": null
+      }
+    },
+    {
+      "id": "match-bilibili-video-p1-default",
+      "description": "B 站视频不带 p 参数：默认为第 1 分集",
+      "url": "https://www.bilibili.com/video/BV1tx421c7ab/",
+      "title": "大模型应用开发入门",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1tx421c7ab",
+        "episodeId": "1"
+      }
+    },
+    {
+      "id": "match-bilibili-video-p1-explicit",
+      "description": "B 站视频显式 p=1 且带追踪参数：与不带 p 的地址匹配同一 Source",
+      "url": "https://www.bilibili.com/video/BV1tx421c7ab?p=1&spm_id_from=333.788&vd_source=abc123",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1tx421c7ab",
+        "episodeId": "1",
+        "matchesSameSourceAs": "match-bilibili-video-p1-default"
+      }
+    },
+    {
+      "id": "match-bilibili-multi-episode-p2",
+      "description": "B 站多分集 P2：同 BV 不同 p 各自为独立 Source，进度分别保存",
+      "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+      "title": "注意力机制详解 P2：自注意力",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1ab411L78c",
+        "episodeId": "2",
+        "differsFromSourceOf": "match-bilibili-multi-episode-p3"
+      }
+    },
+    {
+      "id": "match-bilibili-multi-episode-p3",
+      "description": "B 站多分集 P3：与 P2 同 BV 不同 p，独立 Source、独立进度",
+      "url": "https://www.bilibili.com/video/BV1ab411L78c?p=3",
+      "title": "注意力机制详解 P3：多头注意力",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1ab411L78c",
+        "episodeId": "3",
+        "differsFromSourceOf": "match-bilibili-multi-episode-p2"
+      }
+    },
+    {
+      "id": "match-bilibili-episode2-share-link",
+      "description": "等价地址：B 站可识别分享短链（b23.tv + BV + p）与普通分集链接匹配同一 Source",
+      "url": "https://b23.tv/BV1ab411L78c?p=2&share_medium=android&share_plat=android&share_session_id=s-abc123&unique_k=u456",
+      "title": "注意力机制详解 P2：自注意力",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1ab411L78c",
+        "episodeId": "2",
+        "matchesSameSourceAs": "match-bilibili-multi-episode-p2"
+      }
+    },
+    {
+      "id": "match-bilibili-unresolvable-short-link",
+      "description": "不可识别的 b23.tv 短码：无法确认媒体标识，按归一化地址匹配（决策 1 第 2 条）",
+      "url": "https://b23.tv/xy9Kz2a",
+      "expect": {
+        "matchStrategy": "url-exact",
+        "normalizedUrl": "https://b23.tv/xy9Kz2a"
+      }
+    },
+    {
+      "id": "match-youtube-video-watch",
+      "description": "YouTube watch 页：身份 = v 参数；si 等分享参数忽略",
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=share-id-9",
+      "title": "Transformer 从零讲解",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "youtube",
+        "platformVideoId": "dQw4w9WgXcQ",
+        "episodeId": null
+      }
+    },
+    {
+      "id": "match-youtube-video-short-link",
+      "description": "等价地址：youtu.be 短链与 watch 页匹配同一 Source",
+      "url": "https://youtu.be/dQw4w9WgXcQ?si=abc-x",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "youtube",
+        "platformVideoId": "dQw4w9WgXcQ",
+        "episodeId": null,
+        "matchesSameSourceAs": "match-youtube-video-watch"
+      }
+    },
+    {
+      "id": "match-xiaohongshu-video-note",
+      "description": "小红书视频笔记：身份 = 路径中的 note id；xsec_token 等分享参数忽略",
+      "url": "https://www.xiaohongshu.com/explore/66a1b2c3000000001e01ab23?xsec_token=ABtOKn1Q2w&xsec_source=pc_share",
+      "title": "三分钟看懂 RAG",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "xiaohongshu",
+        "platformVideoId": "66a1b2c3000000001e01ab23",
+        "episodeId": null
+      }
+    },
+    {
+      "id": "match-xiaohongshu-image-text-note",
+      "description": "小红书图文笔记：非可播放视频，首轮按归一化地址匹配",
+      "url": "https://www.xiaohongshu.com/explore/66b2c3d4000000002f02cd34?xsec_token=ABxY7zKq&xsec_source=pc_user",
+      "title": "我的 AI 学习工具清单（图文）",
+      "expect": {
+        "matchStrategy": "url-exact",
+        "normalizedUrl": "https://www.xiaohongshu.com/explore/66b2c3d4000000002f02cd34"
+      }
+    },
+    {
+      "id": "match-xiaohongshu-image-text-note-other-token",
+      "description": "同一图文笔记换 xsec_token：归一化地址相同，匹配同一 Source",
+      "url": "https://www.xiaohongshu.com/explore/66b2c3d4000000002f02cd34?xsec_token=DIFFERENT1",
+      "expect": {
+        "matchStrategy": "url-exact",
+        "normalizedUrl": "https://www.xiaohongshu.com/explore/66b2c3d4000000002f02cd34",
+        "matchesSameSourceAs": "match-xiaohongshu-image-text-note"
+      }
+    },
+    {
+      "id": "match-same-title-video-a",
+      "description": "同名不同视频 A：标题相同不参与匹配，身份不同即独立收藏",
+      "url": "https://www.bilibili.com/video/BV1aa411Q11a",
+      "title": "大模型入门第一课",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1aa411Q11a",
+        "episodeId": "1",
+        "differsFromSourceOf": "match-same-title-video-b"
+      }
+    },
+    {
+      "id": "match-same-title-video-b",
+      "description": "同名不同视频 B：与 A 同名但 Platform Video ID 不同，分别收藏为独立 Resource + Source",
+      "url": "https://www.bilibili.com/video/BV1bb411Q22b",
+      "title": "大模型入门第一课",
+      "expect": {
+        "matchStrategy": "platform-identity",
+        "platformId": "bilibili",
+        "platformVideoId": "BV1bb411Q22b",
+        "episodeId": "1",
+        "differsFromSourceOf": "match-same-title-video-a"
+      }
+    }
+  ]
+}

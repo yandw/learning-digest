@@ -1,0 +1,367 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "/v1 六组端点的成功样例。错误样例（401/404/409/400）在 error-examples.json。样例之间互相引用同一批 res_/src_/note_ id：重复收藏、笔记重发、进度链与详情读取跨样例保持一致，三端测试可直接以此为准。样例仅覆盖成功响应；状态码约定：创建 201、命中已有数据 200。",
+  "samples": [
+    {
+      "id": "api-resources-create-bilibili-p2",
+      "description": "首次收藏 B 站 P2 分集：创建 Resource + Source，返回 201",
+      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "request": {
+        "body": {
+          "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+          "title": "注意力机制详解 P2：自注意力",
+          "identity": {
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2"
+          }
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "resource": {
+            "id": "res_01JABC0001",
+            "title": "注意力机制详解 P2：自注意力",
+            "kind": "video",
+            "createdAt": "2026-11-10T08:00:00Z"
+          },
+          "source": {
+            "id": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "kind": "video",
+            "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2",
+            "platformScopeId": null,
+            "progress": null
+          }
+        }
+      }
+    },
+    {
+      "id": "api-resources-duplicate-bilibili-p2",
+      "description": "重复收藏：用可识别分享短链再收藏同一分集，返回 200 与同一条 Resource + Source；原始 URL 保留首次收藏的地址",
+      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "request": {
+        "body": {
+          "url": "https://b23.tv/BV1ab411L78c?p=2&share_medium=android&share_plat=android",
+          "title": "注意力机制详解 P2：自注意力",
+          "identity": {
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "resource": {
+            "id": "res_01JABC0001",
+            "title": "注意力机制详解 P2：自注意力",
+            "kind": "video",
+            "createdAt": "2026-11-10T08:00:00Z"
+          },
+          "source": {
+            "id": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "kind": "video",
+            "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2",
+            "platformScopeId": null,
+            "progress": null
+          }
+        }
+      }
+    },
+    {
+      "id": "api-resources-create-generic-webpage",
+      "description": "收藏普通网页：无 identity，服务端按归一化地址匹配；创建 201",
+      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "request": {
+        "body": {
+          "url": "https://www.example.com/articles/building-a-learning-habit",
+          "title": "如何建立学习习惯"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "resource": {
+            "id": "res_01JABC0010",
+            "title": "如何建立学习习惯",
+            "kind": "webpage",
+            "createdAt": "2026-11-10T08:05:00Z"
+          },
+          "source": {
+            "id": "src_01JABC0011",
+            "resourceId": "res_01JABC0010",
+            "kind": "webpage",
+            "url": "https://www.example.com/articles/building-a-learning-habit",
+            "platformId": null,
+            "platformVideoId": null,
+            "episodeId": null,
+            "platformScopeId": null,
+            "progress": null
+          }
+        }
+      }
+    },
+    {
+      "id": "api-resources-list",
+      "description": "资料列表：返回账号内全部资料及其来源与最新进度，按收藏时间倒序",
+      "endpoint": { "method": "GET", "path": "/v1/resources" },
+      "response": {
+        "status": 200,
+        "body": {
+          "resources": [
+            {
+              "resource": {
+                "id": "res_01JABC0010",
+                "title": "如何建立学习习惯",
+                "kind": "webpage",
+                "createdAt": "2026-11-10T08:05:00Z"
+              },
+              "sources": [
+                {
+                  "id": "src_01JABC0011",
+                  "resourceId": "res_01JABC0010",
+                  "kind": "webpage",
+                  "url": "https://www.example.com/articles/building-a-learning-habit",
+                  "platformId": null,
+                  "platformVideoId": null,
+                  "episodeId": null,
+                  "platformScopeId": null,
+                  "progress": null
+                }
+              ]
+            },
+            {
+              "resource": {
+                "id": "res_01JABC0001",
+                "title": "注意力机制详解 P2：自注意力",
+                "kind": "video",
+                "createdAt": "2026-11-10T08:00:00Z"
+              },
+              "sources": [
+                {
+                  "id": "src_01JABC0002",
+                  "resourceId": "res_01JABC0001",
+                  "kind": "video",
+                  "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+                  "platformId": "bilibili",
+                  "platformVideoId": "BV1ab411L78c",
+                  "episodeId": "2",
+                  "platformScopeId": null,
+                  "progress": { "positionMs": 250000, "revision": 2 }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "api-resources-detail-with-notes",
+      "description": "资料详情：可打开的原地址、各来源最新进度与笔记列表",
+      "endpoint": { "method": "GET", "path": "/v1/resources/res_01JABC0001" },
+      "response": {
+        "status": 200,
+        "body": {
+          "resource": {
+            "id": "res_01JABC0001",
+            "title": "注意力机制详解 P2：自注意力",
+            "kind": "video",
+            "createdAt": "2026-11-10T08:00:00Z"
+          },
+          "sources": [
+            {
+              "id": "src_01JABC0002",
+              "resourceId": "res_01JABC0001",
+              "kind": "video",
+              "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+              "platformId": "bilibili",
+              "platformVideoId": "BV1ab411L78c",
+              "episodeId": "2",
+              "platformScopeId": null,
+              "progress": { "positionMs": 250000, "revision": 2 }
+            }
+          ],
+          "notes": [
+            {
+              "id": "note_01JABC0021",
+              "resourceId": "res_01JABC0001",
+              "sourceId": "src_01JABC0002",
+              "positionMs": 200000,
+              "text": "3:20 起的例子值得回看",
+              "clientRequestId": "note-req-001",
+              "createdAt": "2026-11-10T08:30:00Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "api-resolve-matched-episode2",
+      "description": "插件开始学习前解析来源：提交地址与已识别身份，命中账号内已有 Source（不创建）",
+      "endpoint": { "method": "POST", "path": "/v1/sources/resolve" },
+      "request": {
+        "body": {
+          "url": "https://b23.tv/BV1ab411L78c?p=2&share_session_id=s-9",
+          "title": "注意力机制详解 P2：自注意力",
+          "identity": {
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "matched": true,
+          "resource": {
+            "id": "res_01JABC0001",
+            "title": "注意力机制详解 P2：自注意力",
+            "kind": "video",
+            "createdAt": "2026-11-10T08:00:00Z"
+          },
+          "source": {
+            "id": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "kind": "video",
+            "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2",
+            "platformScopeId": null,
+            "progress": { "positionMs": 250000, "revision": 2 }
+          }
+        }
+      }
+    },
+    {
+      "id": "api-resolve-unmatched-generic",
+      "description": "解析未收藏过的网页：返回 matched=false，不创建任何数据",
+      "endpoint": { "method": "POST", "path": "/v1/sources/resolve" },
+      "request": {
+        "body": {
+          "url": "https://www.example.com/never-saved-before"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "matched": false
+        }
+      }
+    },
+    {
+      "id": "api-progress-first-write",
+      "description": "首次保存进度：尚无进度时 expectedRevision 为 0，写入后 revision 变为 1",
+      "endpoint": { "method": "PUT", "path": "/v1/sources/src_01JABC0002/progress" },
+      "request": {
+        "body": { "positionMs": 125000, "expectedRevision": 0 }
+      },
+      "response": {
+        "status": 200,
+        "body": { "positionMs": 125000, "revision": 1 }
+      }
+    },
+    {
+      "id": "api-progress-update",
+      "description": "续学更新进度：携带读到的 revision；回拖也按最后实际播放位置保存",
+      "endpoint": { "method": "PUT", "path": "/v1/sources/src_01JABC0002/progress" },
+      "request": {
+        "body": { "positionMs": 250000, "expectedRevision": 1 }
+      },
+      "response": {
+        "status": 200,
+        "body": { "positionMs": 250000, "revision": 2 }
+      }
+    },
+    {
+      "id": "api-note-create-timestamped",
+      "description": "视频时间戳笔记：带 clientRequestId 支持重发；positionMs 必须伴随 sourceId",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/notes" },
+      "request": {
+        "body": {
+          "clientRequestId": "note-req-001",
+          "text": "3:20 起的例子值得回看",
+          "sourceId": "src_01JABC0002",
+          "positionMs": 200000
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "note": {
+            "id": "note_01JABC0021",
+            "resourceId": "res_01JABC0001",
+            "sourceId": "src_01JABC0002",
+            "positionMs": 200000,
+            "text": "3:20 起的例子值得回看",
+            "clientRequestId": "note-req-001",
+            "createdAt": "2026-11-10T08:30:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-note-resend-idempotent",
+      "description": "断网重发笔记：同一 clientRequestId 返回 200 与同一条笔记，不产生重复",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/notes" },
+      "request": {
+        "body": {
+          "clientRequestId": "note-req-001",
+          "text": "3:20 起的例子值得回看",
+          "sourceId": "src_01JABC0002",
+          "positionMs": 200000
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "note": {
+            "id": "note_01JABC0021",
+            "resourceId": "res_01JABC0001",
+            "sourceId": "src_01JABC0002",
+            "positionMs": 200000,
+            "text": "3:20 起的例子值得回看",
+            "clientRequestId": "note-req-001",
+            "createdAt": "2026-11-10T08:30:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-note-create-webpage",
+      "description": "普通网页笔记：无来源无时间戳，sourceId 与 positionMs 为 null",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0010/notes" },
+      "request": {
+        "body": {
+          "clientRequestId": "note-req-002",
+          "text": "这篇的复利概念可以整理进学习计划"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "note": {
+            "id": "note_01JABC0022",
+            "resourceId": "res_01JABC0010",
+            "sourceId": null,
+            "positionMs": null,
+            "text": "这篇的复利概念可以整理进学习计划",
+            "clientRequestId": "note-req-002",
+            "createdAt": "2026-11-10T08:40:00Z"
+          }
+        }
+      }
+    }
+  ]
+}

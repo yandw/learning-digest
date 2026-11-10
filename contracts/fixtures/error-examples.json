@@ -1,0 +1,163 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "/v1 错误响应固定样例。错误体统一为 { error: { code, message } }；进度冲突额外携带 current（服务端当前进度与版本）。auth 标记样例的凭据状态：none=未携带凭据，expired=已失效或被联动撤销的凭据，valid=有效凭据。跨账号访问统一返回 404 not_found（隔离语义：不向调用方透露资源存在与否）。样例引用 api-examples.json 中的 src_/res_ id；res_01JZZZZ 系列为「另一账号」的数据。",
+  "samples": [
+    {
+      "id": "error-unauthorized-missing-token",
+      "description": "未登录：请求未携带任何凭据，返回 401",
+      "auth": "none",
+      "endpoint": { "method": "GET", "path": "/v1/resources" },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+        }
+      }
+    },
+    {
+      "id": "error-unauthorized-expired-token",
+      "description": "凭据失效：Web 与插件联动退出后旧凭据访问受保护接口，返回 401",
+      "auth": "expired",
+      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "request": {
+        "body": {
+          "url": "https://www.bilibili.com/video/BV1tx421c7ab",
+          "title": "大模型应用开发入门"
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "凭据已失效，请重新登录并关联" }
+        }
+      }
+    },
+    {
+      "id": "error-cross-account-resource",
+      "description": "跨账号隔离：用有效凭据读取另一账号的资料，按 404 处理，不透露存在性",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/resources/res_01JZZZZ9999" },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-cross-account-progress",
+      "description": "跨账号隔离：对另一账号的来源写进度，返回 404，不产生任何写入",
+      "auth": "valid",
+      "endpoint": { "method": "PUT", "path": "/v1/sources/src_01JZZZZ9998/progress" },
+      "request": {
+        "body": { "positionMs": 60000, "expectedRevision": 0 }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "来源不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-progress-conflict",
+      "description": "过期进度写入：expectedRevision=1 已过期（服务端已到 revision 2），返回 409 与当前进度",
+      "auth": "valid",
+      "endpoint": { "method": "PUT", "path": "/v1/sources/src_01JABC0002/progress" },
+      "request": {
+        "body": { "positionMs": 999000, "expectedRevision": 1 }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": { "code": "progress_revision_conflict", "message": "进度已被其他端更新，请以 current 为准重试" },
+          "current": { "positionMs": 250000, "revision": 2 }
+        }
+      }
+    },
+    {
+      "id": "error-unauthorized-resolve",
+      "description": "解析来源同样要求有效凭据：失效凭据调用 resolve 返回 401，不泄露任何匹配结果",
+      "auth": "expired",
+      "endpoint": { "method": "POST", "path": "/v1/sources/resolve" },
+      "request": {
+        "body": {
+          "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+          "identity": { "platformId": "bilibili", "platformVideoId": "BV1ab411L78c", "episodeId": "2" }
+        }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "凭据已失效，请重新登录并关联" }
+        }
+      }
+    },
+    {
+      "id": "error-cross-account-note-create",
+      "description": "跨账号隔离：向另一账号的资料写笔记，返回 404，不产生任何写入",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JZZZZ9999/notes" },
+      "request": {
+        "body": {
+          "clientRequestId": "note-req-003",
+          "text": "这条笔记不应落库"
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-validation-failed-empty-note-text",
+      "description": "笔记正文为空：返回 400",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/notes" },
+      "request": {
+        "body": {
+          "clientRequestId": "note-req-004",
+          "text": ""
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": { "code": "validation_failed", "message": "笔记正文不能为空" }
+        }
+      }
+    },
+    {
+      "id": "error-invalid-url",
+      "description": "收藏非网页地址：服务端校验 URL 类型，仅接受 http(s)，返回 400",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "request": {
+        "body": { "url": "ftp://files.example.com/course.zip", "title": "课程压缩包" }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": { "code": "invalid_url", "message": "仅支持 http(s) 网页地址" }
+        }
+      }
+    },
+    {
+      "id": "error-validation-failed-missing-url",
+      "description": "收藏请求缺少 url 字段：返回 400",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "request": {
+        "body": { "title": "没有地址的收藏" }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": { "code": "validation_failed", "message": "缺少必填字段 url" }
+        }
+      }
+    }
+  ]
+}

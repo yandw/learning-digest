@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -64,6 +64,188 @@ async function getSettings() {
 }
 
 const promptFileCache = new Map();
+
+// ============================================================
+// AUTHORIZATION GATE (P6, decision 3 of #49)
+// ============================================================
+//
+// A valid linked credential is the precondition of every feature. The
+// credential is presented to GET /v1/me (the API's credential probe); only
+// a 401 counts as "authorization died" — a network failure reports
+// "unreachable" so a dev server blip never logs the learner out.
+
+// Snapshot of the last auth verdict, so the icon-click path can skip
+// capture without an await (the click's capture gesture cannot survive
+// one; see the ordering notes in handleActionClicked).
+let authCache = { authorized: null, checkedAtMs: 0 };
+const AUTH_CACHE_TTL_MS = 60_000;
+
+// Tabs this worker opened for linking: the only tab URLs the gate ever
+// reads, and only for the one-time link code in the success address.
+const pendingLinkTabs = new Set();
+
+function readStoredAuthCredential() {
+  return chrome.storage.local
+    .get(YTD_AUTH_GATE.CREDENTIAL_STORAGE_KEY)
+    .then(
+      (stored) =>
+        YTD_AUTH_GATE.parseStoredCredential(
+          stored[YTD_AUTH_GATE.CREDENTIAL_STORAGE_KEY],
+        ),
+      () => null,
+    );
+}
+
+function recordAuthBreadcrumb(key, payload) {
+  chrome.storage.local
+    .set({ [key]: { at: Date.now(), ...payload } })
+    .catch(() => {});
+}
+
+/**
+ * Full probe: stored credential + configured API base -> GET /v1/me.
+ * Every verdict lands in the storage breadcrumbs (the extension's main
+ * debug channel) and refreshes the click-path cache.
+ */
+async function checkAuthNow() {
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  let verdict;
+  try {
+    verdict = await YTD_AUTH_GATE.checkAuthorization({
+      fetchImpl: fetch,
+      apiBaseUrl: settings.apiBaseUrl,
+      credential,
+    });
+  } catch (error) {
+    verdict = { authorized: false, reason: "unreachable" };
+    console.error("[Learning Digest] auth probe crashed:", error?.message || error);
+  }
+  authCache = { authorized: verdict.authorized, checkedAtMs: Date.now() };
+  recordAuthBreadcrumb("ytd_last_auth_check", {
+    authorized: verdict.authorized,
+    reason: verdict.reason || null,
+    hasCredential: !!credential,
+  });
+  return verdict;
+}
+
+/**
+ * The icon-click fast path: true unless the last probe said unauthorized.
+ * Unknown (cold worker) fails open here — handleStartLearning runs the
+ * authoritative await-based check before any capture starts.
+ */
+function isAuthorizedCached() {
+  if (authCache.authorized === null) return true;
+  if (authCache.authorized !== true) return false;
+  // A stale "authorized" is still fine: the hard gate re-checks.
+  return true;
+}
+
+/**
+ * Open the Web confirmation page (apps/web link.html) in a tab this worker
+ * owns and remember it: the link flow reads that tab's final URL for the
+ * one-time code. chrome.tabs URL visibility needs the "tabs" permission —
+ * host_permissions stay untouched (ticket #26 stays open).
+ */
+async function handleOpenAuthPage() {
+  const settings = await getSettings();
+  const pageUrl = YTD_AUTH_GATE.buildLinkPageUrl(settings.webAppBaseUrl);
+  if (!pageUrl) {
+    return { success: false, error: "授权页地址无效，请在设置中检查 Web 应用地址。" };
+  }
+  recordAuthBreadcrumb("ytd_last_auth_link_opened", { url: pageUrl });
+  const tab = await chrome.tabs.create({ url: pageUrl });
+  if (typeof tab?.id === "number") {
+    pendingLinkTabs.add(tab.id);
+  }
+  return { success: true, tabId: tab?.id ?? null };
+}
+
+/**
+ * Deliver one message to the panel with brief retries: the panel may still
+ * be loading when the link flow finishes. The first attempt goes out
+ * immediately; the waits sit BETWEEN attempts, so a no-op setTimeout (test
+ * sandbox) cannot park this promise forever.
+ */
+async function notifyPanel(payload) {
+  for (const delayMs of [0, 900, 2400]) {
+    try {
+      await chrome.runtime.sendMessage(payload);
+      return true;
+    } catch (_error) {
+      // Panel not ready (or closed); wait, then retry.
+    }
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return false;
+}
+
+/**
+ * The extension read `?link=<code>` from its own tab: exchange the code for
+ * a live extension credential and store it. The issued credential joins the
+ * confirming Web session's credential group server-side (P7 linked logout).
+ */
+async function handleLinkCodeCaptured(tabId, code) {
+  pendingLinkTabs.delete(tabId);
+  chrome.tabs.remove(tabId).catch(() => {});
+  const settings = await getSettings();
+  const result = await YTD_AUTH_GATE.exchangeLinkCode({
+    fetchImpl: fetch,
+    apiBaseUrl: settings.apiBaseUrl,
+    code,
+  });
+  if (!result.ok || !result.credential) {
+    recordAuthBreadcrumb("ytd_last_auth_link", {
+      outcome: "exchangeFailed",
+      detail: result.message || "unknown",
+    });
+    console.error("[Learning Digest] link exchange failed:", result.message);
+    await notifyPanel({
+      action: "authState",
+      authorized: false,
+      reason: "linkFailed",
+      message: result.message,
+    });
+    return { success: false, error: result.message };
+  }
+  await chrome.storage.local.set({
+    [YTD_AUTH_GATE.CREDENTIAL_STORAGE_KEY]: result.credential,
+  });
+  authCache = { authorized: true, checkedAtMs: Date.now() };
+  recordAuthBreadcrumb("ytd_last_auth_link", {
+    outcome: "linked",
+    email: result.credential.email,
+  });
+  console.log(
+    `[Learning Digest] 插件已关联学习库账号: ${result.credential.email || "(unknown email)"}`,
+  );
+  await notifyPanel({ action: "authAuthorized", email: result.credential.email });
+  return { success: true };
+}
+
+// The link completion watcher: only tabs this worker opened for linking are
+// inspected, and only the success address's ?link= parameter is extracted.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!pendingLinkTabs.has(tabId)) return;
+  const url = changeInfo.url || tab?.url;
+  if (!url) return;
+  const code = YTD_AUTH_GATE.extractLinkCode(url);
+  if (!code) return; // confirmation page still loading, or an unrelated nav
+  void handleLinkCodeCaptured(tabId, code).catch((error) =>
+    console.error("[Learning Digest] link handling failed:", error?.message || error),
+  );
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  pendingLinkTabs.delete(tabId);
+});
+
+// Warm the click-path cache on every worker start; the breadcrumb trail
+// records the verdict (storage breadcrumbs are the main debug channel).
+void checkAuthNow();
 
 async function loadPromptSection(fileName, heading, variables = {}) {
   let markdown = promptFileCache.get(fileName);
@@ -385,6 +567,18 @@ async function handleActionClicked(tab) {
   // gesture unwind — the panel then silently failed to open whenever the
   // fetch threw (e.g. an already-active capture on this tab).
   const panelOpening = openPanelQuietly(tab);
+
+  // P6 gate fast path: a cached "unauthorized" verdict means capture cannot
+  // start — skip the streamId fetch (it exists only for capture) and leave
+  // the learner at the panel, which shows the authorization guide. Unknown
+  // verdicts fall through; handleStartLearning runs the authoritative check.
+  if (!isAuthorizedCached()) {
+    console.log("[Learning Digest] icon click: not authorized, opening the panel only");
+    await recordStartAttempt("not authorized: capture blocked (P6 gate)");
+    await panelOpening;
+    return;
+  }
+
   let streamId = null;
   try {
     streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
@@ -526,6 +720,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.runtime.openOptionsPage();
     sendResponse({ success: true });
     return false;
+  }
+
+  // --- Authorization gate (P6) ---
+
+  if (message.action === "checkAuth") {
+    checkAuthNow()
+      .then(sendResponse)
+      .catch((error) =>
+        sendResponse({ authorized: false, reason: "unreachable", error: error.message }),
+      );
+    return true;
+  }
+
+  if (message.action === "openAuthPage") {
+    handleOpenAuthPage()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
   }
 
   // --- Session capture (xiaoe-tech Source Platform, #16) ---
@@ -829,6 +1041,11 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleRestartFromBeginning,
   handleActionClicked,
   handlePageTitle,
+  // Authorization gate (P6): the probe, the authorization-page opener and
+  // the link code exchange — see tests/plugin-auth-flow.test.js.
+  checkAuthNow,
+  handleOpenAuthPage,
+  handleLinkCodeCaptured,
   // Timeline anchoring + seek-awareness (#48): the bridge's position stream
   // drives the probe window, the anchor transition, seek cuts and the
   // Plan A re-listen retries — see tests/background-capture.test.js.
@@ -1651,6 +1868,22 @@ async function handleStartLearning(message) {
   const existing = await ensureCaptureResumed();
   if (existing) {
     return { success: false, error: "A learning Session is already active.", sessionId: existing.sessionId };
+  }
+
+  // P6 authorization gate (authoritative, await-based): no linked credential
+  // that /v1/me accepts, no capture. The panel is told to show the guide.
+  const auth = await checkAuthNow();
+  if (!auth.authorized) {
+    void notifyPanel({
+      action: "authState",
+      authorized: false,
+      reason: auth.reason || "unauthorized",
+    });
+    return {
+      success: false,
+      error:
+        "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再开始学习。",
+    };
   }
 
   const settings = await getSettings();

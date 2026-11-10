@@ -225,6 +225,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   await refreshSegmentLengthForCopy();
   await evictOldCacheEntries(20);
 
+  // P6 authorization gate: a valid linked credential unlocks everything;
+  // anything else shows only the guide below.
+  if (await runStartupGate()) {
+    await startAuthorizedSession();
+  }
+});
+
+/**
+ * The post-gate startup: the config check the panel has always run, then
+ * the welcome-state sequence.
+ */
+async function startAuthorizedSession() {
   const configStatus = await chrome.runtime.sendMessage({
     action: "checkConfig",
   });
@@ -234,6 +246,35 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
 
+  unlockAfterAuth();
+}
+
+/**
+ * The startup authorization probe (P6): asks the background to present the
+ * stored credential to GET /v1/me. Returns true when authorized (the caller
+ * continues into the normal startup sequence); otherwise shows the guide
+ * and returns false.
+ */
+async function runStartupGate() {
+  let authStatus = null;
+  try {
+    authStatus = await chrome.runtime.sendMessage({ action: "checkAuth" });
+  } catch (_error) {
+    authStatus = { authorized: false, reason: "unreachable" };
+  }
+  if (authStatus && authStatus.authorized === true) {
+    return true;
+  }
+  showAuthGate(authStatus || { authorized: false, reason: "unconfigured" });
+  return false;
+}
+
+/**
+ * The post-authorization startup sequence: restore the surfaces the gate
+ * hid, then run the welcome-state startup the panel has always run.
+ */
+function unlockAfterAuth() {
+  setSettingsButtonVisible(true);
   showState("welcome");
   setupSessionUI();
   // D7 (#30): reopening the panel shows the most recent persisted report
@@ -241,7 +282,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   void adoptLatestStoredReport();
   // The 概览 first-topic hint names the configured tick interval.
   void refreshSummaryIntervalMinutes();
-});
+}
 
 // Listen for messages from the background script.
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -251,6 +292,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .getElementById("notesFilterAll")
       ?.classList.contains("active");
     loadNotes(filterAll ? null : currentNotesScopeId());
+    sendResponse({ success: true });
+  }
+  if (message.action === "authAuthorized") {
+    // The link flow finished in the background: re-run the gate and, when
+    // it passes, continue into the full startup sequence.
+    void (async () => {
+      if (await runStartupGate()) {
+        await startAuthorizedSession();
+      }
+    })();
+    sendResponse({ success: true });
+  }
+  if (message.action === "authState" && message.authorized === false) {
+    // Authorization died (a failed exchange, or a blocked capture attempt):
+    // back to the guide.
+    showAuthGate(message);
     sendResponse({ success: true });
   }
   return false;
@@ -279,6 +336,20 @@ function setupEventListeners() {
 
   document.getElementById("settingsBtn")?.addEventListener("click", () => {
     chrome.runtime.sendMessage({ action: "openOptions" });
+  });
+
+  // Authorization gate (P6): open the Web confirmation page, or re-run the
+  // probe after the learner believes the link is done.
+  document.getElementById("openAuthPageBtn")?.addEventListener("click", () => {
+    showAuthGateWaiting();
+    chrome.runtime.sendMessage({ action: "openAuthPage" });
+  });
+  document.getElementById("authRecheckBtn")?.addEventListener("click", () => {
+    void (async () => {
+      if (await runStartupGate()) {
+        await startAuthorizedSession();
+      }
+    })();
   });
 
   // Transcript actions
@@ -711,6 +782,10 @@ function showState(state) {
     state === "error" ? "block" : "none";
   const uploadEl = document.getElementById("uploadState");
   if (uploadEl) uploadEl.style.display = "none"; // Upload state removed — always hidden
+  const authGateEl = document.getElementById("authGateState");
+  if (authGateEl) {
+    authGateEl.style.display = state === "authGate" ? "flex" : "none";
+  }
   document.getElementById("resultsState").style.display =
     state === "results" ? "block" : "none";
 
@@ -745,6 +820,58 @@ function showConfigError(configStatus) {
     `请在 Learning Digest 设置中填写你的 ${missingKeys.join(" 和 ")}。`;
   document.getElementById("errorBtn").textContent = "打开设置";
   errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
+}
+
+// ============================================================
+// AUTHORIZATION GATE VIEW (P6)
+// ============================================================
+
+const AUTH_GATE_COPY = {
+  unconfigured:
+    "先把 Learning Digest 插件关联到你的学习库账号：点击下方按钮，在打开的网页中登录并确认关联，完成后这里会自动解锁。",
+  unauthorized:
+    "授权已失效，请重新关联学习库账号：点击下方按钮，在打开的网页中重新确认，完成后这里会自动解锁。",
+  unreachable:
+    "暂时连不上学习服务。请检查设置中的学习服务 API 地址，或稍后点击下方按钮重试。",
+  linkFailed: null, // the exchange failure message arrives with the event
+};
+
+function setSettingsButtonVisible(visible) {
+  const settingsBtn = document.getElementById("settingsBtn");
+  if (settingsBtn) {
+    settingsBtn.style.display = visible ? "" : "none";
+  }
+}
+
+/**
+ * The gate view: every functional surface (tabs, session bar, settings
+ * entry) is replaced by the authorization guide. All the learner can do
+ * here is open the authorization page or re-check.
+ */
+function showAuthGate(status) {
+  setSettingsButtonVisible(false);
+  showState("authGate");
+
+  const message =
+    status && status.reason === "linkFailed" && status.message
+      ? status.message
+      : AUTH_GATE_COPY[status && status.reason] || AUTH_GATE_COPY.unconfigured;
+  const statusEl = document.getElementById("authGateStatus");
+  if (statusEl) {
+    statusEl.textContent = message || "";
+  }
+  const waitingEl = document.getElementById("authGateWaiting");
+  if (waitingEl) {
+    waitingEl.style.display = "none";
+  }
+}
+
+/** The waiting copy while the authorization page tab is open. */
+function showAuthGateWaiting() {
+  const waitingEl = document.getElementById("authGateWaiting");
+  if (waitingEl) {
+    waitingEl.style.display = "block";
+  }
 }
 
 // ============================================================
@@ -1527,6 +1654,16 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   saveTranscriptViewState,
   renderSubtitleInlineMarkup,
   switchTab,
+};
+
+// Authorization gate view helpers for the repository's Node tests (P6). The
+// extension does not read this object at runtime.
+globalThis.__YTD_AUTH_TESTING__ = {
+  runStartupGate,
+  showAuthGate,
+  showAuthGateWaiting,
+  unlockAfterAuth,
+  setSettingsButtonVisible,
 };
 
 // Report tab helpers for the repository's Node tests (#30). The extension

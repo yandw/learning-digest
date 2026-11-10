@@ -179,6 +179,7 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
   const sentMessages = [];
   const createdElements = [];
   const docListeners = {};
+  const runtimeMessageListeners = [];
   const alerts = [];
   let selection = null;
   let nextResponse = { success: true };
@@ -236,7 +237,11 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
     },
     chrome: {
       runtime: {
-        onMessage: { addListener() {} },
+        onMessage: {
+          addListener: (listener) => {
+            runtimeMessageListeners.push(listener);
+          },
+        },
         sendMessage: (message) => {
           sentMessages.push(message);
           return Promise.resolve(
@@ -283,12 +288,14 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
     report: sandbox.__YTD_REPORT_TESTING__,
     transcript: sandbox.__YTD_TRANSCRIPT_TESTING__,
     session: sandbox.__YTD_SESSION_TESTING__,
+    auth: sandbox.__YTD_AUTH_TESTING__,
     elements,
     elementById,
     selectorResults,
     createdElements,
     sentMessages,
     docListeners,
+    runtimeMessageListeners,
     alerts,
     flush,
     setSelection: (value) => {
@@ -670,6 +677,9 @@ test("panel startup waits for a stored 15-second setting before the first wait r
   const state = activeSessionState({ segments: [], transcriptRecords: [] });
   panel.setNextResponse((message) => {
     if (message.action === "checkConfig") return { hasAiKey: true };
+    // P6: the startup gate probe — the linked learner continues into the
+    // session UI this test asserts on.
+    if (message.action === "checkAuth") return { authorized: true };
     if (message.action === "getSessionState") {
       return {
         active: true,
@@ -1211,4 +1221,127 @@ test("the transcript empty state keeps the Segment wait copy in segment mode", (
   const pendingRow = findDescendants(transcript, "session-pending")[0];
   const text = findDescendants(pendingRow, "session-record-text")[0];
   assert.equal(text.textContent, "录制中，第一段逐字稿约 30 秒 后出现…");
+});
+
+// --- Authorization gate (P6): 未授权时只有引导，授权后一切照旧 -----------------
+
+function makeAuthPanel(responses) {
+  const panel = loadPanel({ stored: {} });
+  panel.setNextResponse((message) => {
+    if (responses[message.action]) return responses[message.action];
+    if (message.action === "checkConfig") return { hasAiKey: true };
+    return { success: true };
+  });
+  return panel;
+}
+
+test("an unlinked learner sees only the authorization guide at startup", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: false, reason: "unconfigured" },
+  });
+
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  const display = (id) => panel.elementById(id).style.display;
+  assert.equal(display("authGateState"), "flex", "the guide is the visible view");
+  assert.equal(display("welcomeState"), "none");
+  assert.equal(display("resultsState"), "none");
+  assert.equal(display("tabsNav"), "none", "no feature tabs before linking");
+  assert.equal(
+    panel.elementById("settingsBtn").style.display,
+    "none",
+    "the settings entry is hidden too",
+  );
+  // The probe was asked, and the failure named in the copy.
+  assert.match(panel.elementById("authGateStatus").textContent, /关联/);
+  assert.ok(panel.sentMessages.some((message) => message.action === "checkAuth"));
+});
+
+test("an unreachable learning service says so instead of blaming the link", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: false, reason: "unreachable" },
+  });
+
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  assert.equal(panel.elementById("authGateState").style.display, "flex");
+  assert.match(
+    panel.elementById("authGateStatus").textContent,
+    /连不上学习服务/,
+  );
+});
+
+test("a linked learner skips the gate and lands on the welcome state", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+  });
+
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  const display = (id) => panel.elementById(id).style.display;
+  assert.equal(display("authGateState"), "none");
+  assert.equal(display("welcomeState"), "flex");
+  assert.notEqual(
+    panel.elementById("settingsBtn").style.display,
+    "none",
+    "the settings entry is back",
+  );
+});
+
+test("authState pushes the panel back into the guide with the failure copy", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+  assert.equal(panel.elementById("authGateState").style.display, "none");
+
+  // Drive the runtime message listener the way the background does.
+  const messageListener = panel.runtimeMessageListeners[0];
+  assert.ok(messageListener, "the panel registered a runtime message listener");
+  const response = messageListener(
+    {
+      action: "authState",
+      authorized: false,
+      reason: "linkFailed",
+      message: "关联码无效或已过期，请在网页上重新发起关联",
+    },
+    {},
+    () => {},
+  );
+  await panel.flush();
+
+  assert.equal(panel.elementById("authGateState").style.display, "flex");
+  assert.match(
+    panel.elementById("authGateStatus").textContent,
+    /关联码无效或已过期/,
+  );
+  assert.equal(response, false);
+});
+
+test("authAuthorized re-runs the gate and unlocks the panel", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: false, reason: "unconfigured" },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+  assert.equal(panel.elementById("authGateState").style.display, "flex");
+
+  // The link flow finished: from now on the background reports authorized.
+  panel.setNextResponse((message) => {
+    if (message.action === "checkConfig") return { hasAiKey: true };
+    if (message.action === "checkAuth") return { authorized: true, reason: null };
+    return { success: true };
+  });
+  const messageListener = panel.runtimeMessageListeners[0];
+  messageListener({ action: "authAuthorized", email: "l@e.com" }, {}, () => {});
+  await panel.flush();
+
+  const display = (id) => panel.elementById(id).style.display;
+  assert.equal(display("authGateState"), "none", "the gate lifted");
+  assert.equal(display("welcomeState"), "flex", "the normal startup took over");
+  assert.notEqual(display("settingsBtn"), "none");
 });

@@ -49,6 +49,29 @@ test("styles and scripts are served with matching content types", async () => {
   }
 });
 
+test("GET /link.html serves the extension link confirmation page (P6)", async () => {
+  const web = await startWithPublicDir();
+  try {
+    const response = await web.request("GET", "/link.html");
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /text\/html/);
+    assert.match(response.text, /id="linkConfirmView"/);
+    assert.match(response.text, /id="confirmLinkBtn"/);
+    assert.match(response.text, /id="linkDoneView"/);
+    assert.match(response.text, /\/js\/link\.js/);
+
+    const binding = await web.request("GET", "/js/link.js");
+    assert.equal(binding.status, 200);
+    assert.match(binding.headers.get("content-type"), /javascript/);
+
+    const flowModule = await web.request("GET", "/js/link-flow.js");
+    assert.equal(flowModule.status, 200);
+    assert.match(flowModule.headers.get("content-type"), /javascript/);
+  } finally {
+    await web.close();
+  }
+});
+
 test("unknown static paths answer 404", async () => {
   const web = await startWithPublicDir();
   try {

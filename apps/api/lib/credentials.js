@@ -30,12 +30,16 @@ function findActiveGroup(store, accountId) {
 
 /**
  * Issue a Bearer credential into the account's active group (creating the
- * group when none is active).
+ * group when none is active). The extension link flow (P6) pins the group
+ * instead: it passes credentialGroupId so the extension credential joins
+ * the group of the Web session that confirmed the link.
  * @returns {{ token: string, credential: object }}
  */
-function issueCredential({ store, accountId, kind, now, config }) {
+function issueCredential({ store, accountId, kind, now, config, credentialGroupId }) {
   const atMs = now();
-  let group = findActiveGroup(store, accountId);
+  let group = credentialGroupId
+    ? store.get("credentialGroups", credentialGroupId)
+    : findActiveGroup(store, accountId);
   if (!group) {
     group = {
       id: generateId("credgrp"),

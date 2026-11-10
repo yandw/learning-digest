@@ -85,5 +85,12 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("GET", "/v1/me");
   }
 
-  return { request, requestCode, verify, logout, me };
+  // P6 extension linking: create a one-time link code bound to this
+  // session's credential group. A 401 here routes through the shared
+  // interceptor (clear + onUnauthorized) so the link page returns to login.
+  function createLinkRequest() {
+    return request("POST", "/v1/auth/link-requests", { body: {} });
+  }
+
+  return { request, requestCode, verify, logout, me, createLinkRequest };
 }

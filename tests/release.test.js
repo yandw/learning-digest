@@ -23,6 +23,14 @@ test("manifest uses minimized install-time permissions", () => {
       `permissions must include ${permission}`,
     );
   }
+  // P6 link flow: chrome.tabs URL visibility for the link confirmation tab
+  // the extension itself opens (no host_permissions for the web origin —
+  // ticket #26 stays open). The worker only ever reads the URL of a tab in
+  // its pending-link set.
+  assert.ok(
+    manifest.permissions.includes("tabs"),
+    "permissions must include tabs (P6 link tab URL visibility)",
+  );
   assert.deepEqual(manifest.content_scripts, [
     {
       matches: ["https://*.xiaoe-tech.com/*"],
@@ -50,7 +58,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.2.0");
+  assert.equal(manifest.version, "0.2.1");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -421,6 +429,9 @@ test("core Learning Digest modules ship in the release and load in the service w
     "session-segmenter.js",
     "session-summary.js",
     "page-bridge.js",
+    // P6 authorization gate: the pure module behind the auth check and the
+    // link code exchange.
+    "auth-gate.js",
     "offscreen.js",
     "offscreen.html",
     // The report surfaces (#30): the pure renderer, the full report page and
@@ -442,6 +453,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js"\)/,
   );
 });

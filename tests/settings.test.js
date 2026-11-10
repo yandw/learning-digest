@@ -367,3 +367,42 @@ test("a blob stamped at the current version is never AI-migrated", () => {
   assert.equal(normalized.aiBaseUrl, "https://openrouter.ai/api/v1");
   assert.equal(normalized.aiModel, "deepseek/deepseek-v4.1-flash-1017");
 });
+
+// --- Learning service origins (P6): API + Web authorization page ------------
+
+test("learning service URLs default to the local dev servers", () => {
+  const normalized = settings.normalize({});
+  assert.equal(normalized.apiBaseUrl, "http://127.0.0.1:8787");
+  assert.equal(normalized.webAppBaseUrl, "http://127.0.0.1:8080");
+});
+
+test("custom learning service URLs are preserved and normalized", () => {
+  const normalized = settings.normalize({
+    apiBaseUrl: "https://api.example.com/",
+    webAppBaseUrl: "  https://learn.example.com  ",
+  });
+  assert.equal(normalized.apiBaseUrl, "https://api.example.com");
+  assert.equal(normalized.webAppBaseUrl, "https://learn.example.com");
+});
+
+test("invalid learning service URLs fall back to the dev defaults", () => {
+  const normalized = settings.normalize({
+    apiBaseUrl: "not a url",
+    webAppBaseUrl: "https://",
+  });
+  assert.equal(normalized.apiBaseUrl, settings.DEFAULTS.apiBaseUrl);
+  assert.equal(normalized.webAppBaseUrl, settings.DEFAULTS.webAppBaseUrl);
+});
+
+test("learning service URLs accept plain http only on loopback", () => {
+  assert.equal(
+    settings.normalize({ apiBaseUrl: "http://192.168.1.5:8787" }).apiBaseUrl,
+    settings.DEFAULTS.apiBaseUrl,
+    "a LAN http origin is rejected",
+  );
+  assert.equal(
+    settings.normalize({ apiBaseUrl: "http://localhost:8787" }).apiBaseUrl,
+    "http://localhost:8787",
+    "localhost http is allowed (self-hosted dev)",
+  );
+});

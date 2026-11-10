@@ -58,6 +58,17 @@ const YTD_OPTIONS = (() => {
       segmentLengthLabel: "分段长度（秒）",
       segmentLengthHelp:
         "分段转写模式下每段采集的音频时长，改小可更快看到逐字稿（默认 30 秒）；可填范围 5～60 秒；实时转写模式下此字段不生效；拖拽落点会对齐到该时长的整数倍边界，时长越短，拖拽可能放弃的音频也越少。",
+      learningService: "学习服务",
+      apiBaseUrlLabel: "学习服务 API 地址",
+      apiBaseUrlHelp:
+        "插件用这个地址校验关联授权（默认指向本地开发服务 apps/api，端口 8787）。两个字段都留空则保持默认值。",
+      webAppBaseUrlLabel: "授权页地址",
+      webAppBaseUrlHelp:
+        "侧边栏的「打开授权页」按钮会打开这个地址的关联确认页（默认指向本地 Web 应用 apps/web，端口 8080）。",
+      apiBaseUrlInvalid:
+        "学习服务 API 地址不是合法的 https 地址（仅 localhost 允许使用 http）。",
+      webAppBaseUrlInvalid:
+        "授权页地址不是合法的 https 地址（仅 localhost 允许使用 http）。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -358,6 +369,10 @@ const YTD_OPTIONS = (() => {
     const aiModelInput = doc.getElementById("aiModel");
     const summaryIntervalInput = doc.getElementById("summaryIntervalMinutes");
     const segmentLengthInput = doc.getElementById("segmentLengthSeconds");
+    // Learning service origins (P6): the API the linked credential talks to
+    // and the Web app origin whose confirmation page authorizes the link.
+    const apiBaseUrlInput = doc.getElementById("apiBaseUrl");
+    const webAppBaseUrlInput = doc.getElementById("webAppBaseUrl");
     const speechProviderSelect = doc.getElementById("speechProvider");
     const speechProviderFields = doc.getElementById("speechProviderFields");
     const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
@@ -605,6 +620,12 @@ const YTD_OPTIONS = (() => {
         if (segmentLengthInput) {
           segmentLengthInput.value = settings.segmentLengthSeconds;
         }
+        if (apiBaseUrlInput) {
+          apiBaseUrlInput.value = settings.apiBaseUrl;
+        }
+        if (webAppBaseUrlInput) {
+          webAppBaseUrlInput.value = settings.webAppBaseUrl;
+        }
 
         // Speech Provider: seed per-provider drafts from stored credentials,
         // pre-filling Groq from the legacy stt* fields when the new slot is
@@ -671,6 +692,18 @@ const YTD_OPTIONS = (() => {
         return;
       }
 
+      // Learning service origins (P6): same https/loopback-http rule as the
+      // other base URLs; a typo must fail the save, not silently fall back.
+      for (const [input, errorKey] of [
+        [apiBaseUrlInput, "apiBaseUrlInvalid"],
+        [webAppBaseUrlInput, "webAppBaseUrlInvalid"],
+      ]) {
+        if (input && input.value.trim() && !settingsApi.isValidBaseUrl(input.value.trim())) {
+          setStatus(saveStatus, errorKey);
+          return;
+        }
+      }
+
       const selectedProvider = getSelectedSpeechProvider();
       if (selectedProvider) {
         const draft = getSpeechProviderDraft(selectedProvider.id);
@@ -700,6 +733,9 @@ const YTD_OPTIONS = (() => {
         aiModel: aiModelInput.value,
         summaryIntervalMinutes: summaryIntervalInput?.value,
         segmentLengthSeconds: segmentLengthInput?.value,
+        // Left empty means "keep the default" (normalizeBaseUrl's fallback).
+        apiBaseUrl: apiBaseUrlInput ? apiBaseUrlInput.value.trim() : undefined,
+        webAppBaseUrl: webAppBaseUrlInput ? webAppBaseUrlInput.value.trim() : undefined,
         ...collectSpeechProviderSettings(),
       });
 

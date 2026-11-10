@@ -1033,6 +1033,44 @@ body {
 }
 
 /* ============================================================
+   AUTHORIZATION GATE (P6): the pre-link view replaces every
+   functional surface, so its buttons follow the welcome scale.
+   ============================================================ */
+.auth-gate-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-gate-btn {
+  min-width: 200px;
+}
+
+.auth-gate-recheck {
+  font-family: var(--font-reading);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.auth-gate-recheck:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.auth-gate-waiting {
+  font-family: var(--font-reading);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  max-width: 270px;
+  line-height: 1.6;
+}
+
+/* ============================================================
    SHARE / ACTIONS BAR
    ============================================================ */
 .actions-bar {

@@ -77,6 +77,26 @@
         </div>
       </div>
 
+      <!-- AUTHORIZATION GATE (P6)：未关联时唯一的可见界面 -->
+      <div id="authGateState" class="welcome-container" style="display: none">
+        <div class="welcome-icon" aria-hidden="true"></div>
+        <div class="welcome-title">先关联学习库账号</div>
+        <div class="welcome-desc" id="authGateStatus">
+          把 Learning Digest 插件关联到你的学习库账号后才能开始使用。
+        </div>
+        <div class="auth-gate-actions">
+          <button class="session-btn auth-gate-btn" id="openAuthPageBtn" type="button">
+            打开授权页并关联
+          </button>
+          <button class="auth-gate-recheck" id="authRecheckBtn" type="button">
+            我已完成关联，重新检查
+          </button>
+        </div>
+        <div class="auth-gate-waiting" id="authGateWaiting" style="display: none">
+          已打开授权页：在网页上确认关联后，这里会自动继续。
+        </div>
+      </div>
+
       <!-- LOADING STATE -->
       <div id="loadingState" style="display: none">
         <div class="loading-container">

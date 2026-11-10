@@ -85,6 +85,13 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("GET", "/v1/me");
   }
 
+  // P6 extension linking: create a one-time link code bound to this
+  // session's credential group. A 401 here routes through the shared
+  // interceptor (clear + onUnauthorized) so the link page returns to login.
+  function createLinkRequest() {
+    return request("POST", "/v1/auth/link-requests", { body: {} });
+  }
+
   // Resource endpoints (P5): collection, list, detail and the §3.7 retitle.
   // Ids are opaque server-generated strings; they are encoded so a hostile
   // value can never change the path shape.
@@ -106,5 +113,5 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     });
   }
 
-  return { request, requestCode, verify, logout, me, createResource, listResources, getResourceDetail, updateResourceTitle };
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle };
 }

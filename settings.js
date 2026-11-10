@@ -33,6 +33,13 @@ var YTD_SETTINGS = (() => {
     // coverage since the last Topic reaches this length (minutes, clamped
     // to [5, 180]) and at least 10 new records exist.
     summaryIntervalMinutes: 15,
+    // Learning Digest learning service (P6): the API the extension presents
+    // its linked credential to, and the Web app origin whose confirmation
+    // page the authorization flow opens. Dev defaults point at the apps/
+    // dev servers (apps/api :8787, apps/web :8080); http is accepted for
+    // loopback origins only, same rule as the AI/Speech base URLs.
+    apiBaseUrl: "http://127.0.0.1:8787",
+    webAppBaseUrl: "http://127.0.0.1:8080",
   });
 
   function isLegacyCustom(input) {
@@ -251,6 +258,11 @@ var YTD_SETTINGS = (() => {
       summaryIntervalMinutes: normalizeSummaryIntervalMinutes(
         input.summaryIntervalMinutes,
       ),
+      // Learning service origins (P6): validated like every other base URL
+      // (https anywhere, http loopback only) so a typo can never aim the
+      // linked credential at a stranger's server.
+      apiBaseUrl: normalizeBaseUrl(input.apiBaseUrl, DEFAULTS.apiBaseUrl),
+      webAppBaseUrl: normalizeBaseUrl(input.webAppBaseUrl, DEFAULTS.webAppBaseUrl),
     };
   }
 

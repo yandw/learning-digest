@@ -40,6 +40,25 @@ function promptAwareFetch(fetchImpl, promptFiles = {}) {
   };
 }
 
+/**
+ * P6 auth verdict seam: the real gate module, with checkAuthorization
+ * pinned to the requested verdict so tests never need a live /v1 for the
+ * gate. `auth: { real: true }` keeps the real module (the sandbox fetch
+ * then observes the actual /v1/me probe). The default keeps the pre-P6
+ * behavior: the worker counts as linked.
+ */
+function withAuthVerdict(gate, auth) {
+  if (auth.real) return gate;
+  const verdict = auth.verdict || {
+    authorized: !!auth.authorized,
+    reason: auth.authorized ? null : auth.reason || "unauthorized",
+  };
+  return {
+    ...gate,
+    checkAuthorization: async () => verdict,
+  };
+}
+
 function loadBackgroundHelpers({
   settings = {
     provider: "deepseek",
@@ -77,8 +96,14 @@ function loadBackgroundHelpers({
   // and answers via tabMessageImpl (default success).
   tabMessages = null,
   tabMessageImpl = null,
+  // P6 authorization seam: by default the worker counts as linked so every
+  // pre-P6 orchestration test is untouched. Pass { authorized: false,
+  // reason } to exercise the gate, or a full verdict object.
+  auth = { authorized: true, reason: null },
 } = {}) {
   const listeners = { addListener() {} };
+  const createdTabs = [];
+  const removedTabIds = [];
   const localStorage = { ytd_settings: settings, ...stored };
   // A Date subclass with an injectable now(): everything else (parse, UTC,
   // instances) inherits unchanged, so only clock reads are controllable.
@@ -149,6 +174,17 @@ function loadBackgroundHelpers({
       tabs: {
         onUpdated: listeners,
         onActivated: listeners,
+        onRemoved: listeners,
+        // P6 link flow: tabs the worker opens for linking (and closes after
+        // the code exchange). Recorded so tests can assert the flow.
+        create: async ({ url }) => {
+          const tab = { id: 90 + createdTabs.length, url };
+          createdTabs.push(tab);
+          return tab;
+        },
+        remove: async (tabId) => {
+          removedTabIds.push(tabId);
+        },
         sendMessage: (tabId, msg) => {
           if (tabMessages) tabMessages.push({ tabId, ...msg });
           if (tabMessageImpl) return Promise.resolve(tabMessageImpl(msg));
@@ -169,6 +205,9 @@ function loadBackgroundHelpers({
     // used to be predated the versioned migration in normalize() and hid it
     // from every orchestration test.
     YTD_SETTINGS: require("../../settings.js"),
+    // P6 authorization gate: the real pure module, with checkAuthorization
+    // overridden when the test asks for a non-default verdict.
+    YTD_AUTH_GATE: withAuthVerdict(require("../../auth-gate.js"), auth),
   };
   if (transcribeImpl) {
     sandbox.YTD_SPEECH_PROVIDERS.registerSpeechProvider({
@@ -184,6 +223,10 @@ function loadBackgroundHelpers({
     ...sandbox.__YTD_TRANSLATION_TESTING__,
     // Direct view of the storage backing, for asserting what was persisted.
     readStored: (key) => localStorage[key],
+    // P6 link flow seams: tabs the worker opened/closed, for asserting the
+    // authorization page lifecycle.
+    createdTabs,
+    removedTabIds,
   };
 }
 

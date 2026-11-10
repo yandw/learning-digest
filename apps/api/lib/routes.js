@@ -6,7 +6,8 @@ const { validationFailed, unauthorizedMissing, unauthorizedExpired } = require("
 const { normalizeEmail, isInvited } = require("./invites");
 const { issueCode } = require("./codes");
 const { openOrLogin } = require("./accounts");
-const { authenticate, revokeCredential } = require("./credentials");
+const { authenticate, revokeCredential, issueCredential } = require("./credentials");
+const { createLinkCode, consumeLinkCode } = require("./link-codes");
 const {
   parseSourceRequest,
   matchSource,
@@ -193,6 +194,65 @@ function registerRoutes(ctx) {
       sourceId: params.id,
       body,
     });
+  });
+
+  // --- P6: extension account linking (decision 3 of #49) ---
+
+  // POST /v1/auth/link-requests — the Web confirmation page (presenting its
+  // own Bearer credential) creates a one-time short-lived link code bound to
+  // its credential group. The page bounces the browser to a success address
+  // carrying the code; the extension reads it from the tab it opened.
+  router.add("POST", "/v1/auth/link-requests", async ({ req }) => {
+    const credential = requireCredential(req);
+    const { linkCode, expiresAt } = createLinkCode({
+      store,
+      credential,
+      now,
+      config,
+    });
+    return { status: 201, body: { linkCode, expiresAt } };
+  });
+
+  // POST /v1/auth/link — the extension exchanges the code (no Bearer: it has
+  // no credential yet) for a live extension credential joined into the
+  // confirming Web session's credential group. One exchange per code; a
+  // group revoked in the meantime fails the exchange.
+  router.add("POST", "/v1/auth/link", async ({ body }) => {
+    if (
+      body === null ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      body.code === undefined ||
+      body.code === null ||
+      body.code === ""
+    ) {
+      throw validationFailed("缺少必填字段 code");
+    }
+    const { accountId, credentialGroupId } = consumeLinkCode({
+      store,
+      code: String(body.code),
+      now,
+    });
+    const { token, credential } = issueCredential({
+      store,
+      accountId,
+      kind: "extension",
+      now,
+      config,
+      credentialGroupId,
+    });
+    const account = store.list("accounts").find((entry) => entry.id === accountId);
+    return {
+      status: 201,
+      body: {
+        account: { id: accountId, email: account ? account.email : null },
+        credential: {
+          token,
+          kind: credential.kind,
+          credentialGroupId: credential.credentialGroupId,
+        },
+      },
+    };
   });
 }
 

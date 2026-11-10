@@ -361,3 +361,62 @@ test("other providers are unaffected: the Groq section renders no radio", async 
     apiKey: "gsk-x",
   });
 });
+
+// --- Learning service fields (P6): load + save -------------------------------
+
+test("the learning service fields load the stored URLs and save edits", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      speechProvider: "groq",
+      speechProviders: { groq: { apiKey: "gsk-x" } },
+      apiBaseUrl: "https://api.example.com",
+      webAppBaseUrl: "https://learn.example.com",
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  assert.equal(page.elements.apiBaseUrl.value, "https://api.example.com");
+  assert.equal(page.elements.webAppBaseUrl.value, "https://learn.example.com");
+
+  page.elements.apiBaseUrl.value = "http://127.0.0.1:8787";
+  page.elements.webAppBaseUrl.value = "";
+  await page.submit();
+
+  const saved = page.stored.ytd_settings;
+  assert.equal(saved.apiBaseUrl, "http://127.0.0.1:8787");
+  assert.equal(
+    saved.webAppBaseUrl,
+    "http://127.0.0.1:8080",
+    "an empty field keeps the default",
+  );
+});
+
+test("an invalid learning service URL fails the save with the field's error", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-ai",
+      speechProvider: "groq",
+      speechProviders: { groq: { apiKey: "gsk-x" } },
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  page.elements.apiBaseUrl.value = "ftp://nope.example.com";
+  await page.submit();
+  assert.match(page.elements.saveStatus.textContent, /学习服务 API 地址/);
+
+  page.elements.apiBaseUrl.value = "https://api.example.com";
+  page.elements.webAppBaseUrl.value = "not a url";
+  await page.submit();
+  assert.match(page.elements.saveStatus.textContent, /授权页地址/);
+});
+
+test("the options page renders the 学习服务 card with both URL fields", () => {
+  const html = read("options.html");
+  assert.match(html, /id="apiBaseUrl"/);
+  assert.match(html, /id="webAppBaseUrl"/);
+  assert.match(html, /data-i18n="learningService"/);
+});

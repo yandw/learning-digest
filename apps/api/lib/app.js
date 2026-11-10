@@ -6,6 +6,7 @@
 const http = require("node:http");
 const { createRouter } = require("./router");
 const { respondJson, respondError, readJsonBody } = require("./http");
+const { isApiPath, applyCors } = require("./cors");
 const { registerRoutes } = require("./routes");
 const { createMemoryMailer } = require("./mailer");
 const { createMemoryStore } = require("./persistence");
@@ -15,6 +16,9 @@ const DEFAULT_CONFIG = Object.freeze({
   // Verification code lifetime. Decision: 10 minutes, a normal email-code
   // window; configurable so trials can tighten it.
   codeTtlMs: 10 * 60 * 1000,
+  // Link code lifetime (P6): the one-time code travels through the browser
+  // location bar, so it lives only as long as a focused link confirmation.
+  linkCodeTtlMs: 10 * 60 * 1000,
   // Failed verification attempts allowed per code before it is invalidated
   // (brute-force guard). 5 tries on a 6-digit code.
   codeMaxAttempts: 5,
@@ -60,6 +64,12 @@ function createApp(options = {}) {
 
 async function dispatch(req, res, router, config) {
   try {
+    // CORS owns /v1 (the extension's service worker fetches these paths
+    // cross-origin); an OPTIONS preflight is answered here and never
+    // reaches the router (which has no OPTIONS routes).
+    if (isApiPath(req.url) && applyCors(req, res)) {
+      return;
+    }
     const url = new URL(req.url, "http://localhost");
     const { handler, params } = router.match(req.method, url.pathname);
     const body = await readJsonBody(req, config.maxBodyBytes);

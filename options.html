@@ -185,6 +185,40 @@
           </p>
         </section>
 
+        <section class="card">
+          <h2 data-i18n="learningService">学习服务</h2>
+          <label for="apiBaseUrl" data-i18n="apiBaseUrlLabel"
+            >学习服务 API 地址</label
+          >
+          <input
+            id="apiBaseUrl"
+            name="apiBaseUrl"
+            type="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="http://127.0.0.1:8787"
+          />
+          <p class="help" data-i18n="apiBaseUrlHelp">
+            The extension verifies the linked authorization against this API
+            (default: the local dev API).
+          </p>
+          <label for="webAppBaseUrl" data-i18n="webAppBaseUrlLabel"
+            >授权页地址</label
+          >
+          <input
+            id="webAppBaseUrl"
+            name="webAppBaseUrl"
+            type="url"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="http://127.0.0.1:8080"
+          />
+          <p class="help" data-i18n="webAppBaseUrlHelp">
+            The side panel's open-authorization-page button opens the
+            confirmation page at this origin.
+          </p>
+        </section>
+
         <div class="form-actions">
           <button class="primary" type="submit" data-i18n="saveSettings">
             Save settings

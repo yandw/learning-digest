@@ -143,6 +143,29 @@ function isAuthorizedCached() {
 }
 
 /**
+ * The authoritative gate probe + P7 verdict split shared by the deliberate
+ * panel actions (collect, note save): a definitive 401 verdict (group
+ * revoked elsewhere) also stops a running capture; unreachable/unconfigured
+ * verdicts only point at the guide. Returns the verdict so each caller
+ * keeps its own refusal copy.
+ */
+async function gateForPanelAction() {
+  const auth = await checkAuthNow();
+  if (!auth.authorized) {
+    if (auth.reason === "unauthorized") {
+      void handleCredentialsInvalidated(auth.reason);
+    } else {
+      void notifyPanel({
+        action: "authState",
+        authorized: false,
+        reason: auth.reason || "unauthorized",
+      });
+    }
+  }
+  return auth;
+}
+
+/**
  * Open the Web confirmation page (apps/web link.html) in a tab this worker
  * owns and remember it: the link flow reads that tab's final URL for the
  * one-time code. chrome.tabs URL visibility needs the "tabs" permission —
@@ -366,12 +389,23 @@ function recordBridgePageTitle(sender, message) {
   bridgePageTitles.set(tabId, title);
 }
 
+/**
+ * The bridge's real document title for one tab, or null when it has not
+ * reported one (an empty title counts as none). Shared preference rule: the
+ * bridge title wins over chrome.tabs' own, on the collect path and the
+ * course-tab list alike.
+ */
+function bridgeTitleForTab(tab) {
+  const bridgeTitle = bridgePageTitles.get(tab ? tab.id : null);
+  return typeof bridgeTitle === "string" && bridgeTitle !== "" ? bridgeTitle : null;
+}
+
 /** The collect target: url + best title + identity for the active tab. */
 function collectTargetFromTab(tab) {
   if (!tab || typeof tab.url !== "string" || tab.url === "") return null;
-  const bridgeTitle = bridgePageTitles.get(tab.id);
+  const bridgeTitle = bridgeTitleForTab(tab);
   const title =
-    typeof bridgeTitle === "string" && bridgeTitle !== ""
+    bridgeTitle !== null
       ? bridgeTitle
       : typeof tab.title === "string"
         ? tab.title.trim()
@@ -393,19 +427,8 @@ function collectTargetFromTab(tab) {
  * lands in the ytd_last_collect breadcrumb.
  */
 async function collectTabTarget(target) {
-  const auth = await checkAuthNow();
+  const auth = await gateForPanelAction();
   if (!auth.authorized) {
-    // P7: a definitive 401 verdict (group revoked elsewhere) also stops a
-    // running capture; unreachable/unconfigured only point at the guide.
-    if (auth.reason === "unauthorized") {
-      void handleCredentialsInvalidated(auth.reason);
-    } else {
-      void notifyPanel({
-        action: "authState",
-        authorized: false,
-        reason: auth.reason || "unauthorized",
-      });
-    }
     return {
       ok: false,
       message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再收藏当前页。",
@@ -501,6 +524,50 @@ async function handleResolveCurrentSource() {
 }
 
 /**
+ * The POST /v1/sources/resolve pipeline both resolve paths share:
+ * settings → stored credential → URL → POST → parse. Returns one of:
+ * - { verdict: "miss" }    no stored credential, or an unconfigured URL;
+ * - { verdict: "network" } the fetch threw;
+ * - { verdict: "result", result, status }  the parsed resolve outcome.
+ * Miss shapes, identity-present flags, breadcrumbs and the mid-action 401
+ * handoff stay with the callers: the passive panel-open probe misses
+ * quietly and locally, while the learning-start path is full-fidelity and
+ * breadcrumb-free — collapsing those policies would reorder the pinned
+ * breadcrumb and message sequences.
+ */
+async function postResolveRequest(target) {
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  if (!credential) return { verdict: "miss" };
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOLVE_PATH);
+  if (!apiUrl) return { verdict: "miss" };
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(YTD_COLLECT.buildCollectRequest(target)),
+    });
+  } catch (_error) {
+    return { verdict: "network" };
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  return {
+    verdict: "result",
+    result: YTD_COLLECT.parseResolveResponse({ status: response.status, data }),
+    status: response.status,
+  };
+}
+
+/**
  * The resolve probe for one already-queried tab (shared by the panel's
  * pre-collect announcement and the P12 note entry, which needs BOTH the
  * matched source and the tab's media position from one consistent page).
@@ -521,39 +588,20 @@ async function resolveSourceForTab({ target, requireIdentity = true }) {
   const miss = { ok: true, matched: false, identityPresent, resource: null, source: null };
   if (requireIdentity && !identityPresent) return miss;
   if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) return miss;
-  const settings = await getSettings();
-  const credential = await readStoredAuthCredential();
-  if (!credential) return miss;
-  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOLVE_PATH);
-  if (!apiUrl) return miss;
-  let response;
-  try {
-    response = await fetch(apiUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(YTD_COLLECT.buildCollectRequest(target)),
-    });
-  } catch (_error) {
+  const posted = await postResolveRequest(target);
+  if (posted.verdict === "miss") return miss;
+  if (posted.verdict === "network") {
     return { ...miss, ok: false, message: "无法连接学习服务，请稍后重试。" };
   }
-  let data = null;
-  try {
-    data = await response.json();
-  } catch (_error) {
-    data = null;
-  }
-  const result = YTD_COLLECT.parseResolveResponse({ status: response.status, data });
+  const { result, status } = posted;
   if (!result.ok) {
     recordAuthBreadcrumb("ytd_last_collect_resolve", {
       matched: false,
       url: target.url,
-      status: response.status,
+      status,
       detail: result.message,
     });
-    if (response.status === 401) {
+    if (status === 401) {
       // P7 linked logout: same stop semantics as the collect 401 above.
       await handleCredentialsInvalidated("unauthorized");
     }
@@ -611,19 +659,8 @@ async function readTabMediaPosition(tabId) {
  * re-linked session.
  */
 async function handleSaveNoteToLibrary({ text } = {}) {
-  const auth = await checkAuthNow();
+  const auth = await gateForPanelAction();
   if (!auth.authorized) {
-    // Same split as collect: a definitive 401 verdict stops a running
-    // capture; unreachable/unconfigured only point at the guide.
-    if (auth.reason === "unauthorized") {
-      void handleCredentialsInvalidated(auth.reason);
-    } else {
-      void notifyPanel({
-        action: "authState",
-        authorized: false,
-        reason: auth.reason || "unauthorized",
-      });
-    }
     return {
       ok: false,
       message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再保存笔记。",
@@ -840,44 +877,37 @@ async function saveLearningTargetState() {
   }
 }
 
+/** Registered Source Platform playback pages can start captures. */
+function isStartablePageUrl(url) {
+  return YTD_SOURCE_PLATFORMS.recognizePage(url).kind !== "none";
+}
+
 /** Video pages sort first in the list: identity pages + registered platforms. */
 function learningVideoPageChecker() {
   return (url) =>
-    !!YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(url) ||
-    YTD_SOURCE_PLATFORMS.recognizePage(url).kind !== "none";
+    !!YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(url) || isStartablePageUrl(url);
 }
 
 /**
  * Full-fidelity §3.4 resolve for one tab target: the identity when the URL
  * carries one, the plain (normalized) URL otherwise — the contract accepts
  * both, unlike the passive panel-open probe which stays identity-only so
- * ordinary browsing never calls the service.
+ * ordinary browsing never calls the service. Rides the shared
+ * postResolveRequest pipeline; its own miss semantics are failure-shaped
+ * (ok:false) because a chosen learning target needs a real verdict.
  */
 async function resolveSourceForTarget(target) {
   if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
     return { ok: false, matched: false, identityPresent: false, resource: null, source: null };
   }
-  const request = YTD_COLLECT.buildCollectRequest(target);
-  if (!request) {
+  if (!YTD_COLLECT.buildCollectRequest(target)) {
     return { ok: false, matched: false, identityPresent: false, resource: null, source: null };
   }
-  const settings = await getSettings();
-  const credential = await readStoredAuthCredential();
-  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOLVE_PATH);
-  if (!apiUrl || !credential) {
+  const posted = await postResolveRequest(target);
+  if (posted.verdict === "miss") {
     return { ok: false, matched: false, identityPresent: !!target.identity, resource: null, source: null };
   }
-  let response;
-  try {
-    response = await fetch(apiUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(request),
-    });
-  } catch (_error) {
+  if (posted.verdict === "network") {
     return {
       ok: false,
       matched: false,
@@ -887,15 +917,9 @@ async function resolveSourceForTarget(target) {
       message: "无法连接学习服务，请稍后重试。",
     };
   }
-  let data = null;
-  try {
-    data = await response.json();
-  } catch (_error) {
-    data = null;
-  }
-  const result = YTD_COLLECT.parseResolveResponse({ status: response.status, data });
+  const { result, status } = posted;
   if (!result.ok) {
-    if (response.status === 401) {
+    if (status === 401) {
       // P7 handoff: same routing as collect/notes mid-action 401s.
       await handleCredentialsInvalidated("unauthorized");
     }
@@ -921,14 +945,11 @@ async function handleGetCourseTabs() {
   await loadLearningTargetState();
   const tabs = await chrome.tabs.query({});
   // The page bridge's real document titles win over chrome.tabs' own, the
-  // same preference the collect path applies.
+  // same preference the collect path applies (bridgeTitleForTab).
   const withTitles = (Array.isArray(tabs) ? tabs : []).map((tab) => ({
     id: tab?.id,
     url: tab?.url,
-    title:
-      typeof bridgePageTitles.get(tab?.id) === "string" && bridgePageTitles.get(tab?.id) !== ""
-        ? bridgePageTitles.get(tab?.id)
-        : tab?.title,
+    title: bridgeTitleForTab(tab) ?? tab?.title,
   }));
   const info = YTD_LEARNING_START.targetInfo(learningTargetState);
   const list = YTD_LEARNING_START.buildCourseTabList({
@@ -982,7 +1003,7 @@ async function handleChooseLearningTarget({ tabId } = {}) {
     target: learningTargetState.target,
     // Capture starts on registered Source Platform pages only; other
     // stations (and plain pages) stay listable/resolvable/favoritable.
-    startable: YTD_SOURCE_PLATFORMS.recognizePage(target.url).kind !== "none",
+    startable: isStartablePageUrl(target.url),
     resolve: resolution,
   };
 }

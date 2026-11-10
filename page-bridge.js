@@ -139,6 +139,32 @@
     return false;
   });
 
+  // One-shot position query (P12 notes): the same primary-media source the
+  // per-second stream above reads, sampled at the moment the learner saves
+  // a note. With all_frames injection the message reaches every frame;
+  // frames without media stay silent (return false, like
+  // restartFromBeginning) so only the frame holding the player answers and
+  // the worker takes its response.
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.action !== "getMediaPosition") return false;
+    const media = findPrimaryMedia();
+    if (!media) {
+      return false;
+    }
+    try {
+      sendResponse({
+        success: true,
+        position: Number(media.currentTime) || 0,
+        duration: Number.isFinite(media.duration) ? media.duration : null,
+        paused: media.paused,
+        ended: media.ended,
+      });
+    } catch (_error) {
+      // A detached or mid-navigation element must never break the bridge.
+    }
+    return false;
+  });
+
   reportPageTitle();
   console.debug("[LD bridge] 已注入，开始每秒上报播放位置");
   setInterval(reportPosition, POSITION_INTERVAL_MS);

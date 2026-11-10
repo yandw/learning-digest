@@ -436,6 +436,9 @@ test("core Learning Digest modules ship in the release and load in the service w
     // the shared four-station identity extractor it rides on (contracts/,
     // same file the API tests pin).
     "collect.js",
+    // P12 library notes: the pure note state machine (request build,
+    // idempotent resend, draft policy).
+    "notes.js",
     "contracts/platform-video-id.js",
     "offscreen.js",
     "offscreen.html",
@@ -458,6 +461,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "notes\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

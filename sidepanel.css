@@ -1092,6 +1092,51 @@ body {
   text-align: center;
 }
 
+/* Library note entry (P12, #61): same welcome-state column as the collect
+   entry above, with a small textarea for the note text. */
+.note-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.note-input {
+  width: 100%;
+  max-width: 300px;
+  resize: vertical;
+  min-height: 64px;
+  padding: 10px 12px;
+  font-family: var(--font-reading);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.note-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.note-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.note-entry-status {
+  font-family: var(--font-reading);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  max-width: 270px;
+  line-height: 1.6;
+  text-align: center;
+}
+
 /* ============================================================
    SHARE / ACTIONS BAR
    ============================================================ */

@@ -18,6 +18,7 @@ const {
   retitleResource,
 } = require("./resources");
 const { saveProgress } = require("./progress");
+const { createNote } = require("./notes");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -160,6 +161,21 @@ function registerRoutes(ctx) {
   router.add("GET", "/v1/resources/:id", async ({ req, params }) => {
     const credential = requireCredential(req);
     return getResourceDetail({ store, accountId: credential.accountId, id: params.id });
+  });
+
+  // POST /v1/resources/:id/notes — add a note (contract §3.6; P12): a
+  // clientRequestId dedupes resends (201 creates, 200 returns the original
+  // note); an optional sourceId + positionMs pair stamps the note onto one
+  // of the resource's own sources. Cross-account resources are 404 (D2).
+  router.add("POST", "/v1/resources/:id/notes", async ({ req, params, body }) => {
+    const credential = requireCredential(req);
+    return createNote({
+      store,
+      accountId: credential.accountId,
+      resourceId: params.id,
+      body,
+      now,
+    });
   });
 
   // PATCH /v1/resources/:id — manual retitle (contract §3.7, round-1

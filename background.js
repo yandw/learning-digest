@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "contracts/platform-video-id.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "notes.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -489,6 +489,16 @@ async function handleCollectCurrentPage() {
 async function handleResolveCurrentSource() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const target = collectTargetFromTab(tab);
+  return resolveSourceForTab({ tabId: tab?.id ?? null, target });
+}
+
+/**
+ * The resolve probe for one already-queried tab (shared by the panel's
+ * pre-collect announcement and the P12 note entry, which needs BOTH the
+ * matched source and the tab's media position from one consistent page).
+ * Same read-only semantics as handleResolveCurrentSource.
+ */
+async function resolveSourceForTab({ target }) {
   const identityPresent = !!(
     target &&
     YTD_COLLECT.isCollectableUrl(target.url) &&
@@ -546,6 +556,226 @@ async function handleResolveCurrentSource() {
     resource: result.resource,
     source: result.source,
   };
+}
+
+// --- Library notes (P12, #61) ----------------------------------------------
+
+/**
+ * Sample the tab's media position at click time through the page-bridge
+ * (the same primary-media source the per-second stream reads). Returns
+ * null when nothing answers — the note then goes out as a plain note
+ * without a timestamp instead of guessing.
+ */
+async function readTabMediaPosition(tabId) {
+  if (typeof tabId !== "number") return null;
+  try {
+    const answer = await chrome.tabs.sendMessage(tabId, { action: "getMediaPosition" });
+    return answer && answer.success ? answer.position : null;
+  } catch (_error) {
+    // No receiver (non-xiaoe page) or the tab navigated away mid-click.
+    return null;
+  }
+}
+
+/**
+ * POST /v1/resources/{id}/notes for the learner's current page (contract
+ * §3.6; ticket #61). Shape mirrors handleCollectCurrentPage: authoritative
+ * gate first, then the pure module builds the request, and a 401 routes
+ * the panel back through the P6 authorization guide.
+ *
+ * Timestamp rule: when the current page resolves to a library Source, the
+ * note is stamped with the tab's current media position (a video page);
+ * when the position cannot be read (no bridged media, or a plain webpage),
+ * it goes out as a plain note without sourceId/positionMs.
+ *
+ * Draft policy (YTD_NOTES): the request is stashed locally BEFORE the
+ * first send attempt; a network failure keeps it and the panel offers a
+ * retry that resends the SAME clientRequestId (重发不换). A send success
+ * (201 or 200) clears it; a 400-style rejection clears it too (the request
+ * itself is poison; the learner rewrites the note). A 401 keeps it for the
+ * re-linked session.
+ */
+async function handleSaveNoteToLibrary({ text } = {}) {
+  const auth = await checkAuthNow();
+  if (!auth.authorized) {
+    // Same split as collect: a definitive 401 verdict stops a running
+    // capture; unreachable/unconfigured only point at the guide.
+    if (auth.reason === "unauthorized") {
+      void handleCredentialsInvalidated(auth.reason);
+    } else {
+      void notifyPanel({
+        action: "authState",
+        authorized: false,
+        reason: auth.reason || "unauthorized",
+      });
+    }
+    return {
+      ok: false,
+      message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再保存笔记。",
+    };
+  }
+
+  // A retry (the panel pre-fills the draft text) resends the stored draft
+  // verbatim instead of building a new request: same clientRequestId, same
+  // source/position, so the idempotent resend collapses into one note.
+  const trimmedText = typeof text === "string" ? text.trim() : "";
+  const draft = await YTD_NOTES.readDraft(chrome.storage.local);
+  const retrying = Boolean(draft) && draft.text === trimmedText;
+
+  let resourceId;
+  let sourceId = null;
+  let positionMs = null;
+  let clientRequestId;
+
+  if (retrying) {
+    resourceId = draft.resourceId;
+    sourceId = draft.sourceId;
+    positionMs = draft.positionMs;
+    clientRequestId = draft.clientRequestId;
+  } else {
+    // The note must attach to a Resource: resolve the current page the way
+    // collect does (read-only). A miss sends the learner to 收藏当前页
+    // first — there is nothing to attach a note to.
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const target = collectTargetFromTab(tab);
+    const resolution = await resolveSourceForTab({ tabId: tab?.id ?? null, target });
+    if (!resolution.ok) {
+      return { ok: false, message: resolution.message || YTD_NOTES.GENERIC_NOTE_ERROR };
+    }
+    if (!resolution.matched) {
+      recordAuthBreadcrumb("ytd_last_note", {
+        outcome: "unresolved",
+        url: target ? target.url : null,
+      });
+      return {
+        ok: false,
+        message: "当前网页还没有进入学习库：先点「收藏当前页」，再保存笔记。",
+      };
+    }
+    resourceId = resolution.resource.id;
+    // A resolved Source rides with the tab's media position when one is
+    // readable; anything else (plain webpage, no bridged media yet) is a
+    // note without a timestamp.
+    if (resolution.source && resolution.source.id) {
+      const seconds = await readTabMediaPosition(tab?.id ?? null);
+      const mapped = YTD_NOTES.positionMsFromSeconds(seconds);
+      if (mapped !== null) {
+        sourceId = resolution.source.id;
+        positionMs = mapped;
+      }
+    }
+    clientRequestId = YTD_NOTES.createClientRequestId();
+  }
+
+  const requestBody = YTD_NOTES.buildNoteRequest({
+    clientRequestId,
+    text: trimmedText,
+    sourceId,
+    positionMs,
+  });
+  if (!requestBody) {
+    return { ok: false, message: "先写点笔记内容，再保存。" };
+  }
+
+  // Draft before the send attempt: the note survives a network drop.
+  const draftRecord = YTD_NOTES.buildDraft({
+    resourceId,
+    sourceId,
+    positionMs,
+    text: requestBody.text,
+    clientRequestId: requestBody.clientRequestId,
+    savedAt: Date.now(),
+  });
+  await YTD_NOTES.writeDraft(chrome.storage.local, draftRecord);
+
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_NOTES.buildNotesPath(resourceId),
+  );
+  if (!apiUrl || !credential) {
+    recordAuthBreadcrumb("ytd_last_note", { outcome: "failed", detail: "unconfigured" });
+    return {
+      ok: false,
+      draftKept: true,
+      message: "学习服务地址未配置或账号未关联：笔记已保留为草稿，配置好后可重试。",
+    };
+  }
+
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_error) {
+    recordAuthBreadcrumb("ytd_last_note", {
+      outcome: "unreachable",
+      resourceId,
+      clientRequestId: requestBody.clientRequestId,
+    });
+    return {
+      ok: false,
+      draftKept: true,
+      message: "无法连接学习服务：笔记已保留为草稿，稍后点「保存笔记」即可重试。",
+    };
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  const result = YTD_NOTES.parseNoteResponse({ status: response.status, data });
+  if (result.ok) {
+    // 201 created or 200 idempotent resend: the note is in the library.
+    await YTD_NOTES.clearDraft(chrome.storage.local);
+    recordAuthBreadcrumb("ytd_last_note", {
+      outcome: result.outcome,
+      resourceId,
+      noteId: result.note.id,
+      sourceId,
+      positionMs,
+    });
+    return { ok: true, outcome: result.outcome, note: result.note };
+  }
+  recordAuthBreadcrumb("ytd_last_note", {
+    outcome: "failed",
+    resourceId,
+    status: response.status,
+    detail: result.message,
+  });
+  if (result.unauthorized) {
+    // The credential died mid-action: the draft survives for the
+    // re-linked session; the panel flips to the guide on its own.
+    await handleCredentialsInvalidated("unauthorized");
+    return {
+      ok: false,
+      draftKept: true,
+      message: result.message || YTD_NOTES.UNAUTHORIZED_MESSAGE,
+    };
+  }
+  // A 4xx/5xx verdict on the request itself: the draft is poison, drop it
+  // so a retry cannot hammer the same rejected request.
+  await YTD_NOTES.clearDraft(chrome.storage.local);
+  return { ok: false, draftKept: false, message: result.message };
+}
+
+/** The panel's draft status line: what a retry would resend, if any. */
+async function handleGetNoteDraft() {
+  const draft = await YTD_NOTES.readDraft(chrome.storage.local);
+  return { ok: true, draft };
+}
+
+/** The learner's explicit discard: the draft is gone for good. */
+async function handleDiscardNoteDraft() {
+  await YTD_NOTES.clearDraft(chrome.storage.local);
+  return { ok: true };
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -1073,6 +1303,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((err) =>
         sendResponse({ ok: false, matched: false, message: err.message }),
       );
+    return true;
+  }
+
+  // --- Library notes (P12, #61) ---
+
+  if (message.action === "saveNoteToLibrary") {
+    handleSaveNoteToLibrary(message)
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({ ok: false, message: err.message }),
+      );
+    return true;
+  }
+
+  if (message.action === "getNoteDraft") {
+    handleGetNoteDraft()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, draft: null, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "discardNoteDraft") {
+    handleDiscardNoteDraft()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
     return true;
   }
 

@@ -287,6 +287,9 @@ function unlockAfterAuth() {
   // before the learner clicks 收藏当前页. Pages without a confirmable
   // identity never reach the API, so panel opens stay quiet.
   void refreshCollectEntry();
+  // P12 (#61): surface an unsent note draft, if any — the input is
+  // pre-filled so clicking 保存笔记 resends it (same clientRequestId).
+  void refreshNoteDraftEntry();
 }
 
 // Listen for messages from the background script.
@@ -377,6 +380,21 @@ function setupEventListeners() {
     .getElementById("collectPageBtn")
     ?.addEventListener("click", () => {
       void collectCurrentPage();
+    });
+
+  // Library note entry (P12, #61): the note text goes to the background,
+  // which resolves the current page and posts the note (a recognized video
+  // page carries the current media position). A network failure keeps a
+  // local draft; the same button then retries it.
+  document
+    .getElementById("saveNoteBtn")
+    ?.addEventListener("click", () => {
+      void saveLibraryNote();
+    });
+  document
+    .getElementById("discardNoteDraftBtn")
+    ?.addEventListener("click", () => {
+      void discardNoteDraft();
     });
 
   // Transcript actions
@@ -989,6 +1007,112 @@ async function collectCurrentPage() {
     return;
   }
   setCollectStatus((result && result.message) || COLLECT_STATUS_COPY.failed);
+}
+
+// ============================================================
+// LIBRARY NOTE ENTRY (P12, #61)
+// ============================================================
+//
+// The welcome-state note entry, shaped like the collect entry above: the
+// background resolves the current page and posts the note (contract §3.6)
+// with the tab's media position when it is a recognized video page. This
+// side is only copy and messaging; a 401 arrives as an authState broadcast
+// which re-shows the authorization guide on its own. The draft policy
+// (network failure keeps the note, retry resends the SAME clientRequestId)
+// lives in notes.js and the background; the panel only pre-fills the input
+// from the stored draft so the retry is one click.
+
+const NOTE_STATUS_COPY = {
+  saving: "正在保存…",
+  created: "笔记已保存到学习库",
+  idempotent: "笔记已在学习库中（未重复保存）",
+  draftKept: "网络没有通：笔记已保留为草稿，稍后点「保存笔记」重试。",
+};
+
+function setNoteStatus(text) {
+  const statusEl = document.getElementById("noteStatus");
+  if (!statusEl) return;
+  statusEl.textContent = text || "";
+  statusEl.style.display = text ? "block" : "none";
+}
+
+function setDiscardDraftButtonVisible(visible) {
+  const discardBtn = document.getElementById("discardNoteDraftBtn");
+  if (discardBtn) {
+    discardBtn.style.display = visible ? "" : "none";
+  }
+}
+
+/**
+ * The unsent-draft surface on panel unlock: pre-fill the input with the
+ * draft's text so a retry needs no retyping, and say so. Silent on any
+ * transport failure — the entry stays usable for a fresh note.
+ */
+async function refreshNoteDraftEntry() {
+  setNoteStatus("");
+  setDiscardDraftButtonVisible(false);
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({ action: "getNoteDraft" });
+  } catch (_error) {
+    return;
+  }
+  if (result && result.ok && result.draft) {
+    const input = document.getElementById("libraryNoteInput");
+    if (input && !input.value.trim()) {
+      input.value = result.draft.text;
+    }
+    setNoteStatus("有一条未发送的笔记草稿，点击「保存笔记」重试。");
+    setDiscardDraftButtonVisible(true);
+  }
+}
+
+/**
+ * The 保存笔记 click. The background's verdict maps to the status line; a
+ * kept draft (network failure, 401) leaves the draft affordances visible,
+ * a clean save or a discarded draft clears them.
+ */
+async function saveLibraryNote() {
+  const input = document.getElementById("libraryNoteInput");
+  const button = document.getElementById("saveNoteBtn");
+  const text = input ? input.value : "";
+  if (button) button.disabled = true;
+  setNoteStatus(NOTE_STATUS_COPY.saving);
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "saveNoteToLibrary",
+      text,
+    });
+  } catch (_error) {
+    result = { ok: false, draftKept: true, message: NOTE_STATUS_COPY.draftKept };
+  }
+  if (button) button.disabled = false;
+  if (result && result.ok) {
+    if (input) input.value = "";
+    setDiscardDraftButtonVisible(false);
+    setNoteStatus(NOTE_STATUS_COPY[result.outcome] || NOTE_STATUS_COPY.created);
+    return;
+  }
+  const draftKept = Boolean(result && result.draftKept);
+  setDiscardDraftButtonVisible(draftKept);
+  setNoteStatus(
+    (result && result.message) || (draftKept ? NOTE_STATUS_COPY.draftKept : "笔记没有保存，请稍后重试。"),
+  );
+}
+
+/** The explicit 放弃草稿 click: the draft is gone; the input clears too. */
+async function discardNoteDraft() {
+  try {
+    await chrome.runtime.sendMessage({ action: "discardNoteDraft" });
+  } catch (_error) {
+    // The worker may be gone; clear the surface anyway — the draft dies
+    // with the next successful save attempt either way.
+  }
+  const input = document.getElementById("libraryNoteInput");
+  if (input) input.value = "";
+  setDiscardDraftButtonVisible(false);
+  setNoteStatus("已放弃未发送的笔记草稿。");
 }
 
 // ============================================================

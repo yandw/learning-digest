@@ -58,7 +58,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.2.1");
+  assert.equal(manifest.version, "0.2.2");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -432,6 +432,11 @@ test("core Learning Digest modules ship in the release and load in the service w
     // P6 authorization gate: the pure module behind the auth check and the
     // link code exchange.
     "auth-gate.js",
+    // P8 collect-current-page: the pure favorite/resolve state machine, and
+    // the shared four-station identity extractor it rides on (contracts/,
+    // same file the API tests pin).
+    "collect.js",
+    "contracts/platform-video-id.js",
     "offscreen.js",
     "offscreen.html",
     // The report surfaces (#30): the pure renderer, the full report page and
@@ -453,6 +458,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

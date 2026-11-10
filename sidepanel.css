@@ -1071,6 +1071,28 @@ body {
 }
 
 /* ============================================================
+   COLLECT CURRENT PAGE (P8, #58): the welcome-state entry.
+   Scales follow the auth-gate buttons; the status line matches
+   the gate's waiting copy so the two hints read as one voice.
+   ============================================================ */
+.collect-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.collect-status {
+  font-family: var(--font-reading);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  max-width: 270px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* ============================================================
    SHARE / ACTIONS BAR
    ============================================================ */
 .actions-bar {

@@ -75,6 +75,15 @@
           点击<strong>浏览器工具栏上的 Learning Digest 图标</strong>：学习会话会自动开始，
           扩展会分段转写课程内容，整理出带时间范围的话题时间轴，并在课程结束时输出完整的学习纪要。
         </div>
+        <!-- Collect current page (P8, #58): the active tab becomes a favorite
+             in the learner's library. Lives inside the welcome state, so the
+             authorization gate hides it until the panel unlocks. -->
+        <div class="collect-entry">
+          <button class="session-btn auth-gate-btn" id="collectPageBtn" type="button">
+            收藏当前页
+          </button>
+          <div class="collect-status" id="collectStatus" aria-live="polite" style="display: none"></div>
+        </div>
       </div>
 
       <!-- AUTHORIZATION GATE (P6)：未关联时唯一的可见界面 -->

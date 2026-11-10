@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -241,6 +241,216 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   pendingLinkTabs.delete(tabId);
+});
+
+// ============================================================
+// COLLECT CURRENT PAGE (P8, issue #58)
+// ============================================================
+//
+// The side panel's 收藏当前页 entry turns the learner's active tab into a
+// favorite: POST /v1/resources with the tab URL, the page title and the
+// platform video identity extracted client-side by the shared
+// contracts/platform-video-id.js module. The read-only sibling POST
+// /v1/sources/resolve answers "is this source already in the library"
+// without writing (contract §3.4).
+
+/**
+ * The page bridge's real document titles per tab, collected session-less:
+ * the bridge reports document.title on every xiaoe page it is injected
+ * into, whether or not a Session is running. The collect path prefers
+ * this over chrome.tabs' tab title; entries die with their tab.
+ */
+const bridgePageTitles = new Map();
+
+function recordBridgePageTitle(sender, message) {
+  const tabId = sender && sender.tab ? sender.tab.id : null;
+  const title = message && typeof message.title === "string" ? message.title.trim() : "";
+  if (typeof tabId !== "number" || title === "") return;
+  bridgePageTitles.set(tabId, title);
+}
+
+/** The collect target: url + best title + identity for the active tab. */
+function collectTargetFromTab(tab) {
+  if (!tab || typeof tab.url !== "string" || tab.url === "") return null;
+  const bridgeTitle = bridgePageTitles.get(tab.id);
+  const title =
+    typeof bridgeTitle === "string" && bridgeTitle !== ""
+      ? bridgeTitle
+      : typeof tab.title === "string"
+        ? tab.title.trim()
+        : "";
+  return {
+    tabId: typeof tab.id === "number" ? tab.id : null,
+    url: tab.url,
+    title,
+    identity: YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(tab.url),
+  };
+}
+
+/**
+ * POST /v1/resources for the learner's active tab (contract §3.1).
+ * Authoritative gate first (a collect click is a deliberate action, same
+ * shape as handleStartLearning); a 401 from the API routes the panel back
+ * through the P6 authorization guide. Every outcome lands in the
+ * ytd_last_collect breadcrumb.
+ */
+async function handleCollectCurrentPage() {
+  const auth = await checkAuthNow();
+  if (!auth.authorized) {
+    void notifyPanel({
+      action: "authState",
+      authorized: false,
+      reason: auth.reason || "unauthorized",
+    });
+    return {
+      ok: false,
+      message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再收藏当前页。",
+    };
+  }
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const target = collectTargetFromTab(tab);
+  if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
+    return { ok: false, message: "当前标签页没有可收藏的网页地址。" };
+  }
+  const request = YTD_COLLECT.buildCollectRequest(target);
+  if (!request) {
+    return { ok: false, message: "当前标签页没有可收藏的网页地址。" };
+  }
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOURCES_PATH);
+  if (!apiUrl || !credential) {
+    recordAuthBreadcrumb("ytd_last_collect", { outcome: "failed", url: target.url, detail: "unconfigured" });
+    return {
+      ok: false,
+      message: "学习服务地址未配置或账号未关联，请在设置中检查后重试。",
+    };
+  }
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (_error) {
+    recordAuthBreadcrumb("ytd_last_collect", { outcome: "unreachable", url: target.url });
+    return { ok: false, message: "无法连接学习服务，请稍后重试。" };
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  const result = YTD_COLLECT.parseCollectResponse({ status: response.status, data });
+  if (result.ok) {
+    recordAuthBreadcrumb("ytd_last_collect", {
+      outcome: result.outcome,
+      url: target.url,
+      resourceId: result.resource.id,
+      sourceId: result.source.id,
+    });
+    return {
+      ok: true,
+      outcome: result.outcome,
+      resource: result.resource,
+      source: result.source,
+    };
+  }
+  recordAuthBreadcrumb("ytd_last_collect", {
+    outcome: "failed",
+    url: target.url,
+    status: response.status,
+    detail: result.message,
+  });
+  if (response.status === 401) {
+    void notifyPanel({
+      action: "authState",
+      authorized: false,
+      reason: "unauthorized",
+    });
+  }
+  return { ok: false, message: result.message };
+}
+
+/**
+ * Read-only resolve probe for the active tab (contract §3.4). Only pages
+ * with a confirmable identity (extractVideoIdentity non-null, the four
+ * round-1 stations) reach the API; everything else is a local miss so an
+ * ordinary panel open never calls the service. A 401 routes the panel
+ * back through the authorization guide, like collect.
+ */
+async function handleResolveCurrentSource() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const target = collectTargetFromTab(tab);
+  const identityPresent = !!(
+    target &&
+    YTD_COLLECT.isCollectableUrl(target.url) &&
+    target.identity
+  );
+  const miss = { ok: true, matched: false, identityPresent, resource: null, source: null };
+  if (!identityPresent) return miss;
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  if (!credential) return miss;
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOLVE_PATH);
+  if (!apiUrl) return miss;
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(YTD_COLLECT.buildCollectRequest(target)),
+    });
+  } catch (_error) {
+    return { ...miss, ok: false, message: "无法连接学习服务，请稍后重试。" };
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  const result = YTD_COLLECT.parseResolveResponse({ status: response.status, data });
+  if (!result.ok) {
+    recordAuthBreadcrumb("ytd_last_collect_resolve", {
+      matched: false,
+      url: target.url,
+      status: response.status,
+      detail: result.message,
+    });
+    if (response.status === 401) {
+      void notifyPanel({
+        action: "authState",
+        authorized: false,
+        reason: "unauthorized",
+      });
+    }
+    return { ok: false, matched: false, identityPresent, message: result.message };
+  }
+  recordAuthBreadcrumb("ytd_last_collect_resolve", {
+    matched: result.matched,
+    url: target.url,
+    resourceId: result.resource ? result.resource.id : null,
+  });
+  return {
+    ok: true,
+    matched: result.matched,
+    identityPresent,
+    resource: result.resource,
+    source: result.source,
+  };
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  bridgePageTitles.delete(tabId);
 });
 
 // Warm the click-path cache on every worker start; the breadcrumb trail
@@ -740,6 +950,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // --- Collect current page (P8, #58) ---
+
+  if (message.action === "collectCurrentPage") {
+    handleCollectCurrentPage()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "resolveCurrentSource") {
+    handleResolveCurrentSource()
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({ ok: false, matched: false, message: err.message }),
+      );
+    return true;
+  }
+
   // --- Session capture (xiaoe-tech Source Platform, #16) ---
 
   if (message.action === "startLearning") {
@@ -1046,6 +1274,11 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   checkAuthNow,
   handleOpenAuthPage,
   handleLinkCodeCaptured,
+  // Collect current page (P8, #58): the favorite POST and the read-only
+  // resolve probe for the learner's active tab — see
+  // tests/plugin-collect-flow.test.js.
+  handleCollectCurrentPage,
+  handleResolveCurrentSource,
   // Timeline anchoring + seek-awareness (#48): the bridge's position stream
   // drives the probe window, the anchor transition, seek cuts and the
   // Plan A re-listen retries — see tests/background-capture.test.js.
@@ -2506,6 +2739,10 @@ async function dispatchFillSegment(context, watch) {
  * state.title).
  */
 async function handlePageTitle(message, sender) {
+  // The bridge's real document title is also the collect path's preferred
+  // title (P8): record it session-less, latest report wins, then let the
+  // session-scoped logic below keep its first-report-wins rule.
+  recordBridgePageTitle(sender, message);
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
   if (sender.tab?.id !== context.tabId) return;

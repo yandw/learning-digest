@@ -100,6 +100,9 @@ function loadBackgroundHelpers({
   // pre-P6 orchestration test is untouched. Pass { authorized: false,
   // reason } to exercise the gate, or a full verdict object.
   auth = { authorized: true, reason: null },
+  // P8 collect seam: chrome.tabs.query({ active, lastFocusedWindow }) —
+  // the collect handlers read the learner's current page through it.
+  tabsQuery = async () => [],
 } = {}) {
   const listeners = { addListener() {} };
   const createdTabs = [];
@@ -175,6 +178,7 @@ function loadBackgroundHelpers({
         onUpdated: listeners,
         onActivated: listeners,
         onRemoved: listeners,
+        query: tabsQuery,
         // P6 link flow: tabs the worker opens for linking (and closes after
         // the code exchange). Recorded so tests can assert the flow.
         create: async ({ url }) => {
@@ -199,6 +203,10 @@ function loadBackgroundHelpers({
     YTD_SESSION_PERSISTENCE: require("../../session-persistence.js"),
     YTD_SEGMENTER: require("../../session-segmenter.js"),
     YTD_SOURCE_PLATFORMS: require("../../source-platforms.js"),
+    // P8 collect-current-page: the shared identity extractor (contracts/,
+    // shared with the API) and the pure collect state machine.
+    YTD_PLATFORM_VIDEO_ID: require("../../contracts/platform-video-id.js"),
+    YTD_COLLECT: require("../../collect.js"),
     YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
     YTD_REPORT_RENDER: require("../../report-render.js"),
     // The real settings module (require-able, pure): the identity stub this

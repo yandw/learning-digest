@@ -282,6 +282,11 @@ function unlockAfterAuth() {
   void adoptLatestStoredReport();
   // The 概览 first-topic hint names the configured tick interval.
   void refreshSummaryIntervalMinutes();
+  // P8 (#58): when the active tab is a recognized video page, one read-only
+  // resolve probe (inside the background) can announce "已在你的学习库"
+  // before the learner clicks 收藏当前页. Pages without a confirmable
+  // identity never reach the API, so panel opens stay quiet.
+  void refreshCollectEntry();
 }
 
 // Listen for messages from the background script.
@@ -351,6 +356,13 @@ function setupEventListeners() {
       }
     })();
   });
+
+  // Collect current page (P8, #58): the active tab becomes a favorite.
+  document
+    .getElementById("collectPageBtn")
+    ?.addEventListener("click", () => {
+      void collectCurrentPage();
+    });
 
   // Transcript actions
   document
@@ -872,6 +884,90 @@ function showAuthGateWaiting() {
   if (waitingEl) {
     waitingEl.style.display = "block";
   }
+}
+
+// ============================================================
+// COLLECT CURRENT PAGE (P8, #58)
+// ============================================================
+//
+// The welcome-state 收藏当前页 entry: the background turns the learner's
+// active tab into a favorite (POST /v1/resources, contract §3.1) and can
+// pre-probe whether the source is already in the library (POST
+// /v1/sources/resolve, contract §3.4, read-only). This side is only copy
+// and messaging; the URL/identity work and the Bearer token stay in the
+// service worker, and a 401 pushes the panel back through showAuthGate.
+
+const COLLECT_STATUS_COPY = {
+  collecting: "正在收藏…",
+  created: "已收藏",
+  existing: "已在库中，返回同一条资料",
+  inLibrary: "该来源已在你的学习库",
+  failed: "收藏没有完成，请稍后重试。",
+};
+
+function setCollectStatus(text) {
+  const statusEl = document.getElementById("collectStatus");
+  if (!statusEl) return;
+  statusEl.textContent = text || "";
+  statusEl.style.display = text ? "block" : "none";
+}
+
+/** The 已在你的学习库 announcement, with the resource's title when known. */
+function describeResolvedSource(resolution) {
+  const title =
+    resolution.resource && typeof resolution.resource.title === "string"
+      ? resolution.resource.title.trim()
+      : "";
+  return title
+    ? `${COLLECT_STATUS_COPY.inLibrary}：${title}`
+    : COLLECT_STATUS_COPY.inLibrary;
+}
+
+/**
+ * The pre-collect probe, once per panel unlock. The background answers a
+ * local miss (no API call) for pages without a confirmable identity, and
+ * any transport failure here is silent — the probe is a convenience, not
+ * a surface the learner depends on.
+ */
+async function refreshCollectEntry() {
+  setCollectStatus("");
+  let resolution = null;
+  try {
+    resolution = await chrome.runtime.sendMessage({
+      action: "resolveCurrentSource",
+    });
+  } catch (_error) {
+    return;
+  }
+  if (resolution && resolution.ok && resolution.matched) {
+    setCollectStatus(describeResolvedSource(resolution));
+  }
+}
+
+/**
+ * The 收藏当前页 click: the authoritative gate, URL/identity extraction
+ * and the POST happen in the background; this maps the verdict to the
+ * status line. A 401 arrives as an authState broadcast, which re-shows
+ * the authorization guide on its own.
+ */
+async function collectCurrentPage() {
+  const button = document.getElementById("collectPageBtn");
+  if (button) button.disabled = true;
+  setCollectStatus(COLLECT_STATUS_COPY.collecting);
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "collectCurrentPage",
+    });
+  } catch (_error) {
+    result = null;
+  }
+  if (button) button.disabled = false;
+  if (result && result.ok && COLLECT_STATUS_COPY[result.outcome]) {
+    setCollectStatus(COLLECT_STATUS_COPY[result.outcome]);
+    return;
+  }
+  setCollectStatus((result && result.message) || COLLECT_STATUS_COPY.failed);
 }
 
 // ============================================================

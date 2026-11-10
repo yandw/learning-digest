@@ -1345,3 +1345,124 @@ test("authAuthorized re-runs the gate and unlocks the panel", async () => {
   assert.equal(display("welcomeState"), "flex", "the normal startup took over");
   assert.notEqual(display("settingsBtn"), "none");
 });
+
+// --- Collect current page (P8, #58): the welcome-state entry -----------------
+
+test("the collect entry lives inside the welcome state, so the authorization gate hides it", () => {
+  const html = read("sidepanel.html");
+  const welcomeBlock = html.match(
+    /<div id="welcomeState"[\s\S]*?<div id="authGateState"/,
+  );
+  assert.ok(welcomeBlock, "the welcome state block is locatable");
+  assert.match(welcomeBlock[0], /id="collectPageBtn"/, "the collect button is in the welcome view");
+  assert.match(welcomeBlock[0], /id="collectStatus"/, "the collect status line is in the welcome view");
+  assert.doesNotMatch(
+    html.match(/<div id="authGateState"[\s\S]*?<div id="loadingState"/)[0],
+    /collectPageBtn/,
+    "the gate view carries no collect entry",
+  );
+});
+
+test("collecting the current page reports 已收藏 when the API creates the favorite", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: false },
+    collectCurrentPage: {
+      ok: true,
+      outcome: "created",
+      resource: { id: "res_1", title: "注意力机制详解 P2：自注意力" },
+      source: { id: "src_1" },
+    },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  panel.elementById("collectPageBtn").listeners.click();
+  await panel.flush();
+
+  const status = panel.elementById("collectStatus");
+  assert.equal(status.textContent, "已收藏");
+  assert.notEqual(status.style.display, "none", "the outcome is visible");
+  assert.equal(
+    panel.elementById("collectPageBtn").disabled,
+    false,
+    "the button is re-enabled after the round trip",
+  );
+  assert.ok(
+    panel.sentMessages.some((message) => message.action === "collectCurrentPage"),
+    "the collect message went to the background",
+  );
+});
+
+test("a duplicate favorite reports that the existing resource was returned", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: false },
+    collectCurrentPage: {
+      ok: true,
+      outcome: "existing",
+      resource: { id: "res_1", title: "注意力机制详解 P2：自注意力" },
+      source: { id: "src_1" },
+    },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  panel.elementById("collectPageBtn").listeners.click();
+  await panel.flush();
+
+  assert.equal(panel.elementById("collectStatus").textContent, "已在库中，返回同一条资料");
+});
+
+test("a failed collect shows the API's envelope message", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: false },
+    collectCurrentPage: {
+      ok: false,
+      message: "地址缺失、非法或非 http(s)",
+    },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  panel.elementById("collectPageBtn").listeners.click();
+  await panel.flush();
+
+  assert.equal(panel.elementById("collectStatus").textContent, "地址缺失、非法或非 http(s)");
+});
+
+test("unlocking on a recognized video page says when the source is already in the library", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: {
+      ok: true,
+      matched: true,
+      resource: { id: "res_1", title: "注意力机制详解 P2：自注意力" },
+      source: { id: "src_1", progress: { positionMs: 250000, revision: 2 } },
+    },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  assert.ok(
+    panel.sentMessages.some((message) => message.action === "resolveCurrentSource"),
+    "the resolve probe fires when the collect entry unlocks",
+  );
+  assert.equal(
+    panel.elementById("collectStatus").textContent,
+    "该来源已在你的学习库：注意力机制详解 P2：自注意力",
+  );
+});
+
+test("a resolve miss keeps the collect entry quiet", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: true },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  assert.ok(panel.sentMessages.some((message) => message.action === "resolveCurrentSource"));
+  assert.equal(panel.elementById("collectStatus").style.display, "none", "nothing announced on a miss");
+});

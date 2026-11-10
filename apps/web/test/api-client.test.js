@@ -202,3 +202,72 @@ test("me() hits GET /v1/me with the stored credential", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.data.account.email, "learner@example.com");
 });
+
+// --- resource endpoints (P5: collection, list, detail, retitle) -------------
+
+test("createResource() POSTs /v1/resources with the favorite body", async () => {
+  const fetcher = fakeFetch([
+    { status: 201, body: { resource: { id: "res_1" }, source: { id: "src_1" } } },
+  ]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+  const body = {
+    url: "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+    title: "注意力机制详解 P2",
+    identity: { platformId: "bilibili", platformVideoId: "BV1ab411L78c", episodeId: "2", platformScopeId: null },
+  };
+
+  const result = await api.createResource(body);
+
+  assert.equal(fetcher.calls[0].path, "/v1/resources");
+  assert.equal(fetcher.calls[0].init.method, "POST");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.deepEqual(JSON.parse(fetcher.calls[0].init.body), body);
+  assert.equal(result.status, 201);
+});
+
+test("listResources() GETs /v1/resources with the stored credential", async () => {
+  const fetcher = fakeFetch([{ status: 200, body: { resources: [] } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.listResources();
+
+  assert.equal(fetcher.calls[0].path, "/v1/resources");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.deepEqual(result.data, { resources: [] });
+});
+
+test("getResourceDetail() GETs /v1/resources/{id} with the id in the path", async () => {
+  const fetcher = fakeFetch([
+    { status: 200, body: { resource: { id: "res_1" }, sources: [], notes: [] } },
+  ]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.getResourceDetail("res_1");
+
+  assert.equal(fetcher.calls[0].path, "/v1/resources/res_1");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(result.ok, true);
+});
+
+test("getResourceDetail() encodes unsafe id characters", async () => {
+  const fetcher = fakeFetch([{ status: 404, body: { error: { code: "not_found", message: "x" } } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  await api.getResourceDetail("res/../../etc");
+
+  assert.equal(fetcher.calls[0].path, `/v1/resources/${encodeURIComponent("res/../../etc")}`);
+});
+
+test("updateResourceTitle() PATCHes /v1/resources/{id} with { title }", async () => {
+  const fetcher = fakeFetch([{ status: 200, body: { resource: { id: "res_1", title: "新标题" } } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.updateResourceTitle("res_1", "新标题");
+
+  assert.equal(fetcher.calls[0].path, "/v1/resources/res_1");
+  assert.equal(fetcher.calls[0].init.method, "PATCH");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.deepEqual(JSON.parse(fetcher.calls[0].init.body), { title: "新标题" });
+  assert.equal(result.status, 200);
+});

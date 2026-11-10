@@ -1,6 +1,6 @@
 {
   "$contract": "learning-digest-contracts/v1",
-  "description": "/v1 六组端点的成功样例。错误样例（401/404/409/400）在 error-examples.json。样例之间互相引用同一批 res_/src_/note_ id：重复收藏、笔记重发、进度链与详情读取跨样例保持一致，三端测试可直接以此为准。样例仅覆盖成功响应；状态码约定：创建 201、命中已有数据 200。",
+  "description": "/v1 六组核心端点加 §3.7 补充端点（手动补标题）的成功样例。错误样例（401/404/409/400）在 error-examples.json。样例之间互相引用同一批 res_/src_/note_ id：重复收藏、笔记重发、进度链与详情读取跨样例保持一致，三端测试可直接以此为准。样例仅覆盖成功响应；状态码约定：创建 201、命中已有数据 200。",
   "samples": [
     {
       "id": "api-resources-create-bilibili-p2",
@@ -359,6 +359,27 @@
             "text": "这篇的复利概念可以整理进学习计划",
             "clientRequestId": "note-req-002",
             "createdAt": "2026-11-10T08:40:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-resource-retitle",
+      "description": "手动补标题（contract §3.7，第一轮补充）：PATCH 仅接受非空 title，返回更新后的 Resource；kind 与 createdAt 不变",
+      "endpoint": { "method": "PATCH", "path": "/v1/resources/res_01JABC0010" },
+      "request": {
+        "body": {
+          "title": "建立学习习惯的复利方法"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "resource": {
+            "id": "res_01JABC0010",
+            "title": "建立学习习惯的复利方法",
+            "kind": "webpage",
+            "createdAt": "2026-11-10T08:05:00Z"
           }
         }
       }

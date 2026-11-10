@@ -48,23 +48,17 @@ function resolveFile(publicDir, urlPath) {
 /**
  * @param {object} options
  * @param {string} options.publicDir static file root
+ * @param {Map<string, string>} [options.sharedFiles] URL path -> absolute
+ *   file path aliases for SHARED repo sources served verbatim (the
+ *   contracts UMD module under /vendor/). One file, no vendor copy that
+ *   could drift; the map keys are exact pathnames, so URL-derived
+ *   traversal never reaches these.
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => Promise<void>}
  */
-export function createStaticHandler({ publicDir } = {}) {
+export function createStaticHandler({ publicDir, sharedFiles } = {}) {
   const root = path.normalize(publicDir + path.sep);
 
-  return async function serveStatic(req, res) {
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      methodNotAllowed(res);
-      return;
-    }
-
-    const file = resolveFile(root, req.url || "/");
-    if (!file) {
-      notFound(res);
-      return;
-    }
-
+  async function serveFile(res, file, method) {
     let stat;
     try {
       stat = fs.statSync(file);
@@ -84,10 +78,31 @@ export function createStaticHandler({ publicDir } = {}) {
       "content-length": stat.size,
       "cache-control": "no-store",
     });
-    if (req.method === "HEAD") {
+    if (method === "HEAD") {
       res.end();
       return;
     }
     fs.createReadStream(file).pipe(res);
+  }
+
+  return async function serveStatic(req, res) {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      methodNotAllowed(res);
+      return;
+    }
+
+    const pathname = (req.url || "/").split("?")[0];
+    const shared = sharedFiles && sharedFiles.get(pathname);
+    if (shared) {
+      await serveFile(res, shared, req.method);
+      return;
+    }
+
+    const file = resolveFile(root, req.url || "/");
+    if (!file) {
+      notFound(res);
+      return;
+    }
+    await serveFile(res, file, req.method);
   };
 }

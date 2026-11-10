@@ -85,5 +85,26 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("GET", "/v1/me");
   }
 
-  return { request, requestCode, verify, logout, me };
+  // Resource endpoints (P5): collection, list, detail and the §3.7 retitle.
+  // Ids are opaque server-generated strings; they are encoded so a hostile
+  // value can never change the path shape.
+  function createResource(body) {
+    return request("POST", "/v1/resources", { body });
+  }
+
+  function listResources() {
+    return request("GET", "/v1/resources");
+  }
+
+  function getResourceDetail(id) {
+    return request("GET", `/v1/resources/${encodeURIComponent(String(id))}`);
+  }
+
+  function updateResourceTitle(id, title) {
+    return request("PATCH", `/v1/resources/${encodeURIComponent(String(id))}`, {
+      body: { title },
+    });
+  }
+
+  return { request, requestCode, verify, logout, me, createResource, listResources, getResourceDetail, updateResourceTitle };
 }

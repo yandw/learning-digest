@@ -318,6 +318,45 @@ function getResourceDetail({ store, accountId, id }) {
   };
 }
 
+/**
+ * Manual retitle (contract §3.7, the round-1 supplement for the Web
+ * "save the link first, add the title later" flow, P5): the request body
+ * accepts ONLY `{ title }` as a non-empty string — extra fields, a missing
+ * title or a blank one are the contract 400. The title is display-only
+ * (§2.1: it never matches), so retitling cannot affect duplicate
+ * detection. Cross-account and unknown ids are the same 404 (D2), checked
+ * after body validation like the other write endpoints.
+ */
+function retitleResource({ store, accountId, id, body }) {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw validationFailed("请求体必须是 JSON 对象");
+  }
+  const extraFields = Object.keys(body).filter((key) => key !== "title");
+  if (extraFields.length > 0) {
+    throw validationFailed("请求体仅接受 title 字段");
+  }
+  if (body.title === undefined || body.title === null) {
+    throw validationFailed("缺少必填字段 title");
+  }
+  if (typeof body.title !== "string") {
+    throw validationFailed("title 必须是非空字符串");
+  }
+  const title = body.title.trim();
+  if (title === "") {
+    throw validationFailed("title 不能为空");
+  }
+  // D2: other accounts' resources and unknown ids are the same 404.
+  const resource = store
+    .list("resources")
+    .find((r) => r.id === id && r.accountId === accountId);
+  if (!resource) {
+    throw notFoundResource();
+  }
+  resource.title = title;
+  store.set("resources", resource.id, resource);
+  return { status: 200, body: { resource: serializeResource(resource) } };
+}
+
 module.exports = {
   parseSourceRequest,
   matchSource,
@@ -325,6 +364,7 @@ module.exports = {
   presentFavorite,
   listResources,
   getResourceDetail,
+  retitleResource,
   serializeResource,
   serializeSource,
 };

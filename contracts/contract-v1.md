@@ -94,7 +94,7 @@
 
 ## 3. `/v1` 端点
 
-六组端点，全部已登录。成功样例在 `fixtures/api-examples.json`，错误样例在 `fixtures/error-examples.json`；下表「样例」列引用其 `id`。
+六组核心端点（§3.1–§3.6），全部已登录；§3.7 为第一轮补充端点（P5）。成功样例在 `fixtures/api-examples.json`，错误样例在 `fixtures/error-examples.json`；下表「样例」列引用其 `id`。
 
 ### 3.1 POST /v1/resources — 收藏网页
 
@@ -139,6 +139,15 @@
 - 请求体：`clientRequestId`（必填）、`text`（必填非空）、`sourceId` + `positionMs`（可选，成对出现；时间戳笔记必须指向该 Resource 名下的实际来源）。
 - 201：新建笔记。200：`clientRequestId` 已存在，返回原笔记（重发幂等）。样例：`api-note-create-timestamped`、`api-note-resend-idempotent`、`api-note-create-webpage`、`error-validation-failed-empty-note-text`。
 - 对其他账号的 Resource 写笔记返回 404（与 3.3 同语义）：`error-cross-account-note-create`。
+
+### 3.7 PATCH /v1/resources/{id} — 手动补标题（第一轮补充）
+
+Web 端「先存链接、后补标题」流程的改标题端点，属**第一轮的契约补充**（Ticket P5，#55），不在首轮六组端点之列。只修改展示标题；标题从不参与匹配（见 2.1），改标题不影响后续重复收藏的命中。
+
+- 请求体：仅接受 `{ "title": "<非空字符串>" }`。缺 `title`、`title` 非字符串、纯空白，或请求体携带其他字段，均为 400 `validation_failed`（错误封套见 §1，形态与 `error-validation-failed-missing-url` 一致）。
+- 200：返回 `{ resource }`，即更新后的 Resource（2.1 形态，`title` 为新值，其余字段不变）。
+- 对其他账号的 Resource 或未知 `id` 返回 404（与 3.3 同语义，决策 D2）。
+- 样例：`api-resource-retitle`（200，标题更新；错误形态复用既有 400/404 封套样例，不另设固定样例）。
 
 ## 4. 错误码
 

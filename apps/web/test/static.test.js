@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { startWebApp } from "./helpers/web.js";
+
+const webRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 // Seam: static serving of the public/ bundle. The shell is a single
 // index.html that hosts both the login view and the library view; the
@@ -25,6 +28,12 @@ test("GET / serves the shell with login and library views wired to main.js", asy
     assert.match(response.text, /id="libraryView"/);
     assert.match(response.text, /\/js\/main\.js/);
     assert.match(response.text, /lang="zh-CN"/);
+    // P5: the collect form, the list and the detail view are part of the
+    // shell, and the shared UMD module loads before the page module.
+    assert.match(response.text, /id="collectForm"/);
+    assert.match(response.text, /id="resourceList"/);
+    assert.match(response.text, /id="detailSection"/);
+    assert.match(response.text, /src="\/vendor\/platform-video-id\.js"/);
   } finally {
     await web.close();
   }
@@ -68,6 +77,26 @@ test("path traversal cannot read files outside public/", async () => {
 
     const deeper = await web.request("GET", "/js/%2e%2e/%2e%2e/server.js");
     assert.equal(deeper.status, 404);
+  } finally {
+    await web.close();
+  }
+});
+
+test("the shared platform-video-id UMD module is served under /vendor/ verbatim", async () => {
+  const web = await startWithPublicDir();
+  try {
+    const response = await web.request("GET", "/vendor/platform-video-id.js");
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /javascript/);
+    // The alias serves the SHARED contracts source byte-identically: one
+    // file, no vendor copy that could drift (the API requires the same
+    // file directly).
+    const sharedSource = fs.readFileSync(
+      path.join(webRoot, "..", "..", "contracts", "platform-video-id.js"),
+      "utf8",
+    );
+    assert.equal(response.text, sharedSource);
+    assert.match(response.text, /YTD_PLATFORM_VIDEO_ID/);
   } finally {
     await web.close();
   }

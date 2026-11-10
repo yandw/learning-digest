@@ -170,9 +170,14 @@ const SIX_ENDPOINTS = [
   "POST /v1/resources/{id}/notes",
 ];
 
+// Round-1 supplement endpoints (contract-v1.md §3.7, ticket P5 #55): not
+// part of the original six, but pinned by the same fixture discipline.
+const ROUND1_SUPPLEMENT_ENDPOINTS = ["PATCH /v1/resources/{id}"];
+const ALL_ENDPOINTS = [...SIX_ENDPOINTS, ...ROUND1_SUPPLEMENT_ENDPOINTS];
+
 // Classifies a concrete example endpoint onto the /v1 contract surface.
 // Concrete ids in path segments collapse into {id}; anything that does
-// not match one of the six templates is a contract error.
+// not match a known template is a contract error.
 function endpointTemplate(method, pathname) {
   const segs = pathname.split("/").filter(Boolean);
   const joined = segs.join("/");
@@ -187,6 +192,9 @@ function endpointTemplate(method, pathname) {
   }
   if (method === "POST" && segs.length === 4 && segs[1] === "resources" && segs[3] === "notes") {
     return "POST /v1/resources/{id}/notes";
+  }
+  if (method === "PATCH" && segs.length === 3 && segs[0] === "v1" && segs[1] === "resources") {
+    return "PATCH /v1/resources/{id}";
   }
   return null;
 }
@@ -344,6 +352,21 @@ test("api-examples response bodies conform to the contract structures", () => {
     } else if (example._template === "POST /v1/resources/{id}/notes") {
       assert.ok(response.status === 201 || response.status === 200, `${example.id}: note create returns 201, resend returns 200`);
       assertNote(response.body.note, `${example.id}`);
+    } else if (example._template === "PATCH /v1/resources/{id}") {
+      // §3.7 retitle: 200 with the updated §2.1 resource, nothing else.
+      assert.equal(response.status, 200, `${example.id}: retitle returns 200`);
+      assertResource(response.body.resource, `${example.id}`);
+      assert.ok(
+        example.request && example.request.body && typeof example.request.body.title === "string",
+        `${example.id}: retitle request carries a string title`,
+      );
+      assert.equal(
+        response.body.resource.title,
+        example.request.body.title,
+        `${example.id}: retitle applies the submitted title`,
+      );
+      assert.equal(response.body.source, undefined, `${example.id}: retitle returns no source`);
+      assert.equal(response.body.sources, undefined, `${example.id}: retitle returns no sources`);
     }
   }
 });
@@ -406,6 +429,37 @@ test("api-examples keep idempotency and revision invariants", () => {
     detailSource.progress,
     { positionMs: update.response.body.positionMs, revision: update.response.body.revision },
     "detail shows the latest progress written by the chain",
+  );
+
+  // §3.7 retitle (round-1 supplement): retitles an existing sample's
+  // resource; only the title moves, kind and createdAt stay put.
+  const retitle = byId.get("api-resource-retitle");
+  assert.ok(retitle, "retitle example must exist");
+  const genericWebpage = byId.get("api-resources-create-generic-webpage");
+  assert.ok(genericWebpage, "the retitled webpage's create example must exist");
+  assert.equal(
+    retitle.response.body.resource.id,
+    genericWebpage.response.body.resource.id,
+    "retitle targets the generic webpage resource",
+  );
+  assert.equal(
+    retitle.response.body.resource.kind,
+    genericWebpage.response.body.resource.kind,
+    "retitle keeps the kind",
+  );
+  assert.equal(
+    retitle.response.body.resource.createdAt,
+    genericWebpage.response.body.resource.createdAt,
+    "retitle keeps createdAt",
+  );
+  assert.notEqual(
+    retitle.response.body.resource.title,
+    genericWebpage.response.body.resource.title,
+    "retitle actually changes the title",
+  );
+  assert.ok(
+    Object.keys(retitle.request.body).length === 1 && retitle.request.body.title.trim() !== "",
+    "retitle request body is exactly one non-empty title",
   );
 });
 
@@ -495,7 +549,7 @@ function readDoc(name) {
 
 test("contract documents exist and list the contract anchors", () => {
   const contract = readDoc("contract-v1.md");
-  for (const endpoint of SIX_ENDPOINTS) {
+  for (const endpoint of ALL_ENDPOINTS) {
     assert.ok(contract.includes(endpoint), `contract-v1.md must list ${endpoint}`);
   }
   for (const structure of ["Resource", "Source", "positionMs", "revision", "Note", "clientRequestId"]) {

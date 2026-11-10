@@ -5,8 +5,19 @@
  * `server.js` wires production defaults.
  */
 import http from "node:http";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createProxy, isApiPath } from "./proxy.js";
 import { createStaticHandler } from "./static-files.js";
+
+const webRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+// Shared repo sources served verbatim under /vendor/: the contracts UMD
+// module for the page's client-side identity extraction (the same single
+// file apps/api requires — no vendor copy that could drift).
+const SHARED_FILES = new Map([
+  ["/vendor/platform-video-id.js", path.join(webRoot, "..", "..", "contracts", "platform-video-id.js")],
+]);
 
 /**
  * @param {object} [options]
@@ -20,7 +31,7 @@ export function createWebApp(options = {}) {
   const upstream = options.upstream || "http://127.0.0.1:8787";
 
   const proxy = createProxy({ upstream });
-  const serveStatic = createStaticHandler({ publicDir });
+  const serveStatic = createStaticHandler({ publicDir, sharedFiles: SHARED_FILES });
 
   const server = http.createServer(async (req, res) => {
     try {

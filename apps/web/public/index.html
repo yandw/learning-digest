@@ -6,6 +6,8 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'" />
     <title>Learning Digest 学习库</title>
     <link rel="stylesheet" href="/styles.css" />
+    <!-- 共享契约模块（UMD）：页面用全局 YTD_PLATFORM_VIDEO_ID 在客户端提取来源身份 -->
+    <script src="/vendor/platform-video-id.js"></script>
     <script type="module" src="/js/main.js"></script>
   </head>
   <body>
@@ -53,7 +55,7 @@
       </section>
     </main>
 
-    <!-- 学习库壳：导航 + 学习列表占位（列表本体属后续票） -->
+    <!-- 学习库壳：导航 + 收藏 + 学习列表 + 资源详情 -->
     <div id="libraryView" hidden>
       <header class="topbar">
         <div class="brand">Learning Digest 学习库</div>
@@ -66,11 +68,66 @@
         </div>
       </header>
       <main class="library-main">
-        <section aria-labelledby="libraryHeading">
+        <!-- 学习列表视图：粘贴收藏 + 列表 -->
+        <section id="listSection" aria-labelledby="libraryHeading">
           <h1 id="libraryHeading">学习列表</h1>
-          <div id="libraryPlaceholder" class="empty-state">
+
+          <form id="collectForm" class="collect-form" novalidate>
+            <label for="collectUrl">粘贴网页链接</label>
+            <div class="collect-row">
+              <input
+                id="collectUrl"
+                name="url"
+                type="url"
+                autocomplete="off"
+                placeholder="https://www.bilibili.com/video/…"
+                required
+              />
+              <button type="submit" id="collectBtn" class="primary-btn">收藏</button>
+            </div>
+            <label for="collectTitle">标题（可选）</label>
+            <input
+              id="collectTitle"
+              name="title"
+              type="text"
+              autocomplete="off"
+              placeholder="留空则先保存链接，稍后可补标题"
+            />
+          </form>
+
+          <p id="libraryNotice" class="notice" hidden></p>
+          <p id="libraryError" class="error" role="alert" hidden></p>
+
+          <ul id="resourceList" class="resource-list"></ul>
+          <div id="listEmpty" class="empty-state" hidden>
             <p>收藏的网页和课程会出现在这里。</p>
-            <p class="hint">收藏与学习列表即将上线。</p>
+            <p class="hint">粘贴一个链接开始收藏。</p>
+          </div>
+        </section>
+
+        <!-- 资源详情视图：原地址、各来源进度、笔记区块占位、标题可编辑 -->
+        <section id="detailSection" hidden>
+          <button id="backToListBtn" type="button" class="link-btn">← 返回学习列表</button>
+
+          <div class="detail-title-row">
+            <h1 id="detailTitleHeading" class="detail-title"></h1>
+            <button id="editTitleBtn" type="button" class="secondary-btn">编辑标题</button>
+          </div>
+          <form id="titleForm" class="title-form" novalidate hidden>
+            <label for="titleInput">标题</label>
+            <input id="titleInput" name="title" type="text" autocomplete="off" required />
+            <div class="title-form-actions">
+              <button type="submit" id="saveTitleBtn" class="primary-btn">保存</button>
+              <button type="button" id="cancelTitleBtn" class="secondary-btn">取消</button>
+            </div>
+          </form>
+
+          <h2 class="detail-subheading">原地址</h2>
+          <ul id="detailSources" class="source-list"></ul>
+
+          <h2 class="detail-subheading">笔记</h2>
+          <div id="detailNotes" class="notes-block">
+            <p class="hint">笔记功能即将上线，这里将展示学习笔记。</p>
           </div>
         </section>
       </main>

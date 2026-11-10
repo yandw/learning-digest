@@ -101,6 +101,30 @@ test("unknown /v1 paths stay transparent: the upstream 404 envelope is returned"
   }
 });
 
+test("forwards PATCH with a JSON body (the §3.7 retitle path)", async () => {
+  const upstream = await startUpstream();
+  const web = await startWebApp({
+    upstream: upstream.url,
+    publicDir: makeEmptyPublicDir(),
+  });
+  try {
+    const response = await web.request("PATCH", "/v1/resources/res_01JABC0010", {
+      body: { title: "手动补的标题" },
+      headers: { Authorization: "Bearer stored-token" },
+    });
+
+    assert.equal(response.status, 200);
+    const echo = response.json.echo;
+    assert.equal(echo.method, "PATCH");
+    assert.equal(echo.path, "/v1/resources/res_01JABC0010");
+    assert.equal(echo.authorization, "Bearer stored-token");
+    assert.deepEqual(JSON.parse(echo.body), { title: "手动补的标题" });
+  } finally {
+    await web.close();
+    await upstream.close();
+  }
+});
+
 test("unreachable upstream answers 502 with an error envelope", async () => {
   const web = await startWebApp({
     // Port 9 on loopback: nothing listens there during tests.

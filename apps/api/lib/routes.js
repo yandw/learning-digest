@@ -14,6 +14,7 @@ const {
   presentFavorite,
   listResources,
   getResourceDetail,
+  retitleResource,
 } = require("./resources");
 const { saveProgress } = require("./progress");
 
@@ -155,6 +156,13 @@ function registerRoutes(ctx) {
   router.add("GET", "/v1/resources/:id", async ({ req, params }) => {
     const credential = requireCredential(req);
     return getResourceDetail({ store, accountId: credential.accountId, id: params.id });
+  });
+
+  // PATCH /v1/resources/:id — manual retitle (contract §3.7, round-1
+  // supplement): body accepts only { title }; cross-account is 404 (D2).
+  router.add("PATCH", "/v1/resources/:id", async ({ req, params, body }) => {
+    const credential = requireCredential(req);
+    return retitleResource({ store, accountId: credential.accountId, id: params.id, body });
   });
 
   // POST /v1/sources/resolve — read-only pre-study lookup (contract §3.4):

@@ -217,3 +217,235 @@ form input:focus {
   font-size: 13px;
   color: #9aa5b1;
 }
+
+/* ---------- 粘贴收藏（P5） ---------- */
+
+.collect-form {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.collect-form label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.collect-form input {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.collect-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.collect-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.collect-row input {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.collect-row .primary-btn {
+  width: auto;
+  white-space: nowrap;
+}
+
+/* ---------- 学习列表（P5） ---------- */
+
+.library-main .notice {
+  margin: 0 0 16px;
+}
+
+.library-main .error {
+  margin: 0 0 16px;
+}
+
+.resource-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.resource-item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+}
+
+.resource-link {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  margin-bottom: 8px;
+}
+
+.resource-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.resource-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  background: var(--page);
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+}
+
+.badge-kind {
+  color: var(--accent);
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.badge-progress {
+  color: #166534;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.resource-meta .detail-btn {
+  margin-left: auto;
+}
+
+.resource-meta .link-btn {
+  margin: 0;
+}
+
+/* ---------- 资源详情（P5） ---------- */
+
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.detail-title {
+  margin: 0;
+  font-size: 20px;
+  flex: 1;
+}
+
+.detail-subheading {
+  margin: 28px 0 12px;
+  font-size: 15px;
+  color: var(--ink-soft);
+}
+
+.title-form {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 8px;
+}
+
+.title-form label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.title-form input {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.title-form input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.title-form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.title-form-actions .primary-btn {
+  width: auto;
+}
+
+.title-form-actions .secondary-btn {
+  width: auto;
+}
+
+.source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.source-item {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 20px;
+}
+
+.source-link {
+  display: block;
+  font-size: 14px;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+  margin-bottom: 8px;
+}
+
+.source-link:hover {
+  text-decoration: underline;
+}
+
+.notes-block {
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.notes-block p {
+  margin: 0;
+}

@@ -1,10 +1,12 @@
 /**
- * Page binding only: wires the login flow state machine, the api client
- * and the credential store to the DOM. All decisions live in the pure
- * modules (login-flow.js / api-client.js / credentials.js); this file has
- * no logic worth unit-testing beyond what the static bundle test asserts.
+ * Page binding only: wires the login flow state machine, the library flow
+ * (P5: collect / list / detail / retitle), the api client and the
+ * credential store to the DOM. All decisions live in the pure modules
+ * (login-flow.js / library.js / api-client.js / credentials.js); this file
+ * only builds elements from their snapshots and view models.
  */
 import { createLoginFlow } from "./login-flow.js";
+import { createLibraryFlow, presentListItem, presentDetail } from "./library.js";
 import { createApiClient } from "./api-client.js";
 import { createCredentialStore } from "./credentials.js";
 
@@ -14,8 +16,8 @@ function byId(id) {
 
 const credentials = createCredentialStore({ storage: window.localStorage });
 
-// The api client and the flow reference each other (401 -> flow.reset), so
-// the expiry handler is bound after both exist.
+// The api client and the flows reference each other (401 -> login flow
+// reset), so the expiry handler is bound after both exist.
 let sessionExpiredHandler = () => {};
 const api = createApiClient({
   fetchImpl: (path, init) => fetch(path, init),
@@ -23,6 +25,13 @@ const api = createApiClient({
   onUnauthorized: () => sessionExpiredHandler(),
 });
 const flow = createLoginFlow({ api, credentials });
+
+// Shared contracts module (UMD global). If it failed to load, degrade to
+// no client-side identity: the server extracts the identity from the URL
+// itself, so collection still works.
+const identityExtractor =
+  window.YTD_PLATFORM_VIDEO_ID || { extractVideoIdentity: () => null };
+const library = createLibraryFlow({ api, identity: identityExtractor });
 sessionExpiredHandler = () => flow.handleSessionExpired();
 
 const elements = {
@@ -39,12 +48,129 @@ const elements = {
   changeEmailBtn: byId("changeEmailBtn"),
   logoutBtn: byId("logoutBtn"),
   accountEmail: byId("accountEmail"),
+  // library: list view
+  listSection: byId("listSection"),
+  collectForm: byId("collectForm"),
+  collectUrl: byId("collectUrl"),
+  collectTitle: byId("collectTitle"),
+  collectBtn: byId("collectBtn"),
+  libraryNotice: byId("libraryNotice"),
+  libraryError: byId("libraryError"),
+  resourceList: byId("resourceList"),
+  listEmpty: byId("listEmpty"),
+  // library: detail view
+  detailSection: byId("detailSection"),
+  backToListBtn: byId("backToListBtn"),
+  detailTitleHeading: byId("detailTitleHeading"),
+  editTitleBtn: byId("editTitleBtn"),
+  titleForm: byId("titleForm"),
+  titleInput: byId("titleInput"),
+  saveTitleBtn: byId("saveTitleBtn"),
+  cancelTitleBtn: byId("cancelTitleBtn"),
+  detailSources: byId("detailSources"),
 };
+
+function setMessage(element, text) {
+  element.textContent = text || "";
+  element.hidden = !text;
+}
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) {
+    node.className = className;
+  }
+  if (text !== undefined) {
+    node.textContent = text;
+  }
+  return node;
+}
+
+/** One learning-list row: open-in-new-tab link + badges + progress. */
+function renderListItem(presented) {
+  const item = el("li", "resource-item");
+
+  const link = el("a", "resource-link", presented.title);
+  link.href = presented.href || "#";
+  link.target = "_blank";
+  link.rel = "noopener";
+  item.appendChild(link);
+
+  const meta = el("div", "resource-meta");
+  meta.appendChild(el("span", "badge badge-kind", presented.kindLabel));
+  if (presented.platformLabel) {
+    meta.appendChild(el("span", "badge badge-platform", presented.platformLabel));
+  }
+  if (presented.progressText) {
+    meta.appendChild(el("span", "badge badge-progress", presented.progressText));
+  }
+  const detailBtn = el("button", "link-btn detail-btn", "详情");
+  detailBtn.type = "button";
+  detailBtn.dataset.id = presented.id;
+  detailBtn.addEventListener("click", () => {
+    act(() => library.openDetail(presented.id));
+  });
+  meta.appendChild(detailBtn);
+  item.appendChild(meta);
+
+  return item;
+}
+
+/** One detail source row: the original address with badges and progress. */
+function renderDetailSource(presented) {
+  const item = el("li", "source-item");
+
+  const link = el("a", "source-link", presented.url);
+  link.href = presented.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  item.appendChild(link);
+
+  const meta = el("div", "resource-meta");
+  meta.appendChild(el("span", "badge badge-kind", presented.kindLabel));
+  if (presented.platformLabel) {
+    meta.appendChild(el("span", "badge badge-platform", presented.platformLabel));
+  }
+  if (presented.progressText) {
+    meta.appendChild(el("span", "badge badge-progress", presented.progressText));
+  }
+  item.appendChild(meta);
+
+  return item;
+}
+
+function renderList(state) {
+  elements.resourceList.replaceChildren(
+    ...state.resources.map((item) => renderListItem(presentListItem(item))),
+  );
+  elements.listEmpty.hidden = state.resources.length > 0;
+}
+
+function renderDetail(state) {
+  if (!state.detail) {
+    return;
+  }
+  const presented = presentDetail(state.detail);
+  elements.detailTitleHeading.textContent = presented.title;
+  if (elements.titleForm.hidden) {
+    // Don't clobber a title the user is currently editing.
+    elements.titleInput.value = presented.title;
+  }
+  elements.detailSources.replaceChildren(
+    ...presented.sources.map((source) => renderDetailSource(source)),
+  );
+}
+
+// The library loads once per authenticated session: on resume, after a
+// fresh login, and never with a previous account's data (reset on logout
+// and session expiry below).
+let libraryLoaded = false;
 
 function render() {
   const state = flow.getState();
-  elements.loginView.hidden = state.state === "authenticated";
-  elements.libraryView.hidden = state.state !== "authenticated";
+  const authenticated = state.state === "authenticated";
+  elements.loginView.hidden = authenticated;
+  elements.libraryView.hidden = !authenticated;
 
   elements.emailForm.hidden = state.state !== "email";
   elements.codeForm.hidden = state.state !== "code";
@@ -63,9 +189,32 @@ function render() {
   elements.verifyBtn.disabled = state.busy;
   elements.logoutBtn.disabled = state.busy;
 
-  if (state.state === "authenticated") {
-    const credential = credentials.get();
-    elements.accountEmail.textContent = credential ? credential.email : "";
+  if (!authenticated) {
+    libraryLoaded = false;
+    return;
+  }
+
+  const credential = credentials.get();
+  elements.accountEmail.textContent = credential ? credential.email : "";
+
+  const libraryState = library.getState();
+  elements.listSection.hidden = libraryState.view !== "list";
+  elements.detailSection.hidden = libraryState.view !== "detail";
+  elements.collectBtn.disabled = libraryState.busy;
+  elements.saveTitleBtn.disabled = libraryState.busy;
+
+  setMessage(elements.libraryNotice, libraryState.notice);
+  setMessage(elements.libraryError, libraryState.error);
+
+  if (libraryState.view === "list") {
+    renderList(libraryState);
+  } else {
+    renderDetail(libraryState);
+  }
+
+  if (!libraryLoaded) {
+    libraryLoaded = true;
+    act(() => library.load());
   }
 }
 
@@ -74,6 +223,8 @@ async function act(action) {
   render();
   return result;
 }
+
+// --- login flow bindings (P3) -------------------------------------------------
 
 elements.emailForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -91,7 +242,75 @@ elements.changeEmailBtn.addEventListener("click", () => {
 });
 
 elements.logoutBtn.addEventListener("click", () => {
-  act(() => flow.logout());
+  act(async () => {
+    const result = await flow.logout();
+    // Leave no trace of the previous session's library.
+    library.reset();
+    return result;
+  });
+});
+
+// --- library flow bindings (P5) ------------------------------------------------
+
+elements.collectForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  act(async () => {
+    const result = await library.collect({
+      url: elements.collectUrl.value,
+      title: elements.collectTitle.value,
+    });
+    if (result.ok) {
+      // A fresh empty input invites the next paste.
+      elements.collectUrl.value = "";
+      elements.collectTitle.value = "";
+    }
+    return result;
+  });
+});
+
+elements.backToListBtn.addEventListener("click", () => {
+  library.backToList();
+  render();
+});
+
+elements.editTitleBtn.addEventListener("click", () => {
+  elements.detailTitleHeading.hidden = true;
+  elements.editTitleBtn.hidden = true;
+  elements.titleForm.hidden = false;
+  elements.titleInput.focus();
+});
+
+function closeTitleEditor() {
+  elements.titleForm.hidden = true;
+  elements.detailTitleHeading.hidden = false;
+  elements.editTitleBtn.hidden = false;
+}
+
+elements.cancelTitleBtn.addEventListener("click", () => {
+  const libraryState = library.getState();
+  if (libraryState.detail) {
+    elements.titleInput.value = libraryState.detail.resource.title;
+  }
+  setMessage(elements.libraryError, null);
+  closeTitleEditor();
+});
+
+elements.titleForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  act(async () => {
+    const libraryState = library.getState();
+    if (!libraryState.detail) {
+      return { ok: false };
+    }
+    const result = await library.retitle(
+      libraryState.detail.resource.id,
+      elements.titleInput.value,
+    );
+    if (result.ok) {
+      closeTitleEditor();
+    }
+    return result;
+  });
 });
 
 /** Validate the stored credential at shell entry and show the account. */

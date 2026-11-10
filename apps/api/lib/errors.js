@@ -45,6 +45,11 @@ function notFoundUnknownPath() {
   return new ApiError(404, "not_found", "未知接口路径");
 }
 
+/** Cross-account or missing Resource reads (decision D2: always 404). */
+function notFoundResource() {
+  return new ApiError(404, "not_found", "资源不存在或无权访问");
+}
+
 function methodNotAllowed() {
   return new ApiError(405, "method_not_allowed", "HTTP 方法不被允许");
 }
@@ -59,6 +64,7 @@ module.exports = {
   unauthorizedMissing,
   unauthorizedExpired,
   notFoundUnknownPath,
+  notFoundResource,
   methodNotAllowed,
   internalError,
 };

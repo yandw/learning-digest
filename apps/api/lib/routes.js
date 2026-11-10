@@ -7,6 +7,14 @@ const { normalizeEmail, isInvited } = require("./invites");
 const { issueCode } = require("./codes");
 const { openOrLogin } = require("./accounts");
 const { authenticate, revokeCredential } = require("./credentials");
+const {
+  parseSourceRequest,
+  matchSource,
+  createFavorite,
+  presentFavorite,
+  listResources,
+  getResourceDetail,
+} = require("./resources");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -119,6 +127,49 @@ function registerRoutes(ctx) {
     }
     revokeCredential({ store, token, now });
     return { status: 200, body: { ok: true } };
+  });
+
+  // POST /v1/resources — favorite (contract §3.1): identity hit first,
+  // else the normalized address; 201 creates, 200 returns the existing
+  // Resource + Source with the original first-favorited URL (D3).
+  router.add("POST", "/v1/resources", async ({ req, body }) => {
+    const credential = requireCredential(req);
+    const request = parseSourceRequest(body);
+    const existing = matchSource({ store, accountId: credential.accountId, request });
+    if (existing) {
+      return { status: 200, body: presentFavorite({ store, ...existing }) };
+    }
+    const created = createFavorite({ store, accountId: credential.accountId, request, now });
+    return { status: 201, body: presentFavorite({ store, ...created }) };
+  });
+
+  // GET /v1/resources — the account's list, newest first (contract §3.2).
+  router.add("GET", "/v1/resources", async ({ req }) => {
+    const credential = requireCredential(req);
+    return listResources({ store, accountId: credential.accountId });
+  });
+
+  // GET /v1/resources/:id — detail with sources and notes; cross-account
+  // reads are the same 404 as unknown ids (D2).
+  router.add("GET", "/v1/resources/:id", async ({ req, params }) => {
+    const credential = requireCredential(req);
+    return getResourceDetail({ store, accountId: credential.accountId, id: params.id });
+  });
+
+  // POST /v1/sources/resolve — read-only pre-study lookup (contract §3.4):
+  // the same matching as favoriting, but a miss answers matched:false and
+  // writes nothing.
+  router.add("POST", "/v1/sources/resolve", async ({ req, body }) => {
+    const credential = requireCredential(req);
+    const request = parseSourceRequest(body);
+    const existing = matchSource({ store, accountId: credential.accountId, request });
+    if (!existing) {
+      return { status: 200, body: { matched: false } };
+    }
+    return {
+      status: 200,
+      body: { matched: true, ...presentFavorite({ store, ...existing }) },
+    };
   });
 }
 

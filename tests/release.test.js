@@ -461,6 +461,9 @@ test("core Learning Digest modules ship in the release and load in the service w
     // P12 library notes: the pure note state machine (request build,
     // idempotent resend, draft policy).
     "notes.js",
+    // Round-1 review fix: the shared §1 envelope + base-URL helpers behind
+    // auth-gate/collect/learning-start/notes.
+    "api-client.js",
     "contracts/platform-video-id.js",
     "offscreen.js",
     "offscreen.html",
@@ -483,6 +486,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

@@ -12,6 +12,9 @@
  *   matching — scheme + lowercase host + path + query, fragment dropped,
  *   the platform's share/tracking params and all utm_* dropped, remaining
  *   query params name-sorted. Storage keeps the raw first-favorited URL.
+ * - platformVideoIdFormats: the §1 per-platform platformVideoId regexes
+ *   (the same ones the extractors pin), the single format-judgment source
+ *   for consumers that validate declared identities.
  *
  * Like source-platforms.js: pure logic, zero dependencies, total functions
  * — any input (including garbage) returns a result and never throws, so
@@ -30,7 +33,12 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
   const YT_HOSTS = new Set(["www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"]);
   const YT_ID_RE = /^[0-9A-Za-z_-]{11}$/;
   const XHS_HOSTS = new Set(["www.xiaohongshu.com", "xhslink.com"]);
-  const XHS_NOTE_RE = /^[0-9a-f]{24}$/;
+  // Case-insensitive so the extractor agrees with source-platforms.js's
+  // recognition adapter (NOTE_ID_RE, also /i): a URL whose note id carries
+  // uppercase hex must not recognize as a video page yet fail extraction.
+  // Hex digits are otherwise lowercase in the wild; the rules table pins
+  // "24 位十六进制" without a case qualifier.
+  const XHS_NOTE_RE = /^[0-9a-f]{24}$/i;
 
   // Share/tracking params each platform's ignore list drops (rules §1).
   // All platforms additionally drop every utm_* param.
@@ -223,6 +231,20 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
   };
 
   /**
+   * The §1 platformVideoId formats, one regex per platform — the SAME
+   * regexes the extractors pin above, exported so consumers (the API's
+   * declared-identity validation) judge formats from this module instead
+   * of re-declaring them and drifting. Frozen: the formats are contract
+   * data, not caller-mutable state.
+   */
+  const platformVideoIdFormats = Object.freeze({
+    "xiaoe-tech": XIAOE_TOKEN_RE,
+    "bilibili": BV_RE,
+    "youtube": YT_ID_RE,
+    "xiaohongshu": XHS_NOTE_RE,
+  });
+
+  /**
    * The platform identity a URL carries, per platform-video-id-rules.md.
    * Returns null when no identity is confirmable from the URL alone;
    * never throws on any input.
@@ -243,7 +265,7 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
     }
   }
 
-  return { normalizeUrl, extractVideoIdentity };
+  return { normalizeUrl, extractVideoIdentity, platformVideoIdFormats };
 })();
 
 if (typeof module !== "undefined" && module.exports) {

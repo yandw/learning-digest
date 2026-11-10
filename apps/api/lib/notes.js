@@ -24,6 +24,11 @@ const { generateId } = require("./ids");
 
 const NOTE_TEXT_MAX = 10000;
 
+/**
+ * Contract §1 timestamp format: ISO 8601 UTC at second precision, like the
+ * fixture samples ("2026-11-10T08:00:00Z"). The API's single timestamp
+ * formatter — resources.js reuses it so every createdAt is shaped alike.
+ */
 function isoSeconds(atMs) {
   return new Date(Math.floor(atMs / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -159,4 +164,4 @@ function createNote({ store, accountId, resourceId, body, now }) {
   return { status: 201, body: { note: serializeNote(note) } };
 }
 
-module.exports = { createNote, notesForResource, serializeNote, parseNoteRequest };
+module.exports = { createNote, notesForResource, serializeNote, parseNoteRequest, isoSeconds };

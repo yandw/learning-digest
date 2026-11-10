@@ -301,16 +301,15 @@ var YTD_LEARNING_START = (() => {
     return `/v1/sources/${encodeURIComponent(String(sourceId))}/progress`;
   }
 
+  // Base-URL joining rides the shared api-client module (one rule for every
+  // contract module); the §3.5 path shaping stays here.
+  const apiClient =
+    typeof YTD_API_CLIENT !== "undefined"
+      ? YTD_API_CLIENT
+      : require("./api-client.js");
+
   function buildProgressApiUrl(apiBaseUrl, sourceId) {
-    if (typeof apiBaseUrl !== "string" || apiBaseUrl.trim() === "") return null;
-    try {
-      const parsed = new URL(apiBaseUrl.trim());
-      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
-      const base = apiBaseUrl.trim().replace(/\/+$/, "");
-      return `${base}${progressPath(sourceId)}`;
-    } catch (_error) {
-      return null;
-    }
+    return apiClient.buildApiUrl(apiBaseUrl, progressPath(sourceId));
   }
 
   /**

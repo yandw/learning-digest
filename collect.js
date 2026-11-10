@@ -21,6 +21,13 @@
  * service worker via importScripts.
  */
 var YTD_COLLECT = (() => {
+  // Shared API client helpers (api-client.js): in Node tests we require
+  // them, in the service worker the global arrives via importScripts.
+  const apiClient =
+    typeof YTD_API_CLIENT !== "undefined"
+      ? YTD_API_CLIENT
+      : require("./api-client.js");
+
   const RESOURCES_PATH = "/v1/resources";
   const RESOLVE_PATH = "/v1/sources/resolve";
 
@@ -76,16 +83,9 @@ var YTD_COLLECT = (() => {
     return body;
   }
 
-  /** §1 error envelope: the server's Chinese message when well-formed. */
-  function parseEnvelope(data, fallback) {
-    const message = data && data.error && data.error.message;
-    return typeof message === "string" && message ? message : fallback;
-  }
-
-  function envelopeCode(data) {
-    const code = data && data.error && data.error.code;
-    return typeof code === "string" ? code : null;
-  }
+  // The §1 envelope readers live in the shared api-client module.
+  const parseEnvelope = apiClient.parseEnvelope;
+  const envelopeCode = apiClient.envelopeCode;
 
   function parseFavoriteBody(data) {
     if (!data || typeof data !== "object") return null;

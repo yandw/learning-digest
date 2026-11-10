@@ -192,6 +192,30 @@ test("two accounts favoriting the same URL concurrently each get their own Sourc
   }
 });
 
+test("a declared uppercase-hex xiaohongshu identity validates (formats come from the shared module)", async () => {
+  // The §1 format judgment is contracts/platform-video-id.js's
+  // platformVideoIdFormats — case-insensitive like the extractors and the
+  // recognition adapter, so an uppercase-hex note identity is not a 400.
+  const app = await startApp({ seedFile: seedFileWith(["learner@example.com"]) });
+  try {
+    const token = await openAccount(app, "learner@example.com");
+    const response = await app.request("POST", "/v1/resources", {
+      headers: authHeader(token),
+      body: {
+        url: "https://www.xiaohongshu.com/explore/66a1b2c3000000001e01ab23",
+        identity: {
+          platformId: "xiaohongshu",
+          platformVideoId: "66A1B2C3000000001E01AB23",
+        },
+      },
+    });
+    assert.equal(response.status, 201);
+    assert.equal(response.json.source.platformVideoId, "66A1B2C3000000001E01AB23");
+  } finally {
+    await app.close();
+  }
+});
+
 test("malformed identity declarations are rejected with validation_failed (400)", async () => {
   const app = await startApp({ seedFile: seedFileWith(["learner@example.com"]) });
   try {

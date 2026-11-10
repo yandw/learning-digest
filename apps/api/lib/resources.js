@@ -16,16 +16,18 @@
  */
 const { ApiError, validationFailed, notFoundResource } = require("./errors");
 const { generateId } = require("./ids");
-const { notesForResource } = require("./notes");
-const { normalizeUrl, extractVideoIdentity } = require("../../../contracts/platform-video-id");
+const { notesForResource, isoSeconds } = require("./notes");
+const {
+  normalizeUrl,
+  extractVideoIdentity,
+  platformVideoIdFormats,
+} = require("../../../contracts/platform-video-id");
 
-// platformVideoId formats from platform-video-id-rules.md §1.
-const PLATFORM_VIDEO_ID_FORMATS = {
-  "xiaoe-tech": /^(p|v|a|i|l)_[a-z0-9]{4,}$/i,
-  "bilibili": /^BV[0-9A-Za-z]{10}$/,
-  "youtube": /^[0-9A-Za-z_-]{11}$/,
-  "xiaohongshu": /^[0-9a-f]{24}$/,
-};
+// The declared-identity format judgment comes from the shared contracts
+// module (platform-video-id-rules.md §1) — the same regexes the extractors
+// pin, so a URL that extracts an identity and a declared one are judged by
+// one source. The 400 validation POLICY stays here (parseIdentity).
+const PLATFORM_VIDEO_ID_FORMATS = platformVideoIdFormats;
 
 function invalidUrl() {
   return new ApiError(400, "invalid_url", "仅支持 http(s) 网页地址");
@@ -226,14 +228,6 @@ function createFavorite({ store, accountId, request, now }) {
   store.set("resources", resource.id, resource);
   store.set("sources", source.id, source);
   return { resource, source };
-}
-
-/**
- * Contract §1 timestamp format: ISO 8601 UTC at second precision, like the
- * fixture samples ("2026-11-10T08:00:00Z").
- */
-function isoSeconds(atMs) {
-  return new Date(Math.floor(atMs / 1000) * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /** Contract §2.1 shape (internal fields stripped). */

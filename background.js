@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "contracts/platform-video-id.js");
+importScripts("api-client.js", "settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line

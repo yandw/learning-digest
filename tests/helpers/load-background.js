@@ -202,6 +202,9 @@ function loadBackgroundHelpers({
       },
     },
     YTD_SPEECH_TRANSCRIPTION: require("../../speech-transcription.js"),
+    // Round-1 review fix: the shared envelope/URL helpers, loaded first in
+    // the worker (importScripts) and required here for parity.
+    YTD_API_CLIENT: require("../../api-client.js"),
     YTD_SESSION_PIPELINE: require("../../session-pipeline.js"),
     YTD_SESSION_TIMELINE: require("../../session-timeline.js"),
     YTD_SESSION_SUMMARY: require("../../session-summary.js"),

@@ -14,7 +14,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { extractVideoIdentity, normalizeUrl } = require("./platform-video-id");
+const { extractVideoIdentity, normalizeUrl, platformVideoIdFormats } = require("./platform-video-id");
 
 const { samples } = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures", "source-matching.json"), "utf8"),
@@ -228,6 +228,23 @@ test("xiaoe-tech tokens shorter than 4 chars or without a subdomain", () => {
 
 // --- xiaohongshu ---------------------------------------------------------------
 
+test("platformVideoIdFormats exports the §1 formats as contract data", () => {
+  // The single format-judgment source: the API's declared-identity
+  // validation consumes this map instead of re-declaring the regexes.
+  assert.equal(Object.isFrozen(platformVideoIdFormats), true);
+  assert.deepEqual(Object.keys(platformVideoIdFormats).sort(), [
+    "bilibili",
+    "xiaoe-tech",
+    "xiaohongshu",
+    "youtube",
+  ]);
+  assert.ok(platformVideoIdFormats["bilibili"].test("BV1ab411L78c"));
+  assert.ok(platformVideoIdFormats["xiaoe-tech"].test("v_66a1b2c3d4e5"));
+  assert.ok(platformVideoIdFormats["youtube"].test("dQw4w9WgXcQ"));
+  assert.ok(platformVideoIdFormats["xiaohongshu"].test("66A1B2C3000000001E01AB23"));
+  assert.ok(!platformVideoIdFormats["bilibili"].test("BV123"));
+});
+
 test("xiaohongshu note id extracts from both path shapes", () => {
   const explore = extractVideoIdentity("https://www.xiaohongshu.com/explore/66a1b2c3000000001e01ab23");
   assert.deepEqual(explore, {
@@ -243,9 +260,27 @@ test("xiaohongshu note id extracts from both path shapes", () => {
   );
 });
 
+test("xiaohongshu uppercase-hex note ids extract too (aligned with recognition)", () => {
+  // The recognition adapter (source-platforms.js NOTE_ID_RE) has always been
+  // case-insensitive; the extractor now agrees, so an uppercase-hex note URL
+  // cannot recognize as a video page yet fail identity extraction.
+  const explore = extractVideoIdentity("https://www.xiaohongshu.com/explore/66A1B2C3000000001E01AB23");
+  assert.deepEqual(explore, {
+    platformId: "xiaohongshu",
+    platformVideoId: "66A1B2C3000000001E01AB23",
+    episodeId: null,
+    platformScopeId: null,
+  });
+  assert.deepEqual(
+    extractVideoIdentity("https://www.xiaohongshu.com/discovery/item/66A1B2C3000000001E01AB23"),
+    explore,
+    "discovery/item is the same note identity",
+  );
+});
+
 test("xiaohongshu malformed ids and short links yield no identity", () => {
-  assert.equal(extractVideoIdentity("https://www.xiaohongshu.com/explore/66A1B2C3000000001E01AB23"), null, "hex is lowercase only");
-  assert.equal(extractVideoIdentity("https://www.xiaohongshu.com/explore/66a1b2c3000000001e01ab2"), null);
+  assert.equal(extractVideoIdentity("https://www.xiaohongshu.com/explore/66a1b2c3000000001e01ab2"), null, "23 hex digits are not a note id");
+  assert.equal(extractVideoIdentity("https://www.xiaohongshu.com/explore/66a1b2c3000000001e01abz"), null, "non-hex digits are not a note id");
   assert.equal(extractVideoIdentity("https://www.xiaohongshu.com/user/profile/5ffd1a05000000000100712c"), null);
   assert.equal(extractVideoIdentity("https://xhslink.com/xy9Kz2a"), null, "xhslink short code is not locally confirmable (D8)");
 });

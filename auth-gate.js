@@ -15,6 +15,13 @@
  *      the confirming Web session's credential group (P7 linked logout).
  */
 var YTD_AUTH_GATE = (() => {
+  // Shared API client helpers (api-client.js): in Node tests we require
+  // them, in the service worker the global arrives via importScripts.
+  const apiClient =
+    typeof YTD_API_CLIENT !== "undefined"
+      ? YTD_API_CLIENT
+      : require("./api-client.js");
+
   // The linked credential lives in chrome.storage.local under the repo's
   // ytd_* key convention.
   const CREDENTIAL_STORAGE_KEY = "ytd_auth_credential";
@@ -37,23 +44,10 @@ var YTD_AUTH_GATE = (() => {
     };
   }
 
-  /**
-   * Joins a configured base URL and a /v1 path. Returns null when the base
-   * URL is not an http(s) URL (a misconfigured setting must fail loudly at
-   * the call site, not build a nonsense request).
-   */
-  function buildApiUrl(baseUrl, path) {
-    if (typeof baseUrl !== "string" || baseUrl.trim() === "") return null;
-    try {
-      const url = new URL(baseUrl.trim());
-      if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-      const base = baseUrl.trim().replace(/\/+$/, "");
-      const suffix = String(path || "").startsWith("/") ? path : `/${path}`;
-      return `${base}${suffix}`;
-    } catch (_error) {
-      return null;
-    }
-  }
+  // buildApiUrl lives in the shared api-client module (one joining rule for
+  // every contract module); re-exported so the worker wiring keeps calling
+  // YTD_AUTH_GATE.buildApiUrl.
+  const buildApiUrl = apiClient.buildApiUrl;
 
   /** The Web confirmation page the extension opens for linking. */
   function buildLinkPageUrl(webAppBaseUrl) {
@@ -80,9 +74,9 @@ var YTD_AUTH_GATE = (() => {
     return code && code.trim() !== "" ? code : null;
   }
 
+  /** §1 error envelope with this flow's fallback copy (api-client.js). */
   function parseEnvelope(data) {
-    const message = data && data.error && data.error.message;
-    return typeof message === "string" && message ? message : GENERIC_EXCHANGE_ERROR;
+    return apiClient.parseEnvelope(data, GENERIC_EXCHANGE_ERROR);
   }
 
   /**

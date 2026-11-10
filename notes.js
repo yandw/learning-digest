@@ -28,6 +28,13 @@
  * worker via importScripts.
  */
 var YTD_NOTES = (() => {
+  // Shared API client helpers (api-client.js): in Node tests we require
+  // them, in the service worker the global arrives via importScripts.
+  const apiClient =
+    typeof YTD_API_CLIENT !== "undefined"
+      ? YTD_API_CLIENT
+      : require("./api-client.js");
+
   const DRAFT_STORAGE_KEY = "ytd_note_draft";
 
   const GENERIC_NOTE_ERROR = "笔记没有保存，请稍后重试";
@@ -86,16 +93,9 @@ var YTD_NOTES = (() => {
     return `note-${ms.toString(36)}-${randomPart.toString(36)}`;
   }
 
-  /** §1 error envelope: the server's Chinese message when well-formed. */
-  function parseEnvelope(data, fallback) {
-    const message = data && data.error && data.error.message;
-    return typeof message === "string" && message ? message : fallback;
-  }
-
-  function envelopeCode(data) {
-    const code = data && data.error && data.error.code;
-    return typeof code === "string" ? code : null;
-  }
+  // The §1 envelope readers live in the shared api-client module.
+  const parseEnvelope = apiClient.parseEnvelope;
+  const envelopeCode = apiClient.envelopeCode;
 
   /** The §2.4 note shape, checked field by field. */
   function parseNoteBody(data) {

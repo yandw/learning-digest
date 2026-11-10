@@ -17,6 +17,8 @@
 const { ApiError, validationFailed, notFoundResource } = require("./errors");
 const { generateId } = require("./ids");
 const { notesForResource, isoSeconds } = require("./notes");
+const { serializeSession } = require("./sessions");
+const { loadState, transcriptSummary } = require("./transcripts");
 const {
   normalizeUrl,
   extractVideoIdentity,
@@ -273,6 +275,23 @@ function sourcesForResource({ store, accountId, resourceId }) {
 }
 
 /**
+ * Contract-r2 §3.6: the resource's study sessions (历史归档与进行中的并存),
+ * newest first by startedAt, each = Session (§2.1) + the transcript summary
+ * counts { recordCount, gapCount, failedCount } (§2.5 projection). The full
+ * transcript is read per Session through GET /v1/sessions/{id}/transcript.
+ */
+function sessionsForResource({ store, accountId, resourceId }) {
+  return store
+    .list("sessions")
+    .filter((s) => s.accountId === accountId && s.resourceId === resourceId)
+    .sort((a, b) => b.startedAtMs - a.startedAtMs)
+    .map((session) => ({
+      ...serializeSession(session),
+      transcript: transcriptSummary(loadState(store, session.id)),
+    }));
+}
+
+/**
  * Contract §3.2: the account's resources, newest first, each with its
  * sources carrying the latest progress.
  */
@@ -294,7 +313,9 @@ function listResources({ store, accountId }) {
  * Contract §3.3: one account resource with sources and notes. Reads run
  * with the accountId in the query (D2): other accounts' ids and unknown
  * ids are the same 404. Notes are the real read-back (P12): the account's
- * notes on this resource, oldest first.
+ * notes on this resource, oldest first. Round-2 extension (contract-r2
+ * §3.6): the `sessions` key is purely additive — the round-1 three-key
+ * shape and its samples are unchanged.
  */
 function getResourceDetail({ store, accountId, id }) {
   const resource =
@@ -310,6 +331,7 @@ function getResourceDetail({ store, accountId, id }) {
         (source) => serializeSource({ store, source }),
       ),
       notes: notesForResource({ store, accountId, resourceId: resource.id }),
+      sessions: sessionsForResource({ store, accountId, resourceId: resource.id }),
     },
   };
 }

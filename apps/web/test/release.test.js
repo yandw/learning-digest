@@ -14,10 +14,10 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.0", () => {
+test("apps/web release metadata is 0.1.1", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
-  assert.equal(packageJson.version, "0.1.0");
+  assert.equal(packageJson.version, "0.1.1");
   assert.equal(packageJson.private, true);
 });
 

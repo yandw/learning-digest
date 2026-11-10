@@ -497,15 +497,22 @@ async function handleResolveCurrentSource() {
  * pre-collect announcement and the P12 note entry, which needs BOTH the
  * matched source and the tab's media position from one consistent page).
  * Same read-only semantics as handleResolveCurrentSource.
+ *
+ * The P8 announcement keeps its quiet local miss for pages without a
+ * confirmable identity (an ordinary panel open never calls the service);
+ * a deliberate note save passes requireIdentity:false so a favorited
+ * PLAIN WEBPAGE still resolves by its normalized address (contract §3.4
+ * matches those server-side) and can take notes.
  */
-async function resolveSourceForTab({ target }) {
+async function resolveSourceForTab({ target, requireIdentity = true }) {
   const identityPresent = !!(
     target &&
     YTD_COLLECT.isCollectableUrl(target.url) &&
     target.identity
   );
   const miss = { ok: true, matched: false, identityPresent, resource: null, source: null };
-  if (!identityPresent) return miss;
+  if (requireIdentity && !identityPresent) return miss;
+  if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) return miss;
   const settings = await getSettings();
   const credential = await readStoredAuthCredential();
   if (!credential) return miss;
@@ -634,11 +641,12 @@ async function handleSaveNoteToLibrary({ text } = {}) {
     clientRequestId = draft.clientRequestId;
   } else {
     // The note must attach to a Resource: resolve the current page the way
-    // collect does (read-only). A miss sends the learner to 收藏当前页
-    // first — there is nothing to attach a note to.
+    // collect does (read-only). requireIdentity:false — a favorited plain
+    // webpage resolves by its normalized address too. A miss sends the
+    // learner to 收藏当前页 first — there is nothing to attach a note to.
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const target = collectTargetFromTab(tab);
-    const resolution = await resolveSourceForTab({ tabId: tab?.id ?? null, target });
+    const resolution = await resolveSourceForTab({ target, requireIdentity: false });
     if (!resolution.ok) {
       return { ok: false, message: resolution.message || YTD_NOTES.GENERIC_NOTE_ERROR };
     }

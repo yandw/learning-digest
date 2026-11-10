@@ -155,6 +155,22 @@ function registerRoutes(ctx) {
     const credential = requireCredential(req);
     return getResourceDetail({ store, accountId: credential.accountId, id: params.id });
   });
+
+  // POST /v1/sources/resolve — read-only pre-study lookup (contract §3.4):
+  // the same matching as favoriting, but a miss answers matched:false and
+  // writes nothing.
+  router.add("POST", "/v1/sources/resolve", async ({ req, body }) => {
+    const credential = requireCredential(req);
+    const request = parseSourceRequest(body);
+    const existing = matchSource({ store, accountId: credential.accountId, request });
+    if (!existing) {
+      return { status: 200, body: { matched: false } };
+    }
+    return {
+      status: 200,
+      body: { matched: true, ...presentFavorite({ store, ...existing }) },
+    };
+  });
 }
 
 module.exports = { registerRoutes };

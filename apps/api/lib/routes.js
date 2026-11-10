@@ -6,7 +6,7 @@ const { validationFailed, unauthorizedMissing, unauthorizedExpired } = require("
 const { normalizeEmail, isInvited } = require("./invites");
 const { issueCode } = require("./codes");
 const { openOrLogin } = require("./accounts");
-const { authenticate, revokeCredential, issueCredential } = require("./credentials");
+const { authenticate, findCredentialByToken, revokeCredentialGroup, issueCredential } = require("./credentials");
 const { createLinkCode, consumeLinkCode } = require("./link-codes");
 const {
   parseSourceRequest,
@@ -116,19 +116,22 @@ function registerRoutes(ctx) {
     };
   });
 
-  // POST /v1/auth/logout — round 1 revokes the presented credential only.
-  // The group-revocation primitive (revokeCredentialGroup) is the seam P7
-  // wires linked logout (Web + extension exiting together) through.
+  // POST /v1/auth/logout — linked logout (P7, decision 3 of #49): the
+  // presented credential's WHOLE credential group is revoked, so the Web
+  // session and the extension credential die together (contract §1: 401 =
+  // expired OR linked-revoked). A repeat logout with an already-revoked
+  // credential stays a 200 no-op; a token the server never issued is still
+  // the expired-token 401 body.
   router.add("POST", "/v1/auth/logout", async ({ req }) => {
     const token = bearerToken(req);
     if (!token) {
       throw unauthorizedMissing();
     }
-    const credential = authenticate({ store, token });
-    if (!credential) {
+    const record = findCredentialByToken({ store, token });
+    if (!record) {
       throw unauthorizedExpired();
     }
-    revokeCredential({ store, token, now });
+    revokeCredentialGroup({ store, groupId: record.credentialGroupId, now });
     return { status: 200, body: { ok: true } };
   });
 

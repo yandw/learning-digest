@@ -9,6 +9,7 @@ import { createLoginFlow } from "./login-flow.js";
 import { createLibraryFlow, presentListItem, presentDetail } from "./library.js";
 import { createApiClient } from "./api-client.js";
 import { createCredentialStore } from "./credentials.js";
+import { createSessionRevalidator } from "./session-revalidate.js";
 
 function byId(id) {
   return document.getElementById(id);
@@ -323,6 +324,23 @@ async function refreshAccount() {
   // view; other failures just leave the stored email displayed.
   render();
 }
+
+// P7 linked logout, pull side: a logout on the extension (same credential
+// group) cannot push to this page. While logged in, the next visibility or
+// focus event silently re-checks GET /v1/me; a 401 routes through the
+// shared interceptor (credential cleared, flow reset) and the page
+// re-renders back to the login view.
+const sessionRevalidator = createSessionRevalidator({
+  api,
+  isAuthenticated: () => flow.getState().state === "authenticated",
+  onInvalidated: () => render(),
+});
+document.addEventListener("visibilitychange", () => {
+  void sessionRevalidator.onPageVisible(document.visibilityState === "visible");
+});
+window.addEventListener("focus", () => {
+  void sessionRevalidator.onPageVisible(true);
+});
 
 flow.resume().then(() => {
   render();

@@ -226,6 +226,104 @@ async function handleLinkCodeCaptured(tabId, code) {
   return { success: true };
 }
 
+/**
+ * P7 linked logout, capture side: the credential group was revoked (a
+ * logout on any device), so the capture stream and the local Session
+ * advancement stop now. The Session ends WITHOUT the end-of-session AI
+ * pass — the learner is logged out; the panel's 开始总结 retry can still
+ * produce the digest after a re-login. Snapshots and storage breadcrumbs
+ * are kept, only the live pipeline stops.
+ *
+ * Boundary with the P6 gate semantics: the gate decides whether a capture
+ * may START (and an in-progress Session's resume is deliberately not
+ * gated); this path is only for a credential the server has definitively
+ * rejected (401) or an explicit logout — never for
+ * unreachable/unconfigured probes, whose verdicts must not log the
+ * learner out.
+ *
+ * @returns {Promise<string|null>} the stopped Session's id, null when no
+ *   capture was running
+ */
+async function stopActiveCaptureForCredentials(reason) {
+  const context = await ensureCaptureResumed();
+  if (!context) return null;
+  await endActiveSession(context, { reason, report: false });
+  return context.state.sessionId;
+}
+
+/**
+ * P7 linked logout, push path: the server rejected the credential with a
+ * 401 — its whole group was revoked by a logout on the Web (or another
+ * device). Stops a running capture and pushes the panel back to the
+ * guide. Today the only live 401 source is the gate probe
+ * (handleCheckAuth); when P10's progress writes land, their 401s route
+ * through here too.
+ */
+async function handleCredentialsInvalidated(reason = "unauthorized") {
+  const stoppedSessionId = await stopActiveCaptureForCredentials("credentialsInvalidated");
+  if (stoppedSessionId) {
+    console.log(
+      `[Learning Digest] 凭据已被联动撤销，采集已停止: ${stoppedSessionId}`,
+    );
+  }
+  await notifyPanel({ action: "authState", authorized: false, reason });
+  return { success: true, stoppedSessionId };
+}
+
+/**
+ * P7 linked logout, explicit action: the panel's 退出登录 entry. Revokes
+ * the whole credential group server-side (the Web session dies with it —
+ * contract §1: 401 = expired OR linked-revoked), clears the stored
+ * extension credential, stops a running capture, and lets the panel
+ * return to the guide. Best effort: a network failure must not trap the
+ * learner in the panel, so the local cleanup happens regardless.
+ */
+async function handleLogout() {
+  const stoppedSessionId = await stopActiveCaptureForCredentials("logout");
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  if (credential) {
+    const url = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, "/v1/auth/logout");
+    if (url) {
+      try {
+        await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${credential.token}`,
+          },
+          body: "{}",
+        });
+      } catch (_error) {
+        // Server unreachable: the local logout still happens; the group
+        // stays live until a connected surface logs out.
+      }
+    }
+  }
+  await chrome.storage.local.remove(YTD_AUTH_GATE.CREDENTIAL_STORAGE_KEY);
+  authCache = { authorized: false, checkedAtMs: Date.now() };
+  recordAuthBreadcrumb("ytd_last_auth_logout", {
+    outcome: "loggedOut",
+    hadCredential: !!credential,
+    stoppedSessionId,
+  });
+  return { success: true };
+}
+
+/**
+ * The panel's gate check (the checkAuth message): probe, and on a
+ * DEFINITIVE 401 verdict (the group was revoked elsewhere) drive the
+ * invalidated path above. "unreachable"/"unconfigured" verdicts never
+ * stop a capture — only the server itself can.
+ */
+async function handleCheckAuth() {
+  const verdict = await checkAuthNow();
+  if (!verdict.authorized && verdict.reason === "unauthorized") {
+    await handleCredentialsInvalidated(verdict.reason);
+  }
+  return verdict;
+}
+
 // The link completion watcher: only tabs this worker opened for linking are
 // inspected, and only the success address's ?link= parameter is extracted.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -722,14 +820,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  // --- Authorization gate (P6) ---
+  // --- Authorization gate (P6) and linked logout (P7) ---
 
   if (message.action === "checkAuth") {
-    checkAuthNow()
+    handleCheckAuth()
       .then(sendResponse)
       .catch((error) =>
         sendResponse({ authorized: false, reason: "unreachable", error: error.message }),
       );
+    return true;
+  }
+
+  if (message.action === "logout") {
+    // P7: the panel's 退出登录 — group-wide revocation, local credential
+    // cleanup, capture stop. The panel flips to the guide from the response.
+    handleLogout()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
@@ -1046,6 +1153,12 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   checkAuthNow,
   handleOpenAuthPage,
   handleLinkCodeCaptured,
+  // Linked logout (P7): the explicit 退出登录, the credentialsInvalidated
+  // stop path (P10's progress-write 401s will drive it) and the gate-check
+  // composition — see tests/plugin-logout.test.js.
+  handleLogout,
+  handleCredentialsInvalidated,
+  handleCheckAuth,
   // Timeline anchoring + seek-awareness (#48): the bridge's position stream
   // drives the probe window, the anchor transition, seek cuts and the
   // Plan A re-listen retries — see tests/background-capture.test.js.

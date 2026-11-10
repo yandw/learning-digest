@@ -338,6 +338,21 @@ function setupEventListeners() {
     chrome.runtime.sendMessage({ action: "openOptions" });
   });
 
+  // P7 linked logout: revoke the whole credential group server-side (the
+  // Web session dies with it), clear the stored credential and return to
+  // the guide, whose 授权页 entry doubles as the re-login path.
+  document.getElementById("logoutBtn")?.addEventListener("click", () => {
+    void (async () => {
+      try {
+        await chrome.runtime.sendMessage({ action: "logout" });
+      } catch (_error) {
+        // The worker may be gone (a restart during the click): the guide
+        // below still reflects the logged-out state this panel requested.
+      }
+      showAuthGate({ authorized: false, reason: "unconfigured" });
+    })();
+  });
+
   // Authorization gate (P6): open the Web confirmation page, or re-run the
   // probe after the learner believes the link is done.
   document.getElementById("openAuthPageBtn")?.addEventListener("click", () => {
@@ -840,6 +855,12 @@ function setSettingsButtonVisible(visible) {
   const settingsBtn = document.getElementById("settingsBtn");
   if (settingsBtn) {
     settingsBtn.style.display = visible ? "" : "none";
+  }
+  // P7 linked logout: the 退出登录 entry belongs to the authorized shell
+  // only; the gate view's 授权页按钮 is the re-login entry that replaces it.
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (logoutBtn) {
+    logoutBtn.style.display = visible ? "" : "none";
   }
 }
 

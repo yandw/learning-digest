@@ -1105,15 +1105,36 @@ function setCourseTabStatus(text) {
   statusEl.style.display = text ? "block" : "none";
 }
 
-/** "4:10" from a positionMs; empty for a source without progress. */
+/** "4:10" from a positionMs; "0:00" at 0 (0 IS progress, round-1 review
+ *  fix); empty when the value is unusable. */
 function formatResumePosition(positionMs) {
-  const totalSeconds = Math.floor(Number(positionMs) / 1000);
-  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return "";
+  if (typeof positionMs !== "number" || !Number.isFinite(positionMs) || positionMs < 0) {
+    return "";
+  }
+  const totalSeconds = Math.floor(positionMs / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
   const mm = hours > 0 ? String(minutes).padStart(2, "0") : String(minutes);
   return `${hours > 0 ? hours + ":" : ""}${mm}:${String(seconds).padStart(2, "0")}`;
+}
+
+/**
+ * The "has progress" judgment (round-1 review fix): progress exists AND its
+ * revision is real (≥1) — a revision-backed positionMs of 0 IS progress, so
+ * 继续学习 stays available and the copy shows 上次学到 0:00. A progress
+ * blob without a positive revision (or with an unusable position) is no
+ * progress at all.
+ */
+function hasResumableProgress(progress) {
+  return !!(
+    progress &&
+    Number.isInteger(progress.revision) &&
+    progress.revision >= 1 &&
+    typeof progress.positionMs === "number" &&
+    Number.isFinite(progress.positionMs) &&
+    progress.positionMs >= 0
+  );
 }
 
 /** The list shows whenever the panel is unlocked and nothing records. */
@@ -1146,11 +1167,13 @@ function updateStartButtons() {
   }
   // P11 (#60): the 定位选项 appear only for a chosen, startable, matched
   // target that HAS progress; without progress 开始学习 alone is the flow.
+  // Round-1 review fix: resumePositionMs is null exactly when there is no
+  // revision-backed progress — a stored 0 still counts.
   const resumable = !!(
     courseTargetUi.chosenTabId &&
     courseTargetUi.startable &&
     courseTargetUi.matched &&
-    Number(courseTargetUi.resumePositionMs) > 0
+    courseTargetUi.resumePositionMs !== null
   );
   if (resumeBtn) {
     resumeBtn.style.display = resumable ? "" : "none";
@@ -1229,10 +1252,9 @@ function describeCourseTargetResolution(result) {
         typeof result.resolve.resource.title === "string" &&
         result.resolve.resource.title.trim()) ||
       source.url;
-    const position =
-      source.progress && Number(source.progress.positionMs) > 0
-        ? `${COURSE_TAB_COPY.resume} ${formatResumePosition(source.progress.positionMs)}`
-        : COURSE_TAB_COPY.fromStart;
+    const position = hasResumableProgress(source.progress)
+      ? `${COURSE_TAB_COPY.resume} ${formatResumePosition(source.progress.positionMs)}`
+      : COURSE_TAB_COPY.fromStart;
     return `${COURSE_TAB_COPY.matched}${title} · ${position}`;
   }
   if (!result.startable) return COURSE_TAB_COPY.notStartable;
@@ -1269,9 +1291,12 @@ async function chooseCourseTarget(tabId) {
   courseTargetUi.matched = !!(result.resolve && result.resolve.matched);
   const progress =
     result.resolve && result.resolve.source && result.resolve.source.progress;
-  const position = progress ? Number(progress.positionMs) : 0;
-  courseTargetUi.resumePositionMs =
-    Number.isFinite(position) && position > 0 ? position : null;
+  // Round-1 review fix: a revision-backed positionMs of 0 IS progress —
+  // the 继续学习 option stays available (it seeks to 0:00, same place as
+  // 从头开始, but the 上次学到 0:00 line proves the Source has history).
+  courseTargetUi.resumePositionMs = hasResumableProgress(progress)
+    ? progress.positionMs
+    : null;
   setCourseTabStatus(describeCourseTargetResolution(result));
   updateStartButtons();
 }
@@ -1296,6 +1321,9 @@ async function seekChosenTarget(positionMs) {
   }
   setCourseTabBusy(false);
   if (result && result.success) {
+    // The seek COPY keeps the position>0 split: a seek to 0 lands the
+    // player at the start whether it came from 从头开始 or a stored
+    // 0-position 继续学习, so "已定位到开头" stays the honest copy there.
     setCourseTabStatus(
       positionMs > 0
         ? COURSE_TAB_COPY.locatedResume(formatResumePosition(positionMs))
@@ -2294,6 +2322,14 @@ globalThis.__YTD_OVERVIEW_TESTING__ = {
   renderOverviewTab,
   jumpToTranscriptTimestamp,
   findSessionRecordForSeconds,
+};
+
+// Course-target resume helpers for the repository's Node tests (P11 +
+// round-1 review fix). The extension does not read this object at runtime.
+globalThis.__YTD_COURSE_TESTING__ = {
+  formatResumePosition,
+  hasResumableProgress,
+  describeCourseTargetResolution,
 };
 
 // Session-mode IA helpers for the repository's Node tests (0.1.37). The

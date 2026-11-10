@@ -288,6 +288,7 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
     report: sandbox.__YTD_REPORT_TESTING__,
     transcript: sandbox.__YTD_TRANSCRIPT_TESTING__,
     session: sandbox.__YTD_SESSION_TESTING__,
+    course: sandbox.__YTD_COURSE_TESTING__,
     auth: sandbox.__YTD_AUTH_TESTING__,
     elements,
     elementById,
@@ -1465,4 +1466,57 @@ test("a resolve miss keeps the collect entry quiet", async () => {
 
   assert.ok(panel.sentMessages.some((message) => message.action === "resolveCurrentSource"));
   assert.equal(panel.elementById("collectStatus").style.display, "none", "nothing announced on a miss");
+});
+
+// --- Course-target resume: positionMs=0 IS progress (round-1 review fix) ----
+//
+// The P11 定位选项 and the 上次学到 line previously keyed on position > 0,
+// which hid a revision-backed 0 position behind "从头开始". The judgment is
+// now revision-based (hasResumableProgress), so a Source whose latest
+// position is exactly 0:00 still shows its history and offers 继续学习.
+
+test("formatResumePosition renders 0:00 at zero and stays empty for unusable values", () => {
+  const { course } = loadPanel();
+  assert.equal(course.formatResumePosition(0), "0:00");
+  assert.equal(course.formatResumePosition(250000), "4:10");
+  assert.equal(course.formatResumePosition(3661000), "1:01:01");
+  assert.equal(course.formatResumePosition(null), "");
+  assert.equal(course.formatResumePosition(-1000), "");
+  assert.equal(course.formatResumePosition("250000"), "");
+});
+
+test("hasResumableProgress keys on the revision, not the position", () => {
+  const { course } = loadPanel();
+  assert.equal(course.hasResumableProgress({ positionMs: 0, revision: 1 }), true, "0 IS progress when a revision backs it");
+  assert.equal(course.hasResumableProgress({ positionMs: 250000, revision: 1 }), true);
+  assert.equal(course.hasResumableProgress({ positionMs: 250000, revision: 0 }), false, "revision 0 is no progress");
+  assert.equal(course.hasResumableProgress({ positionMs: 250000 }), false, "no revision is no progress");
+  assert.equal(course.hasResumableProgress({ positionMs: "250000", revision: 1 }), false, "an unusable position is no progress");
+  assert.equal(course.hasResumableProgress(null), false);
+});
+
+test("describeCourseTargetResolution shows 上次学到 0:00 for a revision-backed zero", () => {
+  const { course } = loadPanel();
+  const resolution = (progress) =>
+    course.describeCourseTargetResolution({
+      startable: true,
+      resolve: {
+        matched: true,
+        resource: { id: "res_1", title: "注意力机制详解" },
+        source: { id: "src_1", url: "https://www.example.com/", progress },
+      },
+    });
+
+  assert.match(
+    resolution({ positionMs: 0, revision: 1 }),
+    /上次学到 0:00/,
+    "a stored 0 keeps the resume line",
+  );
+  assert.match(resolution({ positionMs: 250000, revision: 2 }), /上次学到 4:10/);
+  assert.match(resolution(null), /从头开始/, "no progress points at the start");
+  assert.match(
+    resolution({ positionMs: 0 }),
+    /从头开始/,
+    "a position without a revision is no progress",
+  );
 });

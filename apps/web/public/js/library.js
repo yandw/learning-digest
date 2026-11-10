@@ -60,12 +60,22 @@ export function formatPosition(positionMs) {
   return `${minutes}:${twoDigits(seconds)}`;
 }
 
-/** "上次学到 mm:ss" for a source with progress; null otherwise. */
+/**
+ * "上次学到 mm:ss" for a source with progress; null otherwise. The
+ * has-progress judgment (round-1 review fix) is revision-based: a progress
+ * record with revision ≥ 1 IS progress — positionMs 0 renders "上次学到
+ * 0:00" — while a blob without a positive revision (or with an unusable
+ * position) shows no line at all.
+ */
 export function progressLabel(source) {
-  if (!source || !source.progress || typeof source.progress.positionMs !== "number") {
+  if (!source || !source.progress) {
     return null;
   }
-  const position = formatPosition(source.progress.positionMs);
+  const { progress } = source;
+  if (!Number.isInteger(progress.revision) || progress.revision < 1) {
+    return null;
+  }
+  const position = formatPosition(progress.positionMs);
   return position ? `上次学到 ${position}` : null;
 }
 

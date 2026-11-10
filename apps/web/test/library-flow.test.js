@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { createLibraryFlow, presentListItem, presentDetail, presentNote, buildNoteJumpUrl, formatPosition } from "../public/js/library.js";
+import { createLibraryFlow, presentListItem, presentDetail, presentNote, buildNoteJumpUrl, formatPosition, progressLabel } from "../public/js/library.js";
 
 // The library flow (pure module, P5): paste-to-collect inside the login
 // shell, the learning list, and the resource detail with retitle. It owns
@@ -208,6 +208,21 @@ test("formatPosition renders mm:ss and h:mm:ss", () => {
   assert.equal(formatPosition(3599000), "59:59");
   assert.equal(formatPosition(3661000), "1:01:01");
   assert.equal(formatPosition(null), null);
+});
+
+test("progressLabel keys on the revision, so a stored 0:00 still shows (round-1 review fix)", () => {
+  // The has-progress judgment is revision-based: a revision-backed
+  // positionMs of 0 IS progress ("上次学到 0:00"); a blob without a
+  // positive revision shows no line.
+  assert.equal(progressLabel({ progress: { positionMs: 0, revision: 1 } }), "上次学到 0:00");
+  assert.equal(progressLabel({ progress: { positionMs: 250000, revision: 1 } }), "上次学到 4:10");
+  assert.equal(progressLabel({ progress: { positionMs: 250000, revision: 3 } }), "上次学到 4:10");
+  assert.equal(progressLabel({ progress: { positionMs: 250000 } }), null, "no revision is no progress");
+  assert.equal(progressLabel({ progress: { positionMs: 250000, revision: 0 } }), null, "revision 0 is no progress");
+  assert.equal(progressLabel({ progress: { positionMs: -1, revision: 1 } }), null, "an unusable position shows no line");
+  assert.equal(progressLabel({ progress: null }), null);
+  assert.equal(progressLabel({}), null);
+  assert.equal(progressLabel(null), null);
 });
 
 // --- detail ------------------------------------------------------------------

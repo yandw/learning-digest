@@ -11,8 +11,8 @@
  * media is not an error here — the bridge simply stays quiet on positions.
  *
  * Every page kind also reports document.title — once at startup and again
- * on pagehide (#32) — so the Session knows the lesson's name for the
- * report header; the background keeps only the first report.
+ * on pagehide (#32) — so the Session knows the page's title for the report
+ * header; the background keeps only the first report.
  *
  * All four stations play through a standard HTMLVideoElement (bilibili,
  * xiaohongshu and youtube each expose one to the DOM), so position reading
@@ -52,7 +52,7 @@ var YTD_PAGE_BRIDGE = (() => {
     const log = env.console || console;
 
     /** The "primary" media: these pages can mount several video elements
-     *  (previews, ads); the largest visible one is the lesson. */
+     *  (previews, ads); the largest visible one is the one being watched. */
     function findPrimaryMedia() {
       const candidates = [...doc.querySelectorAll("video")].filter(
         (video) => video.readyState >= 1 && video.videoWidth > 0,
@@ -130,7 +130,7 @@ var YTD_PAGE_BRIDGE = (() => {
       }
     }
 
-    /** The lesson title for the report header (#32), sent unconditionally:
+    /** The page title for the report header (#32), sent unconditionally:
      *  live pages have no position stream but do have a title. */
     function reportPageTitle() {
       let message;

@@ -250,6 +250,49 @@ var YTD_LEARNING_START = (() => {
   }
 
   // ============================================================
+  // SAME-TAB SOURCE-SWITCH DETECTION (P11, issue #60 — decision 4 收尾侧)
+  // ============================================================
+
+  /**
+   * Did this tab move to a DIFFERENT video/episode — decision 4's final
+   * finish trigger ("原标签页换视频或分集时收尾")? The comparison runs on
+   * the platform identity (platform, video id, episode, scope), NOT the raw
+   * URL: bilibili and youtube rewrite their URLs in place during ordinary
+   * playback (?t= seek replaceState), and only a different identity is a
+   * different Source (glossary: a separately playable part is its own
+   * Source with its own playback position). A URL without a confirmable
+   * identity (a station home page, a xiaoe container page, garbage) can
+   * never CONFIRM a switch, so the answer stays false — those transitions
+   * end through the other triggers (manual end, capture stream death, tab
+   * close) instead of a possibly-wrong auto-finish.
+   *
+   * @param {unknown} previousUrl - the URL the Session started from
+   * @param {unknown} nextUrl - the URL the tab reports now
+   * @param {(url: unknown) => {platformId: string, platformVideoId: string, episodeId: string|null, platformScopeId: string|null}|null} [extractIdentity]
+   *   injected identity extractor (the worker passes
+   *   contracts/platform-video-id.js's extractVideoIdentity)
+   * @returns {boolean}
+   */
+  function didLearningSourceSwitch(previousUrl, nextUrl, extractIdentity) {
+    const extract = typeof extractIdentity === "function" ? extractIdentity : () => null;
+    let previous = null;
+    let next = null;
+    try {
+      previous = extract(previousUrl);
+      next = extract(nextUrl);
+    } catch (_error) {
+      return false;
+    }
+    if (!previous || !next) return false;
+    return (
+      previous.platformId !== next.platformId ||
+      previous.platformVideoId !== next.platformVideoId ||
+      String(previous.episodeId ?? "") !== String(next.episodeId ?? "") ||
+      String(previous.platformScopeId ?? "") !== String(next.platformScopeId ?? "")
+    );
+  }
+
+  // ============================================================
   // PROGRESS WRITE CLIENT (contract §3.5, decision D4)
   // ============================================================
 
@@ -530,6 +573,22 @@ var YTD_LEARNING_START = (() => {
       },
 
       /**
+       * Key event (P11, decision 4 of #49): the player PAUSED. The exact
+       * paused position is recorded and written immediately — the learner
+       * may close the laptop next, so the pause position cannot wait for
+       * the throttle — while the writer (and the Session behind it) stays
+       * live: resuming playback keeps reporting into the same Session.
+       */
+      reportPause(positionMs) {
+        if (stopped) return;
+        const position = Number(positionMs);
+        if (!Number.isFinite(position) || position < 0) return;
+        pendingPositionMs = Math.round(position);
+        cancelTimer();
+        enqueue(true);
+      },
+
+      /**
        * Forces a write of the pending position now (end of Session, media
        * end). Resolves once the forced cycle settles; a stopped writer or
        * an empty pending slot resolves without touching the API.
@@ -572,6 +631,7 @@ var YTD_LEARNING_START = (() => {
     targetInfo,
     serializeTarget,
     parseTarget,
+    didLearningSourceSwitch,
     progressPath,
     buildProgressApiUrl,
     buildProgressRequest,

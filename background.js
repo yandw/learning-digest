@@ -1002,6 +1002,42 @@ async function handleCollectLearningTarget({ tabId } = {}) {
 }
 
 /**
+ * P11 (decision 4): the panel's 继续学习 / 从头开始 for a chosen target
+ * with existing progress. Both are POSITIONING only — the page bridge's
+ * seekMedia lands the player at positionMs (0 for 从头开始) and nothing
+ * else: no progress write (the writer does not even exist before 开始学习,
+ * so the preview can never落账), no Session, no state change. The tab
+ * check keeps a dead/closed tab an honest failure instead of a silent
+ * no-op; the seek itself rides the same bridge command the Session-view
+ * 从头开始 button uses.
+ */
+async function handleSeekLearningTarget({ tabId, positionMs } = {}) {
+  const position = Number(positionMs);
+  if (!Number.isInteger(tabId) || !Number.isFinite(position) || position < 0) {
+    return { success: false, error: "定位参数无效。" };
+  }
+  try {
+    await chrome.tabs.get(tabId);
+  } catch (_error) {
+    return { success: false, error: "目标标签页已关闭。" };
+  }
+  try {
+    const result = await chrome.tabs.sendMessage(tabId, {
+      action: "seekMedia",
+      positionMs: Math.round(position),
+    });
+    if (result?.success) return { success: true, position: result.position };
+    return {
+      success: false,
+      error: result?.error || "页面上没有找到可定位的视频，请刷新课程页后重试",
+    };
+  } catch (_error) {
+    // No bridge on the tab (closed mid-seek, or not an injected page).
+    return { success: false, error: "课程页桥接不可用，请刷新课程页后重试" };
+  }
+}
+
+/**
  * The 开始学习 click for the chosen course tab: resolve first (fresh
  * expectedRevision at start time), refuse to capture an unresolved page
  * (progress needs a Source — the panel offers 一键收藏 first), then hand
@@ -1139,12 +1175,19 @@ function stopProgressTicker() {
  * switches never reroute this: the stream is sender-checked by
  * handleMediaPosition, and the writer only knows its source.
  */
-function feedLearningPosition(context, positionSeconds) {
+function feedLearningPosition(context, positionSeconds, { paused = false } = {}) {
   if (!learningProgressWriter || !context || context.ended) return;
   if (context.timestampKind !== "video") return;
   const positionMs = Math.round(Number(positionSeconds) * 1000);
   if (!Number.isFinite(positionMs) || positionMs < 0) return;
-  learningProgressWriter.reportPosition(positionMs);
+  if (paused) {
+    // P11 (decision 4): 暂停 is a key event — the exact paused position
+    // writes immediately; the writer (and the Session) stays live, and
+    // resuming playback keeps recording into the same one.
+    learningProgressWriter.reportPause(positionMs);
+  } else {
+    learningProgressWriter.reportPosition(positionMs);
+  }
 }
 
 /**
@@ -1172,6 +1215,77 @@ async function releaseLearningTarget(context) {
     void notifyPanel({ action: "learningTargetChanged", target: null });
   }
 }
+
+/**
+ * P11 finish trigger (decision 4): the recording tab was CLOSED. The
+ * offscreen recorder's own death notice (captureEnded) stays as the
+ * backstop; this direct tabs event is the deterministic primary — no wait
+ * for the stream to be noticed inactive, and it also covers the corner
+ * where no capture stream is alive to die (a restart that already failed
+ * on the missing tab). The end itself matches captureEnded: transcript and
+ * report are produced from whatever was collected.
+ */
+async function handleTabRemoved(tabId) {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended || context.tabId !== tabId) return;
+  broadcastSession(context.state, {
+    captureNotice: "课程标签页已关闭，本次学习已自动结束并保存进度。",
+  });
+  await endActiveSession(context, { reason: "tabClosed" });
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void handleTabRemoved(tabId).catch((error) =>
+    console.error(
+      "[Learning Digest] tab-close handling failed:",
+      error?.message || error,
+    ),
+  );
+});
+
+/**
+ * P11 finish trigger (decision 4): the recording tab navigated to a
+ * DIFFERENT video/episode — the hard-navigation sibling of the position
+ * stream's pageUrl check above, caught the moment the URL commits instead
+ * of when the capture stream is noticed dead. The same identity comparison
+ * gates it, so same-source churn (the stations' ?t= replaceState, a
+ * same-episode reload) never ends a Session here; a genuinely different
+ * source finishes it once (the ended guard absorbs the duplicate the
+ * pageUrl check or the captureEnded notice would raise).
+ */
+async function handleTabNavigated(tabId, url) {
+  if (typeof url !== "string" || url === "") return;
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended || context.tabId !== tabId) return;
+  if (
+    !YTD_LEARNING_START.didLearningSourceSwitch(
+      context.sourceUrl,
+      url,
+      YTD_PLATFORM_VIDEO_ID.extractVideoIdentity,
+    )
+  ) {
+    return;
+  }
+  console.log(
+    `[Learning Digest] 课程标签页已导航到其他视频/分集，自动结束会话: session=${context.sessionId}`,
+  );
+  broadcastSession(context.state, {
+    captureNotice: "课程页已切换到其他视频或分集，本次学习已自动结束并保存进度。",
+  });
+  await endActiveSession(context, { reason: "sourceSwitched", report: false });
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // URL-bearing updates only: status/title/favicon churn is the common case
+  // and never a navigation.
+  if (!changeInfo || typeof changeInfo.url !== "string" || changeInfo.url === "") return;
+  void handleTabNavigated(tabId, changeInfo.url).catch((error) =>
+    console.error(
+      "[Learning Digest] tab navigation handling failed:",
+      error?.message || error,
+    ),
+  );
+});
 
 /**
  * 401 from a progress write: the credential died mid-recording. Stop the
@@ -1790,6 +1904,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === "seekLearningTarget") {
+    // P11 (decision 4): 继续学习/从头开始 positioning for the chosen
+    // target — seek only, no records touched (试看不落账).
+    handleSeekLearningTarget(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.action === "startLearningForTarget") {
     handleStartLearningForTarget(message)
       .then(sendResponse)
@@ -2123,8 +2246,13 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleGetCourseTabs,
   handleChooseLearningTarget,
   handleCollectLearningTarget,
+  handleSeekLearningTarget,
   handleStartLearningForTarget,
   handleProgressAuthLoss,
+  // P11 finish triggers (#60): the recording tab closed / navigated to a
+  // different video or episode — see tests/plugin-learning-start-flow.test.js.
+  handleTabRemoved,
+  handleTabNavigated,
   // Timeline anchoring + seek-awareness (#48): the bridge's position stream
   // drives the probe window, the anchor transition, seek cuts and the
   // Plan A re-listen retries — see tests/background-capture.test.js.
@@ -3103,6 +3231,31 @@ async function handleMediaPosition(message, sender) {
     }
     return;
   }
+  // P11 (decision 4): the SAME tab navigating to a different video/episode
+  // (the bilibili ?p=N soft switch rides the P10b pageUrl field; hard
+  // navigations surface here too once the bridge reinjects) finishes the
+  // Session. Checked BEFORE any position consumption so the new source's
+  // positions never land in the old Session's progress writes — the flush
+  // below saves the old source's last actually-played position, and the
+  // lock releases: starting the new source is the learner's explicit move.
+  if (
+    typeof message.pageUrl === "string" &&
+    message.pageUrl !== "" &&
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      context.sourceUrl,
+      message.pageUrl,
+      YTD_PLATFORM_VIDEO_ID.extractVideoIdentity,
+    )
+  ) {
+    console.log(
+      `[Learning Digest] 标签页已切换到其他视频/分集，自动结束会话: session=${context.sessionId}`,
+    );
+    broadcastSession(context.state, {
+      captureNotice: "课程页已切换到其他视频或分集，本次学习已自动结束并保存进度。",
+    });
+    await endActiveSession(context, { reason: "sourceSwitched", report: false });
+    return;
+  }
   const position = Number(message.position);
   // The video position every consumer below reads: realtime video-kind
   // Sessions stamp finalized utterances from it (#49), the segment-mode
@@ -3111,8 +3264,9 @@ async function handleMediaPosition(message, sender) {
     context.lastVideoPosition = position;
     // P10: the same stream feeds the progress writer for the recorded
     // source — bound to this Session's tab, so focus/tab switches cannot
-    // reroute it (decision 4).
-    feedLearningPosition(context, position);
+    // reroute it (decision 4). P11: a reported pause is a key event —
+    // the exact paused position writes immediately (暂停=立即写当前位置).
+    feedLearningPosition(context, position, { paused: message.paused === true });
   }
   // Realtime Sessions (#47, #49) run no Segment schedule: no scheduler
   // feeds, no re-listen retries (there is no recorder to re-cut from). What

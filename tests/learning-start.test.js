@@ -380,6 +380,54 @@ test("a backward drag (回拖合法, D4) is written immediately with the dragged
   writer.stop();
 });
 
+test("a pause is a key event (P11 决策 4): the exact paused position writes immediately, the writer stays live", async () => {
+  const { calls, fetchImpl } = recordingFetch([
+    () => response(200, FIRST_WRITE_BODY),
+    () => response(200, { positionMs: 180_000, revision: 2 }),
+  ]);
+  const clock = makeClock();
+  const writer = YTD_LEARNING_START.createProgressWriter({
+    fetchImpl,
+    apiBaseUrl: "https://api.example.com",
+    token: "ext-token",
+    sourceId: "src_01JABC0002",
+    throttleMs: 10_000,
+    ...clock,
+  });
+  writer.reportPosition(125_000);
+  await writer.flush(); // anchor write
+  writer.reportPosition(170_000);
+  assert.equal(calls.length, 1, "no write before the pause");
+  writer.reportPause(180_000);
+  await tick();
+  assert.equal(calls.length, 2, "the paused position does not wait for the throttle");
+  assert.deepEqual(calls[1].body, { positionMs: 180000, expectedRevision: 1 });
+  assert.equal(writer.snapshot().stopped, false, "pausing keeps the Session's writer alive");
+  // Playback resumes into the same writer: the next position coalesces as usual.
+  writer.reportPosition(190_000);
+  assert.equal(calls.length, 2, "resume does not write ahead of the throttle schedule");
+  clock.advance(10_000);
+  await writer.flush();
+  assert.equal(calls.length, 3, "the resumed position lands on the throttled schedule");
+  assert.deepEqual(calls[2].body, { positionMs: 190000, expectedRevision: 2 });
+  writer.stop();
+});
+
+test("reportPause as the first position still writes immediately, and a stopped writer ignores it", async () => {
+  const { calls, fetchImpl } = recordingFetch([
+    () => response(200, FIRST_WRITE_BODY),
+  ]);
+  const { writer } = makeWriter({ fetchImpl });
+  writer.reportPause(30_000);
+  await tick();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].body, { positionMs: 30000, expectedRevision: 0 });
+  writer.stop();
+  writer.reportPause(40_000);
+  await tick();
+  assert.equal(calls.length, 1, "nothing writes after stop");
+});
+
 test("409 conflict: the retry adopts current.revision and writes the LATEST position, not current.positionMs", async () => {
   const { calls, fetchImpl } = recordingFetch([
     () => response(200, FIRST_WRITE_BODY),
@@ -645,4 +693,138 @@ test("flush with nothing pending never calls the API", async () => {
   await writer.flush();
   assert.equal(calls.length, 0);
   writer.stop();
+});
+
+// --- didLearningSourceSwitch (P11, #60: 同一标签页换视频/分集的收尾检测) ------
+//
+// The extractor is injected (the same seam buildCourseTabList uses for
+// isVideoPage): the worker passes contracts/platform-video-id.js's
+// extractVideoIdentity, tests pin behavior with the same shapes it returns
+// ({ platformId, platformVideoId, episodeId, platformScopeId }).
+
+const identityOf = (url) => require("../contracts/platform-video-id.js").extractVideoIdentity(url);
+
+test("a bilibili episode switch (?p=1 → ?p=2) is a different source", () => {
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+      identityOf,
+    ),
+    true,
+  );
+});
+
+test("bilibili player URL churn (?t= seek replaceState, absent-p vs p=1) stays the same source", () => {
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1&t=512",
+      identityOf,
+    ),
+    false,
+    "the ?t= replaceState must not end a Session",
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c",
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      identityOf,
+    ),
+    false,
+    "absent p and p=1 are one Source (the extractor normalizes both to 1)",
+  );
+});
+
+test("a different video, a different platform, and a different xiaoe shop are all switches", () => {
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "https://www.bilibili.com/video/BV9cd411M01e?p=1",
+      identityOf,
+    ),
+    true,
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      identityOf,
+    ),
+    true,
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://app12345.xiaoe-tech.com/v_5f0abc123",
+      "https://app99999.xiaoe-tech.com/v_5f0abc123",
+      identityOf,
+    ),
+    true,
+    "the shop subdomain is part of the identity (D7)",
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://app12345.xiaoe-tech.com/v_5f0abc123",
+      "https://app12345.xiaoe-tech.com/v_9f9def456",
+      identityOf,
+    ),
+    true,
+  );
+});
+
+test("youtube and xiaohongshu player URL churn stays the same source", () => {
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90s",
+      identityOf,
+    ),
+    false,
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.xiaohongshu.com/explore/65f0abc123def4567890ab12?xsec_token=abc",
+      "https://www.xiaohongshu.com/explore/65f0abc123def4567890ab12",
+      identityOf,
+    ),
+    false,
+  );
+});
+
+test("no confirmable identity on either side means no confirmed switch", () => {
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "https://www.bilibili.com/",
+      identityOf,
+    ),
+    false,
+    "leaving to a non-video page is not a confirmed different video/episode",
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://app12345.xiaoe-tech.com/term_5f0abc123",
+      "https://app12345.xiaoe-tech.com/v_9f9def456",
+      identityOf,
+    ),
+    false,
+    "an identity-less session URL cannot confirm a switch",
+  );
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "not a url",
+      identityOf,
+    ),
+    false,
+  );
+  assert.equal(YTD_LEARNING_START.didLearningSourceSwitch(null, null, identityOf), false);
+  assert.equal(
+    YTD_LEARNING_START.didLearningSourceSwitch(
+      "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+      "https://www.bilibili.com/video/BV9cd411M01e?p=1",
+    ),
+    false,
+    "a missing extractor degrades to no-switch, never a false finish",
+  );
 });

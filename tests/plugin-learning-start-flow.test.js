@@ -19,6 +19,7 @@ const { loadBackgroundHelpers } = require("./helpers/load-background.js");
 // error-examples.json (error-progress-conflict, unauthorized).
 
 const XIAOE_LESSON = "https://app12345.xiaoe-tech.com/v_5f0abc123";
+const BILI_P1 = "https://www.bilibili.com/video/BV1ab411L78c?p=1";
 const BILI_P2 = "https://www.bilibili.com/video/BV1ab411L78c?p=2";
 const ARTICLE = "https://www.example.com/articles/building-a-learning-habit";
 
@@ -390,6 +391,377 @@ test("startLearningForTarget locks the resolved source, and the end flush writes
   const tabsAfter = await helpers.handleGetCourseTabs();
   assert.equal(tabsAfter.locked, false);
   for (const entry of tabsAfter.tabs) assert.equal(entry.locked, false);
+});
+
+test("pausing writes the exact paused position immediately and the Session keeps recording (决策 4: 暂停保留本次记录)", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    progress: [{ status: 200, body: { positionMs: 400000, revision: 3 } }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  assert.equal(started.success, true);
+
+  await helpers.handleMediaPosition({ position: 300 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve)); // anchor cycle settles
+  await helpers.handleMediaPosition({ position: 400 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  let progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 1, "only the anchor write before the pause");
+  assert.deepEqual(progressCalls[0].body, { positionMs: 300000, expectedRevision: 2 });
+
+  // The bridge reports the paused player: an immediate write of the exact
+  // paused position, and the Session is untouched (no end, no new Session).
+  await helpers.handleMediaPosition({ position: 400, paused: true }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 2, "the pause writes immediately, not on the throttle");
+  assert.deepEqual(
+    progressCalls[1].body,
+    { positionMs: 400000, expectedRevision: 3 },
+    "the revision adopted from the anchor's response rides the pause write",
+  );
+  assert.equal(helpers.readStored("ytd_active_capture")?.sessionId, started.sessionId, "暂停保持本次记录");
+
+  // Resumed playback continues the same Session; the next position coalesces.
+  await helpers.handleMediaPosition({ position: 500, paused: false }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    v1Calls.filter((call) => call.path.includes("/progress")).length,
+    2,
+    "no write between the pause write and the end flush",
+  );
+
+  const ended = await helpers.handleEndLearning();
+  assert.equal(ended.success, true);
+  progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 3);
+  assert.deepEqual(progressCalls[2].body, { positionMs: 500000, expectedRevision: 3 });
+});
+
+test("a pageUrl switch to another episode finishes the Session, saves the old episode's last recorded position, and unlocks (分集隔离)", async () => {
+  const BILI_SOURCE_P1 = {
+    id: "src_01JABILIP1",
+    resourceId: "res_01JABILIR1",
+    kind: "video",
+    url: BILI_P1,
+    platformId: "bilibili",
+    platformVideoId: "BV1ab411L78c",
+    episodeId: "1",
+    platformScopeId: null,
+    progress: { positionMs: 50_000, revision: 1 },
+  };
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: { matched: true, resource: RESOLVE_MATCHED_BODY.resource, source: BILI_SOURCE_P1 } }],
+    progress: [{ status: 200, body: { positionMs: 100000, revision: 2 } }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
+  assert.equal(started.success, true);
+  assert.equal(helpers.readStored("ytd_learning_target").sourceId, "src_01JABILIP1");
+
+  await helpers.handleMediaPosition({ position: 100, pageUrl: BILI_P1 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve)); // anchor write settles
+  await helpers.handleMediaPosition({ position: 120, pageUrl: BILI_P1 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // The soft episode switch (bilibili ?p=2, no document reload) rides the
+  // position stream: the OLD session finishes WITHOUT consuming the new
+  // episode's position.
+  await helpers.handleMediaPosition({ position: 150, pageUrl: BILI_P2 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined, "the old Session ended");
+  assert.equal(helpers.readStored("ytd_learning_target"), undefined, "the lock released — the next start is the learner's move");
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.active, false, "no new Session starts on its own");
+  const progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 2, "anchor + end flush, both for the OLD episode");
+  assert.deepEqual(progressCalls[0].body, { positionMs: 100000, expectedRevision: 1 });
+  assert.deepEqual(
+    progressCalls[1].body,
+    { positionMs: 120000, expectedRevision: 2 },
+    "the flush saves the old episode's last ACTUALLY PLAYED position, never the new episode's 150s",
+  );
+  assert.equal(progressCalls[1].path, "/v1/sources/src_01JABILIP1/progress");
+});
+
+test("a same-source pageUrl churn (?t= seek) does NOT finish the Session", async () => {
+  const BILI_SOURCE_P1 = {
+    id: "src_01JABILIP1",
+    resourceId: "res_01JABILIR1",
+    kind: "video",
+    url: BILI_P1,
+    platformId: "bilibili",
+    platformVideoId: "BV1ab411L78c",
+    episodeId: "1",
+    platformScopeId: null,
+    progress: null,
+  };
+  const { fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: { matched: true, resource: RESOLVE_MATCHED_BODY.resource, source: BILI_SOURCE_P1 } }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
+  assert.equal(started.success, true);
+
+  await helpers.handleMediaPosition(
+    { position: 100, pageUrl: "https://www.bilibili.com/video/BV1ab411L78c?p=1&t=42" },
+    { tab: { id: 2 } },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.notEqual(helpers.readStored("ytd_active_capture"), undefined, "the player's ?t= replaceState is not a switch");
+  await helpers.handleEndLearning();
+});
+
+test("closing the recording tab finishes the Session and saves the last recorded position (收尾: 标签页关闭)", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    progress: [{ status: 200, body: { positionMs: 300000, revision: 3 } }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  assert.equal(started.success, true);
+  await helpers.handleMediaPosition({ position: 300 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  await helpers.handleMediaPosition({ position: 400 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await helpers.handleTabRemoved(7);
+
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined, "the Session ended with the tab");
+  assert.equal(helpers.readStored("ytd_learning_target"), undefined, "the lock released");
+  const progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 2, "anchor + tab-close flush");
+  assert.deepEqual(progressCalls[1].body, { positionMs: 400000, expectedRevision: 3 });
+});
+
+test("closing an unrelated tab leaves the recording Session alone", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: v1Fetch().fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearning({ url: XIAOE_LESSON, tabId: 7 });
+  assert.equal(started.success, true);
+
+  await helpers.handleTabRemoved(2);
+
+  assert.notEqual(helpers.readStored("ytd_active_capture"), undefined, "still recording");
+  await helpers.handleEndLearning();
+});
+
+test("the recording tab navigating to a different video finishes the Session (收尾: 换视频, tabs event)", async () => {
+  const BILI_SOURCE_P1 = {
+    id: "src_01JABILIP1",
+    resourceId: "res_01JABILIR1",
+    kind: "video",
+    url: BILI_P1,
+    platformId: "bilibili",
+    platformVideoId: "BV1ab411L78c",
+    episodeId: "1",
+    platformScopeId: null,
+    progress: null,
+  };
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: { matched: true, resource: RESOLVE_MATCHED_BODY.resource, source: BILI_SOURCE_P1 } }],
+    progress: [{ status: 200, body: { positionMs: 100000, revision: 2 } }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
+  assert.equal(started.success, true);
+  await helpers.handleMediaPosition({ position: 100, pageUrl: BILI_P1 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve)); // anchor write settles
+  await helpers.handleMediaPosition({ position: 120, pageUrl: BILI_P1 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // Hard navigation to another video: the tabs event ends the Session
+  // before the capture stream's own death notice would.
+  await helpers.handleTabNavigated(2, BILI_P2);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined, "the Session ended on the navigation");
+  assert.equal(helpers.readStored("ytd_learning_target"), undefined, "the lock released");
+  const progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 2, "anchor + navigation flush with the old video's position");
+  assert.deepEqual(progressCalls[0].body, { positionMs: 100000, expectedRevision: 0 });
+  assert.deepEqual(
+    progressCalls[1].body,
+    { positionMs: 120000, expectedRevision: 2 },
+    "the flush saves the old video's last ACTUALLY PLAYED position",
+  );
+});
+
+test("a same-source navigation (?t= churn) and an unrelated tab's navigation do not finish the Session", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: v1Fetch().fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
+  assert.equal(started.success, true);
+
+  await helpers.handleTabNavigated(2, "https://www.bilibili.com/video/BV1ab411L78c?p=1&t=77");
+  assert.notEqual(helpers.readStored("ytd_active_capture"), undefined, "?t= churn is the same source");
+  await helpers.handleTabNavigated(3, BILI_P2);
+  assert.notEqual(helpers.readStored("ytd_active_capture"), undefined, "another tab's navigation is not this Session's");
+  await helpers.handleEndLearning();
+});
+
+test("seekLearningTarget positions the page (seekMedia) without writing any progress or starting a Session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+  });
+  const tabMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+    tabMessages,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const chosen = await helpers.handleChooseLearningTarget({ tabId: 7 });
+  assert.equal(chosen.ok, true);
+  assert.equal(chosen.resolve.source.progress.positionMs, 250000);
+
+  // 继续学习: position only — no /progress call, no Session, no lock.
+  const resume = await helpers.handleSeekLearningTarget({ tabId: 7, positionMs: 250000 });
+  assert.equal(resume.success, true);
+  assert.ok(
+    tabMessages.some((message) => message.tabId === 7 && message.action === "seekMedia" && message.positionMs === 250000),
+    "the page bridge receives the resume position",
+  );
+  assert.equal(v1Calls.some((call) => call.path.includes("/progress")), false, "试看不落账: no progress write");
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.active, false, "no Session starts from a seek");
+  assert.equal(helpers.readStored("ytd_learning_target").status, "chosen", "the target stays chosen, not locked");
+
+  // 从头开始: position 0, same guarantee.
+  const fromStart = await helpers.handleSeekLearningTarget({ tabId: 7, positionMs: 0 });
+  assert.equal(fromStart.success, true);
+  assert.ok(
+    tabMessages.some((message) => message.tabId === 7 && message.action === "seekMedia" && message.positionMs === 0),
+  );
+  assert.equal(v1Calls.some((call) => call.path.includes("/progress")), false);
+});
+
+test("seekLearningTarget refuses a bad position or a dead tab without side effects", async () => {
+  const tabMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: v1Fetch().fetchImpl,
+    tabMessages,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+  const negative = await helpers.handleSeekLearningTarget({ tabId: 7, positionMs: -5 });
+  assert.equal(negative.success, false);
+  assert.equal(tabMessages.length, 0, "nothing is sent for a bad position");
+
+  const missing = await helpers.handleSeekLearningTarget({ tabId: 99, positionMs: 1000 });
+  assert.equal(missing.success, false, "a tab without the bridge (or gone) fails honestly");
+  assert.equal(tabMessages.length, 0);
+});
+
+test("a second 开始学习 on the same source is a new Session and continues the progress (多次学习)", async () => {
+  // Resolve #1 (first choose/start cycle) knows progress at 250s rev 2;
+  // resolve #2 (second cycle) reflects the first Session's end flush.
+  const resolveAt = (positionMs, revision) => ({
+    status: 200,
+    body: { ...RESOLVE_MATCHED_BODY, source: { ...RESOLVED_SOURCE, progress: { positionMs, revision } } },
+  });
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [
+      resolveAt(250_000, 2),
+      resolveAt(250_000, 2),
+      resolveAt(250_000, 2),
+      resolveAt(400_000, 3),
+      resolveAt(400_000, 3),
+      resolveAt(400_000, 3),
+    ],
+    progress: [
+      { status: 200, body: { positionMs: 300000, revision: 3 } },
+      { status: 200, body: { positionMs: 400000, revision: 4 } },
+    ],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+
+  await helpers.handleChooseLearningTarget({ tabId: 7 });
+  const first = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  assert.equal(first.success, true);
+  await helpers.handleMediaPosition({ position: 300 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  await helpers.handleMediaPosition({ position: 400 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const ended = await helpers.handleEndLearning();
+  assert.equal(ended.success, true);
+  assert.equal(helpers.readStored("ytd_learning_target"), undefined, "the first Session released the lock");
+
+  // Same source, second 开始学习: a NEW Session, the resolve's fresh
+  // progress seeds expectedRevision, and the write continues the history.
+  const chosenAgain = await helpers.handleChooseLearningTarget({ tabId: 7 });
+  assert.equal(chosenAgain.ok, true);
+  assert.equal(chosenAgain.resolve.source.progress.positionMs, 400000, "resolve reports the last Session's position");
+  const second = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  assert.equal(second.success, true);
+  assert.notEqual(second.sessionId, first.sessionId, "each 开始学习 is its own Session");
+  const snapshot = helpers.readStored("ytd_learning_target");
+  assert.equal(snapshot.sourceId, "src_01JABC0002", "the same Source owns both Sessions");
+  assert.equal(snapshot.expectedRevision, 3, "the fresh resolve revision seeds the new writer");
+
+  await helpers.handleMediaPosition({ position: 500 }, { tab: { id: 7 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const progressCalls = v1Calls.filter((call) => call.path.includes("/progress"));
+  assert.equal(progressCalls.length, 3, "anchor1 + flush1 + anchor2");
+  assert.deepEqual(progressCalls[2].body, { positionMs: 500000, expectedRevision: 3 });
+  await helpers.handleEndLearning();
 });
 
 test("end flush hitting 409 adopts current.revision and still writes the latest position", async () => {

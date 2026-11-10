@@ -87,6 +87,15 @@
         <div class="course-tab-list" id="courseTabList"></div>
         <div class="course-tab-status" id="courseTabStatus" aria-live="polite" style="display: none"></div>
         <div class="course-tab-actions">
+          <!-- P11 (#60): the chosen source already has progress — 定位选项.
+               Both only move the player (试看不落账): recording starts with
+               开始学习 alone. -->
+          <button class="session-btn auth-gate-btn" id="seekResumeTargetBtn" type="button" style="display: none">
+            继续学习
+          </button>
+          <button class="session-btn auth-gate-btn" id="seekFromStartTargetBtn" type="button" style="display: none">
+            从头开始
+          </button>
           <button class="session-btn auth-gate-btn" id="startLearningForTargetBtn" type="button" disabled>
             开始学习
           </button>

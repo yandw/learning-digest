@@ -397,6 +397,8 @@ function setupEventListeners() {
 
   // Course tab list (P10, #59): 开始学习 opens the Session on the chosen
   // course tab; 收藏并开始 covers the resolve-missed target in one click.
+  // P11 (#60): 继续学习/从头开始 position the player for a chosen target
+  // with progress — only 开始学习 records.
   document
     .getElementById("startLearningForTargetBtn")
     ?.addEventListener("click", () => {
@@ -406,6 +408,16 @@ function setupEventListeners() {
     .getElementById("collectTargetBtn")
     ?.addEventListener("click", () => {
       void collectAndStartTarget();
+    });
+  document
+    .getElementById("seekResumeTargetBtn")
+    ?.addEventListener("click", () => {
+      void seekChosenTarget(courseTargetUi.resumePositionMs);
+    });
+  document
+    .getElementById("seekFromStartTargetBtn")
+    ?.addEventListener("click", () => {
+      void seekChosenTarget(0);
     });
 
   // Library note entry (P12, #61): the note text goes to the background,
@@ -1065,6 +1077,13 @@ const COURSE_TAB_COPY = {
   starting: "正在开始学习…",
   favoriting: "正在收藏…",
   failed: "操作没有完成，请稍后重试。",
+  // P11 (#60): the 继续学习/从头开始 options position the player only —
+  // the status line reminds the learner that recording starts with
+  // 开始学习 (试看不落账).
+  locatedResume: (position) =>
+    `已定位到上次位置 ${position}，点「开始学习」开始记录。`,
+  locatedFromStart: "已定位到开头，点「开始学习」开始记录。",
+  seekFailed: "定位没有完成，请稍后重试。",
 };
 
 // The chosen-target UI state, reconciled from the background's answers.
@@ -1073,6 +1092,9 @@ const courseTargetUi = {
   chosenTabId: null,
   startable: false,
   matched: false,
+  // P11 (#60): the chosen source's resume position (resolve §3.4), or null
+  // when it has no progress — the 继续学习/从头开始 options exist only then.
+  resumePositionMs: null,
   busy: false,
 };
 
@@ -1109,6 +1131,8 @@ function setCourseTabBusy(busy) {
 function updateStartButtons() {
   const startBtn = document.getElementById("startLearningForTargetBtn");
   const collectBtn = document.getElementById("collectTargetBtn");
+  const resumeBtn = document.getElementById("seekResumeTargetBtn");
+  const fromStartBtn = document.getElementById("seekFromStartTargetBtn");
   if (startBtn) {
     startBtn.disabled =
       courseTargetUi.busy ||
@@ -1119,6 +1143,22 @@ function updateStartButtons() {
     collectBtn.style.display =
       courseTargetUi.chosenTabId && !courseTargetUi.matched ? "" : "none";
     collectBtn.disabled = courseTargetUi.busy;
+  }
+  // P11 (#60): the 定位选项 appear only for a chosen, startable, matched
+  // target that HAS progress; without progress 开始学习 alone is the flow.
+  const resumable = !!(
+    courseTargetUi.chosenTabId &&
+    courseTargetUi.startable &&
+    courseTargetUi.matched &&
+    Number(courseTargetUi.resumePositionMs) > 0
+  );
+  if (resumeBtn) {
+    resumeBtn.style.display = resumable ? "" : "none";
+    resumeBtn.disabled = courseTargetUi.busy;
+  }
+  if (fromStartBtn) {
+    fromStartBtn.style.display = resumable ? "" : "none";
+    fromStartBtn.disabled = courseTargetUi.busy;
   }
 }
 
@@ -1139,6 +1179,7 @@ async function refreshCourseTabs() {
   courseTargetUi.chosenTabId = result.chosenTabId || null;
   courseTargetUi.matched = false;
   courseTargetUi.startable = false;
+  courseTargetUi.resumePositionMs = null;
   renderCourseTabList(result.tabs || []);
   setCourseTabStatus("");
   updateStartButtons();
@@ -1218,12 +1259,51 @@ async function chooseCourseTarget(tabId) {
     setCourseTabStatus(result.reason === "locked" ? COURSE_TAB_COPY.locked : COURSE_TAB_COPY.failed);
     return;
   }
+  // The list refresh re-renders the chosen row; the resolve verdict is
+  // applied AFTER it (refreshCourseTabs reconciles from getCourseTabs,
+  // which carries no resolve data — applying first let the refresh clobber
+  // startable/matched and leave 开始学习 disabled).
+  await refreshCourseTabs();
   courseTargetUi.chosenTabId = tabId;
   courseTargetUi.startable = !!result.startable;
   courseTargetUi.matched = !!(result.resolve && result.resolve.matched);
-  await refreshCourseTabs();
+  const progress =
+    result.resolve && result.resolve.source && result.resolve.source.progress;
+  const position = progress ? Number(progress.positionMs) : 0;
+  courseTargetUi.resumePositionMs =
+    Number.isFinite(position) && position > 0 ? position : null;
   setCourseTabStatus(describeCourseTargetResolution(result));
   updateStartButtons();
+}
+
+/**
+ * P11 (#60): the 继续学习/从头开始 click. Positioning only — the
+ * background forwards seekMedia to the page bridge; no progress is written
+ * and no Session starts (试看不落账: recording begins with 开始学习).
+ */
+async function seekChosenTarget(positionMs) {
+  if (!courseTargetUi.chosenTabId) return;
+  setCourseTabBusy(true);
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "seekLearningTarget",
+      tabId: courseTargetUi.chosenTabId,
+      positionMs,
+    });
+  } catch (_error) {
+    result = null;
+  }
+  setCourseTabBusy(false);
+  if (result && result.success) {
+    setCourseTabStatus(
+      positionMs > 0
+        ? COURSE_TAB_COPY.locatedResume(formatResumePosition(positionMs))
+        : COURSE_TAB_COPY.locatedFromStart,
+    );
+    return;
+  }
+  setCourseTabStatus((result && result.error) || COURSE_TAB_COPY.seekFailed);
 }
 
 /**

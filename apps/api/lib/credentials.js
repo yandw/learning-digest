@@ -59,4 +59,21 @@ function issueCredential({ store, accountId, kind, now, config }) {
   return { token, credential };
 }
 
-module.exports = { issueCredential, findActiveGroup, hashToken };
+/**
+ * Authenticate a Bearer token: resolves the credential by token hash and
+ * rejects it when the credential itself or its whole group is revoked.
+ * @returns {object|null} the live credential record, or null
+ */
+function authenticate({ store, token }) {
+  const record = store.get("credentials", hashToken(token));
+  if (!record || record.revokedAt !== null) {
+    return null;
+  }
+  const group = store.get("credentialGroups", record.credentialGroupId);
+  if (!group || group.revokedAt !== null) {
+    return null;
+  }
+  return record;
+}
+
+module.exports = { issueCredential, findActiveGroup, hashToken, authenticate };

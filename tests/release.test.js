@@ -73,9 +73,9 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.7 (P11 #60): resume options (继续学习/从头开始) + the four finish
-  // triggers on top of the P10/P10b learning flow.
-  assert.equal(manifest.version, "0.2.7");
+  // 0.2.8 (round-1 review fixes): shared api-client module extraction,
+  // wiring dedup, and the positionMs=0 progress edge.
+  assert.equal(manifest.version, "0.2.8");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

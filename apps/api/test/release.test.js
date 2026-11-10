@@ -9,12 +9,14 @@ const path = require("node:path");
 
 const apiRoot = path.resolve(__dirname, "..");
 
-test("apps/api release metadata is 0.1.0", () => {
+test("apps/api release metadata is 0.1.1", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(apiRoot, "package.json"), "utf8"),
   );
   assert.equal(packageJson.name, "@learning-digest/api");
-  assert.equal(packageJson.version, "0.1.0");
+  // 0.1.1 (round-1 review fixes): platformVideoIdFormats unified onto the
+  // shared contracts module, isoSeconds dedupe.
+  assert.equal(packageJson.version, "0.1.1");
   assert.equal(packageJson.private, true);
 });
 

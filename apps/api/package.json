@@ -1,6 +1,6 @@
 {
   "name": "@learning-digest/api",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Learning Digest backend API, round 1: /v1 auth with invited-email verification codes. Zero npm dependencies (node:http + node:test).",
   "license": "MIT",

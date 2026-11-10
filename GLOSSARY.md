@@ -1,42 +1,65 @@
 # Learning Digest
 
-A Chrome side panel that turns course content on any learning platform into a learning resource: segment-by-segment transcription, rolling summaries, and a full-session digest. Platform and speech-to-text providers are both switchable.
+A personal learning library for saving links to web materials and resuming study at the original Source. The desktop browser extension supports study on the original website.
 
 ## Language
 
+### Learning Library
+
+**Resource**:
+An item in a learner's personal library, such as a standalone webpage or a lesson. A Resource can have multiple Sources.
+
+**Source**:
+A specific webpage or playable version on the original platform through which a learner accesses a Resource. A separately playable part is a distinct Source with its own playback position.
+
+**Platform Video ID**:
+The identifier assigned to a video by its original platform. Its scope is that platform.
+_Avoid_: Clean ID
+
 **Session**:
-One continuous learning act, from the user pressing "start learning" to pressing "end". Corresponds to one lesson (typically 2–3 hours). Deliberately has no Course-level grouping.
+One continuous act of learning from a Source. A learner can return to the same Source in multiple Sessions.
 _Avoid_: Lesson, class, recording
 
-**Segment**:
-A fixed-length slice of the session's audio (about 2 minutes), the smallest unit submitted to speech-to-text exactly once. Segment length is provider-dependent and user-configurable.
-_Avoid_: Chunk, clip, fragment
+### Learning Content
 
 **Transcript**:
-The timestamped text of what is said in a Session, assembled Segment by Segment. The single input for every AI feature (rolling summary, digest, notes).
-_Avoid_: Subtitles text, script, 逐字稿 (in English docs)
+The timestamped text of speech from a Source. It can cover the whole Source or just the part captured during a Session.
+_Avoid_: Script
 
 **Topic**:
-A semantically coherent stretch of the Session's Transcript, identified on the text layer and allowed to span Segment boundaries (fixed-length recording cuts may split one Topic across Segments). Carries a Transcript time range; the organizational unit for the Rolling Summary, Session Digest, Overview, and the report.
-_Avoid_: Block, chunk, chapter, 主题
+A coherent subject covered within a time range of a Transcript.
+_Avoid_: Block, chunk, chapter
+
+**Course Summary**:
+A learner-requested synthesis of a Resource's available Transcripts and notes. A learner can generate it at any point and request a new summary as more material becomes available.
+
+**Study Guide**:
+A learning aid organized around key Topics, with references to the Transcript and relevant portions of the original Source.
+
+### Browser Extension
+
+**Segment**:
+A time-bounded slice of captured Session audio submitted for transcription as a unit.
+_Avoid_: Chunk, clip, fragment
 
 **Rolling Summary**:
-The live, append-only Topic timeline produced during a Session: each tick summarizes the Transcript since the last tick plus a short overlap tail of the previous tick, and appends new Topics without rewriting earlier ones. It serves only the in-session view; it is not an input to the Session Digest.
+The live, append-only Topic timeline that helps a learner follow what has been covered during a Session.
 _Avoid_: Interim summary, merged running summary, periodic digest, running notes
 
 **Session Digest**:
-The final deliverable generated when a Session ends, built by one global pass over the full Transcript: Topic segmentation with per-Topic summaries, key quotes, and action items. It does not depend on the Rolling Summary.
-_UI_: the panel's 纪要 tab is the Session Digest surface.
+The summary of a completed Session, based on its full Transcript and organized by Topic.
 _Avoid_: Final summary, complete overview
 
 **Source Platform**:
-A switchable adapter for one learning platform (first: xiaoe-tech.com). Identifies its pages, locates the media, and exposes platform-specific capture to the rest of the extension. New platforms plug in without touching the core pipeline.
+A video or learning platform for which Learning Digest recognizes playable media and supports platform-specific learning assistance.
 _Avoid_: Adapter, connector, integration, channel
 
+### Providers
+
 **Speech Provider**:
-A switchable speech-to-text service (Groq, Tencent Cloud ASR, Qwen ASR) with its own credentials and endpoint, responsible for turning one Segment's audio into Transcript records.
+An external service that converts speech into Transcript records.
 _Avoid_: ASR provider, transcription provider, STT
 
 **AI Provider**:
-The external chat-completion service used for Rolling Summary, Session Digest, Translation, Explain, and note cleanup. Configured with its own base URL, API key, and model. Distinct from Speech Provider.
+An external model service that helps interpret or summarize learning content.
 _Avoid_: LLM provider, model provider

@@ -14,4 +14,6 @@ Single-context layout: one `GLOSSARY.md` at repo root, ADRs under `docs/adr/`. S
 
 ## Project conventions
 
-- **Every change bumps the patch version** (manifest.json + package.json + the pin in tests/release.test.js, kept in sync): 0.1.0 → 0.1.1 → … The owner verifies in chrome://extensions that newly loaded code is current, so the version must move on every push.
+- **Version the four release units independently.** The Chrome extension, Web library, backend API, and recording Worker each own their release version. Bump the patch version of each affected unit for runtime changes by default. Shared changes bump each unit whose shipped behavior changes. Planning-only changes do not require a release bump.
+- **The root version is the Chrome extension version.** The productization branch starts at `0.2.0`. The `0.1.x` series belongs to the legacy PoC. Keep `manifest.json`, root `package.json`, and the pin in `tests/release.test.js` in sync. Bump them when a change affects the extension release so the owner can verify the loaded version in `chrome://extensions`.
+- **The Web library, API, and Worker each start at `0.1.0` when their first runnable build exists.** Store each version in that unit's own release metadata when introducing the unit. The API contract path `/v1` is versioned separately from the API build.

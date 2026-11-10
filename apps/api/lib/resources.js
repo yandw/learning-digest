@@ -14,7 +14,7 @@
  * source of identity extraction and normalization; this module only adds
  * the account-scoped store access and the API kinds.
  */
-const { ApiError, validationFailed } = require("./errors");
+const { ApiError, validationFailed, notFoundResource } = require("./errors");
 const { generateId } = require("./ids");
 const { normalizeUrl, extractVideoIdentity } = require("../../../contracts/platform-video-id");
 
@@ -270,11 +270,61 @@ function presentFavorite({ store, resource, source }) {
   };
 }
 
+/** All sources of one account's resource, insertion order. */
+function sourcesForResource({ store, accountId, resourceId }) {
+  return store
+    .list("sources")
+    .filter((s) => s.accountId === accountId && s.resourceId === resourceId);
+}
+
+/**
+ * Contract §3.2: the account's resources, newest first, each with its
+ * sources carrying the latest progress.
+ */
+function listResources({ store, accountId }) {
+  const items = store
+    .list("resources")
+    .filter((r) => r.accountId === accountId)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .map((resource) => ({
+      resource: serializeResource(resource),
+      sources: sourcesForResource({ store, accountId, resourceId: resource.id }).map(
+        (source) => serializeSource({ store, source }),
+      ),
+    }));
+  return { status: 200, body: { resources: items } };
+}
+
+/**
+ * Contract §3.3: one account resource with sources and notes. Reads run
+ * with the accountId in the query (D2): other accounts' ids and unknown
+ * ids are the same 404. Notes stay empty until P12 lands.
+ */
+function getResourceDetail({ store, accountId, id }) {
+  const resource =
+    store.list("resources").find((r) => r.id === id && r.accountId === accountId) || null;
+  if (!resource) {
+    throw notFoundResource();
+  }
+  return {
+    status: 200,
+    body: {
+      resource: serializeResource(resource),
+      sources: sourcesForResource({ store, accountId, resourceId: resource.id }).map(
+        (source) => serializeSource({ store, source }),
+      ),
+      notes: [],
+    },
+  };
+}
+
 module.exports = {
   parseSourceRequest,
   matchSource,
   createFavorite,
   presentFavorite,
+  listResources,
+  getResourceDetail,
   serializeResource,
   serializeSource,
 };

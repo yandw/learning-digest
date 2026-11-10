@@ -12,6 +12,8 @@ const {
   matchSource,
   createFavorite,
   presentFavorite,
+  listResources,
+  getResourceDetail,
 } = require("./resources");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
@@ -139,6 +141,19 @@ function registerRoutes(ctx) {
     }
     const created = createFavorite({ store, accountId: credential.accountId, request, now });
     return { status: 201, body: presentFavorite({ store, ...created }) };
+  });
+
+  // GET /v1/resources — the account's list, newest first (contract §3.2).
+  router.add("GET", "/v1/resources", async ({ req }) => {
+    const credential = requireCredential(req);
+    return listResources({ store, accountId: credential.accountId });
+  });
+
+  // GET /v1/resources/:id — detail with sources and notes; cross-account
+  // reads are the same 404 as unknown ids (D2).
+  router.add("GET", "/v1/resources/:id", async ({ req, params }) => {
+    const credential = requireCredential(req);
+    return getResourceDetail({ store, accountId: credential.accountId, id: params.id });
   });
 }
 

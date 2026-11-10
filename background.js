@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -349,6 +349,17 @@ async function openPanelQuietly(tab) {
   }
 }
 
+/**
+ * True when the active Session already belongs to the page the icon was
+ * clicked on. Prefers the URL persisted with the 0.1.57+ pointer (exact
+ * course identity); pre-0.1.57 pointers carry no sourceUrl, so the tab id is
+ * the only available signal — same tab means same course there.
+ */
+function isSameCourse(context, url, tabId) {
+  if (context.sourceUrl) return context.sourceUrl === url;
+  return context.tabId === tabId;
+}
+
 async function handleActionClicked(tab) {
   // Without the "tabs" permission tab.url is only populated when the
   // extension has host access to the page; on unrecognized hosts it is
@@ -399,11 +410,28 @@ async function handleActionClicked(tab) {
 
   const existing = await ensureCaptureResumed();
   if (existing) {
-    console.log("[Learning Digest] icon click: a Session is already active");
-    await recordStartAttempt(
-      `a Session is already active (${existing.sessionId})`,
+    if (isSameCourse(existing, tab.url, tab.id)) {
+      console.log("[Learning Digest] icon click: a Session is already active");
+      await recordStartAttempt(
+        `a Session is already active (${existing.sessionId})`,
+      );
+      return; // Session already running on this course; the panel shows its state.
+    }
+    // 0.1.57 course switch: the still-active Session belongs to another
+    // lesson (its tab/URL no longer matches). End it WITHOUT the AI report
+    // pass and fall through to start a fresh Session for this course below —
+    // before this, the stale Session shadowed every new course (its
+    // transcript reappeared and the new lesson was never captured).
+    console.log(
+      "[Learning Digest] icon click on a new course while a Session is active: ending",
+      existing.sessionId,
+      "and starting fresh for",
+      tab.url,
     );
-    return; // Session already running; the panel shows its state.
+    await recordStartAttempt(
+      `course switch: ended ${existing.sessionId} (was active)`,
+    );
+    await endActiveSession(existing, { reason: "course-switch", report: false });
   }
 
   const result = await handleStartLearning({ url: tab.url, tabId: tab.id, streamId });
@@ -528,6 +556,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleGetSessionState()
       .then(sendResponse)
       .catch((err) => sendResponse({ active: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "clearSessionRecord") {
+    handleClearSessionRecord(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "restartFromBeginning") {
+    // From the panel's 从头开始 button (0.1.63): forward to the capture tab's
+    // page bridge, which rewinds the lesson video to 0:00 and plays.
+    handleRestartFromBeginning()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 
@@ -781,6 +825,8 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleStartLearning,
   handleEndLearning,
   handleGetSessionState,
+  handleClearSessionRecord,
+  handleRestartFromBeginning,
   handleActionClicked,
   handlePageTitle,
   // Timeline anchoring + seek-awareness (#48): the bridge's position stream
@@ -826,12 +872,14 @@ const LIVE_TICK_MS = 1000;
 const PROBE_WINDOW_MS = 10_000;
 
 /**
- * #48 seek-forward threshold: a position jump larger than one Segment plus
- * this tolerance within one bridge tick is a seek (cut at the seek point,
- * jump the cursor, mark the gap). Smaller jumps feed the scheduler
- * normally, matching the replay path's D7 semantics.
+ * Forward-drag threshold: a position jump larger than this within one bridge
+ * report is a drag (cut at the seek point, jump the cursor, mark the gap).
+ * The page bridge's seeking/seeked events are the primary detector and fire
+ * for any drag size; this constant is only the fallback for a lost event.
+ * Backward moves always count as drags. 3s: shorter than any lesson
+ * Segment, long enough to swallow ordinary player jitter.
  */
-const SEEK_JUMP_TOLERANCE_SECONDS = 5;
+const FORWARD_DRAG_THRESHOLD_SECONDS = 3;
 
 /** @type {object|null} in-memory capture context, rebuilt from storage on wake. */
 let captureContext = null;
@@ -899,7 +947,15 @@ async function persistContextPointer(context) {
       segmentLengthSeconds: context.segmentLengthSeconds,
       transcribeMode: context.transcribeMode,
       pageTitle: context.pageTitle,
+      sourceUrl: context.sourceUrl ?? null,
       cursorSeconds: context.segmenter ? context.segmenter.emittedUpTo : 0,
+      // Realtime timeline state (#50), so a worker restart rebuilds the
+      // hold/resume and covered-range bookkeeping instead of re-recognizing
+      // what the windows already cover.
+      playbackWindows: context.playbackWindows || [],
+      playbackWindowStart: context.playbackWindowStart ?? null,
+      realtimeOriginSeconds: context.realtimeOriginSeconds ?? 0,
+      realtimeHoldUntilSeconds: context.realtimeHoldUntilSeconds ?? null,
     },
   });
 }
@@ -973,8 +1029,18 @@ function resolveTranscribeMode(providerId, providerConfig) {
  * @param {"segment"|"realtime"} [parts.transcribeMode] - resolved at start;
  *   pre-0.1.43 pointers without the field fall back to "segment" (#45)
  * @param {string} [parts.pageTitle] - page title reported by the bridge (#32)
+ * @param {string} [parts.sourceUrl] - URL of the page the Session was started
+ *   on (0.1.57): the icon-click flow compares it to detect a course switch
+ *   and auto-end the stale Session; absent on pre-0.1.57 pointers
  * @param {object} parts.state - Session state from session-pipeline.js
  * @param {object} parts.segmenter - scheduler from session-segmenter.js
+ * @param {object[]} [parts.playbackWindows] - closed captured playback ranges
+ *   (#50), from the pointer on a rebuild
+ * @param {number|null} [parts.playbackWindowStart] - the open range's start
+ * @param {number} [parts.realtimeOriginSeconds] - the recognition origin the
+ *   utterance offsets count from (#50)
+ * @param {number|null} [parts.realtimeHoldUntilSeconds] - non-null while a
+ *   re-watch of covered audio suppresses forwarding
  * @param {string} parts.providerId - selected Speech Provider id
  * @param {object} parts.credentials - that provider's credentials
  */
@@ -988,6 +1054,11 @@ function createCaptureContext({
   segmentLengthSeconds,
   transcribeMode,
   pageTitle,
+  sourceUrl,
+  playbackWindows,
+  playbackWindowStart,
+  realtimeOriginSeconds,
+  realtimeHoldUntilSeconds,
   state,
   segmenter,
   providerId,
@@ -1004,6 +1075,9 @@ function createCaptureContext({
     transcribeMode: transcribeMode === "realtime" ? "realtime" : "segment",
     // Absent until the bridge reports the page title; first write wins.
     pageTitle,
+    // 0.1.57: the page URL the Session was started on, persisted with the
+    // pointer so a worker restart can still tell course-switch from re-click.
+    sourceUrl: typeof sourceUrl === "string" ? sourceUrl : null,
     state,
     segmenter,
     // The last position seen on the active timeline. A rebuilt context
@@ -1011,6 +1085,24 @@ function createCaptureContext({
     // or seek jump carried by the pointer), so the first tick after a
     // restart never reads as a seek from 0.
     lastPosition: segmenter.emittedUpTo,
+    // Drag-detection baseline: false until the first bridged position arms
+    // it, so a Session opened mid-video never reads its first report as a
+    // drag from 0 (the 3s fallback threshold would fire on any start
+    // position). A rebuilt context resumes from the persisted cursor (> 0
+    // once anything was captured), so restarts arm immediately.
+    seekBaselineArmed: segmenter.emittedUpTo > 0,
+    // Realtime timeline state (#50): playbackWindows are the CLOSED ranges
+    // the player traversed while capturing (they cover silent stretches a
+    // done Segment would cover in segment mode); playbackWindowStart is the
+    // open one. realtimeOriginSeconds is the video position the live
+    // recognition session counts its utterance offsets from (re-based on
+    // every drag); realtimeHoldUntilSeconds is non-null while a re-watch of
+    // covered audio suppresses forwarding, and names the position where
+    // capture resumes.
+    playbackWindows: Array.isArray(playbackWindows) ? playbackWindows : [],
+    playbackWindowStart: playbackWindowStart ?? null,
+    realtimeOriginSeconds: Number(realtimeOriginSeconds) || 0,
+    realtimeHoldUntilSeconds: realtimeHoldUntilSeconds ?? null,
     // The last VIDEO position the page bridge reported (#49), updated on
     // every bridged report. Realtime video-kind Sessions stamp finalized
     // utterances from this (mapUtteranceStart); null until the first
@@ -1072,9 +1164,13 @@ function buildCaptureStartMessage(context, streamId) {
     transcribeMode: context.transcribeMode,
     // The realtime WebSocket handshake needs the Qwen key (spec #44:
     // message-only transport, never persisted); the segment recorder
-    // ignores it.
+    // ignores it. originSeconds (#50) re-bases a resumed Session's
+    // recognition at its persisted resume point.
     ...(context.transcribeMode === "realtime"
-      ? { apiKey: context.credentials.apiKey }
+      ? {
+          apiKey: context.credentials.apiKey,
+          originSeconds: Number(context.realtimeOriginSeconds) || 0,
+        }
       : {}),
   };
 }
@@ -1141,7 +1237,21 @@ async function ensureCaptureResumed() {
       context.lastPosition,
       lastUtteranceEndSeconds(resumedState),
     );
+    // The offscreen document restarts its recognition session on the fresh
+    // captureStart, so the origin re-bases at the resume point: never below
+    // the last persisted record's end (utterance offsets would re-stamp
+    // already-covered ranges).
+    if (context.timestampKind === "video") {
+      context.realtimeOriginSeconds = Math.max(
+        context.realtimeOriginSeconds,
+        lastUtteranceEndSeconds(resumedState),
+      );
+    }
   }
+  // A resumed context always carries a meaningful drag-detection baseline
+  // (the persisted cursor, plus the last utterance's end above): the first
+  // post-restart report must detect drags, not arm the baseline.
+  context.seekBaselineArmed = true;
   captureContext = context;
 
   // The offscreen recorder survives a worker restart but not a browser
@@ -1176,6 +1286,64 @@ async function ensureCaptureResumed() {
   startSummaryTimer(context);
   console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
+}
+
+/**
+ * The panel's 从头开始 button (0.1.63): rewinds the lesson to 0:00 so an
+ * autoplay-started course transcribes from the true beginning instead of
+ * losing its first grid cell to the mid-video anchor's upward snap. The
+ * rewind itself rides the existing bridge (seek events report the new
+ * position immediately); the re-listen path keeps covered ranges free of
+ * duplicates when the button is pressed mid-Session.
+ */
+async function handleRestartFromBeginning() {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) {
+    return { success: false, error: "当前没有进行中的转写会话" };
+  }
+  if (context.kind === "live") {
+    return { success: false, error: "直播没有时间轴，无法从头播放" };
+  }
+  try {
+    // 0.1.65: a late-detected live replay may have anchored at 0:15 (or any
+    // later grid point) while still having no captured Segments. Merely
+    // rewinding the player leaves the scheduler at that anchor, so playback
+    // from 0:00 is treated as re-listening and the prefix is never captured.
+    // For a genuinely empty segment Session, reopen the prefix at zero before
+    // the bridge's seek events arrive. Sessions with existing coverage keep
+    // the normal re-listen/no-duplicate behavior.
+    if (
+      context.transcribeMode !== "realtime" &&
+      context.state.segments.length === 0 &&
+      context.state.transcriptRecords.length === 0
+    ) {
+      await discardRecordedAudio(context);
+      context.segmenter = YTD_SEGMENTER.createSegmenter({
+        segmentLengthSeconds: context.segmentLengthSeconds,
+        startAt: 0,
+        startIndex: 0,
+      });
+      context.lastPosition = 0;
+      context.relisten = null;
+      context.retryWatch = null;
+      context.fillWatch = null;
+      context.fillInFlight = false;
+      context.seekBaselineArmed = false;
+      await persistContextPointer(context);
+    }
+    const result = await chrome.tabs.sendMessage(context.tabId, {
+      action: "restartFromBeginning",
+    });
+    if (result?.success) return { success: true };
+    return {
+      success: false,
+      error: result?.error || "页面上没有找到可控制的视频，请刷新课程页后重试",
+    };
+  } catch (_error) {
+    // No bridge on the tab (closed, navigated, or an iframe-only player):
+    // the honest failure tells the learner what to do next.
+    return { success: false, error: "课程页桥接不可用，请刷新课程页后重试" };
+  }
 }
 
 function startLiveTimer(context) {
@@ -1400,6 +1568,10 @@ function feedPosition(context, positionSeconds) {
  * in-flight Segment. Retry dispatches (#48) pass an explicit segmentId —
  * the FAILED Segment's own id — so the result replaces that Segment's
  * failure marker instead of appending a new entry.
+ *
+ * @returns {Promise<boolean>} true when the Segment transcribed cleanly —
+ * hole-fill callers shrink the skipped marker only on this outcome, so a
+ * failed fill never swallows the hole it was filling.
  */
 async function dispatchSegment(context, segment, segmentId = `seg-${segment.index}`) {
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
@@ -1430,6 +1602,9 @@ async function dispatchSegment(context, segment, segmentId = `seg-${segment.inde
       segmentId,
       records: absoluteRecords,
     });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state);
+    return true;
   } catch (error) {
     // Loud on purpose: a failed Segment shows up in the panel only as an
     // anonymous [语音转录失败] marker, so this console.error is the only
@@ -1443,9 +1618,10 @@ async function dispatchSegment(context, segment, segmentId = `seg-${segment.inde
       type: "transcribeFailed",
       segmentId,
     });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state);
+    return false;
   }
-  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
-  broadcastSession(context.state);
 }
 
 /**
@@ -1505,6 +1681,7 @@ async function handleStartLearning(message) {
     kind: recognition.kind,
     timestampKind: recognition.timestampKind,
     startedAtMs: Date.now(),
+    sourceUrl: message.url,
     segmentLengthSeconds: settings.segmentLengthSeconds,
     transcribeMode: resolveTranscribeMode(providerId, credentials),
     state,
@@ -1592,7 +1769,19 @@ async function handleStartLearning(message) {
 async function handleMediaPosition(message, sender) {
   const context = await ensureCaptureResumed();
   if (!context || context.ended) return;
-  if (sender.tab?.id !== context.tabId) return;
+  if (sender.tab?.id !== context.tabId) {
+    // One-time (per context) diagnostic: a position stream from another tab
+    // is the stale-Session signature — every message below would otherwise
+    // be dropped silently and the learner sees "drag does nothing".
+    if (!context.warnedForeignPosition) {
+      context.warnedForeignPosition = true;
+      console.warn(
+        `[Learning Digest] 忽略来自标签页 ${sender.tab?.id} 的播放位置：` +
+          `当前会话属于标签页 ${context.tabId}（可能是未结束的旧会话）`,
+      );
+    }
+    return;
+  }
   const position = Number(message.position);
   // The video position every consumer below reads: realtime video-kind
   // Sessions stamp finalized utterances from it (#49), the segment-mode
@@ -1609,14 +1798,18 @@ async function handleMediaPosition(message, sender) {
   // stamps for its whole life, exactly as pre-#49.
   if (context.transcribeMode === "realtime") {
     if (context.timestampKind !== "video") {
-      await probeForAnchor(context, position);
-      if (context.timestampKind !== "video") return;
+      // 0.1.64 live-replay recovery, same as the segment path below.
+      if (!(await convertLiveRecordingIfReplay(context, message, position))) {
+        await probeForAnchor(context, position);
+        if (context.timestampKind !== "video") return;
+      }
     }
     if (Number.isFinite(position)) {
-      await handleRealtimeSeekForward(context, position);
-      // Seek detection needs the live position as its baseline; the
-      // monotonic max mirrors feedPosition's rule for the segment path.
-      context.lastPosition = Math.max(context.lastPosition, position);
+      await handleRealtimeDrag(context, position);
+      // Drag detection compares against the last REPORTED position (not a
+      // monotonic frontier): after a backward drag the baseline is the
+      // landing point, so the next drag measures from there.
+      context.lastPosition = position;
     }
     // Media end auto-ends replay/course Sessions; live ends only via the
     // explicit end action.
@@ -1626,12 +1819,18 @@ async function handleMediaPosition(message, sender) {
     return;
   }
   if (context.timestampKind !== "video") {
-    // #48 probe window: a wallclock Session anchors to the video timeline
-    // when the bridge reports a valid position in time. While it stays
-    // wallclock (no probe, lapsed window, or not-yet-valid position), the
-    // position stream is ignored exactly as before.
-    await probeForAnchor(context, position);
-    if (context.timestampKind !== "video") return;
+    // 0.1.64: a live-kind Session whose probe lapsed still converts when a
+    // FINITE-duration recording shows up (直播回放), before the warn path.
+    if (await convertLiveRecordingIfReplay(context, message, position)) {
+      // Converted: fall through to the video-timeline handling below.
+    } else {
+      // #48 probe window: a wallclock Session anchors to the video timeline
+      // when the bridge reports a valid position in time. While it stays
+      // wallclock (no probe, lapsed window, or not-yet-valid position), the
+      // position stream is ignored exactly as before.
+      await probeForAnchor(context, position);
+      if (context.timestampKind !== "video") return;
+    }
   }
   if (!Number.isFinite(position)) return;
   // #48 seek-awareness, in order: a forward seek cuts at the seek point and
@@ -1657,8 +1856,49 @@ async function handleMediaPosition(message, sender) {
  * @param {object} context - the active capture context
  * @param {number} position - the bridged position, unvalidated
  */
+/**
+ * 0.1.66 live-replay detection: a live-kind Session converts whenever the
+ * bridge reports a FINITE-duration video, both inside and after the initial
+ * probe window. The old lapse-only gate let the early probe flip the timeline
+ * to video while leaving kind=live forever (直播 · 已对齐视频时间轴). A finite
+ * duration is a recording (直播回放), so kind flips to "replay" and every
+ * replay behavior follows (grid timeline, media-end auto-stop, 从头开始).
+ * True broadcasts (infinite/no duration) keep the existing probe behavior.
+ *
+ * @returns {Promise<boolean>} true when the Session converted and anchored
+ */
+async function convertLiveRecordingIfReplay(context, message, position) {
+  if (context.kind !== "live") return false;
+  if (!Number.isFinite(position) || position < 0) return false;
+  const duration = Number(message.duration);
+  if (!Number.isFinite(duration) || duration <= 0) return false;
+  context.kind = "replay";
+  await anchorSessionToVideo(context, position);
+  console.log(
+    `[Learning Digest] 直播页检测到录像（时长 ${Math.round(duration)}s），已按回放转写`,
+  );
+  return true;
+}
+
 async function probeForAnchor(context, position) {
-  if (context.probeDeadlineMs === null) return; // resumed Session: no probe
+  if (context.probeDeadlineMs === null) {
+    // One-time diagnostic: positions keep arriving but this Session can never
+    // anchor (probe lapsed at start, or a resumed wallclock Session): every
+    // consumer below ignores the stream, which otherwise looks like "drag
+    // does nothing / nothing transcribes on the video timeline".
+    if (
+      !context.warnedLapsedProbe &&
+      Number.isFinite(position) &&
+      position >= 0
+    ) {
+      context.warnedLapsedProbe = true;
+      console.warn(
+        `[Learning Digest] 会话保持墙钟计时，播放位置流被忽略 ` +
+          `(会话=${context.sessionId})；拖拽与视频时间轴转写不可用`,
+      );
+    }
+    return; // resumed Session: no probe
+  }
   if (Date.now() > context.probeDeadlineMs) {
     context.probeDeadlineMs = null;
     return;
@@ -1678,7 +1918,10 @@ async function probeForAnchor(context, position) {
  * the first anchored cut rather than discarded, so no lesson audio is lost.
  */
 async function anchorSessionToVideo(context, position) {
-  const anchor = Math.max(0, Math.floor(position));
+  // 0.1.60: the anchor snaps up to the next Segment-length boundary, same
+  // grid rule as seek landings — records before it produce nothing either
+  // way (no backfill of the skipped head).
+  const anchor = snapToSegmentGrid(context, position);
   context.timestampKind = "video";
   context.probeDeadlineMs = null;
   if (context.liveTimer) {
@@ -1704,17 +1947,40 @@ async function anchorSessionToVideo(context, position) {
 }
 
 /**
- * #48 seek-forward: a position jump larger than one Segment plus a small
- * tolerance within one tick cuts the recorder at the seek point (the
- * pre-seek audio lands as the tail record with its pre-seek timestamps),
+ * 0.1.60 grid alignment: the segmenter steps SegmentLength from 0, so grid
+ * points are multiples of the configured length. Snapping a drag/fill
+ * landing position UP to the next boundary keeps every transcript record
+ * starting on the same grid — the audio between the landing point and the
+ * boundary is deliberately not transcribed (the learner's call: a tidy
+ * timeline outweighs at most one Segment of audio per landing). Positions
+ * already on a boundary pass through unchanged.
+ */
+function snapToSegmentGrid(context, position) {
+  const length = Number(context.segmentLengthSeconds) || 30;
+  const grid = Math.max(5, Math.min(60, Math.floor(length)));
+  return Math.ceil((Number(position) || 0) / grid) * grid;
+}
+
+/**
+ * Seek-forward: a position jump larger than the forward-drag threshold
+ * within one report DISCARDS the in-flight partial Segment (0.1.62: the
+ * not-yet-full tail is never transcribed — the gap marker owns its range),
  * jumps the scheduler cursor emitting nothing for the skipped range, and
  * appends one visible gap marker so the Digest is honest about the hole.
- * Backward moves and small advances return without touching anything.
+ * The landing point snaps UP to the next Segment-length boundary (0.1.60),
+ * so every transcribed Segment is a full grid cell. Backward moves and
+ * small advances return without touching anything.
  */
 async function handleSeekForward(context, position) {
+  if (!context.seekBaselineArmed) {
+    // The first bridged position arms the drag-detection baseline; it is
+    // never itself a drag (a Session can open at any video position).
+    context.seekBaselineArmed = true;
+    return;
+  }
   const previous = context.lastPosition;
   if (!Number.isFinite(previous) || position <= previous) return;
-  if (position - previous <= context.segmentLengthSeconds + SEEK_JUMP_TOLERANCE_SECONDS) {
+  if (position - previous <= FORWARD_DRAG_THRESHOLD_SECONDS) {
     return;
   }
   // A seek invalidates any in-progress re-listen pass: the buffered audio
@@ -1724,22 +1990,32 @@ async function handleSeekForward(context, position) {
   // seek machinery owns the new hole/jump).
   context.retryWatch = null;
   context.fillWatch = null;
-  // (a) The pre-seek audio lands as a tail record stamped with its pre-seek
-  // coverage — flush() emits the trailing partial Segment, when audible.
-  const tail = context.segmenter.flush(previous);
+  // (a) 0.1.62: the in-flight partial Segment is discarded, not transcribed.
+  // The buffered audio since the last completed boundary is cut and dropped;
+  // its range folds into the gap marker below, so the Transcript holds only
+  // full grid cells.
+  await discardRecordedAudio(context);
   const gapStart = context.segmenter.emittedUpTo;
-  // (b) The cursor jumps; the skipped range emits nothing. The pointer is
-  // persisted BEFORE the tail dispatch: a worker death mid-seek must never
-  // resume below the jumped cursor and backfill the skipped range.
-  context.segmenter.jumpTo(position);
-  context.lastPosition = Math.max(context.lastPosition, position);
+  // (b) The cursor jumps to the snapped landing point; the skipped range
+  // (the discarded partial included) emits nothing. The pointer is
+  // persisted BEFORE the gap marker lands: a worker death mid-seek must
+  // never resume below the jumped cursor and backfill the skipped range.
+  const aligned = snapToSegmentGrid(context, position);
+  context.segmenter.jumpTo(aligned);
+  context.lastPosition = Math.max(context.lastPosition, aligned);
   await persistContextPointer(context);
-  if (tail) await dispatchSegment(context, tail);
-  // (c) One visible gap marker over the uncovered range. When the tail was
-  // too short to emit, its sub-minimum coverage folds into the gap so no
-  // audio silently disappears.
-  const gapDuration = position - gapStart;
+  // (c) One visible gap marker over the whole uncovered range — from the
+  // last completed boundary (not the raw drag position) to the snapped
+  // landing point.
+  const gapDuration = aligned - gapStart;
   if (gapDuration > 0) {
+    console.log(
+      `[Learning Digest] 检测到向前拖拽: ` +
+        `${YTD_SPEECH_TRANSCRIPTION.formatTimestamp(previous)} → ` +
+        `${YTD_SPEECH_TRANSCRIPTION.formatTimestamp(position)}，` +
+        `对齐到 ${YTD_SPEECH_TRANSCRIPTION.formatTimestamp(aligned)} 后开始转写，` +
+        `跳过 ${YTD_SPEECH_TRANSCRIPTION.formatTimestamp(gapDuration)}`,
+    );
     context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
       type: "gapSkipped",
       start: gapStart,
@@ -1799,7 +2075,7 @@ async function updateRelisten(context, position) {
       context.fillWatch = null;
     } else if (
       position - watch.windowEnd >
-      context.segmentLengthSeconds + SEEK_JUMP_TOLERANCE_SECONDS
+      FORWARD_DRAG_THRESHOLD_SECONDS
     ) {
       // Playback jumped deep past the window's boundary within one tick (a
       // drag below the cursor is invisible to the seek cut): the buffered
@@ -1916,8 +2192,13 @@ function findGapSkippedMarkerAt(context, position) {
 function armFillWatch(context, position) {
   const marker = findGapSkippedMarkerAt(context, position);
   if (!marker) return false;
-  const entry = Math.floor(position);
+  // 0.1.60: the fill starts at the next Segment-length boundary, never at
+  // the raw landing point, so filled records sit on the same grid as
+  // everything else. A hole whose remaining tail is shorter than one grid
+  // step cannot host a grid-aligned fill — it stays a hole.
+  const entry = snapToSegmentGrid(context, position);
   const holeEnd = marker.start + marker.duration;
+  if (entry >= holeEnd) return false;
   context.fillWatch = {
     filledStart: entry,
     windowStart: entry,
@@ -1932,7 +2213,9 @@ function armFillWatch(context, position) {
  * since the window's entry cut is transcribed as a NORMAL Segment over
  * [windowStart, windowEnd] — real hole audio, stamped at its in-hole
  * positions — and the covering gapSkipped marker shrinks via gapFilled so
- * it never coexists with the fill records. The next window re-arms at this
+ * it never coexists with the fill records. A FAILED fill shrinks nothing:
+ * the hole marker keeps its full remainder and the failed Segment's marker
+ * carries the retry outcome, so a later re-watch can retry the range. The next window re-arms at this
  * one's end until the hole is fully filled. fillInFlight keeps concurrent
  * bridge ticks from arming an overlapping pass while the transcription is
  * in the air; the marker lookup for the shrink tolerates the shapes every
@@ -1942,7 +2225,7 @@ async function dispatchFillSegment(context, watch) {
   context.fillWatch = null;
   context.fillInFlight = true;
   try {
-    await dispatchSegment(
+    const transcribed = await dispatchSegment(
       context,
       {
         start: watch.windowStart,
@@ -1950,6 +2233,10 @@ async function dispatchFillSegment(context, watch) {
       },
       `seg-fill-${watch.windowStart}`,
     );
+    // A failed fill must not shrink the skipped marker: the hole stays
+    // visible (its head still uncovered) and the failed Segment's marker
+    // shows the retry outcome, so a later re-watch can retry the range.
+    if (!transcribed) return;
     context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
       type: "gapFilled",
       filledStart: watch.filledStart,
@@ -2122,50 +2409,187 @@ async function handleRealtimePartial(message) {
 function mapUtteranceStart(context, message) {
   const start = Number(message?.start);
   if (context.timestampKind !== "video") return start;
-  const origin = context.segmenter.emittedUpTo;
-  const position = Number.isFinite(context.lastVideoPosition)
-    ? context.lastVideoPosition
-    : start;
-  return Math.max(0, origin, position - Number(message?.duration));
+  // Absolute video time = the recognition session's origin (re-based on
+  // every drag, #50) plus the utterance's offset inside that session. The
+  // old "last bridged position minus duration" heuristic smeared stamps
+  // across seeks; the origin makes every stamp tied to the session that
+  // heard the audio.
+  const origin = Number(context.realtimeOriginSeconds) || 0;
+  return Math.max(origin, origin + (Number.isFinite(start) ? start : 0));
 }
 
 /**
- * Realtime seek-forward (0.1.49): the #48 seek awareness for Sessions that
- * run no recorder. There is no audio to cut and no Segment cursor riding
- * the position stream, so a forward seek leaves only the honest hole
- * marker over the skipped range and the stamping clamp re-bases to the new
- * position; the per-utterance mapping itself is stateless (recomputed from
- * the last bridged position), so no mapping state needs resetting. A seek
- * mid-utterance makes that one utterance's stamp approximate — its formula
- * reads the post-seek position while the speech began pre-seek (a D7-class
- * corner, accepted). Backward moves and small advances leave everything
- * untouched, like the segment path.
+ * Realtime drag handling (#50), the video-timeline twin of the segment
+ * path's seek/re-listen logic: every drag closes the open playback window
+ * at the pre-drag position and re-bases recognition at the landing point.
+ * A forward drag marks the skipped range; a backward drag consults the
+ * timeline view — landing on covered audio (success records or silent
+ * playback windows alike) enters a hold that suppresses forwarding until
+ * playback reaches the next capture point, while landing on a hole or
+ * failure captures from the landing point and shrinks the hole's tail the
+ * new session will actually cover. Wallclock Sessions never get here (the
+ * caller gates on timestampKind).
  *
  * @param {object} context - the active capture context
- * @param {number} position - the bridged position, unvalidated
+ * @param {number} position - the bridged position
  */
-async function handleRealtimeSeekForward(context, position) {
-  const previous = context.lastPosition;
-  if (!Number.isFinite(previous) || position <= previous) return;
-  if (position - previous <= context.segmentLengthSeconds + SEEK_JUMP_TOLERANCE_SECONDS) {
+async function handleRealtimeDrag(context, position) {
+  if (!context.seekBaselineArmed) {
+    // The first bridged position arms detection and is never itself a
+    // drag. A non-zero start position (mid-video open) re-bases recognition
+    // there so utterance offsets count from the real position.
+    context.seekBaselineArmed = true;
+    openPlaybackWindow(context, position);
+    if (position - context.realtimeOriginSeconds > FORWARD_DRAG_THRESHOLD_SECONDS) {
+      await rebaseRealtimeCapture(context, position, false);
+      await persistContextPointer(context);
+    }
     return;
   }
-  // No tail flush: realtime has no recorder to cut pre-seek audio from —
-  // the utterances already finalized carry their own video stamps.
-  const gapStart = previous;
-  context.segmenter.jumpTo(position);
-  // The pointer is persisted BEFORE the gap marker lands: a worker death
-  // mid-seek must never resume below the jumped cursor.
+  const previous = context.lastPosition;
+  const forwardDrag =
+    Number.isFinite(previous) &&
+    position - previous > FORWARD_DRAG_THRESHOLD_SECONDS;
+  const backwardDrag = Number.isFinite(previous) && position < previous;
+
+  // Hold bookkeeping runs before drag handling: advancing onto the resume
+  // point ends the hold; a drag supersedes it either way.
+  if (context.realtimeHoldUntilSeconds !== null && !forwardDrag && !backwardDrag) {
+    extendPlaybackWindow(context, position);
+    if (position >= context.realtimeHoldUntilSeconds) {
+      const resumeAt = context.realtimeHoldUntilSeconds;
+      context.realtimeHoldUntilSeconds = null;
+      context.realtimeOriginSeconds = resumeAt;
+      await sendOffscreen({ action: "captureRealtimeResume", originSeconds: resumeAt });
+      await persistContextPointer(context);
+    }
+    return;
+  }
+
+  if (!forwardDrag && !backwardDrag) {
+    extendPlaybackWindow(context, position);
+    return;
+  }
+
+  // Any drag closes the open window at the pre-drag position and opens a
+  // fresh one at the landing: everything played from here counts as captured
+  // coverage (silent stretches included), however the landing is handled.
+  closePlaybackWindow(context, Number.isFinite(previous) ? previous : position);
+  context.realtimeHoldUntilSeconds = null;
+  openPlaybackWindow(context, position);
+
+  if (forwardDrag) {
+    // The pointer is persisted BEFORE the gap marker lands: a worker death
+    // mid-drag must never resume below the jumped position.
+    context.segmenter.jumpTo(position);
+    await persistContextPointer(context);
+    if (position - previous > 0) {
+      context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+        type: "gapSkipped",
+        start: previous,
+        duration: position - previous,
+      });
+      await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+        chrome.storage.local,
+        context.state,
+      );
+      broadcastSession(context.state);
+    }
+  }
+
+  const view = YTD_SESSION_TIMELINE.buildTimelineView(
+    context.state,
+    context.playbackWindows,
+  );
+  const captureFrom = YTD_SESSION_TIMELINE.nextCaptureStart(view, position);
+  if (captureFrom > position) {
+    // Landing on covered audio: hold — no audio is forwarded (no duplicate
+    // recognition, no double billing) until playback reaches the resume
+    // point.
+    context.realtimeHoldUntilSeconds = captureFrom;
+    await rebaseRealtimeCapture(context, position, true);
+    await persistContextPointer(context);
+    return;
+  }
+  // Capture from the landing point. Backward into a hole: its tail is about
+  // to be covered by the new session, so shrink the marker now; a later
+  // drag away from the hole re-marks what actually stays unwatched.
+  if (backwardDrag && YTD_SESSION_TIMELINE.isCoveredAt(view, position) === false) {
+    await shrinkHoleTail(context, position);
+  }
+  await rebaseRealtimeCapture(context, position, false);
   await persistContextPointer(context);
-  const gapDuration = position - gapStart;
-  if (gapDuration > 0) {
-    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-      type: "gapSkipped",
-      start: gapStart,
-      duration: gapDuration,
-    });
-    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
-    broadcastSession(context.state);
+}
+
+/**
+ * Applies gapFilled for the part of the covering gapSkipped marker that
+ * starts at the landing position: the new recognition session covers
+ * [position, markerEnd) live, so the marker keeps only its unwatched head.
+ * No-op when no marker covers the position.
+ */
+async function shrinkHoleTail(context, position) {
+  const marker = context.state.transcriptRecords.find(
+    (record) =>
+      YTD_SESSION_PIPELINE.isGapSkippedRecord(record) &&
+      position >= record.start &&
+      position < record.start + record.duration,
+  );
+  if (!marker) return;
+  const markerEnd = marker.start + marker.duration;
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "gapFilled",
+    filledStart: position,
+    filledEnd: markerEnd,
+  });
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
+    chrome.storage.local,
+    context.state,
+  );
+  broadcastSession(context.state);
+}
+
+/**
+ * Re-bases the realtime recognition session at the landing point (#50):
+ * the offscreen document finishes the half-sentence on the old connection,
+ * closes it, and opens a new one counting its utterance offsets from
+ * `originSeconds` (held, when asked, so covered re-watches are not
+ * forwarded). The context origin only moves once the rebase lands.
+ */
+async function rebaseRealtimeCapture(context, originSeconds, hold) {
+  const result = await sendOffscreen({
+    action: "captureRebase",
+    originSeconds,
+    hold: hold === true,
+  });
+  if (result && result.error) {
+    // #50 error handling: keep the transcript, surface the failure, and do
+    // not move the origin — no plausible-looking stamps from an unknown
+    // base. The session keeps running; the next drag retries the rebase.
+    console.error(
+      "[Learning Digest] realtime rebase failed:",
+      result.error,
+    );
+    return;
+  }
+  context.realtimeOriginSeconds = originSeconds;
+}
+
+function openPlaybackWindow(context, position) {
+  context.playbackWindowStart = position;
+}
+
+function extendPlaybackWindow(context, position) {
+  if (context.playbackWindowStart === null) {
+    context.playbackWindowStart = position;
+  }
+}
+
+function closePlaybackWindow(context, end) {
+  if (context.playbackWindowStart === null) return;
+  const start = context.playbackWindowStart;
+  context.playbackWindowStart = null;
+  if (end > start) {
+    context.playbackWindows.push({ start, end });
   }
 }
 
@@ -2175,6 +2599,22 @@ async function handleRealtimeUtterance(message) {
   // client finishes its session.finish handshake after the end broadcast.
   if (!context || context.ended) {
     debugLog("[Learning Digest BG] realtimeUtterance dropped: no active Session");
+    return;
+  }
+  // #50: utterances carry the origin of the recognition session that heard
+  // them; a frame from a superseded (pre-rebase) connection stamps against
+  // an origin the context no longer has and is dropped. Frames without the
+  // field predate the rebase protocol and are accepted as-is.
+  if (
+    message?.originSeconds !== undefined &&
+    Number(message.originSeconds) !== Number(context.realtimeOriginSeconds)
+  ) {
+    debugLog(
+      "[Learning Digest BG] stale realtimeUtterance dropped:",
+      message.originSeconds,
+      "!== current origin",
+      context.realtimeOriginSeconds,
+    );
     return;
   }
   const next = YTD_SESSION_PIPELINE.applyEvent(context.state, {
@@ -2218,7 +2658,7 @@ const REALTIME_EVENT_HANDLERS = {
   realtimeGaveUp: handleRealtimeGaveUp,
 };
 
-async function endActiveSession(context, { reason } = {}) {
+async function endActiveSession(context, { reason, report = true } = {}) {
   if (context.ended) return { success: true, reason, state: context.state };
   context.ended = true;
   if (context.liveTimer) clearInterval(context.liveTimer);
@@ -2251,23 +2691,35 @@ async function endActiveSession(context, { reason } = {}) {
   // (#32) prefers the capture context's pageTitle and falls back to the
   // snapshot's, so a resumed Session still names the lesson; absent means
   // the renderers fall back to their default header title.
-  const reportMeta = {
-    startedAtMs: context.startedAtMs,
-    endedAtMs: Date.now(),
-    kind: context.kind,
-    platformId: context.platformId,
-  };
-  const reportTitle = context.pageTitle || context.state.title;
-  if (reportTitle) reportMeta.title = reportTitle;
-  const { report } = await produceSessionReport(context.state, reportMeta);
-  broadcastSession(context.state, { report });
+  //
+  // report: false (the 0.1.57 course-switch auto-end) skips the AI pass: the
+  // stale lesson's digest is not worth the tokens or the wait, the snapshot
+  // is ended and durable, and the panel's 开始总结 retry can still run the
+  // pass later (resolveReportTargetSessionId scans ended snapshots).
+  let reportPayload = null;
+  if (report) {
+    const reportMeta = {
+      startedAtMs: context.startedAtMs,
+      endedAtMs: Date.now(),
+      kind: context.kind,
+      platformId: context.platformId,
+    };
+    const reportTitle = context.pageTitle || context.state.title;
+    if (reportTitle) reportMeta.title = reportTitle;
+    reportPayload = (
+      await produceSessionReport(context.state, reportMeta)
+    ).report;
+    broadcastSession(context.state, { report: reportPayload });
+  } else {
+    broadcastSession(context.state);
+  }
 
   await sendOffscreen({ action: "captureStop" });
   if (await chrome.offscreen.hasDocument()) {
     await chrome.offscreen.closeDocument();
   }
   if (captureContext?.sessionId === context.sessionId) captureContext = null;
-  return { success: true, reason, state: context.state, report };
+  return { success: true, reason, state: context.state, report: reportPayload };
 }
 
 async function handleEndLearning() {
@@ -2413,4 +2865,31 @@ async function handleGetSessionState() {
     startedAtMs: context.startedAtMs,
     state: context.state,
   };
+}
+
+/**
+ * Removes one ended Session's persisted state — snapshot plus the
+ * `report_<sessionId>` artifact — so its transcript and 纪要 stop surfacing
+ * (the panel's 清除记录 button). The report artifact must go with the
+ * snapshot: without it the D7 startup scan would re-adopt the report and
+ * repopulate the panel on the next open.
+ *
+ * The ACTIVE Session is refused: the learner ends that one with 结束学习
+ * first, so an accidental click can never tear down a running capture.
+ */
+async function handleClearSessionRecord(message) {
+  const sessionId =
+    typeof message?.sessionId === "string" ? message.sessionId : "";
+  if (!sessionId) return { success: false, error: "sessionId is required" };
+  const context = await ensureCaptureResumed();
+  if (context?.sessionId === sessionId) {
+    return { success: false, error: "SESSION_ACTIVE" };
+  }
+  await YTD_SESSION_PERSISTENCE.deleteSessionSnapshot(
+    chrome.storage.local,
+    sessionId,
+  );
+  await chrome.storage.local.remove(`report_${sessionId}`);
+  if (lastEndedSessionId === sessionId) lastEndedSessionId = null;
+  return { success: true };
 }

@@ -198,9 +198,17 @@
     }
   }
 
-  function startRealtimeSession(apiKey) {
+  function startRealtimeSession(apiKey, { originSeconds = 0, hold = false } = {}) {
     realtimeSession = {
       apiKey,
+      // The video position this connection counts its utterance offsets
+      // from (#50): the worker re-bases it on every drag, and the utterance
+      // messages carry it so late frames from a superseded connection can
+      // be told apart from current ones.
+      originSeconds: Number(originSeconds) || 0,
+      // Held re-watch (#50): the connection stays open but no audio is
+      // forwarded, so covered ranges are never re-recognized.
+      hold: hold === true,
       // Wall-clock base: utterance timestamps are absolute stream seconds,
       // and a live Session's stream time is wall time since captureStart.
       startedAtMs: Date.now(),
@@ -218,11 +226,14 @@
       tracker: YTD_REALTIME_PROTOCOL.createUtteranceTracker(),
       reconnectAttempt: 0,
       reconnectTimer: null,
-      // Set by captureStop: finish-before-close is in progress.
+      // Set by captureStop/rebase: finish-before-close is in progress.
       stopping: false,
       finished: false,
       finishTimer: null,
       finishResponder: null,
+      // Rebase-only: invoked once the old connection's session.finished
+      // (or its timeout) lands, in place of the capture-teardown stop flow.
+      onFinished: null,
     };
     openRealtimeSocket();
   }
@@ -249,7 +260,9 @@
       socket.send(JSON.stringify(YTD_REALTIME_PROTOCOL.buildSessionUpdate()));
       session.streamBaseMs = Date.now() - session.startedAtMs;
       session.reconnectAttempt = 0;
-      startRealtimePump(session);
+      // A held session opens the socket but forwards no audio until the
+      // worker resumes it at the next capture point (#50).
+      if (!session.hold) startRealtimePump(session);
     };
     socket.onmessage = (event) => handleRealtimeServerMessage(session, event.data);
     socket.onerror = (error) => {
@@ -264,9 +277,19 @@
     stopRealtimePump(session);
     if (realtimeSession !== session) return;
     if (session.stopping) {
-      // captureStop already sent session.finish (or never had a socket);
-      // this close completes the stop flow.
-      finishRealtimeTeardown(session);
+      // captureStop/rebase already sent session.finish (or never had a
+      // socket); this close completes the flow.
+      if (session.onFinished) {
+        // Rebase (#50): the old connection went away without a finished
+        // frame (timeout path races here) — swap connections, keep capture.
+        const begin = session.onFinished;
+        session.onFinished = null;
+        clearTimeout(session.finishTimer);
+        session.finishTimer = null;
+        begin();
+      } else {
+        finishRealtimeTeardown(session);
+      }
       return;
     }
     if (session.reconnectAttempt >= REALTIME_MAX_RECONNECTS) {
@@ -325,7 +348,7 @@
   }
 
   function pumpRealtimeChunk(session, samples) {
-    if (realtimeSession !== session || session.stopping) return;
+    if (realtimeSession !== session || session.stopping || session.hold) return;
     // Dead capture stream (tab closed or navigated away): the recorder
     // path notices via startRecorder, the pump path via stream.active.
     if (!stream || !stream.active) {
@@ -388,6 +411,7 @@
           text: utterance.text,
           start: utterance.startSeconds,
           duration: utterance.durationSeconds,
+          originSeconds: session.originSeconds,
         });
         break;
       }
@@ -410,6 +434,7 @@
             start: pairing.startSeconds,
             duration: pairing.durationSeconds,
             failed: true,
+            originSeconds: session.originSeconds,
           });
         }
         break;
@@ -429,7 +454,19 @@
         session.finished = true;
         // A stop waiting on this event can tear down immediately; anything
         // sent before it (the last completed utterance) was already handled.
-        if (session.stopping) finishRealtimeTeardown(session);
+        if (session.stopping) {
+          if (session.onFinished) {
+            // Rebase (#50): swap connections instead of tearing the
+            // capture down.
+            const begin = session.onFinished;
+            session.onFinished = null;
+            clearTimeout(session.finishTimer);
+            session.finishTimer = null;
+            begin();
+          } else {
+            finishRealtimeTeardown(session);
+          }
+        }
         break;
       default:
         // session.created/updated/committed and unknown frames need no action.
@@ -474,6 +511,88 @@
       session.context = null;
     }
     session.accumulator = [];
+  }
+
+  // Rebase (#50): the worker detected a drag. Finish the half-sentence on
+  // the old connection (session.finish → session.finished or timeout),
+  // close it WITHOUT tearing the capture down, and open a new connection
+  // counting its utterance offsets from originSeconds — held, when asked,
+  // so re-watched covered audio is never forwarded. The response must
+  // always be sent; the worker's drag handling awaits it.
+  function rebaseRealtimeSession(message, sendResponse) {
+    const old = realtimeSession;
+    if (!old) {
+      sendResponse({ error: "no realtime session to rebase" });
+      return;
+    }
+    const apiKey = old.apiKey;
+    old.stopping = true;
+    clearTimeout(old.reconnectTimer);
+    old.reconnectTimer = null;
+    stopRealtimePump(old);
+    let begun = false;
+    const beginNewSession = () => {
+      if (begun) return;
+      begun = true;
+      clearTimeout(old.finishTimer);
+      old.finishTimer = null;
+      old.onFinished = null;
+      if (old.ws) {
+        const socket = old.ws;
+        old.ws = null;
+        try {
+          socket.close(1000);
+        } catch (_error) {
+          // Already closed.
+        }
+      }
+      if (realtimeSession !== old) {
+        // A newer stop/rebase won the race; it owns the response path.
+        sendResponse({ success: true });
+        return;
+      }
+      realtimeSession = null;
+      startRealtimeSession(apiKey, {
+        originSeconds: Number(message.originSeconds) || 0,
+        hold: message.hold === true,
+      });
+      sendResponse({ success: true });
+    };
+    const socket = old.ws;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      old.onFinished = beginNewSession;
+      old.finishTimer = setTimeout(beginNewSession, REALTIME_FINISH_TIMEOUT_MS);
+      try {
+        socket.send(JSON.stringify(YTD_REALTIME_PROTOCOL.buildFinish()));
+      } catch (_error) {
+        // A send on a dying socket throws; the close/timeout path proceeds.
+        beginNewSession();
+      }
+    } else {
+      // No live socket to flush the trailing utterance through.
+      beginNewSession();
+    }
+  }
+
+  // Resume (#50): a held re-watch reached the next capture point. The same
+  // connection starts forwarding again, counting offsets from the resume
+  // position: the accumulator, utterance tracker, and stream base all reset
+  // so nothing straddles the hold boundary.
+  function resumeRealtimeSession(message, sendResponse) {
+    const session = realtimeSession;
+    if (!session) {
+      sendResponse({ error: "no realtime session to resume" });
+      return;
+    }
+    session.hold = false;
+    session.originSeconds = Number(message.originSeconds) || 0;
+    session.accumulator = [];
+    session.tracker = YTD_REALTIME_PROTOCOL.createUtteranceTracker();
+    session.streamBaseMs = Date.now() - session.startedAtMs;
+    if (session.ws && session.ws.readyState === WebSocket.OPEN) {
+      startRealtimePump(session);
+    }
+    sendResponse({ success: true });
   }
 
   // captureStop in realtime mode: stop the pump, send session.finish BEFORE
@@ -646,13 +765,23 @@
         },
         video: false,
       });
-      segmentLengthMs = Math.max(30_000, Number(message.segmentLengthSeconds) || 30) * 1000;
+      // The message carries SECONDS. Convert first, then clamp in the same
+      // millisecond unit; clamping seconds against 5_000 before multiplying
+      // turns every ordinary setting into a 5,000-second wallclock cadence.
+      segmentLengthMs = Math.min(
+        60_000,
+        Math.max(5_000, (Number(message.segmentLengthSeconds) || 30) * 1000),
+      );
       startPlaybackLoop();
       if (message.transcribeMode === "realtime") {
         // Realtime path (spec #44): no recorder, no cut timers — the PCM
         // pump over the WebSocket replaces them. The key rides the
-        // captureStart message only (never persisted anywhere).
-        startRealtimeSession(message.apiKey);
+        // captureStart message only (never persisted anywhere);
+        // originSeconds (#50) is the persisted recognition origin on a
+        // resumed Session, 0 on a fresh one.
+        startRealtimeSession(message.apiKey, {
+          originSeconds: Number(message.originSeconds) || 0,
+        });
       } else {
         startRecorder();
         armRegularCut(message.mode);
@@ -697,6 +826,14 @@
       // so its wall-clock cadence must stop here.
       armRegularCut(message.mode);
       sendResponse({ success: true });
+      return false;
+    }
+    if (message.action === "captureRebase") {
+      rebaseRealtimeSession(message, sendResponse);
+      return true;
+    }
+    if (message.action === "captureRealtimeResume") {
+      resumeRealtimeSession(message, sendResponse);
       return false;
     }
     if (message.action === "captureStop") {

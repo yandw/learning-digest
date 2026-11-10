@@ -18,8 +18,8 @@
 var YTD_SEGMENTER = (() => {
   const DEFAULT_SEGMENT_LENGTH_SECONDS = 30;
   const DEFAULT_MIN_SEGMENT_SECONDS = 5;
-  const MIN_ALLOWED_SEGMENT_LENGTH = 30;
-  const MAX_ALLOWED_SEGMENT_LENGTH = 600;
+  const MIN_ALLOWED_SEGMENT_LENGTH = 5;
+  const MAX_ALLOWED_SEGMENT_LENGTH = 60;
 
   /**
    * @param {object} [options]

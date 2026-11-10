@@ -288,6 +288,62 @@ test("gapSkipped appends one visible gap marker record for the skipped range", (
   assert.deepEqual(state.segments, []);
 });
 
+test("consecutive gapSkipped ranges merge into ONE marker (0.1.61)", () => {
+  // Ten 30s blocks skipped by several small drags (20:00 -> 20:30 -> 21:00)
+  // stay a single hole with a single "[已跳过 ...]" row.
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 1200,
+    duration: 30,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 1230,
+    duration: 30,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 1260,
+    duration: 60,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "[已跳过 20:00–22:00]", start: 1200, duration: 120, failed: true },
+  ]);
+
+  // An overlapping repeat drag extends the marker instead of appending.
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 1300,
+    duration: 20,
+  });
+  assert.deepEqual(state.transcriptRecords, [
+    { text: "[已跳过 20:00–22:00]", start: 1200, duration: 120, failed: true },
+  ]);
+
+  // A hole separated by covered audio stays its own marker.
+  state = sessionPipeline.applyEvent(state, {
+    type: "utteranceCaptured",
+    text: "中间的内容",
+    start: 1320,
+    duration: 60,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 1380,
+    duration: 60,
+  });
+  assert.deepEqual(
+    state.transcriptRecords
+      .filter((record) => record.failed === true)
+      .map((record) => ({ text: record.text, start: record.start })),
+    [
+      { text: "[已跳过 20:00–22:00]", start: 1200 },
+      { text: "[已跳过 23:00–24:00]", start: 1380 },
+    ],
+  );
+});
+
 test("gapSkipped rejects malformed ranges instead of corrupting the Transcript", () => {
   const state = sessionPipeline.createSession({ sessionId: "s1" });
   for (const bad of [
@@ -419,10 +475,12 @@ test("gapFilled removes the marker once the fill covers the whole hole", () => {
 
 test("gapFilled picks the covering marker when several holes are on the timeline", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
+  // 0.1.61: adjacent gap ranges MERGE into one marker, so these two holes
+  // keep a covered stretch between them (540..600) to stay distinct holes.
   state = sessionPipeline.applyEvent(state, {
     type: "gapSkipped",
     start: 60,
-    duration: 540,
+    duration: 480,
   });
   state = sessionPipeline.applyEvent(state, {
     type: "gapSkipped",
@@ -430,14 +488,14 @@ test("gapFilled picks the covering marker when several holes are on the timeline
     duration: 600,
   });
   // The fill of the second hole must shrink the second marker, not the
-  // first (whose range ends exactly at the fill's start).
+  // first (whose range ends well before the fill's start).
   state = sessionPipeline.applyEvent(state, {
     type: "gapFilled",
     filledStart: 600,
     filledEnd: 720,
   });
   assert.deepEqual(state.transcriptRecords, [
-    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
+    { text: "[已跳过 1:00–9:00]", start: 60, duration: 480, failed: true },
     { text: "[已跳过 12:00–20:00]", start: 720, duration: 480, failed: true },
   ]);
 });

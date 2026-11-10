@@ -140,7 +140,7 @@ var YTD_SETTINGS = (() => {
 
   /**
    * Segment length in seconds: finite numbers are clamped to the range
-   * session-segmenter.js supports ([30, 600]); anything else falls back to
+   * session-segmenter.js supports ([5, 60]); anything else falls back to
    * the default so a corrupted setting can never break capture.
    */
   function normalizeSegmentLengthSeconds(value) {
@@ -166,6 +166,11 @@ var YTD_SETTINGS = (() => {
   function migrateSegmentLength(source) {
     if (Number(source?.settingsVersion) >= SETTINGS_VERSION) {
       return source.segmentLengthSeconds;
+    }
+    // null means "not set" (Number(null) would be 0), not zero — the
+    // same guard clampIntegerSetting applies downstream.
+    if (source?.segmentLengthSeconds === null) {
+      return DEFAULTS.segmentLengthSeconds;
     }
     const stored = Number(source?.segmentLengthSeconds);
     if (!Number.isFinite(stored) || stored === LEGACY_SEGMENT_DEFAULT) {

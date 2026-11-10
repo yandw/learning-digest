@@ -256,11 +256,15 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
-   * Appends the one visible marker record for a seek-forward's skipped
-   * range (#48): the Digest stays honest about the hole without inventing
-   * Segments for audio that was never recorded. The marker shape mirrors
+   * Lands the one visible marker record for a seek-forward skipped range
+   * (#48): the Digest stays honest about the hole without inventing Segments
+   * for audio that was never recorded. The marker shape mirrors
    * failedChunkRecord (failed: true) so it renders and formats exactly like
    * the other visible annotations.
+   *
+   * A new range adjacent to (or overlapping) an existing gapSkipped marker
+   * extends that marker instead of appending: consecutive small drags keep
+   * ONE hole and ONE "[已跳过 a-b]" row, never one row per drag.
    */
   function onGapSkipped(state, event) {
     const start = Math.floor(Number(event.start));
@@ -274,6 +278,26 @@ var YTD_SESSION_PIPELINE = (() => {
       throw new Error(
         "gapSkipped requires a non-negative start and a positive duration",
       );
+    }
+    const end = start + duration;
+    const existing = state.transcriptRecords.find(
+      (record) =>
+        isGapSkippedRecord(record) &&
+        start <= record.start + record.duration &&
+        end >= record.start,
+    );
+    if (existing) {
+      const mergedStart = Math.min(existing.start, start);
+      const mergedEnd = Math.max(existing.start + existing.duration, end);
+      return {
+        ...state,
+        transcriptRecords: replaceRecord(state.transcriptRecords, existing, {
+          text: gapMarkerText(mergedStart, mergedEnd),
+          start: mergedStart,
+          duration: mergedEnd - mergedStart,
+          failed: true,
+        }),
+      };
     }
     const marker = {
       text: gapMarkerText(start, start + duration),

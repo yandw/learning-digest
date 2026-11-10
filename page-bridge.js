@@ -34,9 +34,45 @@
     );
   }
 
+  let bridgedMedia = null;
+
+  /** (Re)binds the seek listeners to the current primary media: a drag is
+   *  reported the moment the player starts seeking, not up to a second
+   *  later at the next poll. Old listeners come off the previous element. */
+  function attachMediaListeners(media) {
+    if (bridgedMedia === media) return;
+    if (bridgedMedia) {
+      bridgedMedia.removeEventListener("seeking", reportPosition);
+      bridgedMedia.removeEventListener("seeked", reportPosition);
+    }
+    bridgedMedia = media;
+    if (media) {
+      media.addEventListener("seeking", reportPosition);
+      media.addEventListener("seeked", reportPosition);
+      if (!attachMediaListeners.logged) {
+        attachMediaListeners.logged = true;
+        console.debug(
+          `[LD bridge] 已绑定视频元素 ${media.videoWidth}x${media.videoHeight}`,
+        );
+      }
+    }
+  }
+
+  let loggedNoMedia = false;
+
   function reportPosition() {
     const media = findPrimaryMedia();
-    if (!media) return;
+    if (!media) {
+      if (!loggedNoMedia) {
+        loggedNoMedia = true;
+        console.debug(
+          "[LD bridge] 未找到可上报的视频元素（readyState/videoWidth 过滤），位置流暂停",
+        );
+      }
+      return;
+    }
+    loggedNoMedia = false;
+    attachMediaListeners(media);
     let message;
     try {
       message = {
@@ -76,7 +112,35 @@
     }
   }
 
+  // Playback control (#0.1.63): the panel's 从头开始 button rewinds the
+  // lesson to 0:00 and plays. The content script shares the DOM with the
+  // page, so driving the primary media element needs no page-world eval.
+  // Autoplay-started lessons (xiaoe) otherwise lose their first grid cell:
+  // the Session opens seconds in, and the anchor snaps UP to a boundary.
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.action !== "restartFromBeginning") return false;
+    const media = findPrimaryMedia();
+    if (!media) {
+      // Silent no-response: with all_frames injection the message reaches
+      // every frame, and only the frame holding the player should answer.
+      return false;
+    }
+    try {
+      media.currentTime = 0;
+      // The seeking/seeked listeners above report the rewind immediately;
+      // play() may reject under autoplay policy — the seek already landed,
+      // so report success either way.
+      const playing = media.play();
+      if (playing && typeof playing.catch === "function") playing.catch(() => {});
+      sendResponse({ success: true });
+    } catch (error) {
+      sendResponse({ success: false, error: error?.message || String(error) });
+    }
+    return false;
+  });
+
   reportPageTitle();
+  console.debug("[LD bridge] 已注入，开始每秒上报播放位置");
   setInterval(reportPosition, POSITION_INTERVAL_MS);
   window.addEventListener("pagehide", reportPosition);
   window.addEventListener("pagehide", reportPageTitle);

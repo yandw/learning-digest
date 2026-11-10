@@ -54,7 +54,7 @@ function baseSettings(overrides = {}) {
     aiModel: "deepseek-v4-flash",
     speechProvider: "groq",
     speechProviders: { groq: { apiKey: "groq-key" } },
-    segmentLengthSeconds: 120,
+    segmentLengthSeconds: 60,
     summaryIntervalMinutes: 30,
     ...overrides,
   };
@@ -199,6 +199,101 @@ test("action click on a live page arms the offscreen wallclock cut", async () =>
   const start = sentMessages.find((message) => message.action === "captureStart");
   assert.ok(start, "captureStart reached the offscreen recorder");
   assert.equal(start.mode, "wallclock");
+});
+
+// --- Course-switch auto-end (0.1.57): a stale active Session on another
+// lesson no longer shadows the icon click; it ends (without the AI pass) and
+// a fresh Session starts for the new course.
+
+const COURSE_B_URL = "https://app12345.xiaoe-tech.com/replay/l_zzz999yyy888";
+
+test("action click on a DIFFERENT course auto-ends the stale Session and starts fresh", async () => {
+  const bg = loadBackgroundHelpers({
+    settings: baseSettings(),
+    sentMessages: [],
+  });
+
+  // Session A active on tab 7 / REPLAY_URL; its pointer carries sourceUrl.
+  await bg.handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+  const first = await bg.handleGetSessionState();
+  assert.equal(first.active, true);
+  const firstSessionId = first.sessionId;
+  assert.equal(bg.readStored("ytd_active_capture").sourceUrl, REPLAY_URL);
+
+  // Icon click on course B (tab 9): A ends silently, B starts.
+  await bg.handleActionClicked({ id: 9, url: COURSE_B_URL, windowId: 1 });
+
+  assert.equal(
+    bg.readStored(`ytd_session_${firstSessionId}`).status,
+    "ended",
+    "the stale Session ends",
+  );
+  assert.equal(
+    bg.readStored(`report_${firstSessionId}`),
+    undefined,
+    "no AI pass runs for the stale lesson",
+  );
+  const second = await bg.handleGetSessionState();
+  assert.equal(second.active, true);
+  assert.notEqual(second.sessionId, firstSessionId);
+  const pointer = bg.readStored("ytd_active_capture");
+  assert.equal(pointer.sourceUrl, COURSE_B_URL);
+  assert.equal(pointer.tabId, 9);
+});
+
+test("action click on the SAME course keeps the active Session (no restart)", async () => {
+  const sentMessages = [];
+  const bg = loadBackgroundHelpers({
+    settings: baseSettings(),
+    sentMessages,
+  });
+
+  await bg.handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+  const first = await bg.handleGetSessionState();
+  const captureStarts = sentMessages.filter(
+    (message) => message.action === "captureStart",
+  ).length;
+
+  await bg.handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+
+  const after = await bg.handleGetSessionState();
+  assert.equal(after.sessionId, first.sessionId, "same Session survives the re-click");
+  assert.equal(
+    sentMessages.filter((message) => message.action === "captureStart").length,
+    captureStarts,
+    "no second capture starts",
+  );
+});
+
+test("a pre-0.1.57 pointer without sourceUrl falls back to tab identity", async () => {
+  const state = sessionPipeline.createSession({ sessionId: "s_legacy" });
+  const bg = loadBackgroundHelpers({
+    settings: baseSettings(),
+    sentMessages: [],
+    stored: {
+      ytd_active_capture: {
+        sessionId: "s_legacy",
+        tabId: 7,
+        platformId: "xiaoe-tech",
+        kind: "replay",
+        timestampKind: "video",
+        startedAtMs: Date.now() - 60_000,
+        segmentLengthSeconds: 120,
+      },
+      ytd_session_s_legacy: JSON.parse(JSON.stringify(state)),
+    },
+  });
+
+  await bg.handleActionClicked({ id: 9, url: COURSE_B_URL, windowId: 1 });
+
+  assert.equal(
+    bg.readStored("ytd_session_s_legacy").status,
+    "ended",
+    "the legacy Session ends on a different tab too",
+  );
+  const now = await bg.handleGetSessionState();
+  assert.equal(now.active, true);
+  assert.equal(now.sessionId !== "s_legacy", true);
 });
 
 // --- Transcription mode resolution (#45/#49): qwen realtime on any Session kind
@@ -613,28 +708,22 @@ test("a resumed realtime Session keeps its transcribeMode from the capture point
   assert.equal(readStored("ytd_active_capture").apiKey, undefined);
 });
 
-// --- Realtime video-kind stamping (#49): utterances land at video positions
-//
-// A replay/course realtime Session keeps its video timeline: the offscreen
-// stream time means nothing on a seekable video, so each finalized utterance
-// stamps at the last bridged video position minus its duration. The bridged
-// position travels the normal mediaPosition message.
+// --- Realtime video-kind stamping (#49, origin-based since #50): utterances
+// land at origin + their offset inside the recognition session. The origin
+// starts at 0 (a video opened at 0:00) and re-bases on every drag.
 
-test("a realtime utterance on a replay Session stamps at the bridged position minus its duration", async () => {
+test("a realtime utterance on a replay Session stamps at the origin plus its offset", async () => {
   const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
     loadBackgroundHelpers({
-      // Pinned segment length: the bridge ticks below the seek threshold so
-      // the position stream stays a plain playback feed (no seek handling).
       settings: qwenSettings("realtime", { settingsVersion: 3 }),
     });
   const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
   assert.equal(started.transcribeMode, "realtime");
 
-  // The bridge reports the video position every second; the utterance
-  // finalized just after the 60s mark, so its start is that position minus
-  // the utterance's own duration. Stream time (12.5) is discarded.
+  // The utterance finalized 12.5 s into the recognition session, which
+  // counts from the video's 0:00 — so its video stamp is 12.5.
   await handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await playTo(handleMediaPosition, 0, 60);
   await handleRealtimeUtterance({
     action: "realtimeUtterance",
     text: "对齐到视频位置的一句。",
@@ -644,11 +733,51 @@ test("a realtime utterance on a replay Session stamps at the bridged position mi
 
   const snapshot = readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "对齐到视频位置的一句。", start: 54.5, duration: 5.5 },
+    { text: "对齐到视频位置的一句。", start: 12.5, duration: 5.5 },
   ]);
 });
 
-test("a video-kind realtime utterance whose speech began before 0:00 clamps to 0", async () => {
+test("positions from another tab drop with a one-time diagnostic warning (0.1.58)", async () => {
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args.map(String).join(" "));
+  try {
+    const bg = loadBackgroundHelpers({
+      settings: baseSettings(),
+      stored: {
+        ytd_active_capture: {
+          sessionId: "s_tab",
+          tabId: 7,
+          platformId: "xiaoe-tech",
+          kind: "replay",
+          timestampKind: "video",
+          startedAtMs: Date.now() - 30_000,
+          segmentLengthSeconds: 120,
+          sourceUrl: REPLAY_URL,
+        },
+        ytd_session_s_tab: JSON.parse(
+          JSON.stringify(sessionPipeline.createSession({ sessionId: "s_tab" })),
+        ),
+      },
+    });
+
+    await bg.handleMediaPosition(mediaPositionMessage(100), { tab: { id: 9 } });
+    await bg.handleMediaPosition(mediaPositionMessage(200), { tab: { id: 9 } });
+
+    assert.equal(warnings.length, 1, "one warning per context, not one per second");
+    assert.match(warnings[0], /标签页 9/);
+    const after = await bg.handleGetSessionState();
+    assert.equal(
+      after.state.transcriptRecords.length,
+      0,
+      "nothing is captured from the wrong tab",
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("a realtime video-kind utterance stamps at the origin, never before it", async () => {
   const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
     loadBackgroundHelpers({
       settings: qwenSettings("realtime", { settingsVersion: 3 }),
@@ -664,7 +793,7 @@ test("a video-kind realtime utterance whose speech began before 0:00 clamps to 0
   });
 
   const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(snapshot.transcriptRecords[0].start, 0);
+  assert.equal(snapshot.transcriptRecords[0].start, 1);
 });
 
 test("a realtime wallclock Session anchors via the probe and stamps at video positions", async () => {
@@ -676,8 +805,9 @@ test("a realtime wallclock Session anchors via the probe and stamps at video pos
   assert.equal(started.timestampKind, "wallclock");
 
   // The #48 probe still applies to realtime Sessions: the first bridged
-  // position anchors the live Session to the video timeline, and utterances
-  // finalize at video positions from then on.
+  // position anchors the live Session to the video timeline, re-bases the
+  // recognition origin there, and utterances finalize at origin + offset
+  // from then on.
   await handleMediaPosition(mediaPositionMessage(800), { tab: { id: 7 } });
   await handleRealtimeUtterance({
     action: "realtimeUtterance",
@@ -689,7 +819,7 @@ test("a realtime wallclock Session anchors via the probe and stamps at video pos
   assert.equal((await handleGetSessionState()).timestampKind, "video");
   const snapshot = readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "对齐后的一句。", start: 800, duration: 4 },
+    { text: "对齐后的一句。", start: 830, duration: 4 },
   ]);
 });
 
@@ -704,7 +834,7 @@ test("a seek during realtime replay marks the skipped range and keeps stamping a
   // learner drags the bar to 10:00. There is no recorder to cut a pre-seek
   // tail from, so the seek only marks the skipped range.
   await handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await playTo(handleMediaPosition, 0, 60);
   await handleRealtimeUtterance({
     action: "realtimeUtterance",
     text: "跳转前的一句。",
@@ -712,7 +842,7 @@ test("a seek during realtime replay marks the skipped range and keeps stamping a
     duration: 4,
   });
   await handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
-  await handleMediaPosition(mediaPositionMessage(610), { tab: { id: 7 } });
+  await playTo(handleMediaPosition, 600, 610);
   await handleRealtimeUtterance({
     action: "realtimeUtterance",
     text: "跳转后的一句。",
@@ -722,9 +852,9 @@ test("a seek during realtime replay marks the skipped range and keeps stamping a
 
   const snapshot = readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "跳转前的一句。", start: 56, duration: 4 },
+    { text: "跳转前的一句。", start: 5, duration: 4 },
     { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
-    { text: "跳转后的一句。", start: 606, duration: 4 },
+    { text: "跳转后的一句。", start: 625, duration: 4 },
   ]);
   assert.deepEqual(snapshot.segments, [], "realtime has no Segments");
   // The jumped cursor travels the pointer, so a worker restart resumes
@@ -791,6 +921,252 @@ test("a resumed realtime replay Session baselines seek detection at the last rec
       duration: record.duration,
     })),
     [{ text: "[已跳过 1:40–10:00]", start: 100, duration: 500 }],
+  );
+});
+
+// --- Realtime drags on the video timeline (#50) ------------------------------
+
+test("dragging back onto covered audio holds forwarding and resumes at the next capture point", async () => {
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { settingsVersion: 3 }),
+    sentMessages,
+  });
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 45);
+  // 0–40 transcribed, 40–45 played silently (a window, no words).
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "前四十秒的内容。",
+    start: 0,
+    duration: 40,
+  });
+
+  // Drag back to 0:20 — covered audio. Forwarding holds; nothing here is
+  // re-recognized.
+  await helpers.handleMediaPosition(mediaPositionMessage(20), { tab: { id: 7 } });
+  await drain();
+  const holdRebase = sentMessages.find((message) => message.action === "captureRebase");
+  assert.deepEqual(
+    { originSeconds: holdRebase.originSeconds, hold: holdRebase.hold },
+    { originSeconds: 20, hold: true },
+  );
+  assert.equal(
+    helpers.readStored("ytd_active_capture").realtimeHoldUntilSeconds,
+    45,
+    "the hold names the covered run's end as the resume point (silent playback counts as covered)",
+  );
+
+  // Playback advances through the hold without re-recognizing anything.
+  await playTo(helpers.handleMediaPosition, 20, 44);
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(snapshot.transcriptRecords.length, 1, "no duplicate records while holding");
+
+  // Reaching 0:45 resumes capture there, and the pointer forgets the hold.
+  await playTo(helpers.handleMediaPosition, 44, 46);
+  const resume = sentMessages.find(
+    (message) => message.action === "captureRealtimeResume",
+  );
+  assert.deepEqual(
+    { originSeconds: resume.originSeconds },
+    { originSeconds: 45 },
+  );
+  assert.equal(
+    helpers.readStored("ytd_active_capture").realtimeHoldUntilSeconds,
+    null,
+  );
+
+  // Post-resume utterances count from the resume point.
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "恢复后的新内容。",
+    start: 3,
+    duration: 4,
+    originSeconds: 45,
+  });
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  const resumed = snapshot.transcriptRecords.find(
+    (record) => record.text === "恢复后的新内容。",
+  );
+  assert.deepEqual(
+    { start: resumed.start, duration: resumed.duration },
+    { start: 48, duration: 4 },
+  );
+});
+
+test("dragging back into a hole captures from the landing point and shrinks the skipped marker", async () => {
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { settingsVersion: 3 }),
+    sentMessages,
+  });
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 20);
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "开头二十秒。",
+    start: 0,
+    duration: 20,
+  });
+  // Drag forward to 0:40: the hole is [0:20, 0:40].
+  await helpers.handleMediaPosition(mediaPositionMessage(40), { tab: { id: 7 } });
+  await drain();
+  await playTo(helpers.handleMediaPosition, 40, 45);
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "四十秒之后。",
+    start: 0,
+    duration: 5,
+    originSeconds: 40,
+  });
+
+  // Drag back to 0:30, inside the hole.
+  await helpers.handleMediaPosition(mediaPositionMessage(30), { tab: { id: 7 } });
+  await drain();
+  const rebase = sentMessages.filter(
+    (message) => message.action === "captureRebase",
+  ).at(-1);
+  assert.deepEqual(
+    { originSeconds: rebase.originSeconds, hold: rebase.hold },
+    { originSeconds: 30, hold: false },
+  );
+
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  // The marker shrank to the unwatched head; the tail is being captured.
+  const gap = snapshot.transcriptRecords.find(
+    (record) => record.failed === true && record.text.startsWith("[已跳过 "),
+  );
+  assert.deepEqual(
+    { text: gap.text, start: gap.start, duration: gap.duration },
+    { text: "[已跳过 0:20–0:30]", start: 20, duration: 10 },
+  );
+  assert.equal(
+    helpers.readStored("ytd_active_capture").realtimeOriginSeconds,
+    30,
+  );
+
+  // The fill's utterances count from the new origin and arrive after the
+  // 40s record; the timeline layer re-orders them for display.
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "补转的三十到四十秒。",
+    start: 2,
+    duration: 8,
+    originSeconds: 30,
+  });
+  const filled = helpers.readStored(`ytd_session_${started.sessionId}`);
+  const fillRecord = filled.transcriptRecords.find(
+    (record) => record.text === "补转的三十到四十秒。",
+  );
+  assert.deepEqual(
+    { start: fillRecord.start, duration: fillRecord.duration },
+    { start: 32, duration: 8 },
+  );
+});
+
+test("a worker restart mid-hold rebuilds the hold and resumes without re-recognizing", async () => {
+  const sentMessages = [];
+  const first = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { settingsVersion: 3 }),
+    sentMessages,
+  });
+  const started = await first.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  await first.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await playTo(first.handleMediaPosition, 0, 45);
+  await first.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "重启前的内容。",
+    start: 0,
+    duration: 40,
+  });
+  await first.handleMediaPosition(mediaPositionMessage(20), { tab: { id: 7 } });
+  await drain();
+  assert.equal(
+    first.readStored("ytd_active_capture").realtimeHoldUntilSeconds,
+    45,
+  );
+
+  // The worker restarts: the pointer carries the hold across.
+  const second = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { settingsVersion: 3 }),
+    sentMessages,
+    stored: {
+      ytd_active_capture: first.readStored("ytd_active_capture"),
+      [`ytd_session_${started.sessionId}`]: first.readStored(
+        `ytd_session_${started.sessionId}`,
+      ),
+    },
+  });
+  const resumedState = await second.handleGetSessionState();
+  assert.equal(resumedState.active, true);
+
+  // Playback reaches the resume point; capture resumes there exactly once
+  // and nothing from the covered range is re-recognized.
+  await playTo(second.handleMediaPosition, 20, 46);
+  const resumes = sentMessages.filter(
+    (message) => message.action === "captureRealtimeResume",
+  );
+  assert.equal(resumes.length, 1, "exactly one resume after the restart");
+  assert.equal(resumes[0].originSeconds, 45);
+  const snapshot = second.readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(
+    snapshot.transcriptRecords.filter((record) => record.text === "重启前的内容。")
+      .length,
+    1,
+  );
+});
+test("a stale utterance from a superseded recognition session is dropped", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: qwenSettings("realtime", { settingsVersion: 3 }),
+  });
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 20);
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+  assert.equal(
+    helpers.readStored("ytd_active_capture").realtimeOriginSeconds,
+    600,
+  );
+
+  // A late frame from the pre-drag connection carries the old origin.
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "旧连接迟到的一句。",
+    start: 15,
+    duration: 4,
+    originSeconds: 0,
+  });
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(
+    snapshot.transcriptRecords.some((record) => record.text === "旧连接迟到的一句。"),
+    false,
+    "stale frames never land in the transcript",
+  );
+
+  // A current frame with the current origin is accepted.
+  await helpers.handleRealtimeUtterance({
+    action: "realtimeUtterance",
+    text: "新连接的一句。",
+    start: 3,
+    duration: 4,
+    originSeconds: 600,
+  });
+  const current = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.equal(
+    current.transcriptRecords.some(
+      (record) => record.text === "新连接的一句。" && record.start === 603,
+    ),
+    true,
   );
 });
 
@@ -932,6 +1308,80 @@ test("getSessionState after resume settles the interrupted Segment as failed wit
   assert.ok(marker, "the gap carries the visible [语音转录失败] annotation");
 });
 
+// --- 清除记录: the panel's clear button deletes an ended Session's snapshot
+// and report artifact, and never the active one.
+
+test("clearSessionRecord deletes the ended Session's snapshot and report artifact", async () => {
+  const bg = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: {
+      ytd_session_s_old: {
+        sessionId: "s_old",
+        status: "ended",
+        transcriptRecords: [{ text: "旧逐字稿", start: 0, duration: 5 }],
+      },
+      report_s_old: { sessionId: "s_old", report: { title: "旧纪要" } },
+    },
+  });
+
+  const result = await bg.handleClearSessionRecord({ sessionId: "s_old" });
+
+  assert.equal(result.success, true);
+  assert.equal(
+    bg.readStored("ytd_session_s_old"),
+    undefined,
+    "the snapshot is gone",
+  );
+  assert.equal(
+    bg.readStored("report_s_old"),
+    undefined,
+    "the report artifact goes with it (else the D7 scan re-adopts it)",
+  );
+});
+
+test("clearSessionRecord refuses the active Session and leaves storage untouched", async () => {
+  const bg = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: {
+      ytd_active_capture: {
+        sessionId: "s_live",
+        tabId: 7,
+        platformId: "xiaoe-tech",
+        kind: "replay",
+        timestampKind: "video",
+        startedAtMs: Date.now(),
+        segmentLengthSeconds: 120,
+      },
+      ytd_session_s_live: {
+        sessionId: "s_live",
+        status: "active",
+        transcriptRecords: [{ text: "进行中", start: 0, duration: 5 }],
+      },
+    },
+  });
+
+  const result = await bg.handleClearSessionRecord({ sessionId: "s_live" });
+
+  assert.equal(result.success, false);
+  assert.equal(result.error, "SESSION_ACTIVE");
+  assert.ok(
+    bg.readStored("ytd_session_s_live"),
+    "a running capture survives the click",
+  );
+});
+
+test("clearSessionRecord without a sessionId is a refused no-op", async () => {
+  const bg = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: {},
+  });
+
+  const result = await bg.handleClearSessionRecord({});
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /sessionId/);
+});
+
 // --- Topic tick flow: timer fires -> prompt -> topicsAppended -> persist + broadcast
 
 const TOPIC_JSON = JSON.stringify([
@@ -985,6 +1435,91 @@ function topicAiFetch(capturedRequests) {
     };
   };
 }
+
+// --- 从头开始 playback control (0.1.63) ------------------------------------
+
+test("从头开始 forwards the rewind to the capture tab's page bridge", async () => {
+  const tabMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    tabMessages,
+  });
+  await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  const result = await helpers.handleRestartFromBeginning();
+
+  assert.equal(result.success, true);
+  assert.deepEqual(tabMessages, [{ tabId: 7, action: "restartFromBeginning" }]);
+});
+
+test("从头开始 is refused on a live Session (no timeline to rewind)", async () => {
+  const tabMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    tabMessages,
+  });
+  await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+
+  const result = await helpers.handleRestartFromBeginning();
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /直播/);
+  assert.deepEqual(tabMessages, []);
+});
+
+test("从头开始 without an active Session is a refused no-op", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+  });
+
+  const result = await helpers.handleRestartFromBeginning();
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /没有进行中的转写会话/);
+});
+
+test("从头开始 maps a missing page bridge to the refresh instruction", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    tabMessageImpl: () => {
+      throw new Error("Could not establish connection. Receiving end does not exist.");
+    },
+  });
+  await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  const result = await helpers.handleRestartFromBeginning();
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /请刷新课程页后重试/);
+});
+
+test("从头开始 surfaces the bridge's own failure message", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    tabMessageImpl: () => ({ success: false, error: "页面上没有找到可控制的视频" }),
+  });
+  await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  const result = await helpers.handleRestartFromBeginning();
+
+  assert.equal(result.success, false);
+  assert.match(result.error, /没有找到可控制的视频/);
+});
 
 test("a summary tick sends the block prompt, appends Topics, persists and broadcasts", async () => {
   const requests = [];
@@ -2053,6 +2588,18 @@ function mediaPositionMessage(position, extra = {}) {
   };
 }
 
+// The bridge reports once a second, and the drag fallback threshold is 3s:
+// any multi-second jump inside ONE message reads as a drag. playTo feeds the
+// per-second stream a real player produces, from `from` (exclusive — the
+// position already reported) up to `to` (inclusive), draining after each
+// report like the tests do for hand-written messages.
+async function playTo(handleMediaPosition, from, to, extra = {}) {
+  for (let position = Math.floor(from) + 1; position <= Math.floor(to); position += 1) {
+    await handleMediaPosition(mediaPositionMessage(position, extra), { tab: { id: 7 } });
+    await drain();
+  }
+}
+
 // The settings migration forces a stored 120 (the legacy default) back
 // to 30 unless the blob is stamped with the current version, so these tests
 // pin the version to keep the round Segment numbers in their assertions.
@@ -2083,13 +2630,16 @@ test("a wallclock l_ Session anchors to the video timeline on the first bridged 
 
   assert.equal((await helpers.handleGetSessionState()).timestampKind, "video");
   // The anchored mode is persisted in the pointer with the segmenter cursor.
+  // 0.1.60: the anchor snaps UP to the next Segment-length boundary (60s
+  // grid), so 13:20 lands on 14:00.
   const pointer = helpers.readStored("ytd_active_capture");
   assert.equal(pointer.timestampKind, "video");
-  assert.equal(pointer.cursorSeconds, 800);
+  assert.equal(pointer.cursorSeconds, 840);
 
-  // The skipped head (0 → 800) produces nothing: the first Segment starts
-  // at the anchor position with the post-anchor audio.
-  await helpers.handleMediaPosition(mediaPositionMessage(920.4), { tab: { id: 7 } });
+  // The skipped head (0 → 840) produces nothing: the first Segment starts
+  // at the snapped anchor position with the post-anchor audio.
+  await playTo(helpers.handleMediaPosition, 840, 960);
+  await helpers.handleMediaPosition(mediaPositionMessage(960.4), { tab: { id: 7 } });
   await drain();
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2097,9 +2647,12 @@ test("a wallclock l_ Session anchors to the video timeline on the first bridged 
       start: segment.start,
       duration: segment.duration,
     })),
-    [{ start: 800, duration: 120 }],
+    [
+      { start: 840, duration: 60 },
+      { start: 900, duration: 60 },
+    ],
   );
-  assert.equal(snapshot.transcriptRecords[0].start, 800);
+  assert.equal(snapshot.transcriptRecords[0].start, 840);
   // The anchor broadcast tells the panel the timeline flipped immediately.
   const update = sentMessages.find(
     (message) => message.action === "sessionUpdate" && message.timestampKind,
@@ -2120,10 +2673,13 @@ test("a wallclock Session with no bridged position in the probe window stays wal
   const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
   assert.equal(started.timestampKind, "wallclock");
 
-  // The window lapses before any position arrives; the later report is
-  // ignored and the Session keeps today's wallclock behavior.
+  // The window lapses before any position arrives; a true live stream
+  // (infinite duration) is ignored afterwards and the Session keeps today's
+  // wallclock behavior.
   now += 11_000;
-  await helpers.handleMediaPosition(mediaPositionMessage(800), { tab: { id: 7 } });
+  await helpers.handleMediaPosition(mediaPositionMessage(800, { duration: null }), {
+    tab: { id: 7 },
+  });
   await drain();
 
   assert.equal((await helpers.handleGetSessionState()).timestampKind, "wallclock");
@@ -2133,11 +2689,179 @@ test("a wallclock Session with no bridged position in the probe window stays wal
 
   // The timeline never switches mid-Session: later positions change nothing.
   now += 1_000;
-  await helpers.handleMediaPosition(mediaPositionMessage(900), { tab: { id: 7 } });
+  await helpers.handleMediaPosition(mediaPositionMessage(900, { duration: null }), {
+    tab: { id: 7 },
+  });
   await drain();
   assert.equal((await helpers.handleGetSessionState()).timestampKind, "wallclock");
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(snapshot.segments, []);
+});
+
+test("a live URL converts to replay when a finite-duration recording reports inside the probe window (0.1.66)", async () => {
+  let now = 1_700_000_000_000;
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings({ segmentLengthSeconds: 15 }),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [15] }),
+    dateNow: () => now,
+  });
+
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.kind, "live");
+  now += 1_000;
+  await helpers.handleMediaPosition(mediaPositionMessage(2, { duration: 9272 }), {
+    tab: { id: 7 },
+  });
+  await drain();
+
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.kind, "replay", "finite duration must not stay mislabeled as 直播");
+  assert.equal(state.timestampKind, "video");
+  const pointer = helpers.readStored("ytd_active_capture");
+  assert.equal(pointer.kind, "replay");
+  assert.equal(pointer.timestampKind, "video");
+  assert.equal(pointer.cursorSeconds, 15);
+  assert.equal((await helpers.handleRestartFromBeginning()).success, true);
+});
+
+test("a live Session converts to replay when a finite-duration recording reports after the probe lapsed (0.1.64)", async () => {
+  let now = 1_700_000_000_000;
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    dateNow: () => now,
+  });
+
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  assert.equal(started.timestampKind, "wallclock");
+
+  // The probe lapsed with no position. Then the page (a live REPLAY with a
+  // 2:34:32 recording) starts reporting: convert to replay + video timeline.
+  now += 11_000;
+  await helpers.handleMediaPosition(mediaPositionMessage(66, { duration: 9272 }), {
+    tab: { id: 7 },
+  });
+  await drain();
+
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.kind, "replay");
+  assert.equal(state.timestampKind, "video");
+  // The pointer carries the flip across a worker restart; the anchor snapped
+  // UP to the 60s grid.
+  const pointer = helpers.readStored("ytd_active_capture");
+  assert.equal(pointer.kind, "replay");
+  assert.equal(pointer.timestampKind, "video");
+  assert.equal(pointer.cursorSeconds, 120);
+
+  // Without pressing 从头开始, Segments cut on the video grid from the
+  // detected anchor, not the wall clock. The explicit rewind path has its
+  // own 15-second regression immediately below.
+  await playTo(helpers.handleMediaPosition, 120, 180);
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [{ start: 120, duration: 60 }],
+  );
+});
+
+test("a late-detected live replay rewinds an empty Session and transcribes from 0:00", async () => {
+  let now = 1_700_000_000_000;
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings({ segmentLengthSeconds: 15 }),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [15] }),
+    dateNow: () => now,
+  });
+
+  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  now += 11_000;
+  // The recording is found at 0:02, so the mid-video anchor snaps to 0:15.
+  await helpers.handleMediaPosition(mediaPositionMessage(2, { duration: 9272 }), {
+    tab: { id: 7 },
+  });
+  await drain();
+  assert.equal(helpers.readStored("ytd_active_capture").cursorSeconds, 15);
+
+  const rewind = await helpers.handleRestartFromBeginning();
+  assert.equal(rewind.success, true);
+  await helpers.handleMediaPosition(mediaPositionMessage(0, { duration: 9272 }), {
+    tab: { id: 7 },
+  });
+  await playTo(helpers.handleMediaPosition, 0, 15, { duration: 9272 });
+
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+      status: segment.status,
+    })),
+    [{ start: 0, duration: 15, status: "done" }],
+    "从头开始 must reopen the never-captured prefix instead of waiting beyond the old anchor",
+  );
+  assert.equal(snapshot.transcriptRecords[0].start, 0);
+});
+
+test("a true live stream (infinite duration) stays wallclock after the probe lapsed", async () => {
+  let now = 1_700_000_000_000;
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe(),
+    dateNow: () => now,
+  });
+  await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
+  now += 11_000;
+  await helpers.handleMediaPosition(mediaPositionMessage(66, { duration: null }), {
+    tab: { id: 7 },
+  });
+  await drain();
+
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.kind, "live");
+  assert.equal(state.timestampKind, "wallclock");
+});
+
+test("the first bridged position arms the drag baseline instead of marking a gap", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [60] }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  // The learner opens the lesson mid-video: the very first report is 1:00.
+  // It arms the drag-detection baseline (never itself a drag): no false gap
+  // marker for the head. The head's coverage stays the pre-existing
+  // simplification (the segmenter starts at 0), unchanged by this rule.
+  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await drain();
+  // Stop short of the second 60s boundary: exactly one Segment exists.
+  await playTo(helpers.handleMediaPosition, 60, 110);
+
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+    })),
+    [{ text: "转写内容", start: 0 }],
+  );
+  assert.equal(
+    snapshot.transcriptRecords.filter((record) => record.failed === true).length,
+    0,
+    "no gap marker for the Session's opening position",
+  );
 });
 
 test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skipped gap", async () => {
@@ -2154,8 +2878,7 @@ test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skippe
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
   // One minute played, then the learner drags the bar to 10:00.
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 60);
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
 
@@ -2188,8 +2911,7 @@ test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skippe
   // (d) The next Segment starts at the new position with post-seek audio;
   // the jumped cursor survived in the pointer.
   assert.equal(helpers.readStored("ytd_active_capture").cursorSeconds, 600);
-  await helpers.handleMediaPosition(mediaPositionMessage(720), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 600, 720);
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -2198,7 +2920,117 @@ test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skippe
     })),
     [
       { start: 0, duration: 60 },
-      { start: 600, duration: 120 },
+      { start: 600, duration: 60 },
+      { start: 660, duration: 60 },
+    ],
+  );
+});
+
+test("a forward-drag landing snaps up to the Segment grid before resuming (0.1.60)", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    // The tail cut holds 60s of pre-seek audio; the resumed Segments 60s.
+    transcribeImpl: asrTranscribe({ durations: [60, 60, 60, 60] }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  // One minute played, then the learner drags the bar to 10:47 — NOT on the
+  // 60s grid. The landing snaps UP to 11:00: the marker covers up to 11:00,
+  // the cursor jumps there, and transcription resumes on the boundary.
+  await playTo(helpers.handleMediaPosition, 0, 60);
+  await helpers.handleMediaPosition(mediaPositionMessage(647), { tab: { id: 7 } });
+  await drain();
+
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      duration: record.duration,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "转写内容", start: 0, duration: 60, failed: false },
+      { text: "[已跳过 1:00–11:00]", start: 60, duration: 600, failed: true },
+    ],
+  );
+  assert.equal(helpers.readStored("ytd_active_capture").cursorSeconds, 660);
+
+  await playTo(helpers.handleMediaPosition, 647, 840);
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [
+      { start: 0, duration: 60 },
+      { start: 660, duration: 60 },
+      { start: 720, duration: 60 },
+      { start: 780, duration: 60 },
+    ],
+  );
+});
+
+test("a forward drag discards the in-flight partial Segment (0.1.62)", async () => {
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    transcribeImpl: asrTranscribe({ durations: [60] }),
+    sentMessages,
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+
+  // 45s played with a 60s grid: NOTHING has been submitted yet — the first
+  // Segment is still in flight. Dragging to 5:00 must NOT transcribe those
+  // 45 seconds: they fold into the skipped marker as one hole [0:00, 5:00].
+  await playTo(helpers.handleMediaPosition, 0, 45);
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+
+  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      duration: record.duration,
+      failed: record.failed === true,
+    })),
+    [{ text: "[已跳过 0:00–5:00]", start: 0, duration: 300, failed: true }],
+  );
+  assert.equal(
+    snapshot.transcriptRecords.filter((record) => record.text === "转写内容").length,
+    0,
+    "the in-flight partial is discarded, never transcribed",
+  );
+  // The partial audio was cut and dropped at the recorder, not flushed.
+  assert.ok(sentMessages.some((message) => message.action === "captureCut"));
+
+  // Resuming lands full grid cells only: [5:00, 6:00].
+  await playTo(helpers.handleMediaPosition, 300, 360);
+  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  assert.deepEqual(
+    snapshot.segments.map((segment) => ({
+      start: segment.start,
+      duration: segment.duration,
+    })),
+    [{ start: 300, duration: 60 }],
+  );
+  assert.deepEqual(
+    snapshot.transcriptRecords.map((record) => ({
+      text: record.text,
+      start: record.start,
+      failed: record.failed === true,
+    })),
+    [
+      { text: "[已跳过 0:00–5:00]", start: 0, failed: true },
+      { text: "转写内容", start: 300, failed: false },
     ],
   );
 });
@@ -2216,19 +3048,16 @@ test("re-listening a failed Segment retries it once and replaces the marker with
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
   // First pass: two Segments, the first failed with its visible marker. The
-  // bridge ticks once a second, so the feeds stay within the seek threshold.
+  // bridge ticks once a second, so the feeds stay under the drag threshold.
   await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(130), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(250), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 60);
+  await playTo(helpers.handleMediaPosition, 60, 130);
+  await playTo(helpers.handleMediaPosition, 130, 250);
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => segment.status),
-    ["failed", "done"],
+    ["failed", "done", "done", "done"],
   );
   const marker = snapshot.transcriptRecords.find((record) => record.failed === true);
   assert.equal(marker.text, "[语音转录失败]");
@@ -2236,17 +3065,15 @@ test("re-listening a failed Segment retries it once and replaces the marker with
   // Seek back to 0:00 and re-listen through the failed range.
   await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(130), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 60);
+  await playTo(helpers.handleMediaPosition, 60, 130);
 
   // The retry landed under the failed Segment's own id: its marker is
   // replaced in place, the timeline stays single-copy and monotonic.
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => segment.status),
-    ["done", "done"],
+    ["done", "done", "done", "done"],
   );
   assert.deepEqual(
     snapshot.transcriptRecords.map((record) => ({
@@ -2256,30 +3083,33 @@ test("re-listening a failed Segment retries it once and replaces the marker with
     })),
     [
       { text: "转写内容", start: 0, failed: false },
+      { text: "转写内容", start: 60, failed: false },
       { text: "转写内容", start: 120, failed: false },
+      { text: "转写内容", start: 180, failed: false },
     ],
   );
 
   // Plan A: covered ranges are never re-emitted, and new content resumes
   // once playback passes the old cursor frontier.
-  await helpers.handleMediaPosition(mediaPositionMessage(240), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(360), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 130, 240);
+  await playTo(helpers.handleMediaPosition, 240, 360);
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(snapshot.segments.length, 3);
+  assert.equal(snapshot.segments.length, 6);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
       start: segment.start,
       duration: segment.duration,
     })),
     [
-      { start: 0, duration: 120 },
-      { start: 120, duration: 120 },
-      { start: 240, duration: 120 },
+      { start: 0, duration: 60 },
+      { start: 60, duration: 60 },
+      { start: 120, duration: 60 },
+      { start: 180, duration: 60 },
+      { start: 240, duration: 60 },
+      { start: 300, duration: 60 },
     ],
   );
-  assert.equal(snapshot.transcriptRecords.length, 3);
+  assert.equal(snapshot.transcriptRecords.length, 6);
   assert.equal(snapshot.transcriptRecords.filter((record) => record.failed).length, 0);
 });
 
@@ -2290,30 +3120,29 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
     settings: pinnedSettings(),
     fetchImpl: noNetworkFetch,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [120, 120, 120] }),
+    transcribeImpl: asrTranscribe({ durations: [120, 120, 120, 120] }),
   });
 
   const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  // The probe anchors at 1:00; dragging to 5:00 cuts no tail (the anchor
-  // consumed the probe audio) and marks the hole [1:00, 5:00].
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  // The probe anchors at 2:00; dragging to 5:00 cuts no tail (the anchor
+  // consumed the probe audio) and marks the hole [2:00, 5:00].
+  await helpers.handleMediaPosition(mediaPositionMessage(120), { tab: { id: 7 } });
   await drain();
   await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
   await drain();
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.transcriptRecords.map((record) => record.text),
-    ["[已跳过 1:00–5:00]"],
+    ["[已跳过 2:00–5:00]"],
   );
 
   // Dragging back into the hole at its start arms the first fill window.
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await helpers.handleMediaPosition(mediaPositionMessage(120), { tab: { id: 7 } });
   await drain();
-  // Crossing the first boundary dispatches fill Segment [60, 180] with the
+  // Crossing the first boundary dispatches fill Segment [2:00, 3:00] with the
   // re-watched hole audio, stamped at the in-hole position; the marker
   // shrinks to the unfilled tail.
-  await helpers.handleMediaPosition(mediaPositionMessage(180), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 120, 180);
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -2321,7 +3150,7 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
       start: segment.start,
       duration: segment.duration,
     })),
-    [{ id: "seg-fill-60", start: 60, duration: 120 }],
+    [{ id: "seg-fill-120", start: 120, duration: 60 }],
   );
   assert.deepEqual(
     snapshot.transcriptRecords.map((record) => ({
@@ -2331,16 +3160,14 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
     })),
     [
       { text: "[已跳过 3:00–5:00]", start: 180, failed: true },
-      { text: "转写内容", start: 60, failed: false },
+      { text: "转写内容", start: 120, failed: false },
     ],
   );
 
-  // The second fill completes the hole: the marker is gone entirely, and
+  // The remaining fills complete the hole: the marker is gone entirely, and
   // crossing the old cursor frontier resumes the normal Segment flow.
-  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(420), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 180, 300);
+  await playTo(helpers.handleMediaPosition, 300, 420);
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -2348,9 +3175,11 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
       duration: segment.duration,
     })),
     [
-      { start: 60, duration: 120 },
-      { start: 180, duration: 120 },
-      { start: 300, duration: 120 },
+      { start: 120, duration: 60 },
+      { start: 180, duration: 60 },
+      { start: 240, duration: 60 },
+      { start: 300, duration: 60 },
+      { start: 360, duration: 60 },
     ],
   );
   assert.deepEqual(
@@ -2360,9 +3189,11 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
       failed: record.failed === true,
     })),
     [
-      { text: "转写内容", start: 60, failed: false },
+      { text: "转写内容", start: 120, failed: false },
       { text: "转写内容", start: 180, failed: false },
+      { text: "转写内容", start: 240, failed: false },
       { text: "转写内容", start: 300, failed: false },
+      { text: "转写内容", start: 360, failed: false },
     ],
   );
 });
@@ -2372,7 +3203,7 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
     settings: pinnedSettings(),
     fetchImpl: noNetworkFetch,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60, 120, 120, 60, 120] }),
+    transcribeImpl: asrTranscribe({ durations: [60, 60, 60, 60, 60, 60, 60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -2382,18 +3213,15 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
 
-  // The defect scenario: dragging back INTO the hole (5:00) starts
-  // transcription there — one fill per Segment-length boundary.
+  // 0.1.60: dragging back INTO the hole (5:00) lands ON the 60s grid, so the
+  // fill pass starts right there — one 60s fill per boundary until the hole
+  // is covered, then the normal Segment flow resumes past the old cursor.
   await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(420), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(540), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
-  await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(720), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 300, 420);
+  await playTo(helpers.handleMediaPosition, 420, 540);
+  await playTo(helpers.handleMediaPosition, 540, 600);
+  await playTo(helpers.handleMediaPosition, 600, 720);
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2403,10 +3231,13 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
     })),
     [
       { start: 0, duration: 60 },
-      { start: 300, duration: 120 },
-      { start: 420, duration: 120 },
+      { start: 300, duration: 60 },
+      { start: 360, duration: 60 },
+      { start: 420, duration: 60 },
+      { start: 480, duration: 60 },
       { start: 540, duration: 60 },
-      { start: 600, duration: 120 },
+      { start: 600, duration: 60 },
+      { start: 660, duration: 60 },
     ],
   );
   // The unfilled head [1:00, 5:00) remains visible as the shrunken marker;
@@ -2421,17 +3252,19 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
       { text: "转写内容", start: 0, failed: false },
       { text: "[已跳过 1:00–5:00]", start: 60, failed: true },
       { text: "转写内容", start: 300, failed: false },
+      { text: "转写内容", start: 360, failed: false },
       { text: "转写内容", start: 420, failed: false },
+      { text: "转写内容", start: 480, failed: false },
       { text: "转写内容", start: 540, failed: false },
       { text: "转写内容", start: 600, failed: false },
+      { text: "转写内容", start: 660, failed: false },
     ],
   );
 
   // Re-watching the now-COVERED range produces nothing (Plan A unchanged).
   await helpers.handleMediaPosition(mediaPositionMessage(350), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(400), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 350, 400);
   const reread = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(reread.segments, snapshot.segments);
   assert.deepEqual(reread.transcriptRecords, snapshot.transcriptRecords);
@@ -2442,7 +3275,7 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
     settings: pinnedSettings(),
     fetchImpl: noNetworkFetch,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60, 120, 100] }),
+    transcribeImpl: asrTranscribe({ durations: [60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -2451,15 +3284,15 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
 
-  // Fill [5:00, 7:00], then drag out of the hole to 0:30 mid-window.
+  // Enter the hole at 5:00 (on the 60s grid): the fill window is [5:00, 6:00],
+  // then drag out of the hole to 0:30 mid-window (at 5:50, before 6:00).
   await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(420), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 300, 350);
   await helpers.handleMediaPosition(mediaPositionMessage(30), { tab: { id: 7 } });
   await drain();
-  // Filling stopped: the shrunken marker keeps the unfilled head intact and
-  // no further records land for the abandoned window.
+  // Filling stopped: the marker keeps its full range intact and no further
+  // records land for the abandoned window.
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.transcriptRecords.map((record) => ({
@@ -2469,16 +3302,15 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
     })),
     [
       { text: "转写内容", start: 0, duration: 60 },
-      { text: "[已跳过 1:00–5:00]", start: 60, duration: 240 },
-      { text: "转写内容", start: 300, duration: 120 },
+      { text: "[已跳过 1:00–10:00]", start: 60, duration: 540 },
     ],
   );
 
-  // Re-entering the unfilled head refills it, capped at the hole's end.
+  // Re-entering the unfilled head at 3:20 snaps the entry to 4:00 and fills
+  // [4:00, 5:00], shrinking the marker's head to [1:00, 4:00).
   await helpers.handleMediaPosition(mediaPositionMessage(200), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 200, 300);
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -2487,8 +3319,7 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
     })),
     [
       { start: 0, duration: 60 },
-      { start: 300, duration: 120 },
-      { start: 200, duration: 100 },
+      { start: 240, duration: 60 },
     ],
   );
   assert.deepEqual(
@@ -2499,10 +3330,61 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
     })),
     [
       { text: "转写内容", start: 0, failed: false },
-      { text: "[已跳过 1:00–3:20]", start: 60, failed: true },
-      { text: "转写内容", start: 300, failed: false },
-      { text: "转写内容", start: 200, failed: false },
+      { text: "[已跳过 1:00–4:00]", start: 60, failed: true },
+      { text: "转写内容", start: 240, failed: false },
     ],
+  );
+});
+
+test("a failed hole-fill keeps the skipped marker intact for a later retry", async () => {
+  let attempts = 0;
+  const helpers = loadBackgroundHelpers({
+    settings: pinnedSettings(),
+    fetchImpl: noNetworkFetch,
+    sendMessageImpl: cutReply(),
+    // The pre-seek tail transcribes; the in-hole fill then fails.
+    transcribeImpl: async () => {
+      attempts += 1;
+      if (attempts === 2) throw new Error("provider boom");
+      return [
+        { text: "转写内容", start: 0, duration: attempts === 1 ? 60 : 120, language: "zh" },
+      ];
+    },
+  });
+
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
+  await drain();
+  await playTo(helpers.handleMediaPosition, 0, 60);
+  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await drain();
+
+  // Re-watch from 5:00 (on the 60s grid): the [5:00, 6:00] fill's
+  // transcription fails. Playback stops AT the failed window's boundary so
+  // no successor window arms within this pass.
+  await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
+  await drain();
+  await playTo(helpers.handleMediaPosition, 300, 360);
+
+  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
+  // The hole marker keeps its FULL range — a failed fill never shrinks it.
+  const gap = snapshot.transcriptRecords.find(
+    (record) => record.failed === true && record.text.startsWith("[已跳过 "),
+  );
+  assert.deepEqual(
+    { text: gap.text, start: gap.start, duration: gap.duration },
+    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540 },
+  );
+  // The failed fill leaves its own failure marker (retryable), and no fill
+  // record pretends the range was transcribed.
+  const fillFailure = snapshot.transcriptRecords.find(
+    (record) => record.failed === true && record.text === "[语音转录失败]",
+  );
+  assert.ok(fillFailure, "the failed fill shows a failure marker");
+  assert.equal(
+    snapshot.transcriptRecords.filter((record) => record.text === "转写内容").length,
+    1,
+    "only the pre-seek tail has text",
   );
 });
 
@@ -2511,26 +3393,26 @@ test("a drag deep through a hole skips the unwatched window's fill and resumes a
     settings: pinnedSettings(),
     fetchImpl: noNetworkFetch,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60, 20] }),
+    transcribeImpl: asrTranscribe({ durations: [60, 60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
   await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
+  await helpers.handleMediaPosition(mediaPositionMessage(720), { tab: { id: 7 } });
   await drain();
 
-  // Arm the fill at 5:00, then drag deep past the window's boundary within
-  // one tick: the buffered audio no longer maps to [5:00, 7:00], so its
-  // fill is skipped and the pass resumes where playback actually is.
+  // Arm the fill at 5:00 (on-grid, window [5:00, 6:00]), then drag deep past
+  // the window's boundary within one tick: the seek cut discards the pending
+  // fill, and the pass re-arms with its entry snapped to 10:00 so the resume
+  // lands on the grid.
   await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(350), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 300, 350);
   await helpers.handleMediaPosition(mediaPositionMessage(580), { tab: { id: 7 } });
   await drain();
-  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
-  await drain();
+  await playTo(helpers.handleMediaPosition, 580, 600);
+  await playTo(helpers.handleMediaPosition, 600, 720);
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2540,7 +3422,8 @@ test("a drag deep through a hole skips the unwatched window's fill and resumes a
     })),
     [
       { start: 0, duration: 60 },
-      { start: 580, duration: 20 },
+      { start: 600, duration: 60 },
+      { start: 660, duration: 60 },
     ],
   );
   // The marker shrinks to the head before the resumed fill's entry point.
@@ -2552,8 +3435,9 @@ test("a drag deep through a hole skips the unwatched window's fill and resumes a
     })),
     [
       { text: "转写内容", start: 0, failed: false },
-      { text: "[已跳过 1:00–9:40]", start: 60, failed: true },
-      { text: "转写内容", start: 580, failed: false },
+      { text: "[已跳过 1:00–10:00]", start: 60, failed: true },
+      { text: "转写内容", start: 600, failed: false },
+      { text: "转写内容", start: 660, failed: false },
     ],
   );
 });
@@ -2597,8 +3481,10 @@ test("a worker restart keeps the anchored video timeline and its cursor", async 
     .pop();
   assert.equal(restartStart.mode, "video");
 
-  // Positions continue on the video timeline from the persisted cursor.
-  await second.handleMediaPosition(mediaPositionMessage(920.4), { tab: { id: 7 } });
+  // Positions continue on the video timeline from the persisted cursor
+  // (0.1.60: the snapped anchor grid point).
+  await playTo(second.handleMediaPosition, 840, 960);
+  await second.handleMediaPosition(mediaPositionMessage(960.4), { tab: { id: 7 } });
   await drain();
   const snapshot = second.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2606,6 +3492,9 @@ test("a worker restart keeps the anchored video timeline and its cursor", async 
       start: segment.start,
       duration: segment.duration,
     })),
-    [{ start: 800, duration: 120 }],
+    [
+      { start: 840, duration: 60 },
+      { start: 900, duration: 60 },
+    ],
   );
 });

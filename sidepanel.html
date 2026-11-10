@@ -44,8 +44,18 @@
       <!-- SESSION CAPTURE (xiaoe-tech Source Platform) -->
       <div id="sessionBar" class="session-bar" style="display: none">
         <div class="session-status" id="sessionStatus"></div>
+        <div class="session-start-hint" id="startLearningHint" style="display: none">
+          <span class="session-start-hint-dot" aria-hidden="true"></span>
+          <span>点击<strong>浏览器工具栏</strong>的 Learning Digest 图标，开始转写本节课</span>
+        </div>
+        <button class="session-btn" id="restartFromStartBtn" type="button" style="display: none" title="把课程视频跳回 0:00 并播放，从头开始转写">
+          从头开始
+        </button>
         <button class="session-btn session-btn-end" id="endLearningBtn" type="button" style="display: none">
           结束学习
+        </button>
+        <button class="session-btn session-btn-clear" id="clearSessionBtn" type="button" style="display: none">
+          清除记录
         </button>
       </div>
       <div id="sessionView" class="session-view" style="display: none">
@@ -246,6 +256,8 @@
 
     <script src="settings.js"></script>
     <script src="speech-transcription.js"></script>
+    <script src="session-pipeline.js"></script>
+    <script src="session-timeline.js"></script>
     <script src="source-platforms.js"></script>
     <script src="report-render.js"></script>
     <script src="sidepanel.js"></script>

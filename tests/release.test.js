@@ -28,6 +28,9 @@ test("manifest uses minimized install-time permissions", () => {
       matches: ["https://*.xiaoe-tech.com/*"],
       js: ["page-bridge.js"],
       run_at: "document_idle",
+      // 0.1.64: xiaoe players can live inside iframes — the bridge must
+      // reach them or position reporting and playback control both fail.
+      all_frames: true,
     },
   ]);
   for (const host of [
@@ -47,7 +50,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.1.53");
+  assert.equal(manifest.version, "0.1.66");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -412,6 +415,7 @@ test("core Learning Digest modules ship in the release and load in the service w
     "speech-transcription.js",
     "speech-providers.js",
     "session-pipeline.js",
+    "session-timeline.js",
     "session-persistence.js",
     "source-platforms.js",
     "session-segmenter.js",
@@ -438,6 +442,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js"\)/,
   );
 });

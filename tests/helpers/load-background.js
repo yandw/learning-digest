@@ -73,6 +73,10 @@ function loadBackgroundHelpers({
     open: () => Promise.resolve(),
   },
   stored = {},
+  // chrome.tabs.sendMessage seam (0.1.63 从头开始): records into tabMessages
+  // and answers via tabMessageImpl (default success).
+  tabMessages = null,
+  tabMessageImpl = null,
 } = {}) {
   const listeners = { addListener() {} };
   const localStorage = { ytd_settings: settings, ...stored };
@@ -142,10 +146,19 @@ function loadBackgroundHelpers({
           return Promise.resolve({ success: true });
         },
       },
-      tabs: { onUpdated: listeners, onActivated: listeners },
+      tabs: {
+        onUpdated: listeners,
+        onActivated: listeners,
+        sendMessage: (tabId, msg) => {
+          if (tabMessages) tabMessages.push({ tabId, ...msg });
+          if (tabMessageImpl) return Promise.resolve(tabMessageImpl(msg));
+          return Promise.resolve({ success: true });
+        },
+      },
     },
     YTD_SPEECH_TRANSCRIPTION: require("../../speech-transcription.js"),
     YTD_SESSION_PIPELINE: require("../../session-pipeline.js"),
+    YTD_SESSION_TIMELINE: require("../../session-timeline.js"),
     YTD_SESSION_SUMMARY: require("../../session-summary.js"),
     YTD_SESSION_PERSISTENCE: require("../../session-persistence.js"),
     YTD_SEGMENTER: require("../../session-segmenter.js"),

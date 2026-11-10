@@ -89,6 +89,15 @@ function makeElement(id = "") {
     append(...kids) {
       element.children.push(...kids);
     },
+    insertBefore(child, ref) {
+      // DOM semantics: re-inserting an existing child moves it, not copies.
+      const existing = element.children.indexOf(child);
+      if (existing !== -1) element.children.splice(existing, 1);
+      const at = ref ? element.children.indexOf(ref) : -1;
+      if (at === -1) element.children.push(child);
+      else element.children.splice(at, 0, child);
+      return child;
+    },
     remove() {},
     addEventListener(type, handler) {
       element.listeners[type] = handler;
@@ -152,7 +161,7 @@ function findDescendants(element, className, found = []) {
  * harness with recorded document listeners, a settable selection, and the
  * real settings module so the interval hint reads the stored value.
  */
-function loadPanel({ stored = {} } = {}) {
+function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
   const elements = {};
   const elementById = (id) => elements[id] || (elements[id] = makeElement(id));
   const selectorResults = {
@@ -195,6 +204,7 @@ function loadPanel({ stored = {} } = {}) {
         alerts.push(String(message));
       },
       addEventListener() {},
+      YTD_SOURCE_PLATFORMS: require("../source-platforms.js"),
     },
     document: {
       getElementById: elementById,
@@ -237,6 +247,7 @@ function loadPanel({ stored = {} } = {}) {
       },
       tabs: {
         create: () => Promise.resolve({ id: 9 }),
+        query: async () => [{ id: 7, url: "https://example.com/course" }],
         onUpdated: { addListener() {} },
         onActivated: { addListener() {} },
       },
@@ -244,6 +255,7 @@ function loadPanel({ stored = {} } = {}) {
         local: {
           setAccessLevel: () => Promise.resolve(),
           get: async (key) => {
+            if (storageGetImpl) return storageGetImpl(key, stored);
             if (key === null) return { ...stored };
             if (Array.isArray(key)) {
               return Object.fromEntries(key.map((item) => [item, stored[item]]));
@@ -259,6 +271,8 @@ function loadPanel({ stored = {} } = {}) {
     },
     YTD_SETTINGS: require("../settings.js"),
     YTD_REPORT_RENDER: require("../report-render.js"),
+    YTD_SESSION_PIPELINE: require("../session-pipeline.js"),
+    YTD_SESSION_TIMELINE: require("../session-timeline.js"),
   };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("sidepanel.js"), sandbox);
@@ -324,6 +338,39 @@ test("the session view renders the realtime draft box above the transcript", () 
   assert.match(js, /未捕获到逐字稿，未生成学习纪要。/);
   // The 纪要 tab funnel still feeds every report arrival.
   assert.match(js, /applyReportPayloadToTab\(report, sessionId\)/);
+});
+
+// --- 逐字稿 timeline ordering ----------------------------------------------
+
+test("session transcript rows follow video time, placing a late fill before later records", () => {
+  const panel = loadPanel();
+  showSession(
+    panel,
+    activeSessionState({
+      transcriptRecords: [
+        { start: 0, text: "开场" },
+        { start: 600, text: "十分钟处" },
+      ],
+    }),
+  );
+
+  // A re-watched range's fill arrives after the records that came later.
+  showSession(
+    panel,
+    activeSessionState({
+      transcriptRecords: [
+        { start: 0, text: "开场" },
+        { start: 600, text: "十分钟处" },
+        { start: 300, text: "五分钟补转" },
+      ],
+    }),
+  );
+
+  const texts = panel.elements.sessionTranscript.children
+    .filter((row) => row.classList.contains("session-record"))
+    .map((row) => row.children[1].textContent);
+
+  assert.deepEqual(texts, ["开场", "五分钟补转", "十分钟处"]);
 });
 
 // --- 概览: live Topic timeline + quotes --------------------------------------
@@ -575,6 +622,9 @@ test("the 笔记 tab is reachable during a session", () => {
   const panel = loadPanel();
   showSession(panel, activeSessionState());
 
+  // Auto-create the tab bar element (the mock document only materializes
+  // elements on getElementById; the real HTML always has it).
+  panel.elementById("tabsNav");
   assert.equal(panel.elements.tabsNav.style.display, "flex");
   const notesTab = panel.selectorResults[".tab"].find((tab) => tab.dataset.tab === "notes");
   assert.equal(notesTab.disabled, false);
@@ -598,6 +648,55 @@ test("segment wait copy follows the configured Segment length", () => {
 
   panel.session.setSegmentLengthForCopy(45);
   assert.equal(panel.session.segmentLengthLabel(), "45 秒");
+});
+
+test("panel startup waits for a stored 15-second setting before the first wait row renders", async () => {
+  let releaseSettings;
+  let delayFirstSettingsRead = true;
+  const settingsGate = new Promise((resolve) => {
+    releaseSettings = resolve;
+  });
+  const panel = loadPanel({
+    stored: { ytd_settings: { segmentLengthSeconds: 15 } },
+    storageGetImpl: (key, stored) => {
+      if (key === "ytd_settings" && delayFirstSettingsRead) {
+        delayFirstSettingsRead = false;
+        return settingsGate.then(() => ({ ytd_settings: stored[key] }));
+      }
+      if (key === null) return Promise.resolve({ ...stored });
+      return Promise.resolve({ [key]: stored[key] });
+    },
+  });
+  const state = activeSessionState({ segments: [], transcriptRecords: [] });
+  panel.setNextResponse((message) => {
+    if (message.action === "checkConfig") return { hasAiKey: true };
+    if (message.action === "getSessionState") {
+      return {
+        active: true,
+        sessionId: state.sessionId,
+        kind: "replay",
+        timestampKind: "video",
+        transcribeMode: "segment",
+        startedAtMs: 1_700_000_000_000,
+        state,
+      };
+    }
+    return { success: true };
+  });
+
+  const initializing = panel.docListeners.DOMContentLoaded();
+  // Let the current startup reach its first Session render while the settings
+  // read is still pending, reproducing the real Chrome storage race.
+  await panel.flush();
+  await panel.flush();
+  releaseSettings();
+  await initializing;
+  await panel.flush();
+
+  const transcript = panel.elementById("sessionTranscript");
+  const pendingRow = findDescendants(transcript, "session-pending")[0];
+  const text = findDescendants(pendingRow, "session-record-text")[0];
+  assert.equal(text.textContent, "录制中，第一段逐字稿约 15 秒 后出现…");
 });
 
 test("the session status line names the live timeline mode (#48)", () => {
@@ -630,6 +729,117 @@ test("the session status line names the live timeline mode (#48)", () => {
     panel.elementById("sessionStatus").textContent,
     /直播计时/,
   );
+});
+
+test("the active status line tells when transcription started (0.1.55)", () => {
+  const panel = loadPanel({ stored: {} });
+  const startedAtMs = new Date(2026, 10, 9, 14, 3).getTime();
+  const expected = `${String(new Date(startedAtMs).getHours()).padStart(2, "0")}:${String(
+    new Date(startedAtMs).getMinutes(),
+  ).padStart(2, "0")}`;
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: activeSessionState(),
+    timestampKind: "video",
+    startedAtMs,
+  });
+  assert.match(
+    panel.elementById("sessionStatus").textContent,
+    new RegExp(`转写中 · 开始于 ${expected}`),
+  );
+});
+
+test("the status line falls back to a dash without a start timestamp (0.1.55)", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: activeSessionState(),
+    timestampKind: "video",
+  });
+  assert.match(
+    panel.elementById("sessionStatus").textContent,
+    /转写中 · 开始于 —/,
+  );
+});
+
+test("an idle recognized page shows the start hint instead of a dead button (0.1.55)", () => {
+  const panel = loadPanel({ stored: {} });
+
+  // Idle on a recognized learning page: the hint points at the toolbar icon
+  // (the only legal capture entry point) and the status says not started.
+  panel.session.showSessionMode({ active: false, kind: "replay", state: null });
+  assert.equal(panel.elementById("startLearningHint").style.display, "");
+  assert.match(panel.elementById("sessionStatus").textContent, /未开始转写/);
+
+  // A live Session hides the hint and keeps the end button instead.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: activeSessionState(),
+    timestampKind: "video",
+    startedAtMs: Date.now(),
+  });
+  assert.equal(panel.elementById("startLearningHint").style.display, "none");
+
+  // An unrecognized page: no session bar content at all.
+  panel.session.showSessionMode({ active: false, kind: "none", state: null });
+  assert.equal(panel.elementById("startLearningHint").style.display, "none");
+});
+
+test("formatSessionClock renders HH:MM and a dash for garbage (0.1.55)", () => {
+  const panel = loadPanel({ stored: {} });
+  const at = new Date(2026, 0, 5, 9, 7).getTime();
+  assert.equal(panel.session.formatSessionClock(at), "09:07");
+  assert.equal(panel.session.formatSessionClock(0), "—");
+  assert.equal(panel.session.formatSessionClock(NaN), "—");
+  assert.equal(panel.session.formatSessionClock(undefined), "—");
+});
+
+test("the clear button retires an ended Session from the panel (0.1.55)", async () => {
+  const panel = loadPanel({ stored: {} });
+
+  // An ended Session still on screen: the clear button sits in the bar.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: activeSessionState(),
+    timestampKind: "video",
+    startedAtMs: Date.now(),
+  });
+  panel.session.showSessionMode({ active: false, kind: "replay", state: null });
+  assert.equal(panel.elementById("clearSessionBtn").style.display, "");
+
+  // A live Session never offers it.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: activeSessionState(),
+    timestampKind: "video",
+    startedAtMs: Date.now(),
+  });
+  assert.equal(panel.elementById("clearSessionBtn").style.display, "none");
+
+  // Idle again, then clear: the request names the Session and the panel
+  // wipes its rows and ids without waiting for the next poll.
+  panel.session.showSessionMode({ active: false, kind: "replay", state: null });
+  await panel.session.clearSessionRecord();
+  assert.ok(
+    panel.sentMessages.some(
+      (message) =>
+        message.action === "clearSessionRecord" && message.sessionId === "s_1",
+    ),
+    "the worker receives the delete request",
+  );
+  assert.equal(
+    panel.elementById("clearSessionBtn").style.display,
+    "none",
+    "the button retires with the Session",
+  );
+  assert.equal(panel.elementById("sessionTranscript").textContent, "");
 });
 
 test("the Session view shows on the 逐字稿 tab only", () => {

@@ -513,6 +513,26 @@ test("global pass input tolerates Sessions without records or Topics", () => {
   assert.deepEqual(input.liveTopics, []);
 });
 
+test("global pass and tick input sort records by video time, not arrival order", () => {
+  const state = activeSessionWithRecords([
+    { text: "40s fill", start: 40, duration: 5 },
+    { text: "10s", start: 10, duration: 5 },
+    { text: "30s fill", start: 30, duration: 5 },
+  ]);
+
+  const globalInput = summary.assembleGlobalPassInput(state);
+  assert.deepEqual(
+    globalInput.transcriptRecords.map((record) => record.text),
+    ["10s", "30s fill", "40s fill"],
+  );
+
+  const tickInput = summary.assembleTopicTickInput(state);
+  assert.deepEqual(
+    tickInput.newTranscript.map((record) => record.text),
+    ["10s", "30s fill", "40s fill"],
+  );
+});
+
 test("the global pass prompt demands one JSON object with topics, quotes and todos", () => {
   const messages = summary.buildGlobalPassMessages(REPORT_TEMPLATE, {
     transcriptText: "[0:00] 课程开场\n[1:00] 正式内容",

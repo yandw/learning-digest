@@ -216,12 +216,14 @@ test("Segment length defaults to 30 seconds", () => {
   assert.equal(normalized.segmentLengthSeconds, 30);
 });
 
-test("Segment length is clamped into the supported 30-600 range", () => {
-  assert.equal(settings.normalize({ segmentLengthSeconds: 10 }).segmentLengthSeconds, 30);
+test("Segment length is clamped into the supported 5-60 range", () => {
+  assert.equal(settings.normalize({ segmentLengthSeconds: 1 }).segmentLengthSeconds, 5);
+  assert.equal(settings.normalize({ segmentLengthSeconds: 5 }).segmentLengthSeconds, 5);
   assert.equal(settings.normalize({ segmentLengthSeconds: 30 }).segmentLengthSeconds, 30);
-  assert.equal(settings.normalize({ segmentLengthSeconds: 600 }).segmentLengthSeconds, 600);
-  assert.equal(settings.normalize({ segmentLengthSeconds: 3600 }).segmentLengthSeconds, 600);
-  assert.equal(settings.normalize({ segmentLengthSeconds: 180 }).segmentLengthSeconds, 180);
+  assert.equal(settings.normalize({ segmentLengthSeconds: 60 }).segmentLengthSeconds, 60);
+  assert.equal(settings.normalize({ segmentLengthSeconds: 600 }).segmentLengthSeconds, 60);
+  assert.equal(settings.normalize({ segmentLengthSeconds: 3600 }).segmentLengthSeconds, 60);
+  assert.equal(settings.normalize({ segmentLengthSeconds: 45 }).segmentLengthSeconds, 45);
 });
 
 test("malformed Segment length falls back to the default", () => {
@@ -268,22 +270,22 @@ test("a legacy blob with the old default Segment length migrates to 30", () => {
 });
 
 test("a stamped blob keeps a hand-tuned Segment length", () => {
-  // A v2 stamp (0.1.41-0.1.50) is below the current version, but 600 was
+  // A v2 stamp (0.1.41-0.1.50) is below the current version, but 45 was
   // never a shipped default, so the hand-tuned value passes through and the
   // blob is re-stamped to the current version.
   const normalized = settings.normalize({
     settingsVersion: 2,
-    segmentLengthSeconds: 600,
+    segmentLengthSeconds: 45,
   });
 
-  assert.equal(normalized.segmentLengthSeconds, 600);
+  assert.equal(normalized.segmentLengthSeconds, 45);
   assert.equal(normalized.settingsVersion, 3);
 });
 
 test("an unstamped blob with a hand-tuned Segment length keeps it", () => {
-  const normalized = settings.normalize({ segmentLengthSeconds: 600 });
+  const normalized = settings.normalize({ segmentLengthSeconds: 45 });
 
-  assert.equal(normalized.segmentLengthSeconds, 600);
+  assert.equal(normalized.segmentLengthSeconds, 45);
 });
 
 test("a v2 blob at the old AI defaults migrates to the Bailian Qwen defaults", () => {

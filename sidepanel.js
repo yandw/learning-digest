@@ -34,7 +34,7 @@ let currentVideoId = null;
 // Options-page changes are picked up on the next panel load.
 let segmentLengthForCopy = 30;
 function segmentLengthLabel() {
-  const seconds = Math.max(30, Math.floor(Number(segmentLengthForCopy) || 30));
+  const seconds = Math.max(5, Math.floor(Number(segmentLengthForCopy) || 30));
   return seconds < 60 ? `${seconds} 秒` : `${Math.round(seconds / 60)} 分钟`;
 }
 async function refreshSegmentLengthForCopy() {
@@ -219,7 +219,10 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 
 document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
-  void refreshSegmentLengthForCopy();
+  // The first Session paint must wait for this value: Chrome storage can
+  // resolve after refreshSessionUI(), leaving the pending row at the 30s
+  // default even when the learner configured a shorter Segment.
+  await refreshSegmentLengthForCopy();
   await evictOldCacheEntries(20);
 
   const configStatus = await chrome.runtime.sendMessage({
@@ -1566,6 +1569,10 @@ globalThis.__YTD_SESSION_TESTING__ = {
   showSessionMode,
   endLearning,
   renderEndButton,
+  renderStartHint,
+  renderClearButton,
+  clearSessionRecord,
+  formatSessionClock,
   adoptSessionReport,
   // The sessionUpdate envelope's branches (#47 live box, notices), driven
   // directly by the mock-DOM tests since the real listener only registers
@@ -1599,11 +1606,20 @@ const sessionUi = {
   // Transcription mode (#45): "segment" (default) or "realtime"; drives the
   // start toast and the transcript empty-state copy.
   transcribeMode: null,
+  // When the live Session started (context.startedAtMs from the worker):
+  // the status line names the clock time so the learner can tell when
+  // transcription actually began.
+  startedAtMs: null,
   // The live draft (#47) the realtime ASR server is still revising. Full
   // replacement on every realtimePartial; a finalized utterance's own
   // record row supersedes it, so transcript growth clears it.
   realtimeDraft: "",
   renderedRecords: 0,
+  // Timeline-ordered row reconciliation: one DOM row per transcriptRecords
+  // index (the key), kept in video-time order so a late re-watched fill
+  // inserts before records that arrived earlier instead of appending.
+  recordRows: new Map(),
+  recordRowsSessionId: null,
   active: false,
   // True once an end-time report has been adopted: the Session view (the
   // transcript the report's timestamps jump into) stays visible after the
@@ -1660,36 +1676,129 @@ function renderSessionStatus() {
   // timeline the transcript stamps follow.
   const modeLabel =
     sessionUi.timestampKind === "video" ? "已对齐视频时间轴" : "直播计时（墙钟）";
-  status.textContent = sessionUi.active
-    ? `${kindLabel} · ${modeLabel} · 正在采集音频`
-    : kindLabel;
+  if (sessionUi.active) {
+    const startedAt = formatSessionClock(sessionUi.startedAtMs);
+    status.textContent = `${kindLabel} · ${modeLabel} · 转写中 · 开始于 ${startedAt}`;
+    return;
+  }
+  status.textContent = kindLabel ? `${kindLabel} · 未开始转写` : kindLabel;
+}
+
+/**
+ * "14:03" for a wall-clock ms timestamp; "—" when unknown (a Session state
+ * broadcast predating the startedAtMs field, or a test double without one).
+ */
+function formatSessionClock(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  const date = new Date(value);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/**
+ * The idle-state entry point. A panel-side button cannot start the capture
+ * (Chrome's tabCapture invocation rule), so instead of a dead button the bar
+ * shows this pointer at the toolbar icon whenever a recognized learning page
+ * has no Session yet. Hidden while a Session runs and while an ended Session's
+ * report is generating/retrying (the 开始总结 button owns the bar then).
+ */
+function renderStartHint() {
+  const hint = document.getElementById("startLearningHint");
+  if (!hint) return;
+  const show =
+    !sessionUi.active &&
+    !sessionUi.reportGenerating &&
+    !sessionUi.reportError &&
+    Boolean(sessionUi.kind) &&
+    sessionUi.kind !== "none";
+  hint.style.display = show ? "" : "none";
+}
+
+function buildSessionRecordRow(record) {
+  const row = document.createElement("div");
+  // The Overview's timestamp jumps target rows by start second (#31).
+  row.dataset.seconds = String(recordStartSeconds(record.start));
+  const stamp = document.createElement("span");
+  stamp.className = "session-record-stamp";
+  const text = document.createElement("span");
+  text.className = "session-record-text";
+  row.append(stamp, text);
+  updateSessionRecordRow(row, record);
+  return row;
+}
+
+function updateSessionRecordRow(row, record) {
+  row.className = record.failed
+    ? "session-record session-record-failed"
+    : "session-record";
+  row.dataset.seconds = String(recordStartSeconds(record.start));
+  const stamp = row.children[0];
+  const text = row.children[1];
+  if (stamp) stamp.textContent = `[${sessionTimestampLabel(record.start)}]`;
+  if (text) text.textContent = record.text;
 }
 
 function renderSessionTranscript(state) {
   const container = document.getElementById("sessionTranscript");
   if (!container || !state) return;
   const records = state.transcriptRecords || [];
+
+  // A new Session starts from a clean row map; stale rows from the previous
+  // Session (whose container may still be on screen behind the report) go.
+  if (sessionUi.recordRowsSessionId !== state.sessionId) {
+    for (const row of sessionUi.recordRows.values()) row.remove();
+    sessionUi.recordRows.clear();
+    sessionUi.recordRowsSessionId = state.sessionId;
+  }
+
   if (records.length > sessionUi.renderedRecords) {
     // New record rows (a finalized realtime utterance among them, #47)
     // supersede whatever draft the live box was showing.
     sessionUi.realtimeDraft = "";
   }
-  for (const record of records.slice(sessionUi.renderedRecords)) {
-    const row = document.createElement("div");
-    row.className = record.failed
-      ? "session-record session-record-failed"
-      : "session-record";
-    // The Overview's timestamp jumps target rows by start second (#31).
-    row.dataset.seconds = String(recordStartSeconds(record.start));
-    const stamp = document.createElement("span");
-    stamp.className = "session-record-stamp";
-    stamp.textContent = `[${sessionTimestampLabel(record.start)}]`;
-    const text = document.createElement("span");
-    text.className = "session-record-text";
-    text.textContent = record.text;
-    row.append(stamp, text);
-    container.appendChild(row);
+
+  // Reconcile against the video-timeline order: create/update one row per
+  // record, then place the rows in that order, so a fill recorded after a
+  // later segment still lands at its own timestamp.
+  const entries = YTD_SESSION_TIMELINE.orderedTranscriptEntries(state);
+  const liveKeys = new Set();
+  const rows = [];
+  for (const { record, index } of entries) {
+    liveKeys.add(index);
+    let row = sessionUi.recordRows.get(index);
+    if (!row) {
+      row = buildSessionRecordRow(record);
+      sessionUi.recordRows.set(index, row);
+      container.appendChild(row);
+    } else {
+      updateSessionRecordRow(row, record);
+    }
+    rows.push(row);
   }
+  for (const [index, row] of sessionUi.recordRows) {
+    if (!liveKeys.has(index)) {
+      row.remove();
+      sessionUi.recordRows.delete(index);
+    }
+  }
+  // Reorder pass, back to front: each row goes right before the node that
+  // should follow it. Non-record children (pending spinner rows) are
+  // untouched — renderPendingSegments re-appends them after this.
+  const rowSet = new Set(rows);
+  let before = null;
+  for (const child of Array.from(container.children)) {
+    if (!rowSet.has(child)) {
+      before = child;
+      break;
+    }
+  }
+  for (let i = rows.length - 1; i >= 0; i--) {
+    container.insertBefore(rows[i], before);
+    before = rows[i];
+  }
+
   sessionUi.renderedRecords = records.length;
   renderPendingSegments(container, state);
   renderRealtimeDraft();
@@ -1997,24 +2106,14 @@ async function adoptLatestStoredReport() {
   if (best) {
     reportTabUi.sessionId = best.sessionId || reportTabUi.sessionId;
     reportTabUi.artifact = best;
-    // D7: the deliverable exists with no active Session — surface it.
-    surfaceReportTab();
+    // D7 adopts the deliverable with no active Session. 0.1.59: the panel
+    // opens on the 逐字稿 tab from here on — the report content is adopted
+    // (one click away on 纪要) but the startup scan no longer yanks the tab.
+    showState("results");
   }
   // Render even when nothing was found: this is the tab's first paint, and
   // the idle line must be visible before any session activity.
   renderReportTab();
-}
-
-/**
- * Surfaces the deliverable (#30): shows the results view with the 纪要 tab
- * active. In session mode the Session view (live transcript, end-time card)
- * stays visible above it; a loaded legacy video digest keeps its own tab
- * choice.
- */
-function surfaceReportTab() {
-  if (currentVideoId) return;
-  showState("results");
-  switchTab("report");
 }
 
 /**
@@ -2389,7 +2488,7 @@ function showRecordingToast() {
   );
 }
 
-function showSessionMode({ active, kind, state, transcribeMode, timestampKind }) {
+function showSessionMode({ active, kind, state, transcribeMode, timestampKind, startedAtMs }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
   const welcome = document.getElementById("welcomeState");
@@ -2401,6 +2500,10 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind })
     // The timeline mode (#48): wallclock at start, "video" once the probe
     // anchored the Session — the status line names which one is live.
     if (timestampKind) sessionUi.timestampKind = timestampKind;
+    if (kind) sessionUi.kind = kind;
+    if (Number.isFinite(Number(startedAtMs)) && Number(startedAtMs) > 0) {
+      sessionUi.startedAtMs = Number(startedAtMs);
+    }
     const activeSessionId = state?.sessionId ?? sessionUi.sessionId ?? null;
     if (activeSessionId) {
       sessionUi.sessionId = activeSessionId;
@@ -2413,16 +2516,20 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind })
     // lands (#30); only an id change retires it, so the poll is safe.
     const reportSessionBefore = reportTabUi.sessionId;
     reportTabSetActiveSession(activeSessionId);
-    // A fresh Session surfaces the deliverable's tab (story 7): the 纪要 tab
-    // reads 报告生成中… until the end-time pass lands. Later polls never
-    // yank the learner off the tab they picked. The first-topic hint is
+    // The 0.1.57 default keeps the learner on their current tab when a
+    // Session starts: watching the transcript grow is the primary in-Session
+    // job, so surfacing the 纪要 tab up front (story 7) yanked the learner
+    // away from it. The tab BAR still becomes visible here — without it the
+    // 笔记/概览/纪要 tabs would be unreachable mid-Session (tabsNav starts
+    // hidden and only showState reveals it). The first-topic hint stays
     // truthful about the configured tick interval from Session start on.
     if (reportTabUi.sessionId && reportTabUi.sessionId !== reportSessionBefore) {
-      surfaceReportTab();
+      showState("results");
       void refreshSummaryIntervalMinutes();
     }
     bar.style.display = "flex";
     renderEndButton();
+    renderStartHint();
     updateSessionViewVisibility();
     if (welcome) welcome.style.display = "none";
     if (state?.sessionId && !toastedSessions.has(state.sessionId)) {
@@ -2441,9 +2548,17 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind })
   sessionUi.active = false;
   sessionUi.sessionId = null;
   sessionUi.renderedRecords = 0;
+  // The ended (or idle) Session takes its rows with it; a new Session
+  // reconciles from an empty row map.
+  for (const row of sessionUi.recordRows.values()) row.remove();
+  sessionUi.recordRows.clear();
+  sessionUi.recordRowsSessionId = null;
   // The ended (or idle) Session takes its draft with it; a new Session
   // starts with an empty live box.
   sessionUi.realtimeDraft = "";
+  // Set kind before the renders below: the start hint's visibility and the
+  // status line both read it.
+  sessionUi.kind = kind && kind !== "none" ? kind : null;
   renderRealtimeDraft();
   renderEndButton();
   if (!sessionUi.reportShown) {
@@ -2458,7 +2573,6 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind })
     // panel can never satisfy Chrome's tabCapture invocation rule, so the
     // panel deliberately offers no start control at all.
     bar.style.display = "flex";
-    sessionUi.kind = kind;
     renderSessionStatus();
     if (welcome && state === null) welcome.style.display = "none";
   } else {
@@ -2488,6 +2602,7 @@ async function refreshSessionUI() {
         state: session.state,
         transcribeMode: session.transcribeMode,
         timestampKind: session.timestampKind,
+        startedAtMs: session.startedAtMs,
       });
     } else {
       showSessionMode({ active: false, kind: recognition.kind, state: null });
@@ -2571,8 +2686,86 @@ async function endLearning() {
  * 开始总结 (disabled); ended with a failed pass → 开始总结 (enabled, acts as
  * retry); otherwise (report ready/skipped, or nothing to show) hidden.
  */
+/**
+ * The 清除记录 button. Visible only for an ENDED Session that is still on
+ * screen: it deletes the persisted snapshot and report artifact (via the
+ * worker) and wipes the panel rows. Hidden while a Session runs — ending is
+ * the 结束学习 button's job — and while its report is still generating.
+ */
+function renderClearButton() {
+  const clearBtn = document.getElementById("clearSessionBtn");
+  if (!clearBtn) return;
+  const show =
+    !sessionUi.active &&
+    !sessionUi.reportGenerating &&
+    Boolean(sessionUi.lastSessionId || reportTabUi.sessionId);
+  clearBtn.style.display = show ? "" : "none";
+}
+
+/**
+ * Confirms, then asks the worker to delete the ended Session's snapshot and
+ * report artifact, and locally retires its rows, ids and adopted report so
+ * the panel converges on empty without waiting for the next poll.
+ */
+async function clearSessionRecord() {
+  if (sessionUi.active) return;
+  const sessionId = sessionUi.lastSessionId || reportTabUi.sessionId;
+  if (!sessionId) return;
+  const ok =
+    typeof window.confirm === "function"
+      ? window.confirm(
+          "清除当前课程的转录记录和学习纪要？此操作不可恢复。",
+        )
+      : true;
+  if (!ok) return;
+  try {
+    const result = await chrome.runtime.sendMessage({
+      action: "clearSessionRecord",
+      sessionId,
+    });
+    if (!result?.success) return;
+  } catch (_error) {
+    return;
+  }
+  for (const row of sessionUi.recordRows.values()) row.remove();
+  sessionUi.recordRows.clear();
+  sessionUi.recordRowsSessionId = null;
+  sessionUi.renderedRecords = 0;
+  sessionUi.sessionId = null;
+  sessionUi.lastSessionId = null;
+  sessionUi.reportShown = false;
+  sessionUi.reportGenerating = false;
+  sessionUi.reportError = null;
+  const transcript = document.getElementById("sessionTranscript");
+  if (transcript) transcript.textContent = "";
+  // Retire the adopted report (resets the 纪要/概览 tabs too).
+  reportTabSetActiveSession(null);
+  renderEndButton();
+  updateSessionViewVisibility();
+  void refreshSessionUI();
+}
+
+/**
+ * The 从头开始 button (0.1.63): visible only while a replay/course Session
+ * runs — live streams have no timeline to rewind. It rewinds the lesson to
+ * 0:00 so autoplay-started courses transcribe from the true beginning.
+ */
+function renderRestartFromStartButton() {
+  const btn = document.getElementById("restartFromStartBtn");
+  if (!btn) return;
+  const show = sessionUi.active && sessionUi.kind !== "live";
+  btn.style.display = show ? "" : "none";
+  if (!show) btn.disabled = false;
+}
+
 function renderEndButton() {
   const endBtn = document.getElementById("endLearningBtn");
+  // The hint/clear buttons and the end button share the same state machine
+  // (active / reportGenerating / lastSessionId), so every end-button render
+  // refreshes them too — no call site can leave them out of step.
+  renderStartHint();
+  renderClearButton();
+  renderRestartFromStartButton();
   if (!endBtn) return;
   if (sessionUi.active) {
     endBtn.style.display = "";
@@ -2614,8 +2807,35 @@ function updateSessionViewVisibility() {
   view.style.display = transcriptTabIsActive() && hasSessionContent ? "" : "none";
 }
 
+async function restartFromBeginning() {
+  const btn = document.getElementById("restartFromStartBtn");
+  if (!btn || !sessionUi.active || btn.disabled) return;
+  btn.disabled = true;
+  const settle = (text) => {
+    btn.textContent = text;
+    setTimeout(() => {
+      btn.textContent = "从头开始";
+      btn.disabled = false;
+    }, 2500);
+  };
+  try {
+    const result = await chrome.runtime.sendMessage({
+      action: "restartFromBeginning",
+    });
+    settle(result?.success ? "已回到 0:00" : result?.error || "控制失败，请刷新课程页");
+  } catch (_error) {
+    settle("控制失败，请刷新课程页");
+  }
+}
+
 function setupSessionUI() {
   document.getElementById("endLearningBtn")?.addEventListener("click", endLearning);
+  document
+    .getElementById("restartFromStartBtn")
+    ?.addEventListener("click", restartFromBeginning);
+  document
+    .getElementById("clearSessionBtn")
+    ?.addEventListener("click", clearSessionRecord);
   chrome.tabs.onActivated.addListener(() => {
     if (!sessionUi.active) void refreshSessionUI();
   });

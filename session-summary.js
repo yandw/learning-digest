@@ -35,6 +35,14 @@ var YTD_SESSION_SUMMARY = (() => {
       ? YTD_SPEECH_TRANSCRIPTION
       : require("./speech-transcription.js");
 
+  // Timeline views (sorted records + coverage map) come from the derived
+  // layer; in Node tests we require it, in the service worker both globals
+  // arrive via importScripts.
+  const sessionTimeline =
+    typeof YTD_SESSION_TIMELINE !== "undefined"
+      ? YTD_SESSION_TIMELINE
+      : require("./session-timeline.js");
+
   /**
    * The timeline position (seconds from Session start) up to which a set of
    * Transcript records is covered. The next window starts exactly here.
@@ -88,7 +96,9 @@ var YTD_SESSION_SUMMARY = (() => {
    * @returns {object[]}
    */
   function transcriptSince(state, cursor) {
-    return (state?.transcriptRecords || []).filter(
+    // Input order follows the video timeline (not ASR-arrival order), so a
+    // late fill lands in its right place in the prompt.
+    return sessionTimeline.orderedTranscriptRecords(state).filter(
       (record) => (Number(record.start) || 0) >= cursor,
     );
   }
@@ -129,7 +139,7 @@ var YTD_SESSION_SUMMARY = (() => {
    */
   function assembleTopicTickInput(state) {
     const cursor = topicCursor(state);
-    const records = state?.transcriptRecords || [];
+    const records = sessionTimeline.orderedTranscriptRecords(state);
     const newTranscript = transcriptSince(state, cursor);
     const tailCutoff = cursor - TOPIC_OVERLAP_SECONDS;
     const overlapTail = [];
@@ -374,7 +384,7 @@ var YTD_SESSION_SUMMARY = (() => {
   function assembleGlobalPassInput(state) {
     const topics = Array.isArray(state?.topics) ? state.topics : [];
     return {
-      transcriptRecords: [...(state?.transcriptRecords || [])],
+      transcriptRecords: sessionTimeline.orderedTranscriptRecords(state),
       liveTopics: topics.map((topic) => ({
         start: Number(topic?.start) || 0,
         end: Number(topic?.end) || 0,

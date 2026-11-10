@@ -170,17 +170,18 @@
             id="segmentLengthSeconds"
             name="segmentLengthSeconds"
             type="number"
-            min="30"
-            max="600"
-            step="30"
+            min="5"
+            max="60"
+            step="5"
             autocomplete="off"
           />
           <p class="help" data-i18n="segmentLengthHelp">
             How much audio each Segment captures in segment transcription
             mode; smaller values surface the transcript sooner (default 30
-            seconds). This field has no effect in realtime transcription
-            mode. Tencent Cloud one-sentence recognition caps requests at 60
-            seconds, so keep this at or below 60 when using that provider.
+            seconds). Allowed range is 5-60 seconds. This field has no effect
+            in realtime transcription mode. Drag landings snap up to the next
+            multiple of this length, so shorter lengths also shorten the audio
+            a drag can skip.
           </p>
         </section>
 

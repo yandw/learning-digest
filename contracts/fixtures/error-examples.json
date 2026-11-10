@@ -1,6 +1,6 @@
 {
   "$contract": "learning-digest-contracts/v1",
-  "description": "/v1 错误响应固定样例。错误体统一为 { error: { code, message } }；进度冲突额外携带 current（服务端当前进度与版本）。auth 标记样例的凭据状态：none=未携带凭据，expired=已失效或被联动撤销的凭据，valid=有效凭据。跨账号访问统一返回 404 not_found（隔离语义：不向调用方透露资源存在与否）。样例引用 api-examples.json 中的 src_/res_ id；res_01JZZZZ 系列为「另一账号」的数据。",
+  "description": "/v1 错误响应固定样例。错误体统一为 { error: { code, message } }；进度冲突额外携带 current（服务端当前进度与版本）。auth 标记样例的凭据状态：none=未携带凭据，expired=已失效或被联动撤销的凭据，valid=有效凭据。跨账号访问统一返回 404 not_found（隔离语义：不向调用方透露资源存在与否）。样例引用 api-examples.json 中的 src_/res_ id；res_01JZZZZ 系列为「另一账号」的数据。第二轮样例（Ticket 2.1，contract-r2.md）追加在文件尾部：Session 生命周期（finish/upload 已结束 409、跨账号 404）、段元数据校验 400、同区间单一路径冲突 409，以及 Worker 凭据 401 与未知任务 404；ses_01JZZZZ / tsk_01JZZZZ 为「另一账号」系列的 Session 与任务。",
   "samples": [
     {
       "id": "error-unauthorized-missing-token",
@@ -156,6 +156,178 @@
         "status": 400,
         "body": {
           "error": { "code": "validation_failed", "message": "缺少必填字段 url" }
+        }
+      }
+    },
+    {
+      "id": "error-session-create-unauthorized",
+      "description": "第二轮 · 未登录开学习：Session 创建同样要求有效凭据，未携带凭据返回 401（401 语义沿用 D2 家族约定）",
+      "auth": "none",
+      "endpoint": { "method": "POST", "path": "/v1/sources/src_01JABC0002/sessions" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+        }
+      }
+    },
+    {
+      "id": "error-session-create-cross-account-source",
+      "description": "第二轮 · 跨账号隔离：对另一账号的来源创建学习 Session，返回 404，不创建任何数据",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/sources/src_01JZZZZ9998/sessions" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "来源不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-session-finish-already-finished",
+      "description": "第二轮 · 已结束 Session 再收尾：finish 只对 active Session 有效，重复收尾返回 409 session_already_finished",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0031/finish" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": { "code": "session_already_finished", "message": "本次学习已结束，无需重复收尾" }
+        }
+      }
+    },
+    {
+      "id": "error-cross-account-session-transcript",
+      "description": "第二轮 · 跨账号隔离：读取另一账号 Session 的逐字稿，返回 404，不透露存在性（ses_01JZZZZ 为另一账号的 Session）",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/sessions/ses_01JZZZZ9997/transcript" },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "学习记录不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-audio-segment-after-finish",
+      "description": "第二轮 · 已结束 Session 收到音频：上传只对 active Session 有效，返回 409 session_already_finished，不产生任何写入（在途重发收到 409 后应停止上传）",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0031/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": 0,
+          "startMs": 0,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "U29tZV9hdWRpb19ieXRlcw=="
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": { "code": "session_already_finished", "message": "本次学习已结束，不再接收音频" }
+        }
+      }
+    },
+    {
+      "id": "error-audio-segment-invalid-index",
+      "description": "第二轮 · 段元数据非法：segmentIndex 为负数（或缺失、非整数）返回 400",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": -1,
+          "startMs": 0,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "U29tZV9hdWRpb19ieXRlcw=="
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": { "code": "validation_failed", "message": "segmentIndex 必须是不小于 0 的整数" }
+        }
+      }
+    },
+    {
+      "id": "error-audio-segment-too-large",
+      "description": "第二轮 · 音频超限：audioBase64 超过 10MB 编码上限（样例体以占位串示意，实际请求为超限音频）返回 400；约 30s 段的常规体积远低于该上限",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": 4,
+          "startMs": 120000,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "QUFBQQ=="
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": { "code": "validation_failed", "message": "音频超过 10MB 编码上限" }
+        }
+      }
+    },
+    {
+      "id": "error-transcript-origin-conflict",
+      "description": "第二轮 · 同区间单一路径（D15）：ses_01JABC0033 已按 ASR 路径锁定（音频段已入库），再提交字幕返回 409 transcript_origin_conflict；反向（字幕路径 Session 提交音频）同样 409。强制转写应在提交任何归档前决定路径",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/captions" },
+      "request": {
+        "body": {
+          "segments": [
+            { "startMs": 0, "endMs": 30000, "text": "不应落库的字幕" }
+          ]
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": { "code": "transcript_origin_conflict", "message": "本次学习已按音频转写归档，同一区间只采用一种方式" }
+        }
+      }
+    },
+    {
+      "id": "error-worker-claim-unauthorized",
+      "description": "第二轮 · Worker 凭据：任务领取只接受 Worker 凭据（与用户凭据分离），缺失或无效返回 401",
+      "auth": "none",
+      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/claim" },
+      "request": {
+        "body": { "limit": 3 }
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "Worker 凭据缺失或无效" }
+        }
+      }
+    },
+    {
+      "id": "error-worker-result-unknown-task",
+      "description": "第二轮 · 回写未知任务：taskId 不存在或不属于本 Worker 可见范围，返回 404（已终态任务的重发是 200 幂等，不是 404）",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/tsk_01JZZZZ9999/result" },
+      "request": {
+        "body": {
+          "status": "done",
+          "records": []
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "任务不存在" }
         }
       }
     }

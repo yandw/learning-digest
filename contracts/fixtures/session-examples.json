@@ -1,0 +1,275 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "第二轮 Session 与逐字稿归档成功样例（contract-r2.md）：POST /v1/sources/{id}/sessions、POST /v1/sessions/{id}/finish、POST /v1/sessions/{id}/captions（字幕直归档）、GET /v1/sessions/{id}/transcript（轮询与 Web 回查统一形态）、GET /v1/resources/{id} 的 sessions[] 扩展。错误样例在 error-examples.json（第二轮样例追加在文件尾部）。样例共享第一轮的 res_/src_ id：res_01JABC0001（B 站 P2 注意力机制详解）与 src_01JABC0002 之上开三次学习 ses_01JABC0031（字幕路径，已结束）、ses_01JABC0032（ASR 路径，已结束）、ses_01JABC0033（ASR 路径，进行中，音频与任务样例见 audio-task-examples.json）。所有 startMs/endMs 均为来源视频时间轴毫秒位置。同一 Session 内字幕与音频互斥（D15，首次提交锁定 origin）；字幕不全的空缺按原样归档，不出现在 gaps[]，gaps[] 只收显式跳过。",
+  "samples": [
+    {
+      "id": "api-session-create-bilibili",
+      "description": "开始学习：为 B 站 P2 来源创建本次学习的 Session，返回 201 与 active Session（origin 尚为 null，首次提交字幕或音频后锁定）",
+      "endpoint": { "method": "POST", "path": "/v1/sources/src_01JABC0002/sessions" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "session": {
+            "id": "ses_01JABC0033",
+            "sourceId": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "status": "active",
+            "startedAt": "2026-11-10T10:00:00Z",
+            "finishedAt": null,
+            "origin": null
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-finish-with-gaps",
+      "description": "结束学习：收尾时上报本次仍未取得文本的显式跳过范围（150000–210000，用户拖拽跳过且未回看补录）；返回 finished Session。已结束的 Session 再次 finish 返回 409（见 error-examples.json）",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0032/finish" },
+      "request": {
+        "body": {
+          "gaps": [
+            { "startMs": 150000, "endMs": 210000 }
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "session": {
+            "id": "ses_01JABC0032",
+            "sourceId": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "status": "finished",
+            "startedAt": "2026-11-10T09:00:00Z",
+            "finishedAt": "2026-11-10T09:45:00Z",
+            "origin": "asr"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-captions-archive",
+      "description": "字幕直归档：把读取到的字幕段按来源时间轴原样提交，返回 201 与归档后的 TranscriptView（sessionStatus 仍为 active，gaps[] 为空——缺口上报只发生在 finish）。字幕段 origin 恒为 captions",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0031/captions" },
+      "request": {
+        "body": {
+          "segments": [
+            { "startMs": 138000, "endMs": 159000, "text": "这一节我们把注意力分数放到矩阵上看" },
+            { "startMs": 159000, "endMs": 181000, "text": "Q K V 三个矩阵各司其职" }
+          ]
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "transcript": {
+            "sessionId": "ses_01JABC0031",
+            "sourceId": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "sessionStatus": "active",
+            "origin": "captions",
+            "records": [
+              { "startMs": 138000, "endMs": 159000, "text": "这一节我们把注意力分数放到矩阵上看", "origin": "captions" },
+              { "startMs": 159000, "endMs": 181000, "text": "Q K V 三个矩阵各司其职", "origin": "captions" }
+            ],
+            "gaps": [],
+            "pending": [],
+            "failed": []
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-captions-resend-idempotent",
+      "description": "字幕重发幂等：同一 Session 再次提交字幕（断网重发）返回 200 与已归档内容，不产生重复或覆盖；首提交内容为准",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0031/captions" },
+      "request": {
+        "body": {
+          "segments": [
+            { "startMs": 138000, "endMs": 159000, "text": "这一节我们把注意力分数放到矩阵上看" },
+            { "startMs": 159000, "endMs": 181000, "text": "Q K V 三个矩阵各司其职" }
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "transcript": {
+            "sessionId": "ses_01JABC0031",
+            "sourceId": "src_01JABC0002",
+            "resourceId": "res_01JABC0001",
+            "sessionStatus": "active",
+            "origin": "captions",
+            "records": [
+              { "startMs": 138000, "endMs": 159000, "text": "这一节我们把注意力分数放到矩阵上看", "origin": "captions" },
+              { "startMs": 159000, "endMs": 181000, "text": "Q K V 三个矩阵各司其职", "origin": "captions" }
+            ],
+            "gaps": [],
+            "pending": [],
+            "failed": []
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-transcript-captions-finished",
+      "description": "字幕路径轮询（已结束）：records 为已归档字幕全文；gaps 只有显式跳过的 300000–360000——字幕轨自带的空缺（181000–300000 无字幕）按原样归档，不标记为 gap（D15）；captions 路径 pending/failed 恒为空",
+      "endpoint": { "method": "GET", "path": "/v1/sessions/ses_01JABC0031/transcript" },
+      "response": {
+        "status": 200,
+        "body": {
+          "sessionId": "ses_01JABC0031",
+          "sourceId": "src_01JABC0002",
+          "resourceId": "res_01JABC0001",
+          "sessionStatus": "finished",
+          "origin": "captions",
+          "records": [
+            { "startMs": 138000, "endMs": 159000, "text": "这一节我们把注意力分数放到矩阵上看", "origin": "captions" },
+            { "startMs": 159000, "endMs": 181000, "text": "Q K V 三个矩阵各司其职", "origin": "captions" }
+          ],
+          "gaps": [
+            { "startMs": 300000, "endMs": 360000, "reason": "skipped" }
+          ],
+          "pending": [],
+          "failed": []
+        }
+      }
+    },
+    {
+      "id": "api-session-transcript-asr-active",
+      "description": "ASR 路径轮询（进行中，转写中）：records 含此前已完成的段；segmentIndex 2 的任务失败，显式出现在 failed[]（错误反馈形态）；segmentIndex 3 已被 Worker 领取、正在转写，出现在 pending[]——插件据此显示「转写中」。状态单调：done/failed 为终态，不回退",
+      "endpoint": { "method": "GET", "path": "/v1/sessions/ses_01JABC0033/transcript" },
+      "response": {
+        "status": 200,
+        "body": {
+          "sessionId": "ses_01JABC0033",
+          "sourceId": "src_01JABC0002",
+          "resourceId": "res_01JABC0001",
+          "sessionStatus": "active",
+          "origin": "asr",
+          "records": [
+            { "startMs": 0, "endMs": 30000, "text": "欢迎来到这一节，我们先回顾上一课留下的三个问题", "origin": "asr" },
+            { "startMs": 30000, "endMs": 60000, "text": "注意力分数的计算，就是把查询向量和键向量做点积", "origin": "asr" }
+          ],
+          "gaps": [],
+          "pending": [
+            { "segmentIndex": 3, "startMs": 90000, "endMs": 120000, "status": "transcribing" }
+          ],
+          "failed": [
+            {
+              "segmentIndex": 2,
+              "startMs": 60000,
+              "endMs": 90000,
+              "error": { "code": "transcription_failed", "message": "Speech Provider 返回 429，重试后仍失败" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "api-session-transcript-asr-finished",
+      "description": "ASR 路径轮询（已结束）：跳过范围显式标记为 gap（与 finish 上报一致）；失败段保留 failed[] 与错误详情直到 Session 归档（D14）；此时 pending 为空",
+      "endpoint": { "method": "GET", "path": "/v1/sessions/ses_01JABC0032/transcript" },
+      "response": {
+        "status": 200,
+        "body": {
+          "sessionId": "ses_01JABC0032",
+          "sourceId": "src_01JABC0002",
+          "resourceId": "res_01JABC0001",
+          "sessionStatus": "finished",
+          "origin": "asr",
+          "records": [
+            { "startMs": 60000, "endMs": 90000, "text": "上一节我们留了一个问题：为什么要缩放点积", "origin": "asr" }
+          ],
+          "gaps": [
+            { "startMs": 150000, "endMs": 210000, "reason": "skipped" }
+          ],
+          "pending": [],
+          "failed": [
+            {
+              "segmentIndex": 1,
+              "startMs": 210000,
+              "endMs": 240000,
+              "error": { "code": "transcription_failed", "message": "Speech Provider 返回 400：音频解码失败" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "api-resource-detail-with-sessions",
+      "description": "资料详情扩展（contract-r2.md §3.6）：在第一轮 { resource, sources, notes } 之上增加 sessions[]——历次学习按开始时间倒序，每项带逐字稿摘要 { recordCount, gapCount, failedCount }；进行中的 Session 同样出现。第一轮三键内容与 api-resources-detail-with-notes 一致，原样保留",
+      "endpoint": { "method": "GET", "path": "/v1/resources/res_01JABC0001" },
+      "response": {
+        "status": 200,
+        "body": {
+          "resource": {
+            "id": "res_01JABC0001",
+            "title": "注意力机制详解 P2：自注意力",
+            "kind": "video",
+            "createdAt": "2026-11-10T08:00:00Z"
+          },
+          "sources": [
+            {
+              "id": "src_01JABC0002",
+              "resourceId": "res_01JABC0001",
+              "kind": "video",
+              "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+              "platformId": "bilibili",
+              "platformVideoId": "BV1ab411L78c",
+              "episodeId": "2",
+              "platformScopeId": null,
+              "progress": { "positionMs": 250000, "revision": 2 }
+            }
+          ],
+          "notes": [
+            {
+              "id": "note_01JABC0021",
+              "resourceId": "res_01JABC0001",
+              "sourceId": "src_01JABC0002",
+              "positionMs": 200000,
+              "text": "3:20 起的例子值得回看",
+              "clientRequestId": "note-req-001",
+              "createdAt": "2026-11-10T08:30:00Z"
+            }
+          ],
+          "sessions": [
+            {
+              "id": "ses_01JABC0033",
+              "sourceId": "src_01JABC0002",
+              "resourceId": "res_01JABC0001",
+              "status": "active",
+              "startedAt": "2026-11-10T10:00:00Z",
+              "finishedAt": null,
+              "origin": "asr",
+              "transcript": { "recordCount": 2, "gapCount": 0, "failedCount": 1 }
+            },
+            {
+              "id": "ses_01JABC0032",
+              "sourceId": "src_01JABC0002",
+              "resourceId": "res_01JABC0001",
+              "status": "finished",
+              "startedAt": "2026-11-10T09:00:00Z",
+              "finishedAt": "2026-11-10T09:45:00Z",
+              "origin": "asr",
+              "transcript": { "recordCount": 1, "gapCount": 1, "failedCount": 1 }
+            },
+            {
+              "id": "ses_01JABC0031",
+              "sourceId": "src_01JABC0002",
+              "resourceId": "res_01JABC0001",
+              "status": "finished",
+              "startedAt": "2026-11-10T08:00:00Z",
+              "finishedAt": "2026-11-10T08:45:00Z",
+              "origin": "captions",
+              "transcript": { "recordCount": 2, "gapCount": 1, "failedCount": 0 }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

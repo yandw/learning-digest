@@ -196,6 +196,28 @@ function endpointTemplate(method, pathname) {
   if (method === "PATCH" && segs.length === 3 && segs[0] === "v1" && segs[1] === "resources") {
     return "PATCH /v1/resources/{id}";
   }
+  // Round-2 surface (contract-r2.md, ticket #64): session lifecycle,
+  // transcript archive/polling, audio segment upload and the Worker pull
+  // contract. Round-2 error samples in error-examples.json classify here.
+  if (method === "POST" && segs.length === 4 && segs[1] === "sources" && segs[3] === "sessions") {
+    return "POST /v1/sources/{id}/sessions";
+  }
+  if (method === "POST" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "finish") {
+    return "POST /v1/sessions/{id}/finish";
+  }
+  if (method === "POST" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "captions") {
+    return "POST /v1/sessions/{id}/captions";
+  }
+  if (method === "POST" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "audio-segments") {
+    return "POST /v1/sessions/{id}/audio-segments";
+  }
+  if (method === "GET" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "transcript") {
+    return "GET /v1/sessions/{id}/transcript";
+  }
+  if (method === "POST" && joined === "v1/worker/tasks/claim") return "POST /v1/worker/tasks/claim";
+  if (method === "POST" && segs.length === 5 && segs[1] === "worker" && segs[2] === "tasks" && segs[4] === "result") {
+    return "POST /v1/worker/tasks/{id}/result";
+  }
   return null;
 }
 
@@ -465,12 +487,13 @@ test("api-examples keep idempotency and revision invariants", () => {
 
 // --- error-examples.json ----------------------------------------------------
 
-// status ↔ error.code mapping from contract-v1.md.
+// status ↔ error.code mapping from contract-v1.md §4 and contract-r2.md §4
+// (the round-2 409 codes are additive; round-1 codes are unchanged).
 const ERROR_CODE_BY_STATUS = {
   400: new Set(["invalid_url", "validation_failed"]),
   401: new Set(["unauthorized"]),
   404: new Set(["not_found"]),
-  409: new Set(["progress_revision_conflict"]),
+  409: new Set(["progress_revision_conflict", "session_already_finished", "transcript_origin_conflict"]),
 };
 
 test("error-examples parse, sit on the /v1 surface, and use the error envelope", () => {

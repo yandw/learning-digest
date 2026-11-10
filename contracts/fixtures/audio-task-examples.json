@@ -1,0 +1,193 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "第二轮音频提交与转写任务成功样例（contract-r2.md）：POST /v1/sessions/{id}/audio-segments（JSON 体内 base64 音频，约 30s 一段）、POST /v1/worker/tasks/claim（Worker pull 领取）、POST /v1/worker/tasks/{id}/result（回写）。样例续接 session-examples.json 的 ses_01JABC0033（ASR 进行中）：首段 segmentIndex 0 在更早的调用中已上传并转写完成；此处依次上传段 1、乱序上传段 3、再传段 2；Worker 一次领取三段，段 1 回写 done、段 2 回写 failed、段 3 仍在转写——与 session-examples.json 的 api-session-transcript-asr-active 轮询样例构成同一条时间线。音频传输编码与重试协议见 contract-r2.md §3.4 与决策 D11/D14。",
+  "samples": [
+    {
+      "id": "api-audio-segment-upload",
+      "description": "音频分段上传：约 30s 一段，JSON 体携带段序号、来源时间轴位置与 base64 音频；返回 201 与入队后的段（status pending，等待 Worker 领取）",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": 1,
+          "startMs": 30000,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "U29tZV9hdWRpb19ieXRlcw=="
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "segment": {
+            "segmentIndex": 1,
+            "startMs": 30000,
+            "endMs": 60000,
+            "status": "pending",
+            "audioMimeType": "audio/webm;codecs=opus"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-audio-segment-duplicate-idempotent",
+      "description": "断网重发（重试协议）：同一 (sessionId, segmentIndex) 字节级重放返回 200 与已存段，不覆盖、不重复入队——首次入库的音频为准（与 D3 首存优先同构）",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": 1,
+          "startMs": 30000,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "U29tZV9hdWRpb19ieXRlcw=="
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "segment": {
+            "segmentIndex": 1,
+            "startMs": 30000,
+            "endMs": 60000,
+            "status": "pending",
+            "audioMimeType": "audio/webm;codecs=opus"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-audio-segment-out-of-order",
+      "description": "乱序上传：段 3 先于段 2 到达也接受（201）——服务端不要求连续，顺序以 segmentIndex 归位",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": 3,
+          "startMs": 90000,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "U29tZV9hdWRpb18z"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "segment": {
+            "segmentIndex": 3,
+            "startMs": 90000,
+            "endMs": 120000,
+            "status": "pending",
+            "audioMimeType": "audio/webm;codecs=opus"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-audio-segment-upload-second",
+      "description": "补齐上传段 2：三段（1、2、3）全部 pending 后进入领取样例",
+      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "request": {
+        "body": {
+          "segmentIndex": 2,
+          "startMs": 60000,
+          "durationMs": 30000,
+          "audioMimeType": "audio/webm;codecs=opus",
+          "audioBase64": "U29tZV9hdWRpb18y"
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "segment": {
+            "segmentIndex": 2,
+            "startMs": 60000,
+            "endMs": 90000,
+            "status": "pending",
+            "audioMimeType": "audio/webm;codecs=opus"
+          }
+        }
+      }
+    },
+    {
+      "id": "worker-task-claim",
+      "description": "Worker pull 领取：Worker 以自有凭据领取至多 limit 个 pending 任务，任务原子转为 transcribing；音频以 base64 内联在任务里（≤10MB 编码上限），audioMimeType 供 Speech Provider 判别容器格式；领取结果按 segmentIndex 升序返回。样例音频为占位串，真实载荷为整段音频字节",
+      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/claim" },
+      "request": {
+        "body": { "limit": 3 }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "tasks": [
+            {
+              "taskId": "tsk_01JABC0041",
+              "sessionId": "ses_01JABC0033",
+              "sourceId": "src_01JABC0002",
+              "segmentIndex": 1,
+              "startMs": 30000,
+              "endMs": 60000,
+              "audioMimeType": "audio/webm;codecs=opus",
+              "audioBase64": "U29tZV9hdWRpb19ieXRlcw=="
+            },
+            {
+              "taskId": "tsk_01JABC0042",
+              "sessionId": "ses_01JABC0033",
+              "sourceId": "src_01JABC0002",
+              "segmentIndex": 2,
+              "startMs": 60000,
+              "endMs": 90000,
+              "audioMimeType": "audio/webm;codecs=opus",
+              "audioBase64": "U29tZV9hdWRpb18y"
+            },
+            {
+              "taskId": "tsk_01JABC0043",
+              "sessionId": "ses_01JABC0033",
+              "sourceId": "src_01JABC0002",
+              "segmentIndex": 3,
+              "startMs": 90000,
+              "endMs": 120000,
+              "audioMimeType": "audio/webm;codecs=opus",
+              "audioBase64": "U29tZV9hdWRpb18z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "worker-task-result-done",
+      "description": "Worker 回写成功：records 为该段产出的逐字稿记录，时间戳已是来源时间轴毫秒（Worker 负责把 Provider 的段内相对时间折算到段起点）；空文本段回写 records: [] 表示静音段，同样算 done。回写幂等：同 taskId 重发返回 200 与已存结果",
+      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/tsk_01JABC0041/result" },
+      "request": {
+        "body": {
+          "status": "done",
+          "records": [
+            { "startMs": 30000, "endMs": 60000, "text": "注意力分数的计算，就是把查询向量和键向量做点积" }
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "taskId": "tsk_01JABC0041",
+          "status": "done"
+        }
+      }
+    },
+    {
+      "id": "worker-task-result-failed",
+      "description": "Worker 回写失败：error.code 固定为 transcription_failed（第二轮唯一任务失败码），message 带可排查的 Provider 详情；回写后任务为 failed 终态，对应段在轮询的 failed[] 显式反馈，音频按 D14 保留至 Session 结束加宽限期",
+      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/tsk_01JABC0042/result" },
+      "request": {
+        "body": {
+          "status": "failed",
+          "error": { "code": "transcription_failed", "message": "Speech Provider 返回 429，重试后仍失败" }
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "taskId": "tsk_01JABC0042",
+          "status": "failed"
+        }
+      }
+    }
+  ]
+}

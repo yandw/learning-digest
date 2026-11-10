@@ -6,7 +6,7 @@ const { validationFailed, unauthorizedMissing, unauthorizedExpired } = require("
 const { normalizeEmail, isInvited } = require("./invites");
 const { issueCode } = require("./codes");
 const { openOrLogin } = require("./accounts");
-const { authenticate } = require("./credentials");
+const { authenticate, revokeCredential } = require("./credentials");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -103,6 +103,22 @@ function registerRoutes(ctx) {
       status: 200,
       body: { account: { id: credential.accountId, email: account ? account.email : null } },
     };
+  });
+
+  // POST /v1/auth/logout — round 1 revokes the presented credential only.
+  // The group-revocation primitive (revokeCredentialGroup) is the seam P7
+  // wires linked logout (Web + extension exiting together) through.
+  router.add("POST", "/v1/auth/logout", async ({ req }) => {
+    const token = bearerToken(req);
+    if (!token) {
+      throw unauthorizedMissing();
+    }
+    const credential = authenticate({ store, token });
+    if (!credential) {
+      throw unauthorizedExpired();
+    }
+    revokeCredential({ store, token, now });
+    return { status: 200, body: { ok: true } };
   });
 }
 

@@ -76,4 +76,43 @@ function authenticate({ store, token }) {
   return record;
 }
 
-module.exports = { issueCredential, findActiveGroup, hashToken, authenticate };
+/**
+ * Revoke ONE credential (round-1 logout semantics). Siblings in the same
+ * group stay valid; use revokeCredentialGroup for the linked-logout
+ * primitive. Unknown tokens are a no-op (idempotent logout).
+ * @returns {boolean} true when a live credential was revoked
+ */
+function revokeCredential({ store, token, now }) {
+  const record = store.get("credentials", hashToken(token));
+  if (!record || record.revokedAt !== null) {
+    return false;
+  }
+  record.revokedAt = now();
+  store.set("credentials", record.tokenHash, record);
+  return true;
+}
+
+/**
+ * Revoke a whole credential group — the revocation boundary for decision 3
+ * (Web and extension credentials exit together). This is the server-side
+ * primitive P7's linked-logout endpoint/behavior drives; the round-1
+ * logout endpoint deliberately does NOT call it.
+ */
+function revokeCredentialGroup({ store, groupId, now }) {
+  const group = store.get("credentialGroups", groupId);
+  if (!group || group.revokedAt !== null) {
+    return false;
+  }
+  group.revokedAt = now();
+  store.set("credentialGroups", groupId, group);
+  return true;
+}
+
+module.exports = {
+  issueCredential,
+  findActiveGroup,
+  hashToken,
+  authenticate,
+  revokeCredential,
+  revokeCredentialGroup,
+};

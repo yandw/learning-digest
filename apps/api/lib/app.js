@@ -8,6 +8,8 @@ const { createRouter } = require("./router");
 const { respondJson, respondError, readJsonBody } = require("./http");
 const { registerRoutes } = require("./routes");
 const { createMemoryMailer } = require("./mailer");
+const { createMemoryStore } = require("./persistence");
+const { loadSeedInvites } = require("./invites");
 
 const DEFAULT_CONFIG = Object.freeze({
   // Verification code lifetime. Decision: 10 minutes, a normal email-code
@@ -36,10 +38,14 @@ const DEFAULT_CONFIG = Object.freeze({
  * @returns {import("node:http").Server}
  */
 function createApp(options = {}) {
-  const store = options.store || null;
+  const store = options.store || createMemoryStore();
   const mailer = options.mailer || createMemoryMailer();
   const now = options.now || (() => Date.now());
   const config = { ...DEFAULT_CONFIG, ...(options.config || {}) };
+
+  // Invited emails are data: the seed file is loaded into the store on
+  // every startup, idempotently (scripts/invite.js adds more at runtime).
+  loadSeedInvites(store, options.seedFile, now);
 
   const router = createRouter();
   registerRoutes({ router, store, mailer, now, config, seedFile: options.seedFile });

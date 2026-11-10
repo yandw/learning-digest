@@ -212,6 +212,9 @@ function loadBackgroundHelpers({
     // shared with the API) and the pure collect state machine.
     YTD_PLATFORM_VIDEO_ID: require("../../contracts/platform-video-id.js"),
     YTD_COLLECT: require("../../collect.js"),
+    // P12 library notes: the pure note state machine the save-note handler
+    // drives (tests/plugin-note-timestamp.test.js).
+    YTD_NOTES: require("../../notes.js"),
     // P10 learning-start: the course tab list, the locked-target state
     // machine and the progress write client (learning-start.js).
     YTD_LEARNING_START: require("../../learning-start.js"),

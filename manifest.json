@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Learning Digest",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "minimum_chrome_version": "116",
   "description": "把课程音频变成学习资料：分段中文转写、话题时间轴和完整的学习纪要。",
   "permissions": ["sidePanel", "storage", "tabCapture", "offscreen", "tabs"],
@@ -14,7 +14,16 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://*.xiaoe-tech.com/*"],
+      "matches": [
+        "https://*.xiaoe-tech.com/*",
+        "https://www.bilibili.com/video/*",
+        "https://m.bilibili.com/video/*",
+        "https://www.youtube.com/watch*",
+        "https://m.youtube.com/watch*",
+        "https://music.youtube.com/watch*",
+        "https://www.xiaohongshu.com/explore/*",
+        "https://www.xiaohongshu.com/discovery/item/*"
+      ],
       "js": ["page-bridge.js"],
       "run_at": "document_idle",
       "all_frames": true

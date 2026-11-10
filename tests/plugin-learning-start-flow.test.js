@@ -194,7 +194,7 @@ test("chooseLearningTarget resolves a matched source with the shared identity an
   assert.equal(helpers.readStored("ytd_learning_target").status, "chosen");
 });
 
-test("chooseLearningTarget marks a four-station page startable:false but still resolves it by identity", async () => {
+test("chooseLearningTarget marks a bilibili video page startable (P10b #63 registered the station)", async () => {
   const { v1Calls, fetchImpl } = v1Fetch({ resolve: [{ status: 200, body: { matched: false } }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
@@ -206,7 +206,7 @@ test("chooseLearningTarget marks a four-station page startable:false but still r
   const result = await helpers.handleChooseLearningTarget({ tabId: 2 });
 
   assert.equal(result.ok, true);
-  assert.equal(result.startable, false, "capture starts on registered platforms only");
+  assert.equal(result.startable, true, "bilibili /video/<BV> is a registered Source Platform page");
   assert.equal(result.resolve.matched, false, "unfavorited video page: the panel prompts 先收藏");
   assert.deepEqual(v1Calls[0].body.identity, {
     platformId: "bilibili",
@@ -214,6 +214,86 @@ test("chooseLearningTarget marks a four-station page startable:false but still r
     episodeId: "2",
     platformScopeId: null,
   });
+});
+
+test("chooseLearningTarget marks youtube and xiaohongshu video pages startable (P10b #63)", async () => {
+  for (const [url, platformId] of [
+    ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youtube"],
+    ["https://www.xiaohongshu.com/explore/65f0abc123def4567890ab12", "xiaohongshu"],
+  ]) {
+    const { fetchImpl } = v1Fetch({ resolve: [{ status: 200, body: { matched: false } }] });
+    const helpers = loadBackgroundHelpers({
+      settings: baseSettings(),
+      stored: CREDENTIAL_STORE,
+      tabsGet: async (tabId) => ({ id: tabId, url, title: platformId }),
+      fetchImpl,
+    });
+
+    const result = await helpers.handleChooseLearningTarget({ tabId: 5 });
+
+    assert.equal(result.ok, true, url);
+    assert.equal(result.startable, true, url);
+  }
+});
+
+test("startLearning proceeds on all three stations with video timestamps (P10b #63)", async () => {
+  for (const [url, platformId] of [
+    [BILI_P2, "bilibili"],
+    ["https://www.youtube.com/watch?v=dQw4w9WgXcQ", "youtube"],
+    ["https://www.xiaohongshu.com/explore/65f0abc123def4567890ab12", "xiaohongshu"],
+  ]) {
+    const helpers = loadBackgroundHelpers({
+      settings: baseSettings(),
+      stored: CREDENTIAL_STORE,
+      fetchImpl: v1Fetch().fetchImpl,
+      transcribeImpl: asrTranscribe,
+      sendMessageImpl: cutReply,
+    });
+
+    const result = await helpers.handleStartLearning({ url, tabId: 5 });
+
+    assert.equal(result.success, true, url);
+    const pointer = helpers.readStored("ytd_active_capture");
+    assert.equal(pointer.platformId, platformId, url);
+    assert.equal(pointer.kind, "video", url);
+    assert.equal(pointer.timestampKind, "video", url);
+    await helpers.handleEndLearning();
+  }
+});
+
+test("a video-kind Session auto-ends when the bridge reports media end (like replay/course)", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: v1Fetch().fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+
+  const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
+  assert.equal(started.success, true);
+
+  await helpers.handleMediaPosition({ position: 600, ended: true }, { tab: { id: 2 } });
+
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined, "the Session ended");
+});
+
+test("a video-kind Session does NOT auto-end on ordinary position reports", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: v1Fetch().fetchImpl,
+    transcribeImpl: asrTranscribe,
+    sendMessageImpl: cutReply,
+  });
+
+  const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
+  assert.equal(started.success, true);
+
+  await helpers.handleMediaPosition({ position: 60, ended: false }, { tab: { id: 2 } });
+
+  assert.notEqual(helpers.readStored("ytd_active_capture"), undefined, "still recording");
+  await helpers.handleEndLearning();
 });
 
 test("chooseLearningTarget while a Session records is refused (decision 4: 记录目标锁定)", async () => {

@@ -33,7 +33,22 @@ test("manifest uses minimized install-time permissions", () => {
   );
   assert.deepEqual(manifest.content_scripts, [
     {
-      matches: ["https://*.xiaoe-tech.com/*"],
+      // P10b (#63): the same page bridge on all four round-1 stations.
+      // Playback-page paths only — no whole-site matches: xiaoe stays
+      // site-wide (its shops use arbitrary resource paths), bilibili /video,
+      // youtube /watch (www / m / music), xiaohongshu note pages. The
+      // redirect hosts (b23.tv, youtu.be, xhslink.com) need no injection —
+      // their redirects land on the matched playback pages.
+      matches: [
+        "https://*.xiaoe-tech.com/*",
+        "https://www.bilibili.com/video/*",
+        "https://m.bilibili.com/video/*",
+        "https://www.youtube.com/watch*",
+        "https://m.youtube.com/watch*",
+        "https://music.youtube.com/watch*",
+        "https://www.xiaohongshu.com/explore/*",
+        "https://www.xiaohongshu.com/discovery/item/*",
+      ],
       js: ["page-bridge.js"],
       run_at: "document_idle",
       // 0.1.64: xiaoe players can live inside iframes — the bridge must
@@ -58,25 +73,28 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.2.5");
+  // 0.2.6 (P10b #63): the bridge injects on the three added stations.
+  assert.equal(manifest.version, "0.2.6");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
 });
 
-test("no YouTube-specific runtime code remains", () => {
-  const runtime = [
-    "manifest.json",
-    "background.js",
-    "sidepanel.js",
-    "options.js",
-    "settings.js",
-  ]
+test("no legacy YouTube caption-collection code remains", () => {
+  // P10b (#63) re-scoped youtube.com to a round-1 Source Platform: its only
+  // legitimate runtime presence is the page-bridge injection match in the
+  // manifest (pinned shape above) and the Source Platform adapter (pure URL
+  // recognition, not in these runtime files). host_permissions must not
+  // include YouTube (asserted above — no server-side fetching), and the PoC
+  // caption pipeline stays retired everywhere, manifest included.
+  const runtime = ["background.js", "sidepanel.js", "options.js", "settings.js"]
     .map(read)
     .join("\n");
+  const manifest = read("manifest.json");
 
   assert.doesNotMatch(runtime, /youtube|youtu\.be|timedtext|movie_player/i);
   assert.doesNotMatch(runtime, /captionTrack|caption track/i);
+  assert.doesNotMatch(manifest, /timedtext|movie_player|captionTrack|caption track/i);
   for (const removed of ["captions.js", "content.js"]) {
     assert.equal(
       fs.existsSync(path.join(root, removed)),

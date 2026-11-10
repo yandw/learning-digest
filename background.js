@@ -2098,6 +2098,9 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleRestartFromBeginning,
   handleActionClicked,
   handlePageTitle,
+  // P12 library notes: the save-note handler (the bridge getMediaPosition
+  // sample rides inside it) — see tests/plugin-note-timestamp.test.js.
+  handleSaveNoteToLibrary,
   // Authorization gate (P6): the probe, the authorization-page opener and
   // the link code exchange — see tests/plugin-auth-flow.test.js.
   checkAuthNow,
@@ -3133,9 +3136,13 @@ async function handleMediaPosition(message, sender) {
       // landing point, so the next drag measures from there.
       context.lastPosition = position;
     }
-    // Media end auto-ends replay/course Sessions; live ends only via the
-    // explicit end action.
-    if (message.ended && (context.kind === "replay" || context.kind === "course")) {
+    // Media end auto-ends replay/course/video Sessions ("video" = the P10b
+    // stations' playback pages, #63); live ends only via the explicit end
+    // action.
+    if (
+      message.ended &&
+      (context.kind === "replay" || context.kind === "course" || context.kind === "video")
+    ) {
       await endActiveSession(context, { reason: "mediaEnded" });
     }
     return;
@@ -3162,9 +3169,13 @@ async function handleMediaPosition(message, sender) {
   await handleSeekForward(context, position);
   await updateRelisten(context, position);
   feedPosition(context, position);
-  // Media end auto-ends replay/course Sessions; live ends only via the
-  // explicit end action.
-  if (message.ended && (context.kind === "replay" || context.kind === "course")) {
+  // Media end auto-ends replay/course/video Sessions ("video" = the P10b
+  // stations' playback pages, #63); live ends only via the explicit end
+  // action.
+  if (
+    message.ended &&
+    (context.kind === "replay" || context.kind === "course" || context.kind === "video")
+  ) {
     await endActiveSession(context, { reason: "mediaEnded" });
   }
 }

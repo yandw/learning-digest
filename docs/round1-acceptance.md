@@ -11,17 +11,17 @@
 
 ## 1. 自动化验收（本分支已绿）
 
-实测分支 tip `1381ad4`，日期 2026-11-11，全部通过：
+实测分支 tip `28ac699`（评审修复轮 review-fixes 之后），日期 2026-11-11，全部通过：
 
-- [x] **契约样例** — `node --test contracts/` → **30 pass / 0 fail**
-  共享身份提取（四站 Video ID 规则表全量断言）+ 契约 fixture（source-matching / api-examples / error-examples）+ PATCH retitle 扩展。
-- [x] **API 边界** — `cd apps/api && npm test` → **104 pass / 0 fail**
+- [x] **契约样例** — `node --test contracts/` → **32 pass / 0 fail**
+  共享身份提取（四站 Video ID 规则表全量断言）+ 契约 fixture（source-matching / api-examples / error-examples）+ PATCH retitle 扩展；评审修复新增 platformVideoIdFormats 导出与大写 hex 钉子。
+- [x] **API 边界** — `cd apps/api && npm test` → **105 pass / 0 fail**
   验证码登录（防爆破/冷却）、link-requests/link 关联、整组撤销 logout、resources 收藏与去重、resolve、progress（乐观并发 409+current、幂等重发）、notes（clientRequestId 幂等、指针校验）、retitle；错误封套与契约样例逐字一致。
-- [x] **Web 逻辑** — `cd apps/web && npm test` → **103 pass / 0 fail**
-  `/v1` 反向代理（错误逐字透传）、静态资源、登录流、凭据 401 回登录页、学习列表/详情、PATCH 转发、vendor 共享模块字节相等。
-- [x] **插件纯模块与接线** — `npm test`（根，`node --test tests/*.test.js`）→ **648 pass / 0 fail**
-  auth-gate 四态、collect、notes（时间戳/草稿重试）、learning-start（目标锁定/进度写入客户端/409 采纳重试）、page-bridge（位置流/seek/换源检测）、三站 Source Platform 适配、联动退出、续学选项与四类收尾触发；PoC 会话行为全量回归。
-- [x] `npm run check` → Release checks passed（41 allowlist 文件）。
+- [x] **Web 逻辑** — `cd apps/web && npm test` → **104 pass / 0 fail**
+  `/v1` 反向代理（错误逐字透传）、静态资源、登录流、凭据 401 回登录页、学习列表/详情、PATCH 转发、vendor 共享模块字节相等；评审修复新增 progressLabel 的 revision 判定钉子。
+- [x] **插件纯模块与接线** — `npm test`（根，`node --test tests/*.test.js`）→ **655 pass / 0 fail**
+  auth-gate 四态、collect、notes（时间戳/草稿重试）、learning-start（目标锁定/进度写入客户端/409 采纳重试）、page-bridge（位置流/seek/换源检测）、三站 Source Platform 适配、联动退出、续学选项与四类收尾触发；PoC 会话行为全量回归；评审修复新增 api-client 套件与 positionMs=0 钉子。
+- [x] `npm run check` → Release checks passed（42 allowlist 文件）。
 
 ## 2. 人工验收步骤
 
@@ -149,11 +149,11 @@
 
 | 套件 | 命令 | 结果 | 日期 |
 | --- | --- | --- | --- |
-| contracts | `node --test contracts/` | 30 pass / 0 fail | 2026-11-11（tip 1381ad4） |
-| apps/api | `cd apps/api && npm test` | 104 pass / 0 fail | 同上 |
-| apps/web | `cd apps/web && npm test` | 103 pass / 0 fail | 同上 |
-| 插件（根） | `npm test` | 648 pass / 0 fail | 同上 |
-| 发布检查 | `npm run check` | passed（41 allowlist） | 同上 |
+| contracts | `node --test contracts/` | 32 pass / 0 fail | 2026-11-11（tip 28ac699） |
+| apps/api | `cd apps/api && npm test` | 105 pass / 0 fail | 同上 |
+| apps/web | `cd apps/web && npm test` | 104 pass / 0 fail | 同上 |
+| 插件（根） | `npm test` | 655 pass / 0 fail | 同上 |
+| 发布检查 | `npm run check` | passed（42 allowlist） | 同上 |
 
 ### 3.3 四站样本课程登记表（等待项目方提供）
 

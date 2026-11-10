@@ -44,6 +44,9 @@
       <!-- SESSION CAPTURE (xiaoe-tech Source Platform) -->
       <div id="sessionBar" class="session-bar" style="display: none">
         <div class="session-status" id="sessionStatus"></div>
+        <!-- Learning target (P10, #59): the recorded target while a Session
+             runs — focus and tab switches cannot change it. -->
+        <div class="learning-target" id="learningTargetLabel" style="display: none"></div>
         <div class="session-start-hint" id="startLearningHint" style="display: none">
           <span class="session-start-hint-dot" aria-hidden="true"></span>
           <span>点击<strong>浏览器工具栏</strong>的 Learning Digest 图标，开始转写本节课</span>
@@ -64,6 +67,24 @@
           <span class="session-realtime-draft" id="sessionRealtimeDraft"></span>
         </div>
         <div class="session-transcript" id="sessionTranscript"></div>
+      </div>
+
+      <!-- COURSE TAB LIST (P10, #59): the open course tabs (background tabs
+           included), one chosen as the learning target; 开始学习 opens the
+           Session. Hidden while a Session records — the list is locked and
+           the bar names the target — and selectable again afterwards. -->
+      <div class="course-tabs" id="courseTabsBox" style="display: none">
+        <div class="course-tabs-title">课程标签页：选择一门课，开始学习</div>
+        <div class="course-tab-list" id="courseTabList"></div>
+        <div class="course-tab-status" id="courseTabStatus" aria-live="polite" style="display: none"></div>
+        <div class="course-tab-actions">
+          <button class="session-btn auth-gate-btn" id="startLearningForTargetBtn" type="button" disabled>
+            开始学习
+          </button>
+          <button class="session-btn auth-gate-btn" id="collectTargetBtn" type="button" style="display: none">
+            收藏并开始
+          </button>
+        </div>
       </div>
 
       <!-- WELCOME STATE -->

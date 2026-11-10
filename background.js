@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "contracts/platform-video-id.js");
+importScripts("settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -288,13 +288,14 @@ function collectTargetFromTab(tab) {
 }
 
 /**
- * POST /v1/resources for the learner's active tab (contract §3.1).
- * Authoritative gate first (a collect click is a deliberate action, same
- * shape as handleStartLearning); a 401 from the API routes the panel back
- * through the P6 authorization guide. Every outcome lands in the
- * ytd_last_collect breadcrumb.
+ * POST /v1/resources for one tab target (contract §3.1) — the shared core
+ * of the P8 收藏当前页 entry (the active tab) and P10's 一键收藏 for a
+ * chosen course tab. Authoritative gate first (a collect click is a
+ * deliberate action, same shape as handleStartLearning); a 401 from the API
+ * routes the panel back through the P6 authorization guide. Every outcome
+ * lands in the ytd_last_collect breadcrumb.
  */
-async function handleCollectCurrentPage() {
+async function collectTabTarget(target) {
   const auth = await checkAuthNow();
   if (!auth.authorized) {
     void notifyPanel({
@@ -307,8 +308,6 @@ async function handleCollectCurrentPage() {
       message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再收藏当前页。",
     };
   }
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const target = collectTargetFromTab(tab);
   if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
     return { ok: false, message: "当前标签页没有可收藏的网页地址。" };
   }
@@ -375,6 +374,15 @@ async function handleCollectCurrentPage() {
     });
   }
   return { ok: false, message: result.message };
+}
+
+/**
+ * POST /v1/resources for the learner's active tab (contract §3.1) — the
+ * panel's 收藏当前页 entry.
+ */
+async function handleCollectCurrentPage() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return collectTabTarget(collectTargetFromTab(tab));
 }
 
 /**
@@ -452,6 +460,433 @@ async function handleResolveCurrentSource() {
 chrome.tabs.onRemoved.addListener((tabId) => {
   bridgePageTitles.delete(tabId);
 });
+
+// ============================================================
+// LEARNING START (P10, issue #59) — 决策 4 的开始侧
+// ============================================================
+//
+// The panel's course tab list and 开始学习 flow, on top of the PoC capture
+// machinery: list the open http(s) tabs (video pages first), choose a
+// target, resolve it against the library (contract §3.4), and only the
+// explicit 开始学习 click opens the local Session and starts recording
+// progress to PUT /v1/sources/{id}/progress (contract §3.5). While a
+// Session records, the target is LOCKED (decision 4 of #49): browser focus
+// and tab switches cannot change it, and the list unlocks only when the
+// Session ends. All contract logic lives in learning-start.js (pure, Node-
+// tested); this section is the thin browser wiring around it.
+
+const LEARNING_TARGET_KEY = "ytd_learning_target";
+// In-memory target state + the active Session's progress writer. Both
+// rebuild from storage after a service-worker restart (see
+// rebuildProgressTracking), so a restart never drops the recording target
+// or the optimistic-concurrency revision.
+let learningTargetState = YTD_LEARNING_START.createTargetState();
+let learningTargetLoaded = false;
+let learningProgressWriter = null;
+let learningProgressTicker = null;
+
+async function loadLearningTargetState() {
+  if (learningTargetLoaded) return;
+  learningTargetLoaded = true;
+  const stored = await chrome.storage.local.get(LEARNING_TARGET_KEY);
+  learningTargetState =
+    YTD_LEARNING_START.parseTarget(stored[LEARNING_TARGET_KEY]) ||
+    YTD_LEARNING_START.createTargetState();
+}
+
+async function saveLearningTargetState() {
+  const snapshot = YTD_LEARNING_START.serializeTarget(learningTargetState);
+  if (snapshot) {
+    await chrome.storage.local.set({ [LEARNING_TARGET_KEY]: snapshot });
+  } else {
+    await chrome.storage.local.remove(LEARNING_TARGET_KEY);
+  }
+}
+
+/** Video pages sort first in the list: identity pages + registered platforms. */
+function learningVideoPageChecker() {
+  return (url) =>
+    !!YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(url) ||
+    YTD_SOURCE_PLATFORMS.recognizePage(url).kind !== "none";
+}
+
+/**
+ * Full-fidelity §3.4 resolve for one tab target: the identity when the URL
+ * carries one, the plain (normalized) URL otherwise — the contract accepts
+ * both, unlike the passive panel-open probe which stays identity-only so
+ * ordinary browsing never calls the service.
+ */
+async function resolveSourceForTarget(target) {
+  if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
+    return { ok: false, matched: false, identityPresent: false, resource: null, source: null };
+  }
+  const request = YTD_COLLECT.buildCollectRequest(target);
+  if (!request) {
+    return { ok: false, matched: false, identityPresent: false, resource: null, source: null };
+  }
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOLVE_PATH);
+  if (!apiUrl || !credential) {
+    return { ok: false, matched: false, identityPresent: !!target.identity, resource: null, source: null };
+  }
+  let response;
+  try {
+    response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(request),
+    });
+  } catch (_error) {
+    return {
+      ok: false,
+      matched: false,
+      identityPresent: !!target.identity,
+      resource: null,
+      source: null,
+      message: "无法连接学习服务，请稍后重试。",
+    };
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  const result = YTD_COLLECT.parseResolveResponse({ status: response.status, data });
+  if (!result.ok) {
+    if (response.status === 401) {
+      void notifyPanel({
+        action: "authState",
+        authorized: false,
+        reason: "unauthorized",
+      });
+    }
+    return {
+      ok: false,
+      matched: false,
+      identityPresent: !!target.identity,
+      resource: null,
+      source: null,
+      message: result.message,
+    };
+  }
+  return {
+    ok: true,
+    matched: result.matched,
+    identityPresent: !!target.identity,
+    resource: result.resource,
+    source: result.source,
+  };
+}
+
+async function handleGetCourseTabs() {
+  await loadLearningTargetState();
+  const tabs = await chrome.tabs.query({});
+  // The page bridge's real document titles win over chrome.tabs' own, the
+  // same preference the collect path applies.
+  const withTitles = (Array.isArray(tabs) ? tabs : []).map((tab) => ({
+    id: tab?.id,
+    url: tab?.url,
+    title:
+      typeof bridgePageTitles.get(tab?.id) === "string" && bridgePageTitles.get(tab?.id) !== ""
+        ? bridgePageTitles.get(tab?.id)
+        : tab?.title,
+  }));
+  const info = YTD_LEARNING_START.targetInfo(learningTargetState);
+  const list = YTD_LEARNING_START.buildCourseTabList({
+    tabs: withTitles,
+    lockedTabId: info ? info.target.tabId : null,
+    isVideoPage: learningVideoPageChecker(),
+  });
+  const chosen =
+    learningTargetState.status === "chosen" ? learningTargetState.target : null;
+  return {
+    ok: true,
+    tabs: list,
+    locked: YTD_LEARNING_START.isLocked(learningTargetState),
+    target: info ? { ...info.target, sourceId: info.sourceId, sessionId: info.sessionId } : null,
+    chosenTabId: chosen ? chosen.tabId : null,
+  };
+}
+
+/**
+ * The panel picked one course tab: store the choice, then resolve it so the
+ * panel can show 在你的学习库 + the resume position, or the 先收藏 prompt.
+ * Refused outright while a Session records — the locked target cannot be
+ * switched (decision 4).
+ */
+async function handleChooseLearningTarget({ tabId } = {}) {
+  await loadLearningTargetState();
+  if (YTD_LEARNING_START.isLocked(learningTargetState)) {
+    return {
+      ok: false,
+      reason: "locked",
+      target: YTD_LEARNING_START.targetInfo(learningTargetState),
+    };
+  }
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_error) {
+    return { ok: false, reason: "tabNotFound" };
+  }
+  const target = collectTargetFromTab(tab);
+  const chosen = YTD_LEARNING_START.chooseTarget(
+    learningTargetState,
+    target ? { tabId: target.tabId, url: target.url, title: target.title } : null,
+  );
+  if (!chosen.ok) return { ok: false, reason: chosen.reason };
+  learningTargetState = chosen.state;
+  await saveLearningTargetState();
+  const resolution = await resolveSourceForTarget(target);
+  return {
+    ok: true,
+    target: learningTargetState.target,
+    // Capture starts on registered Source Platform pages only; other
+    // stations (and plain pages) stay listable/resolvable/favoritable.
+    startable: YTD_SOURCE_PLATFORMS.recognizePage(target.url).kind !== "none",
+    resolve: resolution,
+  };
+}
+
+/**
+ * The panel's 一键收藏 for the chosen course tab (the P8 collect POST, but
+ * for an explicit tab instead of the active one).
+ */
+async function handleCollectLearningTarget({ tabId } = {}) {
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_error) {
+    return { ok: false, message: "目标标签页已关闭。" };
+  }
+  return collectTabTarget(collectTargetFromTab(tab));
+}
+
+/**
+ * The 开始学习 click for the chosen course tab: resolve first (fresh
+ * expectedRevision at start time), refuse to capture an unresolved page
+ * (progress needs a Source — the panel offers 一键收藏 first), then hand
+ * over to the PoC capture flow, whose success path locks the target and
+ * arms the progress writer.
+ */
+async function handleStartLearningForTarget({ tabId } = {}) {
+  await loadLearningTargetState();
+  if (YTD_LEARNING_START.isLocked(learningTargetState)) {
+    return { success: false, error: "已有进行中的学习会话，请先结束本次学习。" };
+  }
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_error) {
+    return { success: false, error: "目标标签页已关闭。" };
+  }
+  const target = collectTargetFromTab(tab);
+  if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
+    return { success: false, error: "目标标签页没有可学习的网页地址。" };
+  }
+  const resolution = await resolveSourceForTarget(target);
+  if (!resolution.ok) {
+    return {
+      success: false,
+      error: resolution.message || "来源解析失败，请稍后重试。",
+    };
+  }
+  if (!resolution.matched) {
+    return {
+      success: false,
+      needsFavorite: true,
+      error: "该页面还没有收藏到学习库：先收藏才能记录学习进度。",
+    };
+  }
+  const started = await handleStartLearning({ url: target.url, tabId: target.tabId });
+  if (!started.success) return started;
+  return { ...started, resource: resolution.resource, source: resolution.source };
+}
+
+/**
+ * Locks the target for a running Session and arms the progress writer.
+ * Runs on EVERY successful start (panel flow and toolbar-icon flow alike):
+ * the resolve is re-issued here so expectedRevision is fresh at write time.
+ * An unmatched page still locks (capture is running; the list shows the
+ * target) — progress simply has nowhere to write and says so in the
+ * breadcrumb.
+ */
+async function beginProgressTracking(context) {
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const target = {
+    tabId: context.tabId,
+    url: typeof context.sourceUrl === "string" ? context.sourceUrl : "",
+    title: typeof context.pageTitle === "string" ? context.pageTitle : "",
+  };
+  let sourceId = null;
+  let expectedRevision = 0;
+  if (credential && YTD_COLLECT.isCollectableUrl(target.url)) {
+    const resolution = await resolveSourceForTarget(
+      collectTargetFromTab({ id: target.tabId, url: target.url, title: target.title }),
+    );
+    if (resolution.ok && resolution.matched && resolution.source) {
+      sourceId = resolution.source.id;
+      expectedRevision = Number.isInteger(resolution.source.progress?.revision)
+        ? resolution.source.progress.revision
+        : 0;
+    } else {
+      recordAuthBreadcrumb("ytd_last_learning_progress", {
+        outcome: "noSource",
+        url: target.url,
+        matched: resolution.matched,
+      });
+    }
+  }
+  const lock = YTD_LEARNING_START.lockTarget(learningTargetState, {
+    ...target,
+    sessionId: context.sessionId,
+    sourceId,
+    expectedRevision,
+  });
+  if (!lock.ok) {
+    // "locked" means a Session is already recording — the double-start guard
+    // in handleStartLearning makes this unreachable in practice.
+    return;
+  }
+  learningTargetState = lock.state;
+  await saveLearningTargetState();
+  if (sourceId && credential) {
+    startProgressWriter(context, { settings, credential, sourceId, expectedRevision });
+  }
+  void notifyPanel({
+    action: "learningTargetChanged",
+    target: YTD_LEARNING_START.targetInfo(learningTargetState),
+  });
+}
+
+function startProgressWriter(context, { settings, credential, sourceId, expectedRevision }) {
+  if (!YTD_LEARNING_START.buildProgressApiUrl(settings.apiBaseUrl, sourceId)) return;
+  learningProgressWriter = YTD_LEARNING_START.createProgressWriter({
+    fetchImpl: fetch,
+    apiBaseUrl: settings.apiBaseUrl,
+    token: credential.token,
+    sourceId,
+    expectedRevision,
+    onUnauthorized: () => void handleProgressAuthLoss(),
+  });
+  // Live (wallclock) sources record elapsed session time as positionMs
+  // (contract §2.3); recorded sources ride the bridge's position stream.
+  // The ticker stands down the moment the Session anchors to video time.
+  if (context.timestampKind === "wallclock") {
+    learningProgressTicker = setInterval(() => {
+      if (!learningProgressWriter || context.ended) {
+        stopProgressTicker();
+        return;
+      }
+      if (context.timestampKind !== "wallclock") return;
+      learningProgressWriter.reportPosition(
+        Math.max(0, Date.now() - context.startedAtMs),
+      );
+    }, 5_000);
+  }
+}
+
+function stopProgressTicker() {
+  if (learningProgressTicker !== null) {
+    clearInterval(learningProgressTicker);
+    learningProgressTicker = null;
+  }
+}
+
+/**
+ * The bridge's position stream (bound to the SAME capture tabId the Session
+ * records) feeds the writer with media-position milliseconds. Focus and tab
+ * switches never reroute this: the stream is sender-checked by
+ * handleMediaPosition, and the writer only knows its source.
+ */
+function feedLearningPosition(context, positionSeconds) {
+  if (!learningProgressWriter || !context || context.ended) return;
+  if (context.timestampKind !== "video") return;
+  const positionMs = Math.round(Number(positionSeconds) * 1000);
+  if (!Number.isFinite(positionMs) || positionMs < 0) return;
+  learningProgressWriter.reportPosition(positionMs);
+}
+
+/**
+ * Session end (explicit 结束学习 or media-end): one final flush of the
+ * latest position — bounded by design (throttle-bypassing cycles never wait
+ * on the network) — then the writer stops and the list unlocks (决策 4:
+ * 结束本次学习后列表恢复可选).
+ */
+async function releaseLearningTarget(context) {
+  stopProgressTicker();
+  if (learningProgressWriter) {
+    try {
+      await learningProgressWriter.flush();
+    } catch (_error) {
+      // The final write already deferred internally; nothing to recover.
+    }
+    learningProgressWriter.stop();
+    learningProgressWriter = null;
+  }
+  await loadLearningTargetState();
+  const info = YTD_LEARNING_START.targetInfo(learningTargetState);
+  if (info && (!context || info.sessionId === context.sessionId)) {
+    learningTargetState = YTD_LEARNING_START.endTarget(learningTargetState);
+    await saveLearningTargetState();
+    void notifyPanel({ action: "learningTargetChanged", target: null });
+  }
+}
+
+/**
+ * 401 from a progress write: the credential died mid-recording. Stop the
+ * writer, route the panel back through the authorization gate and end the
+ * Session (capture included) — the P7 linked-logout path takes over the
+ * stop-capture semantics from here.
+ */
+async function handleProgressAuthLoss() {
+  stopProgressTicker();
+  if (learningProgressWriter) {
+    learningProgressWriter.stop();
+    learningProgressWriter = null;
+  }
+  await notifyPanel({
+    action: "authState",
+    authorized: false,
+    reason: "unauthorized",
+  });
+  const context = await ensureCaptureResumed();
+  if (context && !context.ended) {
+    await endActiveSession(context, { reason: "authInvalidated", report: false });
+  }
+}
+
+/**
+ * Service-worker restart with a recording Session: rebuild the progress
+ * writer from the persisted target so the optimistic-concurrency revision
+ * survives (no manufactured 409s), and release locks whose Session died.
+ */
+async function rebuildProgressTracking(context) {
+  await loadLearningTargetState();
+  const info = YTD_LEARNING_START.targetInfo(learningTargetState);
+  if (!info) return;
+  if (info.sessionId !== context.sessionId) {
+    learningTargetState = YTD_LEARNING_START.endTarget(learningTargetState);
+    await saveLearningTargetState();
+    return;
+  }
+  if (!info.sourceId) return;
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  if (!credential) return;
+  startProgressWriter(context, {
+    settings,
+    credential,
+    sourceId: info.sourceId,
+    expectedRevision: info.expectedRevision,
+  });
+}
 
 // Warm the click-path cache on every worker start; the breadcrumb trail
 // records the verdict (storage breadcrumbs are the main debug channel).
@@ -968,6 +1403,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // --- Learning start (P10, #59): course tab list + 开始学习 ---
+
+  if (message.action === "getCourseTabs") {
+    handleGetCourseTabs()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "chooseLearningTarget") {
+    handleChooseLearningTarget(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "collectLearningTarget") {
+    handleCollectLearningTarget(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "startLearningForTarget") {
+    handleStartLearningForTarget(message)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   // --- Session capture (xiaoe-tech Source Platform, #16) ---
 
   if (message.action === "startLearning") {
@@ -1279,6 +1744,14 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // tests/plugin-collect-flow.test.js.
   handleCollectCurrentPage,
   handleResolveCurrentSource,
+  // Learning start (P10, #59): the course tab list, the locked learning
+  // target and the real-time progress writes — see
+  // tests/plugin-learning-start-flow.test.js.
+  handleGetCourseTabs,
+  handleChooseLearningTarget,
+  handleCollectLearningTarget,
+  handleStartLearningForTarget,
+  handleProgressAuthLoss,
   // Timeline anchoring + seek-awareness (#48): the bridge's position stream
   // drives the probe window, the anchor transition, seek cuts and the
   // Plan A re-listen retries — see tests/background-capture.test.js.
@@ -1703,6 +2176,10 @@ async function ensureCaptureResumed() {
   // post-restart report must detect drags, not arm the baseline.
   context.seekBaselineArmed = true;
   captureContext = context;
+  // P10: a recording Session that survived a worker restart keeps its
+  // progress writer (and its optimistic-concurrency revision) — the
+  // persisted learning target is the durable state.
+  await rebuildProgressTracking(context);
 
   // The offscreen recorder survives a worker restart but not a browser
   // restart; only the latter needs a fresh capture stream.
@@ -2213,6 +2690,11 @@ async function handleStartLearning(message) {
   }
   startSummaryTimer(context);
   broadcastSession(context.state, { transcribeMode: context.transcribeMode });
+  // P10 (decision 4): the Session is recording — lock the learning target
+  // and arm the progress writer (the resolve re-issued here keeps
+  // expectedRevision fresh at write time). Awaited so the persisted lock
+  // lands before the panel learns the Session started.
+  await beginProgressTracking(context);
   // The one-line "capture is live" marker: when this is absent after an
   // icon click, the Session never started and the reason is in the
   // startLearning failure log above.
@@ -2254,6 +2736,10 @@ async function handleMediaPosition(message, sender) {
   // seek/anchor logic follows the same stream as before.
   if (Number.isFinite(position) && position >= 0) {
     context.lastVideoPosition = position;
+    // P10: the same stream feeds the progress writer for the recorded
+    // source — bound to this Session's tab, so focus/tab switches cannot
+    // reroute it (decision 4).
+    feedLearningPosition(context, position);
   }
   // Realtime Sessions (#47, #49) run no Segment schedule: no scheduler
   // feeds, no re-listen retries (there is no recorder to re-cut from). What
@@ -3133,6 +3619,10 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   context.ended = true;
   if (context.liveTimer) clearInterval(context.liveTimer);
   if (context.summaryTimer) clearInterval(context.summaryTimer);
+  // P10 (decision 4): the final progress write of the latest position (the
+  // flush is bounded — throttle-bypassing cycles never wait on the network),
+  // the writer stops, and the course tab list unlocks.
+  await releaseLearningTarget(context);
 
   const finalPosition =
     context.timestampKind === "wallclock"

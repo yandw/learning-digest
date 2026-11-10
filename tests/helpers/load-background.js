@@ -103,6 +103,9 @@ function loadBackgroundHelpers({
   // P8 collect seam: chrome.tabs.query({ active, lastFocusedWindow }) —
   // the collect handlers read the learner's current page through it.
   tabsQuery = async () => [],
+  // P10 learning-start seam: chrome.tabs.get(tabId) — the course-tab target
+  // handlers read a chosen (possibly background) tab through it.
+  tabsGet = null,
 } = {}) {
   const listeners = { addListener() {} };
   const createdTabs = [];
@@ -179,6 +182,8 @@ function loadBackgroundHelpers({
         onActivated: listeners,
         onRemoved: listeners,
         query: tabsQuery,
+        // P10 learning-start: read one chosen (possibly background) tab.
+        get: tabsGet || (async () => { throw new Error("tab not found"); }),
         // P6 link flow: tabs the worker opens for linking (and closes after
         // the code exchange). Recorded so tests can assert the flow.
         create: async ({ url }) => {
@@ -207,6 +212,9 @@ function loadBackgroundHelpers({
     // shared with the API) and the pure collect state machine.
     YTD_PLATFORM_VIDEO_ID: require("../../contracts/platform-video-id.js"),
     YTD_COLLECT: require("../../collect.js"),
+    // P10 learning-start: the course tab list, the locked-target state
+    // machine and the progress write client (learning-start.js).
+    YTD_LEARNING_START: require("../../learning-start.js"),
     YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
     YTD_REPORT_RENDER: require("../../report-render.js"),
     // The real settings module (require-able, pure): the identity stub this

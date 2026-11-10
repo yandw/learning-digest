@@ -58,7 +58,7 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "0.2.2");
+  assert.equal(manifest.version, "0.2.3");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -436,6 +436,9 @@ test("core Learning Digest modules ship in the release and load in the service w
     // the shared four-station identity extractor it rides on (contracts/,
     // same file the API tests pin).
     "collect.js",
+    // P10 learning-start: the course tab list, the locked-target state
+    // machine and the progress write client.
+    "learning-start.js",
     "contracts/platform-video-id.js",
     "offscreen.js",
     "offscreen.html",
@@ -458,6 +461,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

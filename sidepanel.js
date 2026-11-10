@@ -287,6 +287,8 @@ function unlockAfterAuth() {
   // before the learner clicks 收藏当前页. Pages without a confirmable
   // identity never reach the API, so panel opens stay quiet.
   void refreshCollectEntry();
+  // P10 (#59): the course tab list — pick a target, 开始学习 records it.
+  void refreshCourseTabs();
 }
 
 // Listen for messages from the background script.
@@ -313,6 +315,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Authorization died (a failed exchange, or a blocked capture attempt):
     // back to the guide.
     showAuthGate(message);
+    sendResponse({ success: true });
+  }
+  if (message.action === "learningTargetChanged") {
+    // P10 (#59): the recorded target changed — locked (the Session started)
+    // or released (it ended; the list becomes selectable again).
+    renderLearningTargetLabel(message.target ? message.target.target : null);
+    if (!message.target) {
+      void refreshCourseTabs();
+    } else {
+      updateCourseTabsVisibility();
+    }
     sendResponse({ success: true });
   }
   return false;
@@ -362,6 +375,19 @@ function setupEventListeners() {
     .getElementById("collectPageBtn")
     ?.addEventListener("click", () => {
       void collectCurrentPage();
+    });
+
+  // Course tab list (P10, #59): 开始学习 opens the Session on the chosen
+  // course tab; 收藏并开始 covers the resolve-missed target in one click.
+  document
+    .getElementById("startLearningForTargetBtn")
+    ?.addEventListener("click", () => {
+      void startLearningForTarget();
+    });
+  document
+    .getElementById("collectTargetBtn")
+    ?.addEventListener("click", () => {
+      void collectAndStartTarget();
     });
 
   // Transcript actions
@@ -863,6 +889,10 @@ function setSettingsButtonVisible(visible) {
 function showAuthGate(status) {
   setSettingsButtonVisible(false);
   showState("authGate");
+  // The course tab list is an unlocked-panel surface: the gate hides it.
+  courseTargetUi.available = false;
+  const courseBox = document.getElementById("courseTabsBox");
+  if (courseBox) courseBox.style.display = "none";
 
   const message =
     status && status.reason === "linkFailed" && status.message
@@ -968,6 +998,260 @@ async function collectCurrentPage() {
     return;
   }
   setCollectStatus((result && result.message) || COLLECT_STATUS_COPY.failed);
+}
+
+// ============================================================
+// COURSE TAB LIST + START LEARNING (P10, #59)
+// ============================================================
+//
+// The panel lists the open http(s) tabs (video pages first — pages with a
+// confirmable platform identity, which are the ones with a media player),
+// the learner picks one as the target and the background resolves it
+// against the library (contract §3.4: matched with the resume position, or
+// unmatched → 先收藏). Only the 开始学习 click opens the Session. While a
+// Session records, the list is locked: the box yields to the session view
+// and the bar names the recorded target (decision 4 of #49 — focus and tab
+// switches cannot change it); when the Session ends the list comes back
+// selectable. Copy and messaging only — URL/identity work, the Bearer
+// token and the progress writes stay in the service worker.
+
+const COURSE_TAB_COPY = {
+  matched: "已在你的学习库：",
+  resume: "上次学到",
+  fromStart: "从头开始",
+  unmatched: "该页还未收藏：先收藏才能记录学习进度。",
+  notStartable: "该平台暂不支持开始学习采集，可先收藏。",
+  locked: "已有进行中的学习会话，先结束本次学习。",
+  starting: "正在开始学习…",
+  favoriting: "正在收藏…",
+  failed: "操作没有完成，请稍后重试。",
+};
+
+// The chosen-target UI state, reconciled from the background's answers.
+const courseTargetUi = {
+  available: false, // the panel is authorized and the list has loaded once
+  chosenTabId: null,
+  startable: false,
+  matched: false,
+  busy: false,
+};
+
+function setCourseTabStatus(text) {
+  const statusEl = document.getElementById("courseTabStatus");
+  if (!statusEl) return;
+  statusEl.textContent = text || "";
+  statusEl.style.display = text ? "block" : "none";
+}
+
+/** "4:10" from a positionMs; empty for a source without progress. */
+function formatResumePosition(positionMs) {
+  const totalSeconds = Math.floor(Number(positionMs) / 1000);
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return "";
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mm = hours > 0 ? String(minutes).padStart(2, "0") : String(minutes);
+  return `${hours > 0 ? hours + ":" : ""}${mm}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** The list shows whenever the panel is unlocked and nothing records. */
+function updateCourseTabsVisibility() {
+  const box = document.getElementById("courseTabsBox");
+  if (!box) return;
+  box.style.display = courseTargetUi.available && !sessionUi.active ? "" : "none";
+}
+
+function setCourseTabBusy(busy) {
+  courseTargetUi.busy = busy;
+  updateStartButtons();
+}
+
+function updateStartButtons() {
+  const startBtn = document.getElementById("startLearningForTargetBtn");
+  const collectBtn = document.getElementById("collectTargetBtn");
+  if (startBtn) {
+    startBtn.disabled =
+      courseTargetUi.busy ||
+      !courseTargetUi.chosenTabId ||
+      !courseTargetUi.startable;
+  }
+  if (collectBtn) {
+    collectBtn.style.display =
+      courseTargetUi.chosenTabId && !courseTargetUi.matched ? "" : "none";
+    collectBtn.disabled = courseTargetUi.busy;
+  }
+}
+
+/**
+ * Reloads the list from the background and reconciles the target state.
+ * While a Session records the list is locked (the rows come back marked),
+ * so the box stays hidden and the bar's 学习目标 line speaks instead.
+ */
+async function refreshCourseTabs() {
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({ action: "getCourseTabs" });
+  } catch (_error) {
+    return;
+  }
+  if (!result || !result.ok) return;
+  courseTargetUi.available = true;
+  courseTargetUi.chosenTabId = result.chosenTabId || null;
+  courseTargetUi.matched = false;
+  courseTargetUi.startable = false;
+  renderCourseTabList(result.tabs || []);
+  setCourseTabStatus("");
+  updateStartButtons();
+  updateCourseTabsVisibility();
+}
+
+function renderCourseTabList(rows) {
+  const list = document.getElementById("courseTabList");
+  if (!list) return;
+  list.textContent = "";
+  for (const row of rows) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "course-tab-row";
+    if (row.isTarget) {
+      item.classList.add("course-tab-row-target");
+    } else if (row.locked) {
+      // 学习进行中：其他标签页锁定（决策 4）。
+      item.classList.add("course-tab-row-locked");
+      item.disabled = true;
+    } else {
+      item.addEventListener("click", () => {
+        void chooseCourseTarget(row.tabId);
+      });
+    }
+    if (row.tabId === courseTargetUi.chosenTabId) {
+      item.classList.add("course-tab-row-chosen");
+    }
+    const badge = document.createElement("span");
+    badge.className = `course-tab-badge${row.video ? " course-tab-badge-video" : ""}`;
+    badge.textContent = row.video ? "视频" : "网页";
+    const title = document.createElement("span");
+    title.className = "course-tab-title";
+    title.textContent = row.title;
+    title.title = row.title;
+    item.append(badge, title);
+    list.append(item);
+  }
+}
+
+/** The resolve verdict → status copy: 续播位置, or the 先收藏 prompt. */
+function describeCourseTargetResolution(result) {
+  const source = result.resolve && result.resolve.source;
+  if (result.resolve && result.resolve.matched && source) {
+    const title =
+      (result.resolve.resource &&
+        typeof result.resolve.resource.title === "string" &&
+        result.resolve.resource.title.trim()) ||
+      source.url;
+    const position =
+      source.progress && Number(source.progress.positionMs) > 0
+        ? `${COURSE_TAB_COPY.resume} ${formatResumePosition(source.progress.positionMs)}`
+        : COURSE_TAB_COPY.fromStart;
+    return `${COURSE_TAB_COPY.matched}${title} · ${position}`;
+  }
+  if (!result.startable) return COURSE_TAB_COPY.notStartable;
+  return COURSE_TAB_COPY.unmatched;
+}
+
+async function chooseCourseTarget(tabId) {
+  setCourseTabBusy(true);
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "chooseLearningTarget",
+      tabId,
+    });
+  } catch (_error) {
+    result = null;
+  }
+  setCourseTabBusy(false);
+  if (!result) {
+    setCourseTabStatus(COURSE_TAB_COPY.failed);
+    return;
+  }
+  if (!result.ok) {
+    setCourseTabStatus(result.reason === "locked" ? COURSE_TAB_COPY.locked : COURSE_TAB_COPY.failed);
+    return;
+  }
+  courseTargetUi.chosenTabId = tabId;
+  courseTargetUi.startable = !!result.startable;
+  courseTargetUi.matched = !!(result.resolve && result.resolve.matched);
+  await refreshCourseTabs();
+  setCourseTabStatus(describeCourseTargetResolution(result));
+  updateStartButtons();
+}
+
+/**
+ * The 开始学习 click: resolve-before-start happens in the background; on
+ * success the sessionUpdate broadcast takes over and the list yields.
+ */
+async function startLearningForTarget() {
+  if (!courseTargetUi.chosenTabId) return;
+  setCourseTabBusy(true);
+  setCourseTabStatus(COURSE_TAB_COPY.starting);
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: "startLearningForTarget",
+      tabId: courseTargetUi.chosenTabId,
+    });
+  } catch (_error) {
+    result = null;
+  }
+  setCourseTabBusy(false);
+  if (result && result.success) {
+    setCourseTabStatus("");
+    updateCourseTabsVisibility();
+    return;
+  }
+  if (result && result.needsFavorite) {
+    courseTargetUi.matched = false;
+    setCourseTabStatus(result.error || COURSE_TAB_COPY.unmatched);
+    updateStartButtons();
+    return;
+  }
+  setCourseTabStatus((result && result.error) || COURSE_TAB_COPY.failed);
+}
+
+/** 一键收藏并开始 for the chosen, still-unfavorited target. */
+async function collectAndStartTarget() {
+  if (!courseTargetUi.chosenTabId) return;
+  setCourseTabBusy(true);
+  setCourseTabStatus(COURSE_TAB_COPY.favoriting);
+  let collected = null;
+  try {
+    collected = await chrome.runtime.sendMessage({
+      action: "collectLearningTarget",
+      tabId: courseTargetUi.chosenTabId,
+    });
+  } catch (_error) {
+    collected = null;
+  }
+  if (!collected || !collected.ok) {
+    setCourseTabBusy(false);
+    setCourseTabStatus((collected && collected.message) || COURSE_TAB_COPY.failed);
+    return;
+  }
+  courseTargetUi.matched = true;
+  setCourseTabBusy(false);
+  await startLearningForTarget();
+}
+
+/** The bar's 学习目标 line: the recorded target while a Session runs. */
+function renderLearningTargetLabel(target) {
+  const label = document.getElementById("learningTargetLabel");
+  if (!label) return;
+  if (target) {
+    label.textContent = `学习目标：${target.title || target.url}`;
+    label.style.display = "";
+  } else {
+    label.style.display = "none";
+  }
 }
 
 // ============================================================
@@ -2775,6 +3059,9 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
     // The transcript render above skips the box when state is absent; the
     // visibility pass here keeps it in step with the lifecycle regardless.
     renderRealtimeDraft();
+    // P10: a recording Session locks the course tab list — the box yields
+    // to the session view and the bar's 学习目标 line speaks instead.
+    updateCourseTabsVisibility();
     return;
   }
 
@@ -2816,6 +3103,9 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
       welcome.style.display =
         reportTabUi.artifact && !currentVideoId ? "none" : "flex";
     }
+    // P10: the Session ended (or the panel idled) — the course tab list is
+    // selectable again (决策 4: 结束本次学习后列表恢复可选).
+    updateCourseTabsVisibility();
   }
 }
 

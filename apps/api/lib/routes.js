@@ -7,6 +7,12 @@ const { normalizeEmail, isInvited } = require("./invites");
 const { issueCode } = require("./codes");
 const { openOrLogin } = require("./accounts");
 const { authenticate, revokeCredential } = require("./credentials");
+const {
+  parseSourceRequest,
+  matchSource,
+  createFavorite,
+  presentFavorite,
+} = require("./resources");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -119,6 +125,20 @@ function registerRoutes(ctx) {
     }
     revokeCredential({ store, token, now });
     return { status: 200, body: { ok: true } };
+  });
+
+  // POST /v1/resources — favorite (contract §3.1): identity hit first,
+  // else the normalized address; 201 creates, 200 returns the existing
+  // Resource + Source with the original first-favorited URL (D3).
+  router.add("POST", "/v1/resources", async ({ req, body }) => {
+    const credential = requireCredential(req);
+    const request = parseSourceRequest(body);
+    const existing = matchSource({ store, accountId: credential.accountId, request });
+    if (existing) {
+      return { status: 200, body: presentFavorite({ store, ...existing }) };
+    }
+    const created = createFavorite({ store, accountId: credential.accountId, request, now });
+    return { status: 201, body: presentFavorite({ store, ...created }) };
   });
 }
 

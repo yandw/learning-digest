@@ -1,0 +1,5 @@
+# Runtime state of the embedded store and dev mailer outbox. The invite
+# seed file is versioned data; these are deployment-local.
+data/state.json
+data/state.json.tmp
+data/outbox.jsonl

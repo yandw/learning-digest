@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'" />
+    <title>关联浏览器插件</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/js/link.js"></script>
+  </head>
+  <body>
+    <!-- 授权确认页（P6）：浏览器插件打开本页，已登录用户确认后生成一次型关联码 -->
+    <main class="auth-shell">
+      <section class="card" aria-labelledby="linkTitle">
+        <header class="card-header">
+          <p class="eyebrow">Learning Digest</p>
+          <h1 id="linkTitle">关联浏览器插件</h1>
+          <p class="lede">
+            把 Learning Digest 浏览器插件关联到当前账号：插件里的学习记录会进入这个学习库，
+            并且可以和网页端一起退出登录。
+          </p>
+        </header>
+
+        <!-- 未登录：先完成验证码登录，再回到本页确认关联 -->
+        <form id="linkEmailForm" novalidate hidden>
+          <label for="linkEmailInput">邮箱</label>
+          <input
+            id="linkEmailInput"
+            name="email"
+            type="email"
+            autocomplete="email"
+            placeholder="you@example.com"
+            required
+          />
+          <button type="submit" id="linkRequestCodeBtn" class="primary-btn">获取验证码</button>
+        </form>
+
+        <form id="linkCodeForm" novalidate hidden>
+          <p id="linkCodeSentNotice" class="notice"></p>
+          <label for="linkCodeInput">验证码</label>
+          <input
+            id="linkCodeInput"
+            name="code"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="6"
+            placeholder="000000"
+            required
+          />
+          <button type="submit" id="linkVerifyBtn" class="primary-btn">登录并继续关联</button>
+          <button type="button" id="linkChangeEmailBtn" class="link-btn">更换邮箱</button>
+        </form>
+
+        <!-- 已登录：确认关联 -->
+        <div id="linkConfirmView" hidden>
+          <p>确认后，插件会获得本账号的关联凭据（与当前网页会话同一账号）。</p>
+          <button type="button" id="confirmLinkBtn" class="primary-btn">确认关联</button>
+        </div>
+
+        <p id="linkBusy" class="notice" hidden>正在处理，请稍候…</p>
+        <p id="linkError" class="error" role="alert" hidden></p>
+
+        <!-- 关联码已生成：成功地址（?link=<code>），插件读取后即可完成连接 -->
+        <div id="linkDoneView" hidden>
+          <p>关联码已生成。请回到浏览器插件，连接会自动完成。</p>
+          <p class="hint">本页面可以关闭。</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

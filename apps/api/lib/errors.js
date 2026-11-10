@@ -2,7 +2,7 @@
  * Unified error type + contract error envelope.
  *
  * Every non-2xx response body is `{"error": {"code", "message"}}` per
- * contracts/contract-v1.md §1; progress conflicts (P4) additionally carry
+ * contracts/contract-v1.md §1; progress conflicts (P9) additionally carry
  * `current` at the top level, which `extra` accommodates.
  */
 class ApiError extends Error {
@@ -50,6 +50,11 @@ function notFoundResource() {
   return new ApiError(404, "not_found", "资源不存在或无权访问");
 }
 
+/** Cross-account or missing Source writes (decision D2: always 404). */
+function notFoundSource() {
+  return new ApiError(404, "not_found", "来源不存在或无权访问");
+}
+
 function methodNotAllowed() {
   return new ApiError(405, "method_not_allowed", "HTTP 方法不被允许");
 }
@@ -65,6 +70,7 @@ module.exports = {
   unauthorizedExpired,
   notFoundUnknownPath,
   notFoundResource,
+  notFoundSource,
   methodNotAllowed,
   internalError,
 };

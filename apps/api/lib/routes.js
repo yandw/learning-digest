@@ -15,6 +15,7 @@ const {
   listResources,
   getResourceDetail,
 } = require("./resources");
+const { saveProgress } = require("./progress");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -170,6 +171,20 @@ function registerRoutes(ctx) {
       status: 200,
       body: { matched: true, ...presentFavorite({ store, ...existing }) },
     };
+  });
+
+  // PUT /v1/sources/:id/progress — save the playback position with
+  // optimistic concurrency (contract §3.5; decision D4). Semantics live in
+  // lib/progress.js: rewinds are legal, resends of the last write are
+  // idempotent, cross-account sources are 404.
+  router.add("PUT", "/v1/sources/:id/progress", async ({ req, params, body }) => {
+    const credential = requireCredential(req);
+    return saveProgress({
+      store,
+      accountId: credential.accountId,
+      sourceId: params.id,
+      body,
+    });
   });
 }
 

@@ -97,53 +97,6 @@
         </section>
 
         <section class="card">
-          <h2 data-i18n="speechProvider">Speech Provider</h2>
-          <div
-            class="provider-summary"
-            aria-label="Speech Provider"
-            data-i18n-aria-label="speechProviderSummaryLabel"
-          >
-            <span class="provider-badge" data-i18n="speechProviderBadge"
-              >Transcribes lesson audio into Transcript records</span
-            >
-          </div>
-
-          <label for="speechProvider" data-i18n="speechProviderLabel"
-            >Speech Provider</label
-          >
-          <select id="speechProvider" name="speechProvider"></select>
-          <p id="speechProviderLoadError" class="help" hidden></p>
-
-          <div id="speechProviderFields"></div>
-
-          <p class="help">
-            <span data-i18n="speechProviderHelp"></span>
-            <a
-              id="speechProviderHelpLink"
-              href="https://console.groq.com/keys"
-              target="_blank"
-              rel="noreferrer"
-              data-i18n="speechProviderLink"
-              >Create a Groq API key</a
-            ><span data-i18n="speechProviderHelpSuffix">.</span>
-          </p>
-          <p class="help" data-i18n="speechProviderCustomEndpointHelp">
-            A custom base URL must speak the OpenAI audio transcriptions API;
-            local faster-whisper servers work through the same slot. If its
-            host is not api.groq.com, add that host to host_permissions in
-            manifest.json and reload the extension. Known limitation: this
-            release declares no optional permissions, so Chrome cannot grant
-            a custom host at runtime and the manual manifest edit is the only
-            way to reach one.
-          </p>
-          <div class="privacy-note" data-i18n="speechProviderPrivacyNote">
-            When you transcribe, the Speech Provider receives the Segment's
-            audio. Credentials stay in this Chrome profile and are sent only
-            to the provider you configured.
-          </div>
-        </section>
-
-        <section class="card">
           <h2 data-i18n="sessionSettings">Session</h2>
           <label for="summaryIntervalMinutes" data-i18n="summaryIntervalLabel"
             >New content before a Topic tick (minutes)</label
@@ -176,12 +129,11 @@
             autocomplete="off"
           />
           <p class="help" data-i18n="segmentLengthHelp">
-            How much audio each Segment captures in segment transcription
-            mode; smaller values surface the transcript sooner (default 30
-            seconds). Allowed range is 5-60 seconds. This field has no effect
-            in realtime transcription mode. Drag landings snap up to the next
-            multiple of this length, so shorter lengths also shorten the audio
-            a drag can skip.
+            How much audio each Segment captures; smaller values surface the
+            transcript sooner (default 30 seconds). Allowed range is 5-60
+            seconds. Drag landings snap up to the next multiple of this
+            length, so shorter lengths also shorten the audio a drag can
+            skip.
           </p>
         </section>
 
@@ -320,8 +272,6 @@
 
     <script src="session-segmenter.js"></script>
     <script src="settings.js"></script>
-    <script src="speech-transcription.js"></script>
-    <script src="speech-providers.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

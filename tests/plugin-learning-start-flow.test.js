@@ -51,6 +51,17 @@ const COLLECT_CREATED_BODY = {
   source: { ...RESOLVED_SOURCE, progress: null },
 };
 
+// The §3.1 Session the ASR path creates before any capture machinery.
+const SESSION_CREATED_BODY = {
+  id: "ses_01JABC0033",
+  sourceId: "src_01JABC0002",
+  resourceId: "res_01JABC0001",
+  status: "active",
+  startedAt: "2026-11-10T09:00:00Z",
+  finishedAt: null,
+  origin: null,
+};
+
 const REPORT_BODY = {
   topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
   quotes: [{ start: 30, text: "学习是一场旅程。" }],
@@ -64,8 +75,6 @@ function baseSettings(overrides = {}) {
     aiBaseUrl: "https://api.example.com/ai",
     aiModel: "test-model",
     apiBaseUrl: "https://api.example.com",
-    speechProvider: "groq",
-    speechProviders: { groq: { apiKey: "groq-key" } },
     segmentLengthSeconds: 60,
     summaryIntervalMinutes: 30,
     ...overrides,
@@ -80,8 +89,6 @@ const cutReply = (message) =>
   message.action === "captureCut"
     ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
     : { success: true };
-
-const asrTranscribe = async () => [{ text: "转写内容", start: 0, duration: 120, language: "zh" }];
 
 /**
  * One fetch seam for the whole flow: /v1/... calls are scripted per path
@@ -115,6 +122,46 @@ function v1Fetch({ resolve = [], collect = null, progress = [] } = {}) {
     if (path === "/v1/resources") {
       v1Calls.push({ path, method: init.method, body: JSON.parse(init.body) });
       return answer(collect, COLLECT_CREATED_BODY);
+    }
+    if (/^\/v1\/sources\/[^/]+\/sessions$/.test(path)) {
+      v1Calls.push({ path, method: init.method, body: JSON.parse(init.body) });
+      return { status: 201, ok: true, json: async () => ({ session: SESSION_CREATED_BODY }) };
+    }
+    if (/^\/v1\/sessions\/[^/]+\/audio-segments$/.test(path)) {
+      v1Calls.push({ path, method: init.method, body: JSON.parse(init.body) });
+      return {
+        status: 201,
+        ok: true,
+        json: async () => ({
+          segment: {
+            segmentIndex: JSON.parse(init.body).segmentIndex,
+            startMs: 0,
+            endMs: 60000,
+            status: "pending",
+            audioMimeType: "audio/webm",
+          },
+        }),
+      };
+    }
+    if (/^\/v1\/sessions\/[^/]+\/transcript$/.test(path)) {
+      v1Calls.push({ path, method: init.method });
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          sessionId: "ses_01JABC0033",
+          sessionStatus: "active",
+          origin: "asr",
+          records: [],
+          gaps: [],
+          pending: [],
+          failed: [],
+        }),
+      };
+    }
+    if (/^\/v1\/sessions\/[^/]+\/finish$/.test(path)) {
+      v1Calls.push({ path, method: init.method, body: JSON.parse(init.body || "{}") });
+      return { status: 200, ok: true, json: async () => ({ session: { id: "ses_01JABC0033", status: "finished", origin: "asr" } }) };
     }
     // The end-of-Session AI pass (and anything else non-/v1).
     return {
@@ -246,8 +293,7 @@ test("startLearning proceeds on all three stations with video timestamps (P10b #
     const helpers = loadBackgroundHelpers({
       settings: baseSettings(),
       stored: CREDENTIAL_STORE,
-      fetchImpl: v1Fetch().fetchImpl,
-      transcribeImpl: asrTranscribe,
+      fetchImpl: v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] }).fetchImpl,
       sendMessageImpl: cutReply,
     });
 
@@ -266,8 +312,7 @@ test("a video-kind Session auto-ends when the bridge reports media end (like rep
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
-    fetchImpl: v1Fetch().fetchImpl,
-    transcribeImpl: asrTranscribe,
+    fetchImpl: v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] }).fetchImpl,
     sendMessageImpl: cutReply,
   });
 
@@ -283,8 +328,7 @@ test("a video-kind Session does NOT auto-end on ordinary position reports", asyn
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
-    fetchImpl: v1Fetch().fetchImpl,
-    transcribeImpl: asrTranscribe,
+    fetchImpl: v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] }).fetchImpl,
     sendMessageImpl: cutReply,
   });
 
@@ -303,7 +347,6 @@ test("chooseLearningTarget while a Session records is refused (decision 4: 记�
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   await helpers.handleStartLearning({ url: XIAOE_LESSON, tabId: 7 });
@@ -330,7 +373,6 @@ test("startLearningForTarget locks the resolved source, and the end flush writes
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
     sentMessages,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
 
@@ -403,7 +445,6 @@ test("pausing writes the exact paused position immediately and the Session keeps
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
@@ -466,7 +507,6 @@ test("a pageUrl switch to another episode finishes the Session, saves the old ep
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
@@ -518,7 +558,6 @@ test("a same-source pageUrl churn (?t= seek) does NOT finish the Session", async
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
@@ -544,7 +583,6 @@ test("closing the recording tab finishes the Session and saves the last recorded
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
@@ -567,8 +605,7 @@ test("closing an unrelated tab leaves the recording Session alone", async () => 
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
-    fetchImpl: v1Fetch().fetchImpl,
-    transcribeImpl: asrTranscribe,
+    fetchImpl: v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] }).fetchImpl,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearning({ url: XIAOE_LESSON, tabId: 7 });
@@ -600,7 +637,6 @@ test("the recording tab navigating to a different video finishes the Session (�
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
@@ -631,8 +667,7 @@ test("a same-source navigation (?t= churn) and an unrelated tab's navigation do 
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
-    fetchImpl: v1Fetch().fetchImpl,
-    transcribeImpl: asrTranscribe,
+    fetchImpl: v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] }).fetchImpl,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
@@ -656,7 +691,6 @@ test("seekLearningTarget positions the page (seekMedia) without writing any prog
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
     tabMessages,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const chosen = await helpers.handleChooseLearningTarget({ tabId: 7 });
@@ -689,9 +723,8 @@ test("seekLearningTarget refuses a bad position or a dead tab without side effec
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
-    fetchImpl: v1Fetch().fetchImpl,
+    fetchImpl: v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] }).fetchImpl,
     tabMessages,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const negative = await helpers.handleSeekLearningTarget({ tabId: 7, positionMs: -5 });
@@ -729,7 +762,6 @@ test("a second 开始学习 on the same source is a new Session and continues th
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
 
@@ -777,7 +809,6 @@ test("end flush hitting 409 adopts current.revision and still writes the latest 
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   await helpers.handleChooseLearningTarget({ tabId: 7 });
@@ -810,7 +841,6 @@ test("an unmatched chosen target: start asks to favorite first, one-click collec
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
 
@@ -848,7 +878,6 @@ test("a 401 on the mid-recording immediate write stops recording and routes the 
     stored: CREDENTIAL_STORE,
     fetchImpl,
     sentMessages,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   const started = await helpers.handleStartLearning({ url: XIAOE_LESSON, tabId: 7 });
@@ -894,7 +923,6 @@ test("a worker restart rebuilds the progress writer from the persisted target (r
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
     fetchImpl: first.fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
   await helpers1.handleChooseLearningTarget({ tabId: 7 });
@@ -912,7 +940,6 @@ test("a worker restart rebuilds the progress writer from the persisted target (r
       [`ytd_session_${started.sessionId}`]: helpers1.readStored(`ytd_session_${started.sessionId}`),
     },
     fetchImpl: second.fetchImpl,
-    transcribeImpl: asrTranscribe,
     sendMessageImpl: cutReply,
   });
 

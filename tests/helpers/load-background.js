@@ -78,12 +78,6 @@ function loadBackgroundHelpers({
   // Per-action override for runtime.sendMessage (the offscreen channel):
   // return the response for a given message, e.g. a captureCut chunk.
   sendMessageImpl = null,
-  // Transcription stub for the Speech Provider seam: speech-providers.js is
-  // require()'d on the HOST (its fetch never sees the VM's fetch stub), so
-  // dispatch tests re-register the selected provider with this function.
-  // It receives (segmentAudio, credentials) and resolves provider-relative
-  // records, or rejects to fail the Segment.
-  transcribeImpl = null,
   // Controllable Date.now for the #48 probe window; defaults to real time.
   dateNow = () => Date.now(),
   sidePanel = {
@@ -237,14 +231,6 @@ function loadBackgroundHelpers({
     // overridden when the test asks for a non-default verdict.
     YTD_AUTH_GATE: withAuthVerdict(require("../../auth-gate.js"), auth),
   };
-  if (transcribeImpl) {
-    sandbox.YTD_SPEECH_PROVIDERS.registerSpeechProvider({
-      id: "groq",
-      label: "Stub Groq (test)",
-      credentialFields: [{ key: "apiKey", type: "password" }],
-      transcribe: transcribeImpl,
-    });
-  }
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("background.js"), sandbox);
   return {

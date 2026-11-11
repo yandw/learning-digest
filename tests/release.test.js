@@ -61,7 +61,6 @@ test("manifest uses minimized install-time permissions", () => {
   for (const host of [
     "https://api.deepseek.com/*",
     "https://openrouter.ai/*",
-    "https://api.groq.com/*",
     "https://dashscope.aliyuncs.com/*",
     "https://*.xiaoe-tech.com/*",
   ]) {
@@ -73,6 +72,10 @@ test("manifest uses minimized install-time permissions", () => {
   assert.ok(
     !manifest.host_permissions.some((host) => /youtube|youtu\.be/i.test(host)),
     "host_permissions must not include YouTube",
+  );
+  assert.ok(
+    !manifest.host_permissions.some((host) => /groq/i.test(host)),
+    "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
   // 0.2.9 (ticket 2.5, #68): the bilibili captions path — the caption
@@ -443,7 +446,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   const checkRelease = read("scripts/check-release.sh");
   for (const module of [
     "speech-transcription.js",
-    "speech-providers.js",
     "session-pipeline.js",
     "session-timeline.js",
     "session-persistence.js",
@@ -469,6 +471,9 @@ test("core Learning Digest modules ship in the release and load in the service w
     // zero-ASR captions path.
     "session-archive.js",
     "bilibili-captions.js",
+    // Ticket 2.4 (#67): the D11 audio-segment upload client behind the ASR
+    // archive path.
+    "transcript-pipeline.js",
     // Round-1 review fix: the shared §1 envelope + base-URL helpers behind
     // auth-gate/collect/learning-start/notes.
     "api-client.js",
@@ -494,6 +499,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "bilibili-captions\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

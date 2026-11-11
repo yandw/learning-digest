@@ -1441,13 +1441,10 @@ async function startCaptionsSession(message, recognition, captions) {
     startedAtMs: Date.now(),
     sourceUrl: message.url,
     segmentLengthSeconds: settings.segmentLengthSeconds,
-    transcribeMode: "segment",
     state,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
     }),
-    providerId: null,
-    credentials: null,
     capturePath: "captions",
     serverSessionId: created.session.id,
   });
@@ -1458,7 +1455,7 @@ async function startCaptionsSession(message, recognition, captions) {
   // P10 (decision 4): the lock and the progress writer are the capture
   // flow's own — 字幕路径走 P10 的目标锁定/进度写入不变.
   await beginProgressTracking(context);
-  broadcastSession(context.state, { transcribeMode: "captions" });
+  broadcastSession(context.state, { capturePath: "captions" });
 
   // §3.3: archive as-read, then §3.5: poll the server view (first beat
   // now, then the slow re-sync while the Session is active).
@@ -1474,7 +1471,6 @@ async function startCaptionsSession(message, recognition, captions) {
     sessionId: context.sessionId,
     kind: context.kind,
     timestampKind: context.timestampKind,
-    transcribeMode: "captions",
     capturePath: "captions",
     state: context.state,
   };
@@ -2688,9 +2684,15 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleCaptureEnded,
   // Ticket 2.4 (#67): the ASR archive pipeline — the segment upload and the
   // transcript poll adoption the wiring tests drive directly; see
-  // tests/plugin-transcript-pipeline-flow.test.js.
+  // tests/plugin-transcript-pipeline-flow.test.js. The poll hook resumes the
+  // context (or builds it from the pointer) and takes one beat — the #48
+  // capture tests drive it after uploads so the echoed server view lands.
   dispatchSegment,
   pollServerTranscript,
+  pollTranscriptForTest: async () => {
+    const context = await ensureCaptureResumed();
+    if (context && !context.ended) await pollTranscriptNow(context);
+  },
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
@@ -4515,11 +4517,10 @@ async function handleGetSessionState() {
     sessionId: context.sessionId,
     kind: context.kind,
     timestampKind: context.timestampKind,
-    // The captions path (Ticket 2.5) presents as "captions" — the panel's
-    // copy and transcript states key off it (no 录制 wording, no Segment
-    // wait); the internal transcribeMode stays "segment" for the shared
-    // resume machinery.
-    transcribeMode: context.capturePath === "captions" ? "captions" : context.transcribeMode,
+    // The transcript path (Ticket 2.5/2.4): the panel's copy and transcript
+    // states key off it (字幕 for the captions path, no 录制 wording, no
+    // Segment wait; 转写中 for the ASR archive path).
+    capturePath: context.capturePath,
     startedAtMs: context.startedAtMs,
     state: context.state,
   };

@@ -2383,17 +2383,14 @@ const sessionUi = {
   titleSessionId: null,
   kind: null,
   timestampKind: null,
-  // Transcription mode (#45): "segment" (default) or "realtime"; drives the
+  // The transcript path (Ticket 2.4/2.5): "captions" (the archived 字幕
+  // full text) or "asr" (the D11 segment upload pipeline); drives the
   // start toast and the transcript empty-state copy.
-  transcribeMode: null,
+  capturePath: null,
   // When the live Session started (context.startedAtMs from the worker):
   // the status line names the clock time so the learner can tell when
   // transcription actually began.
   startedAtMs: null,
-  // The live draft (#47) the realtime ASR server is still revising. Full
-  // replacement on every realtimePartial; a finalized utterance's own
-  // record row supersedes it, so transcript growth clears it.
-  realtimeDraft: "",
   renderedRecords: 0,
   // Timeline-ordered row reconciliation: one DOM row per transcriptRecords
   // index (the key), kept in video-time order so a late re-watched fill
@@ -2569,12 +2566,6 @@ function renderSessionTranscript(state) {
     sessionUi.recordRowsSessionId = state.sessionId;
   }
 
-  if (records.length > sessionUi.renderedRecords) {
-    // New record rows (a finalized realtime utterance among them, #47)
-    // supersede whatever draft the live box was showing.
-    sessionUi.realtimeDraft = "";
-  }
-
   // Reconcile against the video-timeline order: create/update one row per
   // record, then place the rows in that order, so a fill recorded after a
   // later segment still lands at its own timestamp.
@@ -2618,7 +2609,6 @@ function renderSessionTranscript(state) {
   sessionUi.renderedRecords = records.length;
   renderPendingSegments(container, state);
   renderCaptionsStateNotice(container, state);
-  renderRealtimeDraft();
   container.scrollTop = container.scrollHeight;
 }
 
@@ -2658,30 +2648,24 @@ function renderCaptionsStateNotice(container, state) {
 }
 
 /**
- * The realtime draft box (#47): the badge plus the ASR server's
- * still-revising draft, pinned above the transcript during an active
- * realtime Session. The draft text is whatever the last realtimePartial
- * delivered (full replacement); visibility follows the Session lifecycle —
- * ending the Session, or a segment-mode Session, hides the box entirely.
+ * The captions path's display state keeps the caption full text; the
+ * realtime draft box (#47) retired with the local transcription path
+ * (ticket 2.4, D10) — there is no live partial anymore, only the poll.
  */
-function renderRealtimeDraft() {
-  const box = document.getElementById("sessionRealtimeBox");
-  const draft = document.getElementById("sessionRealtimeDraft");
-  if (!box || !draft) return;
-  draft.textContent = sessionUi.realtimeDraft;
-  box.style.display =
-    sessionUi.active && sessionUi.transcribeMode === "realtime" ? "" : "none";
-}
 
 // Pending Segments (and the wait before the very first one) render as
 // spinner rows — the same loading affordance the original digest
 // transcript had: the learner sees activity at 0:00 instead of an empty
-// pane while the first Segment is still being recorded and transcribed.
-// Realtime Sessions (#47) show no spinner rows at all: the live draft box
-// above the transcript is their waiting affordance.
+// pane while the first Segment is still being recorded and uploaded.
+//
+// The ASR path has two pending sources: the LOCAL segments (recording and
+// uploading, until the D11 POST answers) and the SERVER view's
+// pendingSegments (transcribing, from the §3.5 poll). They never overlap
+// for long — the local spinner hands over to the server's at upload
+// acceptance — and a same-start dedupe keeps a retry's brief overlap from
+// double-spinning one range.
 function renderPendingSegments(container, state) {
   container.querySelectorAll(".session-pending").forEach((row) => row.remove());
-  if (sessionUi.transcribeMode === "realtime") return;
   // The captions path (Ticket 2.5) records no audio: the capture bootstrap
   // copy ("第一段逐字稿约 X 后出现…") would be a lie there.
   if (sessionUi.transcriptOrigin === "captions") return;
@@ -2700,10 +2684,19 @@ function renderPendingSegments(container, state) {
       `录制中，第一段逐字稿约 ${segmentLengthLabel()} 后出现…`,
     );
   }
+  const localPendingStarts = new Set(
+    segments
+      .filter((segment) => segment.status === "pending")
+      .map((segment) => recordStartSeconds(segment.start)),
+  );
   for (const segment of segments) {
     if (segment.status === "pending") {
       appendPendingRow(container, segment.start, "转写中…");
     }
+  }
+  for (const segment of state.pendingSegments || []) {
+    if (localPendingStarts.has(recordStartSeconds(segment.start))) continue;
+    appendPendingRow(container, segment.start, "转写中…");
   }
 }
 
@@ -3335,14 +3328,12 @@ function showRecordingToast() {
     toast.className = "recording-toast";
     document.body.appendChild(toast);
   }
-  // Realtime Sessions (#45) have no Segment wait to announce; the captions
-  // path (Ticket 2.5) records no audio at all — its copy must not say 录制.
+  // The captions path (Ticket 2.5) records no audio at all — its copy must
+  // not say 录制; the ASR path (Ticket 2.4) is the segment-recording one.
   toast.textContent =
-    sessionUi.transcribeMode === "captions"
+    sessionUi.capturePath === "captions"
       ? "已开始学习 · 字幕全文归档中"
-      : sessionUi.transcribeMode === "realtime"
-        ? "已开始录制 · 实时转写已开启"
-        : `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
+      : `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
   toast.classList.add("recording-toast-visible");
   clearTimeout(showRecordingToast.timer);
   showRecordingToast.timer = setTimeout(
@@ -3351,7 +3342,7 @@ function showRecordingToast() {
   );
 }
 
-function showSessionMode({ active, kind, state, transcribeMode, timestampKind, startedAtMs }) {
+function showSessionMode({ active, kind, state, capturePath, timestampKind, startedAtMs }) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
   const welcome = document.getElementById("welcomeState");
@@ -3359,7 +3350,7 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
 
   if (active) {
     sessionUi.active = true;
-    if (transcribeMode) sessionUi.transcribeMode = transcribeMode;
+    if (capturePath) sessionUi.capturePath = capturePath;
     // The timeline mode (#48): wallclock at start, "video" once the probe
     // anchored the Session — the status line names which one is live.
     if (timestampKind) sessionUi.timestampKind = timestampKind;
@@ -3403,9 +3394,6 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
     renderSessionStatus();
     renderLiveTopics(state);
     renderSessionTranscript(state);
-    // The transcript render above skips the box when state is absent; the
-    // visibility pass here keeps it in step with the lifecycle regardless.
-    renderRealtimeDraft();
     // P10: a recording Session locks the course tab list — the box yields
     // to the session view and the bar's 学习目标 line speaks instead.
     updateCourseTabsVisibility();
@@ -3425,13 +3413,9 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
   for (const row of sessionUi.recordRows.values()) row.remove();
   sessionUi.recordRows.clear();
   sessionUi.recordRowsSessionId = null;
-  // The ended (or idle) Session takes its draft with it; a new Session
-  // starts with an empty live box.
-  sessionUi.realtimeDraft = "";
   // Set kind before the renders below: the start hint's visibility and the
   // status line both read it.
   sessionUi.kind = kind && kind !== "none" ? kind : null;
-  renderRealtimeDraft();
   renderEndButton();
   if (!sessionUi.reportShown) {
     clearLiveOverview();
@@ -3475,7 +3459,7 @@ async function refreshSessionUI() {
         active: true,
         kind: session.kind,
         state: session.state,
-        transcribeMode: session.transcribeMode,
+        capturePath: session.capturePath,
         timestampKind: session.timestampKind,
         startedAtMs: session.startedAtMs,
       });
@@ -3749,29 +3733,18 @@ function handleSessionUpdateMessage(message, sendResponse) {
     sendResponse({ success: true });
     return false;
   }
-  if (message.captureNotice || message.realtimeNotice) {
+  if (message.captureNotice) {
     // One surface for every mid-Session trouble notice: a dead capture
-    // stream (course tab closed or navigated away), a realtime error while
-    // the Session stays active, or the WS client's final give-up. All are
-    // alerts plus the status line — the same surface the startError
-    // precedent uses — and any auto-end arrives in the follow-up
-    // sessionUpdate broadcast with the ended state and its digest.
-    const notice =
-      message.captureNotice ||
-      message.realtimeNotice.message ||
-      "实时转写出现错误";
+    // stream (course tab closed or navigated away), or the archive
+    // pipeline's terminal verdicts (the D15 origin conflict's server
+    // message rides this field verbatim). Alerts plus the status line —
+    // the same surface the startError precedent uses — and any auto-end
+    // arrives in the follow-up sessionUpdate broadcast with the ended
+    // state and its digest.
+    const notice = message.captureNotice;
     window.alert(notice);
     const status = document.getElementById("sessionStatus");
     if (status) status.textContent = notice;
-    sendResponse({ success: true });
-    return false;
-  }
-  if (message.realtimePartial) {
-    // The live draft (#47): full replacement on every event; the box only
-    // shows for an active realtime Session (renderRealtimeDraft decides).
-    if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
-    sessionUi.realtimeDraft = String(message.realtimePartial.text ?? "");
-    renderRealtimeDraft();
     sendResponse({ success: true });
     return false;
   }
@@ -3779,7 +3752,7 @@ function handleSessionUpdateMessage(message, sendResponse) {
     if (sessionUi.sessionId && message.sessionId !== sessionUi.sessionId) return false;
     sessionUi.sessionId = message.sessionId;
     sessionUi.lastSessionId = message.sessionId;
-    if (message.transcribeMode) sessionUi.transcribeMode = message.transcribeMode;
+    if (message.capturePath) sessionUi.capturePath = message.capturePath;
     if (message.timestampKind) {
       // The probe anchored the Session to the video timeline (#48); the
       // status line flips immediately instead of waiting for the poll.

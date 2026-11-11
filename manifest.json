@@ -9,7 +9,6 @@
     "https://*.xiaoe-tech.com/*",
     "https://api.deepseek.com/*",
     "https://openrouter.ai/*",
-    "https://api.groq.com/*",
     "https://dashscope.aliyuncs.com/*"
   ],
   "content_scripts": [

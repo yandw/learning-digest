@@ -26,38 +26,13 @@ const YTD_OPTIONS = (() => {
         "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
       privacyNote:
         "使用 AI 功能时，你配置的 AI 服务会收到逐字稿及相关会话上下文（默认为阿里云百炼）。保存前请查看该服务的服务条款和价格。",
-      speechProvider: "语音转录服务",
-      speechProviderSummaryLabel: "语音转录服务",
-      speechProviderBadge: "将课程音频转录为 Transcript 记录",
-      speechProviderLabel: "语音转录服务",
-      speechProviderHelp:
-        "将每个 Segment 的音频转录为 Transcript 记录。凭证仅保存在本地，只发送给你选择的服务。",
-      speechProviderLink: "创建 Groq API 密钥",
-      speechProviderHelpSuffix: "。",
-      speechProviderFieldApiKey: "API 密钥",
-      speechProviderFieldBaseUrl: "API 基础 URL",
-      speechProviderFieldModel: "模型",
-      speechProviderFieldSecretId: "SecretId",
-      speechProviderFieldSecretKey: "SecretKey",
-      speechProviderFieldRegion: "地域",
-      speechProviderFieldEngineModelType: "引擎模型类型（如 16k_zh）",
-      speechProviderFieldMode: "转写模式",
-      speechProviderLinkTencent: "创建腾讯云凭证",
-      speechProviderLinkQwen: "创建百炼 API Key",
-      speechProviderCustomEndpointHelp:
-        "自定义基础 URL 必须兼容 OpenAI 音频转录 API；本地 faster-whisper 服务器也可使用同一入口。如果其域名不是 api.groq.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。已知限制：本版本未声明可选权限，Chrome 无法在运行时授予自定义域名，手动修改 manifest 目前是唯一方式。",
-      speechProviderInvalidBaseUrl:
-        "语音转录服务的基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
-      speechProviderKeyRequired: "请为选中的语音转录服务填写 API 密钥。",
-      speechProviderPrivacyNote:
-        "进行转录时，语音转录服务会收到 Segment 的音频。凭证仅保存在当前 Chrome 个人资料中，只发送给你配置的服务。",
       sessionSettings: "会话",
       summaryIntervalLabel: "话题段触发的最小新内容时长（分钟）",
       summaryIntervalHelp:
         "会话进行中，每当新产生的 Transcript 达到该时长（且至少 10 条记录），AI 服务就会总结出新的话题段并追加到时间轴（每分钟检查一次）。内容阈值越短费用越高；一般课程 15 分钟即可。",
       segmentLengthLabel: "分段长度（秒）",
       segmentLengthHelp:
-        "分段转写模式下每段采集的音频时长，改小可更快看到逐字稿（默认 30 秒）；可填范围 5～60 秒；实时转写模式下此字段不生效；拖拽落点会对齐到该时长的整数倍边界，时长越短，拖拽可能放弃的音频也越少。",
+        "分段转写模式下每段采集的音频时长，改小可更快看到逐字稿（默认 30 秒）；可填范围 5～60 秒；拖拽落点会对齐到该时长的整数倍边界，时长越短，拖拽可能放弃的音频也越少。",
       learningService: "学习服务",
       apiBaseUrlLabel: "学习服务 API 地址",
       apiBaseUrlHelp:
@@ -373,14 +348,6 @@ const YTD_OPTIONS = (() => {
     // and the Web app origin whose confirmation page authorizes the link.
     const apiBaseUrlInput = doc.getElementById("apiBaseUrl");
     const webAppBaseUrlInput = doc.getElementById("webAppBaseUrl");
-    const speechProviderSelect = doc.getElementById("speechProvider");
-    const speechProviderFields = doc.getElementById("speechProviderFields");
-    const speechProviderHelpLink = doc.getElementById("speechProviderHelpLink");
-    const speechProviderLoadError = doc.getElementById("speechProviderLoadError");
-    const providersApi = root.YTD_SPEECH_PROVIDERS;
-    // Per-provider credential drafts, keyed by Speech Provider id, so
-    // switching providers never loses what the user already typed.
-    const speechProviderDrafts = new Map();
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -443,166 +410,6 @@ const YTD_OPTIONS = (() => {
       for (const element of statusStates.keys()) renderStatus(element);
     }
 
-    function listAvailableSpeechProviders() {
-      return providersApi ? providersApi.listSpeechProviders() : [];
-    }
-
-    function getSelectedSpeechProvider() {
-      const providers = listAvailableSpeechProviders();
-      return (
-        providers.find((provider) => provider.id === speechProviderSelect.value) ||
-        providers[0]
-      );
-    }
-
-    function getSpeechProviderDraft(providerId) {
-      if (!speechProviderDrafts.has(providerId)) speechProviderDrafts.set(providerId, {});
-      return speechProviderDrafts.get(providerId);
-    }
-
-    function renderSpeechProviderSelect() {
-      const providers = listAvailableSpeechProviders();
-      speechProviderSelect.replaceChildren();
-      for (const provider of providers) {
-        const option = doc.createElement("option");
-        option.value = provider.id;
-        option.textContent = provider.label;
-        speechProviderSelect.append(option);
-      }
-      speechProviderSelect.disabled = providers.length === 0;
-      showSpeechProviderLoadError(providers.length);
-      if (providers[0] && !providers.some((p) => p.id === speechProviderSelect.value)) {
-        speechProviderSelect.value = providers[0].id;
-      }
-    }
-
-    // Fail-loud: an empty provider list means one of the shared module
-    // scripts (speech-transcription.js / speech-providers.js) failed during
-    // page load. Surface the captured error and the running extension
-    // version instead of leaving a silently disabled dropdown.
-    function showSpeechProviderLoadError(providerCount) {
-      if (!speechProviderLoadError) return;
-      // Only a non-empty provider list is healthy. When the list is empty
-      // the registry global may still exist (a provider module can throw
-      // mid-file after the registry IIFE ran), so never hide on providersApi.
-      if (providerCount > 0) {
-        speechProviderLoadError.hidden = true;
-        return;
-      }
-      const errors = Array.isArray(root.__ytdScriptErrors)
-        ? root.__ytdScriptErrors
-        : [];
-      const version = root.chrome?.runtime?.getManifest?.().version || "?";
-      speechProviderLoadError.textContent =
-        "Speech Provider 模块加载失败（服务商列表为空），下拉框不可用。" +
-        "当前扩展版本 " + version + "。" +
-        (providersApi
-          ? " providersApi 存在但注册表为空：某个服务商模块加载时抛错。"
-          : " providersApi 不存在：speech-providers.js 整体未加载。") +
-        (errors.length
-          ? " 捕获的脚本错误：" + errors.join("；") + "。"
-          : " 未捕获到脚本错误。") +
-        " 请把这段文字反馈给开发者。";
-      speechProviderLoadError.hidden = false;
-    }
-
-    function fieldLabelKey(providerId, fieldKey) {
-      // e.g. speechProviderFieldApiKey; future providers add their own keys.
-      const suffix = fieldKey.charAt(0).toUpperCase() + fieldKey.slice(1);
-      return `speechProviderField${suffix}`;
-    }
-
-    function linkLabelKey(providerId) {
-      // e.g. speechProviderLinkTencent; falls back to the generic Groq copy.
-      const suffix = providerId.charAt(0).toUpperCase() + providerId.slice(1);
-      return `speechProviderLink${suffix}`;
-    }
-
-    function updateSpeechProviderHelpLink(provider) {
-      // Providers may carry a helpLink (e.g. the Tencent Cloud CAM console);
-      // without one the link keeps the generic Groq copy from the markup.
-      if (provider?.helpLink) {
-        speechProviderHelpLink.href = provider.helpLink;
-        const label = translate(currentLanguage, linkLabelKey(provider.id));
-        speechProviderHelpLink.textContent =
-          label || translate(currentLanguage, "speechProviderLink");
-      }
-    }
-
-    // The transcription-mode radio group (#45): rendered from the provider
-    // definition's radio-typed field. The choice lands in the draft like any
-    // text field's value, so the shared normalize/save flow persists it.
-    function renderSpeechProviderRadioGroup(provider, field, draft) {
-      const groupLabel = doc.createElement("label");
-      groupLabel.textContent = translate(
-        currentLanguage,
-        fieldLabelKey(provider.id, field.key),
-      );
-      const group = doc.createElement("div");
-      group.className = "speech-radio-options";
-      const current =
-        draft[field.key] ??
-        provider.defaults?.[field.key] ??
-        field.options?.[0]?.value;
-      for (const option of field.options || []) {
-        const optionLabel = doc.createElement("label");
-        optionLabel.className = "speech-radio-option";
-        const input = doc.createElement("input");
-        input.id = `speech-${provider.id}-${field.key}-${option.value}`;
-        input.name = `speech-${provider.id}-${field.key}`;
-        input.type = "radio";
-        input.value = option.value;
-        input.checked = current === option.value;
-        input.autocomplete = "off";
-        input.addEventListener("change", () => {
-          draft[field.key] = option.value;
-        });
-        optionLabel.append(input, option.label);
-        group.append(optionLabel);
-      }
-      speechProviderFields.append(groupLabel, group);
-    }
-
-    function renderSpeechProviderFields() {
-      const provider = getSelectedSpeechProvider();
-      speechProviderFields.replaceChildren();
-      if (!provider) return;
-      updateSpeechProviderHelpLink(provider);
-
-      const draft = getSpeechProviderDraft(provider.id);
-      for (const field of provider.credentialFields || []) {
-        if (field.type === "radio") {
-          renderSpeechProviderRadioGroup(provider, field, draft);
-          continue;
-        }
-        const label = doc.createElement("label");
-        label.setAttribute("for", `speech-${provider.id}-${field.key}`);
-        label.textContent = translate(
-          currentLanguage,
-          fieldLabelKey(provider.id, field.key),
-        );
-        const input = doc.createElement("input");
-        input.id = `speech-${provider.id}-${field.key}`;
-        input.name = `speech-${provider.id}-${field.key}`;
-        input.type = field.type === "password" ? "password" : "text";
-        input.autocomplete = "off";
-        input.spellcheck = false;
-        input.placeholder = provider.defaults?.[field.key] || "";
-        input.value = draft[field.key] ?? "";
-        input.addEventListener("input", () => {
-          draft[field.key] = input.value;
-        });
-        speechProviderFields.append(label, input);
-      }
-    }
-
-    function collectSpeechProviderSettings() {
-      return {
-        speechProvider: speechProviderSelect.value,
-        speechProviders: Object.fromEntries(speechProviderDrafts.entries()),
-      };
-    }
-
     async function loadSettings() {
       try {
         const stored = await storage.get(settingsApi.STORAGE_KEY);
@@ -627,48 +434,12 @@ const YTD_OPTIONS = (() => {
           webAppBaseUrlInput.value = settings.webAppBaseUrl;
         }
 
-        // Speech Provider: seed per-provider drafts from stored credentials,
-        // pre-filling Groq from the legacy stt* fields when the new slot is
-        // still empty so existing users keep their configured endpoint.
-        speechProviderDrafts.clear();
-        for (const [providerId, credentials] of Object.entries(
-          settings.speechProviders || {},
-        )) {
-          speechProviderDrafts.set(providerId, { ...credentials });
-        }
-        const groqDraft = getSpeechProviderDraft("groq");
-        if (!groqDraft.apiKey && settings.sttApiKey) {
-          groqDraft.apiKey = settings.sttApiKey;
-          groqDraft.baseUrl = groqDraft.baseUrl || settings.sttBaseUrl || "";
-          groqDraft.model = groqDraft.model || settings.sttModel || "";
-        }
-        renderSpeechProviderSelect();
-        speechProviderSelect.value = settings.speechProvider;
-        if (
-          !listAvailableSpeechProviders().some(
-            (provider) => provider.id === speechProviderSelect.value,
-          )
-        ) {
-          const first = listAvailableSpeechProviders()[0];
-          if (first) speechProviderSelect.value = first.id;
-        }
-        renderSpeechProviderFields();
         if (migration.migrated) {
           await storage.set({ [settingsApi.STORAGE_KEY]: settings });
           setStatus(saveStatus, "migrationWarning");
         }
       } catch (error) {
         setStatus(saveStatus, "settingsLoadFailed");
-        // Fail-loud: loadSettings is the only place that populates the
-        // Speech Provider dropdown, so a swallowed throw here leaves a
-        // silently empty select. Surface the real message on the page.
-        if (speechProviderLoadError) {
-          speechProviderLoadError.textContent =
-            "设置加载失败：" +
-            (error && error.message ? error.message : String(error)) +
-            "（语音转录服务下拉框因此未初始化，请把这段文字反馈给开发者。）";
-          speechProviderLoadError.hidden = false;
-        }
       }
     }
 
@@ -704,29 +475,6 @@ const YTD_OPTIONS = (() => {
         }
       }
 
-      const selectedProvider = getSelectedSpeechProvider();
-      if (selectedProvider) {
-        const draft = getSpeechProviderDraft(selectedProvider.id);
-        for (const field of selectedProvider.credentialFields || []) {
-          if (field.key !== "baseUrl") continue;
-          const baseUrlValue = String(draft.baseUrl || "").trim();
-          if (baseUrlValue && !settingsApi.isValidBaseUrl(baseUrlValue)) {
-            setStatus(saveStatus, "speechProviderInvalidBaseUrl");
-            return;
-          }
-        }
-        // Every credential field typed as a password (e.g. Groq's apiKey,
-        // Tencent's SecretId/SecretKey) is required on save; text fields
-        // such as baseUrl/region stay optional and fall back to defaults.
-        const missingSecret = (selectedProvider.credentialFields || [])
-          .filter((field) => field.type === "password")
-          .some((field) => !String(draft[field.key] || "").trim());
-        if (missingSecret) {
-          setStatus(saveStatus, "speechProviderKeyRequired");
-          return;
-        }
-      }
-
       const settings = settingsApi.normalize({
         aiApiKey: aiApiKeyInput.value,
         aiBaseUrl: baseUrlValue,
@@ -736,7 +484,6 @@ const YTD_OPTIONS = (() => {
         // Left empty means "keep the default" (normalizeBaseUrl's fallback).
         apiBaseUrl: apiBaseUrlInput ? apiBaseUrlInput.value.trim() : undefined,
         webAppBaseUrl: webAppBaseUrlInput ? webAppBaseUrlInput.value.trim() : undefined,
-        ...collectSpeechProviderSettings(),
       });
 
       if (!settings.aiApiKey) {
@@ -810,7 +557,6 @@ const YTD_OPTIONS = (() => {
     }
 
     form.addEventListener("submit", saveSettings);
-    speechProviderSelect.addEventListener("change", renderSpeechProviderFields);
     copyCustomizationPromptBtn.addEventListener(
       "click",
       copyCustomizationPrompt,

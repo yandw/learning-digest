@@ -326,14 +326,18 @@ function showSession(panel, state) {
 
 // --- 逐字稿 purity -----------------------------------------------------------
 
-test("the session view renders the realtime draft box above the transcript", () => {
+test("the session view renders the transcript directly (no realtime draft box)", () => {
   const html = read("sidepanel.html");
   const js = read("sidepanel.js");
 
+  // Ticket 2.4 (D10): the realtime draft box (#47) is retired with the
+  // local transcription path — the transcript is the only child.
+  assert.doesNotMatch(html, /sessionRealtimeBox|session-realtime/);
+  assert.doesNotMatch(js, /renderRealtimeDraft|realtimeDraft|realtimePartial|realtimeNotice/);
   assert.match(
     html,
-    /<div id="sessionView" class="session-view" style="display: none">\s*<div class="session-realtime" id="sessionRealtimeBox" style="display: none">\s*<span class="session-realtime-badge" id="sessionRealtimeBadge">实时转写中<\/span>\s*<span class="session-realtime-draft" id="sessionRealtimeDraft"><\/span>\s*<\/div>\s*<div class="session-transcript" id="sessionTranscript"><\/div>\s*<\/div>/,
-    "the realtime draft box sits above the transcript inside the session view",
+    /<div id="sessionView" class="session-view" style="display: none">\s*<div class="session-transcript" id="sessionTranscript"><\/div>\s*<\/div>/,
+    "the transcript is the session view's only child",
   );
   assert.doesNotMatch(html, /id="sessionSummary"|id="sessionDigest"/);
   // The card renderers and their containers are gone from the panel logic.
@@ -687,7 +691,7 @@ test("panel startup waits for a stored 15-second setting before the first wait r
         sessionId: state.sessionId,
         kind: "replay",
         timestampKind: "video",
-        transcribeMode: "segment",
+        capturePath: "asr",
         startedAtMs: 1_700_000_000_000,
         state,
       };
@@ -943,30 +947,16 @@ test("clicking 开始总结 after a failed pass sends regenerateReport", async (
   assert.equal(endBtn.style.display, "none", "a successful retry hides the button");
 });
 
-// --- 转写模式 copy (#45): start toast + transcript empty state ----------------
+// --- transcript path copy (Ticket 2.4/2.5): start toast + transcript empty state
 
-test("the start toast announces realtime transcription for realtime Sessions", () => {
-  const panel = loadPanel({ stored: {} });
-  panel.session.showSessionMode({
-    active: true,
-    kind: "live",
-    state: { sessionId: "s_toast_rt", status: "active" },
-    transcribeMode: "realtime",
-  });
-
-  const toast = panel.elementById("recordingToast");
-  assert.ok(toast, "the recording toast element exists");
-  assert.equal(toast.textContent, "已开始录制 · 实时转写已开启");
-});
-
-test("the start toast keeps the Segment wait copy for segment Sessions", () => {
+test("the start toast keeps the Segment wait copy for the ASR path", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.setSegmentLengthForCopy(30);
   panel.session.showSessionMode({
     active: true,
     kind: "live",
     state: { sessionId: "s_toast_seg", status: "active" },
-    transcribeMode: "segment",
+    capturePath: "asr",
   });
 
   const toast = panel.elementById("recordingToast");
@@ -974,8 +964,9 @@ test("the start toast keeps the Segment wait copy for segment Sessions", () => {
   assert.equal(toast.textContent, "已开始录制 · 逐字稿将在约 30 秒后出现");
 });
 
-test("an absent transcription mode keeps the Segment wait toast", () => {
+test("an absent capture path keeps the Segment wait toast", () => {
   const panel = loadPanel({ stored: {} });
+  panel.session.setSegmentLengthForCopy(30);
   panel.session.showSessionMode({
     active: true,
     kind: "live",
@@ -986,178 +977,89 @@ test("an absent transcription mode keeps the Segment wait toast", () => {
   assert.equal(toast.textContent, "已开始录制 · 逐字稿将在约 30 秒后出现");
 });
 
-// --- 实时转写 live box (#47): the draft above the transcript ------------------
+// --- the ASR path's pending rows (Ticket 2.4): local + server view ------------
 
-test("the realtime draft box shows the badge and fully replaces the draft on every partial", () => {
+test("the transcript renders the server view's pendingSegments as 转写中 rows", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.showSessionMode({
     active: true,
-    kind: "live",
-    state: activeSessionState(),
-    transcribeMode: "realtime",
-  });
-
-  const box = panel.elementById("sessionRealtimeBox");
-  assert.equal(box.style.display, "", "the box shows during an active realtime Session");
-  // The badge label itself is static markup, asserted by the HTML test above.
-
-  panel.session.handleSessionUpdateMessage(
-    { action: "sessionUpdate", sessionId: "s_1", realtimePartial: { text: "今天我们讲" } },
-    () => {},
-  );
-  assert.equal(
-    panel.elementById("sessionRealtimeDraft").textContent,
-    "今天我们讲",
-  );
-
-  panel.session.handleSessionUpdateMessage(
-    {
-      action: "sessionUpdate",
-      sessionId: "s_1",
-      realtimePartial: { text: "今天我们讲混合动力。" },
-    },
-    () => {},
-  );
-  assert.equal(
-    panel.elementById("sessionRealtimeDraft").textContent,
-    "今天我们讲混合动力。",
-    "each partial fully replaces the draft",
-  );
-});
-
-test("a finalized utterance appends a normal row and clears the draft", () => {
-  const panel = loadPanel({ stored: {} });
-  panel.session.showSessionMode({
-    active: true,
-    kind: "live",
-    state: activeSessionState(),
-    transcribeMode: "realtime",
-  });
-  panel.session.handleSessionUpdateMessage(
-    { action: "sessionUpdate", sessionId: "s_1", realtimePartial: { text: "还没定稿的话" } },
-    () => {},
-  );
-
-  panel.session.handleSessionUpdateMessage(
-    {
-      action: "sessionUpdate",
-      sessionId: "s_1",
-      state: activeSessionState({
-        transcriptRecords: [
-          { start: 0, text: "开场" },
-          { start: 75, text: "第二段" },
-          { start: 90, text: "定稿的一句话。", duration: 4 },
-        ],
-      }),
-    },
-    () => {},
-  );
-
-  const transcript = panel.elementById("sessionTranscript");
-  const newRow = transcript.children.find((row) => row.dataset.seconds === "90");
-  assert.ok(newRow, "the utterance renders as a normal record row");
-  assert.equal(newRow.classList.contains("session-record-failed"), false);
-  assert.equal(
-    panel.elementById("sessionRealtimeDraft").textContent,
-    "",
-    "the draft cleared once the record landed",
-  );
-});
-
-test("the realtime draft box stays hidden for segment Sessions and after the Session ends", () => {
-  const panel = loadPanel({ stored: {} });
-  panel.session.showSessionMode({
-    active: true,
-    kind: "live",
-    state: {
-      sessionId: "s_seg",
-      status: "active",
-      segments: [],
-      transcriptRecords: [],
-    },
-    transcribeMode: "segment",
-  });
-  assert.equal(
-    panel.elementById("sessionRealtimeBox").style.display,
-    "none",
-    "a segment Session has no draft box",
-  );
-
-  panel.session.showSessionMode({
-    active: true,
-    kind: "live",
-    state: activeSessionState(),
-    transcribeMode: "realtime",
-  });
-  assert.equal(panel.elementById("sessionRealtimeBox").style.display, "");
-
-  panel.session.showSessionMode({ active: false, kind: "live", state: null });
-  assert.equal(
-    panel.elementById("sessionRealtimeBox").style.display,
-    "none",
-    "ending the Session hides the box",
-  );
-});
-
-test("a realtime Session shows no pending rows; the draft box is the waiting affordance", () => {
-  const panel = loadPanel({ stored: {} });
-  panel.session.showSessionMode({
-    active: true,
-    kind: "live",
-    state: {
-      sessionId: "s_empty_rt",
-      status: "active",
-      segments: [],
-      transcriptRecords: [],
-    },
-    transcribeMode: "realtime",
+    kind: "replay",
+    state: activeSessionState({
+      segments: [
+        { id: "seg-0", start: 0, duration: 30, status: "done" },
+        { id: "seg-1", start: 30, duration: 30, status: "pending" },
+      ],
+      transcriptRecords: [{ start: 0, text: "第一段结果" }],
+      // The §3.5 poll's pending: the Segment whose transcription is still
+      // running server-side (its local twin settled done at upload ack).
+      pendingSegments: [
+        { id: "srv_2", start: 60, duration: 30, status: "pending" },
+      ],
+    }),
+    capturePath: "asr",
   });
 
   const transcript = panel.elementById("sessionTranscript");
-  assert.equal(
-    findDescendants(transcript, "session-pending").length,
-    0,
-    "no spinner rows in realtime mode",
+  const pendingRows = findDescendants(transcript, "session-pending");
+  const texts = pendingRows.map(
+    (row) => findDescendants(row, "session-record-text")[0].textContent,
   );
-  assert.equal(
-    panel.elementById("sessionRealtimeBox").style.display,
-    "",
-    "the live box replaces the Segment-wait affordance",
-  );
+  assert.deepEqual(texts, ["转写中…", "转写中…"], "one spinner for the local upload and one for the server view");
+  const starts = pendingRows.map((row) => row.dataset.seconds);
+  assert.deepEqual(starts, ["30", "60"], "each pending sits at its own Segment start");
 });
 
-test("a realtimeError notice alerts and takes the status line, like captureEnded", () => {
+test("a server pending at a range the local Segment still covers does not double-spin", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.showSessionMode({
     active: true,
-    kind: "live",
-    state: activeSessionState(),
-    transcribeMode: "realtime",
+    kind: "replay",
+    state: activeSessionState({
+      segments: [{ id: "seg-0", start: 0, duration: 30, status: "pending" }],
+      transcriptRecords: [],
+      pendingSegments: [
+        { id: "srv_0", start: 0, duration: 30, status: "pending" },
+      ],
+    }),
+    capturePath: "asr",
   });
 
-  panel.session.handleSessionUpdateMessage(
-    {
-      action: "sessionUpdate",
-      sessionId: "s_1",
-      realtimeNotice: { message: "实时转写连接已断开" },
-    },
-    () => {},
-  );
+  const transcript = panel.elementById("sessionTranscript");
+  const pendingRows = findDescendants(transcript, "session-pending");
+  assert.equal(pendingRows.length, 1, "the same start spins once");
+});
 
-  assert.deepEqual(panel.alerts, ["实时转写连接已断开"]);
-  assert.equal(
-    panel.elementById("sessionStatus").textContent,
-    "实时转写连接已断开",
+test("the ASR path keeps its pending rows after the first results land", () => {
+  const panel = loadPanel({ stored: {} });
+  panel.session.showSessionMode({
+    active: true,
+    kind: "replay",
+    state: activeSessionState({
+      segments: [{ id: "seg-0", start: 0, duration: 30, status: "done" }],
+      transcriptRecords: [{ start: 0, text: "第一段结果" }],
+      pendingSegments: [
+        { id: "srv_1", start: 30, duration: 30, status: "pending" },
+      ],
+    }),
+    capturePath: "asr",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const rows = transcript.children.filter((row) =>
+    row.classList?.contains("session-record"),
   );
+  assert.ok(rows.length >= 1, "the landed record renders");
+  const pending = findDescendants(transcript, "session-pending");
+  assert.equal(pending.length, 1, "the server's transcribing Segment still spins");
 });
 
 test("a captureNotice alerts and takes the status line through the same surface", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.showSessionMode({
     active: true,
-    kind: "live",
+    kind: "replay",
     state: activeSessionState(),
-    transcribeMode: "segment",
+    capturePath: "asr",
   });
 
   panel.session.handleSessionUpdateMessage(
@@ -1178,32 +1080,28 @@ test("a captureNotice alerts and takes the status line through the same surface"
   );
 });
 
-test("a realtimeGaveUp notice alerts and takes the status line like every other notice", () => {
+test("the D15 origin conflict's server message surfaces verbatim through captureNotice", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.showSessionMode({
     active: true,
-    kind: "live",
+    kind: "replay",
     state: activeSessionState(),
-    transcribeMode: "realtime",
+    capturePath: "asr",
   });
 
   panel.session.handleSessionUpdateMessage(
     {
       action: "sessionUpdate",
       sessionId: "s_1",
-      realtimeNotice: { message: "实时转写连接失败，会话自动结束。" },
+      captureNotice: "本次学习已按字幕归档，同一区间只采用一种方式",
     },
     () => {},
   );
 
-  assert.deepEqual(panel.alerts, ["实时转写连接失败，会话自动结束。"]);
-  assert.equal(
-    panel.elementById("sessionStatus").textContent,
-    "实时转写连接失败，会话自动结束。",
-  );
+  assert.deepEqual(panel.alerts, ["本次学习已按字幕归档，同一区间只采用一种方式"]);
 });
 
-test("the transcript empty state keeps the Segment wait copy in segment mode", () => {
+test("the transcript empty state keeps the Segment wait copy on the ASR path", () => {
   const panel = loadPanel({ stored: {} });
   panel.session.setSegmentLengthForCopy(30);
   panel.session.showSessionMode({
@@ -1215,7 +1113,7 @@ test("the transcript empty state keeps the Segment wait copy in segment mode", (
       segments: [],
       transcriptRecords: [],
     },
-    transcribeMode: "segment",
+    capturePath: "asr",
   });
 
   const transcript = panel.elementById("sessionTranscript");
@@ -1637,7 +1535,7 @@ test("the captions start toast does not claim 录制 (no audio is captured)", ()
     kind: "video",
     state: captionsSessionState(),
     timestampKind: "video",
-    transcribeMode: "captions",
+    capturePath: "captions",
   });
   // The one-shot-per-Session toast keys off the same funnel.
   panel.session.setSegmentLengthForCopy("30");

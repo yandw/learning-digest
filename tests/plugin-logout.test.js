@@ -22,20 +22,11 @@ function baseSettings(overrides = {}) {
     aiApiKey: "test-key",
     aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     aiModel: "qwen3.8-flash",
-    speechProvider: "groq",
-    speechProviders: { groq: { apiKey: "gsk-x" } },
     // apiBaseUrl stays unset by default: an unconfigured origin makes the
     // auth probe a no-op, so only tests that inject fetchImpl ever build a
     // request (no test reaches an external host).
     ...overrides,
   };
-}
-
-function realtimeSettings() {
-  return baseSettings({
-    speechProvider: "qwen",
-    speechProviders: { qwen: { apiKey: "qwen-key", mode: "realtime" } },
-  });
 }
 
 const STORED_CREDENTIAL = {
@@ -45,6 +36,64 @@ const STORED_CREDENTIAL = {
   email: "learner@example.com",
   linkedAt: 1_700_000_000_000,
 };
+
+/**
+ * The archive pipeline's fetch seam (ticket 2.4): resolve / create /
+ * transcript (a scripted active ASR view) / finish / progress answer per
+ * path; the AI pass answers with an empty report body.
+ */
+function archiveFetch(v1Calls, view = {}) {
+  return async (url, init) => {
+    const p = String(url).replace(/^https:\/\/api\.example\.com/, "");
+    v1Calls.push(p);
+    if (p === "/v1/sources/resolve") {
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          matched: true,
+          resource: { id: "res_01JABC0001", title: "注意力机制详解", kind: "video", createdAt: "2026-11-10T08:00:00Z" },
+          source: {
+            id: "src_01JABC0002",
+            resourceId: "res_01JABC0001",
+            kind: "video",
+            url: REPLAY_URL,
+            platformId: "xiaoe-tech",
+            platformVideoId: "l_abc123def456",
+            episodeId: null,
+            platformScopeId: "app12345",
+            progress: { positionMs: 0, revision: 1 },
+          },
+        }),
+      };
+    }
+    if (/\/sessions$/.test(p)) {
+      return { status: 201, ok: true, json: async () => ({ session: { id: "ses_X", status: "active", origin: null } }) };
+    }
+    if (/transcript$/.test(p)) {
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          sessionId: "ses_X",
+          sessionStatus: "active",
+          origin: "asr",
+          records: view.records || [],
+          gaps: [],
+          pending: [],
+          failed: [],
+        }),
+      };
+    }
+    if (/finish$/.test(p)) {
+      return { status: 200, ok: true, json: async () => ({ session: { id: "ses_X", status: "finished", origin: "asr" } }) };
+    }
+    if (/progress$/.test(p)) {
+      return { status: 200, ok: true, json: async () => ({ positionMs: 0, revision: 1 }) };
+    }
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] }) };
+  };
+}
 
 // --- handleLogout: the panel's explicit 退出登录 -------------------------------
 
@@ -114,15 +163,16 @@ test("logout without a linked credential succeeds without a network call", async
 
 test("logout stops the running capture and skips the AI pass", async () => {
   const sentMessages = [];
+  const v1Calls = [];
   const helpers = loadBackgroundHelpers({
     settings: baseSettings({ apiBaseUrl: "https://api.example.com" }),
     sentMessages,
     stored: { ytd_auth_credential: { ...STORED_CREDENTIAL } },
-    fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }),
+    fetchImpl: archiveFetch(v1Calls),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  assert.equal(started.success, true);
+  assert.equal(started.success, true, started.error || "");
   const stateBefore = await helpers.handleGetSessionState();
   assert.equal(stateBefore.active, true);
 
@@ -151,18 +201,25 @@ test("logout stops the running capture and skips the AI pass", async () => {
 
 test("credentialsInvalidated mid-Session stops the capture, keeps the records and breadcrumbs", async () => {
   const sentMessages = [];
+  const v1Calls = [];
   const helpers = loadBackgroundHelpers({
-    settings: realtimeSettings(),
+    settings: baseSettings({ apiBaseUrl: "https://api.example.com" }),
     sentMessages,
     stored: { ytd_auth_credential: { ...STORED_CREDENTIAL } },
+    fetchImpl: archiveFetch(v1Calls, {
+      records: [
+        { startMs: 0, endMs: 30000, text: "老师好", origin: "asr" },
+        { startMs: 30000, endMs: 60000, text: "今天讲因果推断", origin: "asr" },
+      ],
+    }),
   });
 
-  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  assert.equal(started.success, true);
-  // Mid-flight: one utterance has been captured when the 401 arrives
+  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  assert.equal(started.success, true, started.error || "");
+  // Mid-flight: the Worker has produced two rows when the 401 arrives
   // (P10's progress write will be the real trigger; the test simulates it).
-  await helpers.handleRealtimeUtterance({ text: "老师好", start: 0, duration: 2 });
-  await helpers.handleRealtimeUtterance({ text: "今天讲因果推断", start: 2, duration: 3 });
+  await helpers.pollTranscriptForTest();
+  await new Promise((resolve) => setImmediate(resolve));
 
   const result = await helpers.handleCredentialsInvalidated("unauthorized");
 

@@ -15,17 +15,11 @@ const sessionPipeline = require("../session-pipeline.js");
 const REPLAY_URL = "https://app12345.xiaoe-tech.com/replay/l_abc123def456";
 const LIVE_URL = "https://app12345.xiaoe-tech.com/live/l_abc123def456";
 
-// Qwen settings with an optional transcription mode (#45). When mode is
-// null the credentials carry no mode key at all (the pre-0.1.43 blob shape).
-function qwenSettings(mode, overrides = {}) {
-  return baseSettings({
-    speechProvider: "qwen",
-    speechProviders: {
-      qwen: mode === null ? { apiKey: "qwen-key" } : { apiKey: "qwen-key", mode },
-    },
-    ...overrides,
-  });
-}
+// The linked credential every archive call presents (P6): the start flow's
+// resolve/create/finish all require it.
+const CREDENTIAL_STORE = {
+  ytd_auth_credential: { token: "ext-token", credentialGroupId: "grp_1", email: "l@e.com" },
+};
 
 // --- Retired legacy analysis path (#31) ---------------------------------------
 
@@ -52,46 +46,18 @@ function baseSettings(overrides = {}) {
     aiApiKey: "test-key",
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
-    speechProvider: "groq",
-    speechProviders: { groq: { apiKey: "groq-key" } },
+    apiBaseUrl: "https://api.example.com",
     segmentLengthSeconds: 60,
     summaryIntervalMinutes: 30,
     ...overrides,
   };
 }
 
-// --- Start gate: validate against the SELECTED provider's credential fields
-
-test("startLearning gate names the missing field for Groq", async () => {
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: baseSettings({
-      speechProviders: { groq: { apiKey: "" } },
-    }),
-  });
-
-  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  assert.equal(result.success, false);
-  assert.match(result.error, /apiKey/);
-});
-
-test("startLearning gate names the missing field for Tencent", async () => {
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: baseSettings({
-      speechProvider: "tencent",
-      speechProviders: { tencent: { secretId: "id-only", secretKey: "" } },
-    }),
-  });
-
-  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  assert.equal(result.success, false);
-  assert.match(result.error, /secretKey/);
-});
-
 test("background start forces openPanelOnActionClick off so icon clicks fire onClicked", () => {
   const calls = [];
   loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
     sidePanel: {
       setPanelBehavior: (behavior) => {
@@ -106,41 +72,11 @@ test("background start forces openPanelOnActionClick off so icon clicks fire onC
   assert.equal(calls[0].openPanelOnActionClick, false);
 });
 
-test("startLearning gate names the missing field for Qwen", async () => {
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: baseSettings({
-      speechProvider: "qwen",
-      speechProviders: {
-        qwen: { apiKey: "" },
-      },
-    }),
-  });
-
-  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  assert.equal(result.success, false);
-  assert.match(result.error, /apiKey/);
-});
-
-test("startLearning proceeds to capture when the selected provider's credentials are complete", async () => {
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: baseSettings({
-      speechProvider: "tencent",
-      speechProviders: {
-        tencent: { secretId: "id", secretKey: "key" },
-      },
-    }),
-  });
-
-  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  assert.equal(result.success, true);
-  assert.equal(result.sessionId.startsWith("s_"), true);
-});
-
 test("startLearning maps Chrome's not-invoked tabCapture error to a Chinese instruction", async () => {
   const { handleStartLearning, readLastStartFailure } = loadBackgroundHelpers({
     settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: apiFetch().fetchImpl,
     getMediaStreamId: async () => {
       throw new Error(
         "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured.",
@@ -166,7 +102,9 @@ test("action click on a recognized learning page starts the Session", async () =
   let streamRequested = false;
   const sentMessages = [];
   const { handleActionClicked, handleGetSessionState } = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
+    fetchImpl: apiFetch().fetchImpl,
     sentMessages,
     getMediaStreamId: async () => {
       streamRequested = true;
@@ -187,7 +125,9 @@ test("action click on a recognized learning page starts the Session", async () =
 test("action click on a live page arms the offscreen wallclock cut", async () => {
   const sentMessages = [];
   const { handleActionClicked, handleGetSessionState } = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
+    fetchImpl: apiFetch().fetchImpl,
     sentMessages,
   });
 
@@ -209,6 +149,8 @@ const COURSE_B_URL = "https://app12345.xiaoe-tech.com/replay/l_zzz999yyy888";
 
 test("action click on a DIFFERENT course auto-ends the stale Session and starts fresh", async () => {
   const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
     sentMessages: [],
   });
@@ -244,6 +186,8 @@ test("action click on a DIFFERENT course auto-ends the stale Session and starts 
 test("action click on the SAME course keeps the active Session (no restart)", async () => {
   const sentMessages = [];
   const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
     sentMessages,
   });
@@ -268,9 +212,16 @@ test("action click on the SAME course keeps the active Session (no restart)", as
 test("a pre-0.1.57 pointer without sourceUrl falls back to tab identity", async () => {
   const state = sessionPipeline.createSession({ sessionId: "s_legacy" });
   const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
     settings: baseSettings(),
     sentMessages: [],
     stored: {
+      // The linked credential the fresh start's archive preconditions need.
+      ytd_auth_credential: {
+        token: "ext-token",
+        credentialGroupId: "grp_1",
+        email: "l@e.com",
+      },
       ytd_active_capture: {
         sessionId: "s_legacy",
         tabId: 7,
@@ -298,451 +249,13 @@ test("a pre-0.1.57 pointer without sourceUrl falls back to tab identity", async 
 
 // --- Transcription mode resolution (#45/#49): qwen realtime on any Session kind
 
-test("qwen realtime mode on a wallclock Session resolves captureStart transcribeMode realtime", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, readStored } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-
-  const result = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-
-  assert.equal(result.success, true);
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.ok(start, "captureStart reached the offscreen recorder");
-  assert.equal(start.transcribeMode, "realtime");
-  // The pre-existing cut-cadence field is untouched: wallclock cutting stays.
-  assert.equal(start.mode, "wallclock");
-  // The mode travels like kind/timestampKind: start response, capture pointer.
-  assert.equal(result.transcribeMode, "realtime");
-  assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
-});
-
-test("qwen realtime mode on a replay Session resolves captureStart transcribeMode realtime", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, readStored } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-
-  const result = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  assert.equal(result.success, true);
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.ok(start, "captureStart reached the offscreen recorder");
-  assert.equal(start.transcribeMode, "realtime");
-  // The pre-existing cut-cadence field is untouched: video cutting stays.
-  assert.equal(start.mode, "video");
-  assert.equal(result.transcribeMode, "realtime");
-  assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
-});
-
-// The third timestampKind (review finding): a COURSE page is video-kind
-// like a replay — the branch test pins the whole video family on realtime.
-const COURSE_URL =
-  "https://apptdemenwi8039.pc.xiaoe-tech.com/p/t_pc/goods_pc_detail/goods_detail/term_5f4380290ac80_9unBs1";
-
-test("qwen realtime mode on a course Session resolves captureStart transcribeMode realtime", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, readStored } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-
-  const result = await handleStartLearning({ url: COURSE_URL, tabId: 7 });
-
-  assert.equal(result.success, true);
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.ok(start, "captureStart reached the offscreen recorder");
-  assert.equal(start.transcribeMode, "realtime");
-  assert.equal(start.mode, "video");
-  assert.equal(result.transcribeMode, "realtime");
-  assert.equal(readStored("ytd_active_capture").transcribeMode, "realtime");
-});
-
-test("qwen segment mode on a wallclock Session stays on segment transcription", async () => {
-  const sentMessages = [];
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: qwenSettings("segment"),
-    sentMessages,
-  });
-
-  const result = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-
-  assert.equal(result.success, true);
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.ok(start, "captureStart reached the offscreen recorder");
-  assert.equal(start.transcribeMode, "segment");
-  assert.equal(start.mode, "wallclock");
-  assert.equal(result.transcribeMode, "segment");
-});
-
-test("credentials without a mode key (pre-0.1.43 blob) stay on segment transcription", async () => {
-  const sentMessages = [];
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: qwenSettings(null),
-    sentMessages,
-  });
-
-  const result = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-
-  assert.equal(result.success, true);
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.equal(start.transcribeMode, "segment");
-  assert.equal(result.transcribeMode, "segment");
-});
-
-// --- Realtime capture (#46): the API key rides captureStart to offscreen ----
-//
-// The realtime WebSocket lives in the offscreen document and needs the Qwen
-// key for its handshake; it travels in the captureStart message and is never
-// persisted (the capture pointer stays key-free).
-
-test("a realtime captureStart carries the Qwen apiKey to offscreen", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, readStored } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-
-  await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.equal(start.apiKey, "qwen-key");
-  // Message-only transport: the persisted pointer never sees the key.
-  assert.equal(readStored("ytd_active_capture").apiKey, undefined);
-});
-
-test("a segment captureStart carries no apiKey", async () => {
-  const sentMessages = [];
-  const { handleStartLearning } = loadBackgroundHelpers({
-    settings: qwenSettings("segment"),
-    sentMessages,
-  });
-
-  await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.equal(start.apiKey, undefined);
-});
-
-// --- Realtime pipeline handling (#47): utterances become Transcript records
-//
-// R3 replaces the 0.1.46 forwarding: realtimePartial stays a lightweight
-// panel-only broadcast (the panel owns the draft display), realtimeUtterance
-// feeds the pipeline as an utteranceCaptured event (record → persist →
-// broadcast → Topic tick), and realtimeError surfaces loudly. The offscreen
-// document sends these unsolicited, so the handlers stay fire-and-forget
-// like captureChunk.
-
-test("realtimePartial broadcasts a lightweight sessionUpdate extra without state", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, handleRealtimePartial } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  assert.equal(started.success, true);
-
-  await handleRealtimePartial({ action: "realtimePartial", text: "正在说的话" });
-
-  const partial = sentMessages.find((message) => message.realtimePartial);
-  assert.ok(partial, "the partial reaches the panel as a sessionUpdate extra");
-  assert.equal(partial.action, "sessionUpdate");
-  // Property assertion: the payload is created inside the background VM
-  // context, so a cross-realm deepEqual never matches.
-  assert.equal(partial.realtimePartial.text, "正在说的话");
-  assert.equal(partial.sessionId, started.sessionId);
-  // Lightweight: partials stream at speaking pace, so the draft extra must
-  // not ship the full Session state on every revision.
-  assert.equal(partial.state, undefined);
-});
-
-test("a realtime utterance appends a Transcript record, persists and broadcasts", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, handleRealtimeUtterance, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime"),
-      sentMessages,
-    });
-  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  assert.equal(started.success, true);
-
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "一句完整的话。",
-    start: 12.5,
-    duration: 5.5,
-  });
-  // An empty draft never reaches the pipeline.
-  await handleRealtimeUtterance({ action: "realtimeUtterance", text: "   " });
-
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "一句完整的话。", start: 12.5, duration: 5.5 },
-  ]);
-  assert.deepEqual(snapshot.segments, [], "realtime has no Segments");
-  const update = sentMessages
-    .filter((message) => message.action === "sessionUpdate" && message.state)
-    .pop();
-  assert.ok(update, "the panel receives the grown state");
-  assert.equal(update.state.transcriptRecords.length, 1);
-});
-
-test("a failed realtime utterance lands as a failure-marker record", async () => {
-  const sentMessages = [];
-  const { handleStartLearning, handleRealtimeUtterance, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime"),
-      sentMessages,
-    });
-  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  assert.equal(started.success, true);
-
-  // The offscreen tracker places the failed utterance via its
-  // speech_started/stopped pairing and marks the record failed; the
-  // worker must carry the flag into the pipeline untouched.
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "[实时转写失败]",
-    start: 12.5,
-    duration: 5.5,
-    failed: true,
-  });
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "之后恢复的一句。",
-    start: 20,
-    duration: 3,
-  });
-
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "[实时转写失败]", start: 12.5, duration: 5.5, failed: true },
-    { text: "之后恢复的一句。", start: 20, duration: 3 },
-  ]);
-  // The broadcast carries the marker too: the panel's failure styling keys
-  // off the flag alone, via the normal row path.
-  const update = sentMessages
-    .filter((message) => message.action === "sessionUpdate" && message.state)
-    .pop();
-  assert.ok(update, "the panel receives the grown state");
-  assert.equal(update.state.transcriptRecords[0].failed, true);
-});
-
-test("realtime utterances trigger a Topic tick once coverage crosses the threshold", async () => {
-  const requests = [];
-  const sentMessages = [];
-  const sessionId = "s_rt_tick";
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { summaryIntervalMinutes: 5 }),
-    fetchImpl: topicAiFetch(requests),
-    sentMessages,
-    stored: {
-      ytd_active_capture: {
-        ...capturePointer(sessionId),
-        kind: "live",
-        timestampKind: "wallclock",
-        transcribeMode: "realtime",
-      },
-      [`ytd_session_${sessionId}`]: JSON.parse(
-        JSON.stringify(sessionPipeline.createSession({ sessionId })),
-      ),
-    },
-  });
-  await helpers.handleGetSessionState();
-
-  // Ten 30-second utterances: 5 minutes of coverage plus the 10-record
-  // debounce — the same content thresholds as segment mode, fed by records
-  // that never came from a Segment.
-  for (let i = 0; i < 10; i += 1) {
-    await helpers.handleRealtimeUtterance({
-      action: "realtimeUtterance",
-      text: `第 ${i + 1} 句`,
-      start: i * 30,
-      duration: 30,
-    });
-  }
-
-  assert.equal(requests.length, 1, "the tick fired on the content thresholds");
-  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).topics.length, 1);
-  const update = sentMessages.find(
-    (message) => message.action === "sessionUpdate" && message.state?.topics?.length,
-  );
-  assert.ok(update, "the tick broadcast reaches the panel");
-});
-
-test("trailing realtime events after the Session ended are dropped", async () => {
-  const sentMessages = [];
-  const {
-    handleStartLearning,
-    handleEndLearning,
-    handleRealtimePartial,
-    handleRealtimeUtterance,
-    handleRealtimeError,
-    readStored,
-  } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  const ended = await handleEndLearning();
-  assert.equal(ended.success, true);
-  const broadcastsBefore = sentMessages.filter(
-    (message) => message.action === "sessionUpdate",
-  ).length;
-
-  await handleRealtimePartial({ action: "realtimePartial", text: "迟到的话" });
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "迟到的整句。",
-    start: 999,
-    duration: 3,
-  });
-  await handleRealtimeError({ action: "realtimeError", message: "迟到的错误" });
-
-  assert.equal(
-    sentMessages.filter((message) => message.action === "sessionUpdate").length,
-    broadcastsBefore,
-    "no broadcast after the Session ended",
-  );
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(
-    snapshot.transcriptRecords.some((record) => record.text === "迟到的整句。"),
-    false,
-    "the trailing utterance never entered the Transcript",
-  );
-});
-
-test("a realtime Session never dispatches Segments from the position stream", async () => {
-  const timers = [];
-  let now = 1_700_000_000_000;
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    setIntervalImpl: (cb, delayMs) => {
-      timers.push({ cb, delayMs });
-      return timers.length;
-    },
-    dateNow: () => now,
-  });
-  const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  assert.equal(started.success, true);
-
-  // Five minutes of wall-clock lesson time: the live tick feeds the
-  // scheduler far past one Segment length. The realtime path has no
-  // recorder (captureCut would fail), so nothing may be scheduled.
-  now += 300_000;
-  for (const timer of timers) {
-    if (timer.delayMs === 1000) await timer.cb();
-  }
-
-  const state = await helpers.handleGetSessionState();
-  assert.equal(state.transcribeMode, "realtime");
-  assert.deepEqual(state.state.segments, [], "realtime has no Segments");
-  assert.deepEqual(
-    state.state.transcriptRecords.filter((record) => record.failed === true),
-    [],
-    "no [语音转录失败] markers from disabled Segment scheduling",
-  );
-});
-
-test("realtime events with no active capture are dropped without broadcasting", async () => {
-  const sentMessages = [];
-  const { handleRealtimePartial, handleRealtimeUtterance, handleRealtimeError } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime"),
-      sentMessages,
-    });
-
-  await handleRealtimePartial({ action: "realtimePartial", text: "孤儿事件" });
-  await handleRealtimeUtterance({ action: "realtimeUtterance", text: "孤儿事件" });
-  await handleRealtimeError({ action: "realtimeError", message: "孤儿事件" });
-
-  assert.equal(
-    sentMessages.filter(
-      (message) => message.realtimePartial || message.realtimeUtterance || message.realtimeNotice,
-    ).length,
-    0,
-    "no sessionUpdate is broadcast without an active capture",
-  );
-});
-
-test("a resumed realtime Session keeps its transcribeMode from the capture pointer", async () => {
-  const sentMessages = [];
-  const { handleGetSessionState, readStored } = loadBackgroundHelpers({
-    // Settings say segment; the Session's persisted start decision wins.
-    settings: qwenSettings("segment"),
-    // The offscreen document died with the browser: the restart path re-sends
-    // captureStart, which must carry the persisted transcription mode too.
-    offscreenDocument: false,
-    sentMessages,
-    stored: {
-      ytd_active_capture: {
-        sessionId: "s_rt",
-        tabId: 7,
-        platformId: "xiaoe-tech",
-        kind: "live",
-        timestampKind: "wallclock",
-        startedAtMs: Date.now() - 300_000,
-        segmentLengthSeconds: 120,
-        transcribeMode: "realtime",
-      },
-      ytd_session_s_rt: JSON.parse(
-        JSON.stringify(sessionPipeline.createSession({ sessionId: "s_rt" })),
-      ),
-    },
-  });
-
-  const state = await handleGetSessionState();
-
-  assert.equal(state.active, true);
-  assert.equal(state.transcribeMode, "realtime");
-  const start = sentMessages.find((message) => message.action === "captureStart");
-  assert.ok(start, "the restarted capture receives captureStart");
-  assert.equal(start.transcribeMode, "realtime");
-  assert.equal(start.mode, "wallclock");
-  // The restart payload is the fresh start's payload, built by the same
-  // builder: the Qwen key rides along for the WS handshake exactly like on
-  // a fresh start (message-only, the pointer stays key-free).
-  assert.equal(start.apiKey, "qwen-key");
-  assert.equal(readStored("ytd_active_capture").apiKey, undefined);
-});
-
-// --- Realtime video-kind stamping (#49, origin-based since #50): utterances
-// land at origin + their offset inside the recognition session. The origin
-// starts at 0 (a video opened at 0:00) and re-bases on every drag.
-
-test("a realtime utterance on a replay Session stamps at the origin plus its offset", async () => {
-  const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    });
-  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  assert.equal(started.transcribeMode, "realtime");
-
-  // The utterance finalized 12.5 s into the recognition session, which
-  // counts from the video's 0:00 — so its video stamp is 12.5.
-  await handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await playTo(handleMediaPosition, 0, 60);
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "对齐到视频位置的一句。",
-    start: 12.5,
-    duration: 5.5,
-  });
-
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "对齐到视频位置的一句。", start: 12.5, duration: 5.5 },
-  ]);
-});
-
 test("positions from another tab drop with a one-time diagnostic warning (0.1.58)", async () => {
   const warnings = [];
   const originalWarn = console.warn;
   console.warn = (...args) => warnings.push(args.map(String).join(" "));
   try {
     const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
       settings: baseSettings(),
       stored: {
         ytd_active_capture: {
@@ -777,402 +290,11 @@ test("positions from another tab drop with a one-time diagnostic warning (0.1.58
   }
 });
 
-test("a realtime video-kind utterance stamps at the origin, never before it", async () => {
-  const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    });
-  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  await handleMediaPosition(mediaPositionMessage(3), { tab: { id: 7 } });
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "开头的一句。",
-    start: 1,
-    duration: 5.5,
-  });
-
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(snapshot.transcriptRecords[0].start, 1);
-});
-
-test("a realtime wallclock Session anchors via the probe and stamps at video positions", async () => {
-  const { handleStartLearning, handleGetSessionState, handleMediaPosition, handleRealtimeUtterance, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    });
-  const started = await handleStartLearning({ url: LIVE_URL, tabId: 7 });
-  assert.equal(started.timestampKind, "wallclock");
-
-  // The #48 probe still applies to realtime Sessions: the first bridged
-  // position anchors the live Session to the video timeline, re-bases the
-  // recognition origin there, and utterances finalize at origin + offset
-  // from then on.
-  await handleMediaPosition(mediaPositionMessage(800), { tab: { id: 7 } });
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "对齐后的一句。",
-    start: 30,
-    duration: 4,
-  });
-
-  assert.equal((await handleGetSessionState()).timestampKind, "video");
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "对齐后的一句。", start: 830, duration: 4 },
-  ]);
-});
-
-test("a seek during realtime replay marks the skipped range and keeps stamping at video positions", async () => {
-  const { handleStartLearning, handleMediaPosition, handleRealtimeUtterance, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    });
-  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  // One minute played (stamped from the bridged positions), then the
-  // learner drags the bar to 10:00. There is no recorder to cut a pre-seek
-  // tail from, so the seek only marks the skipped range.
-  await handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await playTo(handleMediaPosition, 0, 60);
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "跳转前的一句。",
-    start: 5,
-    duration: 4,
-  });
-  await handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
-  await playTo(handleMediaPosition, 600, 610);
-  await handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "跳转后的一句。",
-    start: 25,
-    duration: 4,
-  });
-
-  const snapshot = readStored(`ytd_session_${started.sessionId}`);
-  assert.deepEqual(snapshot.transcriptRecords, [
-    { text: "跳转前的一句。", start: 5, duration: 4 },
-    { text: "[已跳过 1:00–10:00]", start: 60, duration: 540, failed: true },
-    { text: "跳转后的一句。", start: 625, duration: 4 },
-  ]);
-  assert.deepEqual(snapshot.segments, [], "realtime has no Segments");
-  // The jumped cursor travels the pointer, so a worker restart resumes
-  // past the skipped range.
-  assert.equal(readStored("ytd_active_capture").cursorSeconds, 600);
-});
-
-test("media end auto-ends a realtime replay Session like any replay Session", async () => {
-  const { handleStartLearning, handleGetSessionState, handleMediaPosition, readStored } =
-    loadBackgroundHelpers({
-      settings: qwenSettings("realtime", { settingsVersion: 3 }),
-      fetchImpl: noNetworkFetch,
-    });
-  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  assert.equal(started.transcribeMode, "realtime");
-
-  await handleMediaPosition(mediaPositionMessage(600, { ended: true }), { tab: { id: 7 } });
-
-  const state = await handleGetSessionState();
-  assert.equal(state.active, false);
-  assert.equal(readStored(`ytd_session_${started.sessionId}`).status, "ended");
-  // The ended Session is no longer resumable: the capture pointer is gone.
-  assert.equal(readStored("ytd_active_capture"), undefined);
-});
-
-test("a resumed realtime replay Session baselines seek detection at the last record's end", async () => {
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { settingsVersion: 2 }),
-    stored: {
-      ytd_active_capture: {
-        sessionId: "s_rt_resume",
-        tabId: 7,
-        platformId: "xiaoe-tech",
-        kind: "replay",
-        timestampKind: "video",
-        startedAtMs: Date.now() - 600_000,
-        segmentLengthSeconds: 120,
-        transcribeMode: "realtime",
-        cursorSeconds: 0,
-      },
-      ytd_session_s_rt_resume: {
-        ...JSON.parse(
-          JSON.stringify(sessionPipeline.createSession({ sessionId: "s_rt_resume" })),
-        ),
-        transcriptRecords: [{ text: "重启前的一句。", start: 96, duration: 4 }],
-      },
-    },
-  });
-
-  // The worker died mid-playback and the video meanwhile reached 10:00.
-  // The first report must not read as a seek from 0 — the head was already
-  // transcribed (records are video-stamped) — so the marker covers only the
-  // genuinely untranscribed restart hole, from the last record's end.
-  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
-
-  const snapshot = helpers.readStored("ytd_session_s_rt_resume");
-  const markers = snapshot.transcriptRecords.filter(
-    (record) => record.failed === true,
-  );
-  assert.deepEqual(
-    markers.map((record) => ({
-      text: record.text,
-      start: record.start,
-      duration: record.duration,
-    })),
-    [{ text: "[已跳过 1:40–10:00]", start: 100, duration: 500 }],
-  );
-});
-
-// --- Realtime drags on the video timeline (#50) ------------------------------
-
-test("dragging back onto covered audio holds forwarding and resumes at the next capture point", async () => {
-  const sentMessages = [];
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    sentMessages,
-  });
-  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await drain();
-  await playTo(helpers.handleMediaPosition, 0, 45);
-  // 0–40 transcribed, 40–45 played silently (a window, no words).
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "前四十秒的内容。",
-    start: 0,
-    duration: 40,
-  });
-
-  // Drag back to 0:20 — covered audio. Forwarding holds; nothing here is
-  // re-recognized.
-  await helpers.handleMediaPosition(mediaPositionMessage(20), { tab: { id: 7 } });
-  await drain();
-  const holdRebase = sentMessages.find((message) => message.action === "captureRebase");
-  assert.deepEqual(
-    { originSeconds: holdRebase.originSeconds, hold: holdRebase.hold },
-    { originSeconds: 20, hold: true },
-  );
-  assert.equal(
-    helpers.readStored("ytd_active_capture").realtimeHoldUntilSeconds,
-    45,
-    "the hold names the covered run's end as the resume point (silent playback counts as covered)",
-  );
-
-  // Playback advances through the hold without re-recognizing anything.
-  await playTo(helpers.handleMediaPosition, 20, 44);
-  let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(snapshot.transcriptRecords.length, 1, "no duplicate records while holding");
-
-  // Reaching 0:45 resumes capture there, and the pointer forgets the hold.
-  await playTo(helpers.handleMediaPosition, 44, 46);
-  const resume = sentMessages.find(
-    (message) => message.action === "captureRealtimeResume",
-  );
-  assert.deepEqual(
-    { originSeconds: resume.originSeconds },
-    { originSeconds: 45 },
-  );
-  assert.equal(
-    helpers.readStored("ytd_active_capture").realtimeHoldUntilSeconds,
-    null,
-  );
-
-  // Post-resume utterances count from the resume point.
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "恢复后的新内容。",
-    start: 3,
-    duration: 4,
-    originSeconds: 45,
-  });
-  snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
-  const resumed = snapshot.transcriptRecords.find(
-    (record) => record.text === "恢复后的新内容。",
-  );
-  assert.deepEqual(
-    { start: resumed.start, duration: resumed.duration },
-    { start: 48, duration: 4 },
-  );
-});
-
-test("dragging back into a hole captures from the landing point and shrinks the skipped marker", async () => {
-  const sentMessages = [];
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    sentMessages,
-  });
-  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await drain();
-  await playTo(helpers.handleMediaPosition, 0, 20);
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "开头二十秒。",
-    start: 0,
-    duration: 20,
-  });
-  // Drag forward to 0:40: the hole is [0:20, 0:40].
-  await helpers.handleMediaPosition(mediaPositionMessage(40), { tab: { id: 7 } });
-  await drain();
-  await playTo(helpers.handleMediaPosition, 40, 45);
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "四十秒之后。",
-    start: 0,
-    duration: 5,
-    originSeconds: 40,
-  });
-
-  // Drag back to 0:30, inside the hole.
-  await helpers.handleMediaPosition(mediaPositionMessage(30), { tab: { id: 7 } });
-  await drain();
-  const rebase = sentMessages.filter(
-    (message) => message.action === "captureRebase",
-  ).at(-1);
-  assert.deepEqual(
-    { originSeconds: rebase.originSeconds, hold: rebase.hold },
-    { originSeconds: 30, hold: false },
-  );
-
-  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
-  // The marker shrank to the unwatched head; the tail is being captured.
-  const gap = snapshot.transcriptRecords.find(
-    (record) => record.failed === true && record.text.startsWith("[已跳过 "),
-  );
-  assert.deepEqual(
-    { text: gap.text, start: gap.start, duration: gap.duration },
-    { text: "[已跳过 0:20–0:30]", start: 20, duration: 10 },
-  );
-  assert.equal(
-    helpers.readStored("ytd_active_capture").realtimeOriginSeconds,
-    30,
-  );
-
-  // The fill's utterances count from the new origin and arrive after the
-  // 40s record; the timeline layer re-orders them for display.
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "补转的三十到四十秒。",
-    start: 2,
-    duration: 8,
-    originSeconds: 30,
-  });
-  const filled = helpers.readStored(`ytd_session_${started.sessionId}`);
-  const fillRecord = filled.transcriptRecords.find(
-    (record) => record.text === "补转的三十到四十秒。",
-  );
-  assert.deepEqual(
-    { start: fillRecord.start, duration: fillRecord.duration },
-    { start: 32, duration: 8 },
-  );
-});
-
-test("a worker restart mid-hold rebuilds the hold and resumes without re-recognizing", async () => {
-  const sentMessages = [];
-  const first = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    sentMessages,
-  });
-  const started = await first.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  await first.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await drain();
-  await playTo(first.handleMediaPosition, 0, 45);
-  await first.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "重启前的内容。",
-    start: 0,
-    duration: 40,
-  });
-  await first.handleMediaPosition(mediaPositionMessage(20), { tab: { id: 7 } });
-  await drain();
-  assert.equal(
-    first.readStored("ytd_active_capture").realtimeHoldUntilSeconds,
-    45,
-  );
-
-  // The worker restarts: the pointer carries the hold across.
-  const second = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { settingsVersion: 3 }),
-    sentMessages,
-    stored: {
-      ytd_active_capture: first.readStored("ytd_active_capture"),
-      [`ytd_session_${started.sessionId}`]: first.readStored(
-        `ytd_session_${started.sessionId}`,
-      ),
-    },
-  });
-  const resumedState = await second.handleGetSessionState();
-  assert.equal(resumedState.active, true);
-
-  // Playback reaches the resume point; capture resumes there exactly once
-  // and nothing from the covered range is re-recognized.
-  await playTo(second.handleMediaPosition, 20, 46);
-  const resumes = sentMessages.filter(
-    (message) => message.action === "captureRealtimeResume",
-  );
-  assert.equal(resumes.length, 1, "exactly one resume after the restart");
-  assert.equal(resumes[0].originSeconds, 45);
-  const snapshot = second.readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(
-    snapshot.transcriptRecords.filter((record) => record.text === "重启前的内容。")
-      .length,
-    1,
-  );
-});
-test("a stale utterance from a superseded recognition session is dropped", async () => {
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime", { settingsVersion: 3 }),
-  });
-  const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-
-  await helpers.handleMediaPosition(mediaPositionMessage(0), { tab: { id: 7 } });
-  await drain();
-  await playTo(helpers.handleMediaPosition, 0, 20);
-  await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
-  await drain();
-  assert.equal(
-    helpers.readStored("ytd_active_capture").realtimeOriginSeconds,
-    600,
-  );
-
-  // A late frame from the pre-drag connection carries the old origin.
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "旧连接迟到的一句。",
-    start: 15,
-    duration: 4,
-    originSeconds: 0,
-  });
-  const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(
-    snapshot.transcriptRecords.some((record) => record.text === "旧连接迟到的一句。"),
-    false,
-    "stale frames never land in the transcript",
-  );
-
-  // A current frame with the current origin is accepted.
-  await helpers.handleRealtimeUtterance({
-    action: "realtimeUtterance",
-    text: "新连接的一句。",
-    start: 3,
-    duration: 4,
-    originSeconds: 600,
-  });
-  const current = helpers.readStored(`ytd_session_${started.sessionId}`);
-  assert.equal(
-    current.transcriptRecords.some(
-      (record) => record.text === "新连接的一句。" && record.start === 603,
-    ),
-    true,
-  );
-});
-
 test("action click on an unrecognized page only opens the panel", async () => {
   let streamRequested = false;
   const { handleActionClicked, readLastStartFailure } = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
     getMediaStreamId: async () => {
       streamRequested = true;
@@ -1196,6 +318,8 @@ test("action click on an unrecognized page only opens the panel", async () => {
 test("action click issues the panel open and the streamId fetch before any await", async () => {
   const order = [];
   const { handleActionClicked } = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
     getMediaStreamId: async () => {
       order.push("getMediaStreamId");
@@ -1222,7 +346,9 @@ test("handleStartLearning consumes a pre-fetched streamId without fetching again
   let fetchCount = 0;
   const sentMessages = [];
   const { handleStartLearning } = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
+    fetchImpl: apiFetch().fetchImpl,
     sentMessages,
     getMediaStreamId: async () => {
       fetchCount += 1;
@@ -1246,10 +372,15 @@ test("handleStartLearning consumes a pre-fetched streamId without fetching again
 test("action click start failure broadcasts the reason to the panel", async () => {
   const sentMessages = [];
   const { handleActionClicked } = loadBackgroundHelpers({
-    settings: baseSettings({
-      speechProviders: { groq: { apiKey: "" } },
-    }),
+    stored: CREDENTIAL_STORE,
+    settings: baseSettings(),
+    fetchImpl: apiFetch().fetchImpl,
     sentMessages,
+    getMediaStreamId: async () => {
+      throw new Error(
+        "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured.",
+      );
+    },
     setTimeoutImpl: setTimeout,
     clearTimeoutImpl: clearTimeout,
   });
@@ -1258,7 +389,7 @@ test("action click start failure broadcasts the reason to the panel", async () =
 
   const startError = sentMessages.find((message) => message.startError);
   assert.ok(startError, "the panel receives the failure reason");
-  assert.match(startError.startError, /apiKey/);
+  assert.match(startError.startError, /点击工具栏中的 Learning Digest 图标/);
 });
 
 // --- Resume: an in-flight Segment at worker death leaves no orphan pending
@@ -1280,6 +411,7 @@ test("getSessionState after resume settles the interrupted Segment as failed wit
   });
 
   const { handleGetSessionState } = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
     settings: baseSettings(),
     stored: {
       ytd_active_capture: {
@@ -1313,6 +445,7 @@ test("getSessionState after resume settles the interrupted Segment as failed wit
 
 test("clearSessionRecord deletes the ended Session's snapshot and report artifact", async () => {
   const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
     settings: baseSettings(),
     stored: {
       ytd_session_s_old: {
@@ -1341,6 +474,7 @@ test("clearSessionRecord deletes the ended Session's snapshot and report artifac
 
 test("clearSessionRecord refuses the active Session and leaves storage untouched", async () => {
   const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
     settings: baseSettings(),
     stored: {
       ytd_active_capture: {
@@ -1372,6 +506,7 @@ test("clearSessionRecord refuses the active Session and leaves storage untouched
 
 test("clearSessionRecord without a sessionId is a refused no-op", async () => {
   const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
     settings: baseSettings(),
     stored: {},
   });
@@ -1441,10 +576,10 @@ function topicAiFetch(capturedRequests) {
 test("从头开始 forwards the rewind to the capture tab's page bridge", async () => {
   const tabMessages = [];
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     tabMessages,
   });
   await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -1458,10 +593,10 @@ test("从头开始 forwards the rewind to the capture tab's page bridge", async 
 test("从头开始 is refused on a live Session (no timeline to rewind)", async () => {
   const tabMessages = [];
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     tabMessages,
   });
   await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
@@ -1475,10 +610,10 @@ test("从头开始 is refused on a live Session (no timeline to rewind)", async 
 
 test("从头开始 without an active Session is a refused no-op", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
   });
 
   const result = await helpers.handleRestartFromBeginning();
@@ -1489,10 +624,10 @@ test("从头开始 without an active Session is a refused no-op", async () => {
 
 test("从头开始 maps a missing page bridge to the refresh instruction", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     tabMessageImpl: () => {
       throw new Error("Could not establish connection. Receiving end does not exist.");
     },
@@ -1507,10 +642,10 @@ test("从头开始 maps a missing page bridge to the refresh instruction", async
 
 test("从头开始 surfaces the bridge's own failure message", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     tabMessageImpl: () => ({ success: false, error: "页面上没有找到可控制的视频" }),
   });
   await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -1953,85 +1088,6 @@ test("captureEnded on a Session with no Transcript skips the digest without cras
 // notice broadcast, auto-end — so the learner keeps the transcript collected
 // so far and an honest end instead of a zombie Session with a dead stream.
 
-function seededRealtimeCapture(sessionId) {
-  let state = sessionPipeline.createSession({ sessionId });
-  for (let i = 0; i < 4; i += 1) {
-    state = sessionPipeline.applyEvent(state, {
-      type: "utteranceCaptured",
-      text: `第 ${i + 1} 句`,
-      start: i * 30,
-      duration: 30,
-    });
-  }
-  return JSON.parse(JSON.stringify(state));
-}
-
-test("a realtimeGaveUp notice auto-ends the Session and broadcasts the reason", async () => {
-  const requests = [];
-  const sentMessages = [];
-  const sessionId = "s_rt_gave_up";
-  const helpers = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
-    sentMessages,
-    stored: {
-      ytd_active_capture: {
-        ...capturePointer(sessionId),
-        kind: "live",
-        timestampKind: "wallclock",
-        transcribeMode: "realtime",
-      },
-      [`ytd_session_${sessionId}`]: seededRealtimeCapture(sessionId),
-    },
-  });
-  await helpers.handleGetSessionState();
-
-  await helpers.handleRealtimeGaveUp({ action: "realtimeGaveUp" });
-
-  // Nothing stays resumable: the Session ended and the pointer is cleared.
-  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
-  assert.equal(helpers.readStored("ytd_active_capture"), undefined);
-  // The panel learns the reason immediately, then sees the ended state with
-  // the digest built from the transcript collected so far.
-  const notice = sentMessages.find((message) => message.realtimeNotice);
-  assert.ok(notice, "the notice broadcast reaches the panel");
-  assert.equal(notice.realtimeNotice.message, "实时转写连接失败，会话自动结束。");
-  const ended = sentMessages.find(
-    (message) =>
-      message.action === "sessionUpdate" && message.state?.status === "ended",
-  );
-  assert.ok(ended, "the end broadcast reaches the panel");
-  assert.deepEqual(ended.report, REPORT_BODY);
-  assert.equal(requests.length, 1, "exactly one global pass over what exists");
-
-  // Death is final: a repeated notice finds the ended context, a no-op.
-  const updatesBefore = sentMessages.filter(
-    (message) => message.action === "sessionUpdate",
-  ).length;
-  await helpers.handleRealtimeGaveUp({ action: "realtimeGaveUp" });
-  assert.equal(
-    sentMessages.filter((message) => message.action === "sessionUpdate").length,
-    updatesBefore,
-    "a second realtimeGaveUp is a no-op",
-  );
-});
-
-test("a realtimeGaveUp notice with no active capture is a no-op", async () => {
-  const sentMessages = [];
-  const { handleRealtimeGaveUp } = loadBackgroundHelpers({
-    settings: qwenSettings("realtime"),
-    sentMessages,
-  });
-
-  await handleRealtimeGaveUp({ action: "realtimeGaveUp" });
-
-  assert.equal(
-    sentMessages.filter((message) => message.action === "sessionUpdate").length,
-    0,
-    "no broadcast without an active capture",
-  );
-});
-
 // --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>
 
 // Schema v2 (0.1.38): the mocked model output carries the new fields too —
@@ -2337,6 +1393,7 @@ test("regenerateReport finds the most recent ended Session in storage after a wo
 test("regenerateReport with no ended Session anywhere reports the dead end", async () => {
   const requests = [];
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
     fetchImpl: reportAiFetch(requests, REPORT_BODY),
   });
@@ -2352,6 +1409,8 @@ test("regenerateReport with no ended Session anywhere reports the dead end", asy
 
 test("a pageTitle message from the capture tab stores it once and a later title never overwrites", async () => {
   const helpers = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
   });
 
@@ -2392,6 +1451,8 @@ test("a pageTitle message from the capture tab stores it once and a later title 
 
 test("a pageTitle message from another tab is ignored", async () => {
   const helpers = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
     settings: baseSettings(),
   });
 
@@ -2517,18 +1578,18 @@ test("a worker restart mid-session rebuilds the title from the capture pointer",
 
 test("the settings blob is stamped with the version on the first read", async () => {
   const { handleStartLearning, readStored } = loadBackgroundHelpers({
-    settings: baseSettings({
-      speechProviders: { groq: { apiKey: "" } },
-      segmentLengthSeconds: 120,
-    }),
+    settings: baseSettings({ segmentLengthSeconds: 120 }),
+    stored: CREDENTIAL_STORE,
+    fetchImpl: apiFetch().fetchImpl,
   });
 
-  // The start gate reads settings (and persists the migrated blob) before
-  // it fails on the missing credential — enough to assert the migration.
-  await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  // The start flow reads settings (and persists the migrated blob) before
+  // capture — enough to assert the migration.
+  const started = await handleStartLearning({ url: REPLAY_URL, tabId: 7 });
+  assert.equal(started.success, true);
 
   const blob = readStored("ytd_settings");
-  assert.equal(blob.settingsVersion, 3);
+  assert.equal(blob.settingsVersion, 4);
   assert.equal(blob.segmentLengthSeconds, 30);
 });
 
@@ -2550,24 +1611,169 @@ async function drain(steps = 40) {
   }
 }
 
-// A transcription stub on the Speech Provider seam: the first `failFirst`
-// calls reject so a first-pass Segment can be forced failed while later
-// ones succeed. Records are provider-relative (start 0), like the real
-// providers; the capture layer stamps them onto the Segment's range.
-function asrTranscribe({ failFirst = 0, text = "转写内容", durations = [] } = {}) {
-  let attempts = 0;
-  return async (_segmentAudio, _credentials) => {
-    attempts += 1;
-    if (attempts <= failFirst) {
-      throw new Error("provider boom");
-    }
-    const duration = durations.length > 0 ? durations.shift() : 120;
-    return [{ text, start: 0, duration, language: "zh" }];
-  };
-}
+// The resolve answer for the xiaoe lesson/lab URLs (contract §3.4): every
+// start flow archives against a matched Source now.
+const RESOLVED_SOURCE = {
+  id: "src_01JABC0002",
+  resourceId: "res_01JABC0001",
+  kind: "video",
+  url: REPLAY_URL,
+  platformId: "xiaoe-tech",
+  platformVideoId: "l_abc123def456",
+  episodeId: null,
+  platformScopeId: "app12345",
+  progress: { positionMs: 0, revision: 1 },
+};
+const RESOLVE_MATCHED_BODY = {
+  matched: true,
+  resource: {
+    id: "res_01JABC0001",
+    title: "注意力机制详解",
+    kind: "video",
+    createdAt: "2026-11-10T08:00:00Z",
+  },
+  source: RESOLVED_SOURCE,
+};
+const SESSION_CREATED_BODY = {
+  status: 201,
+  body: {
+    session: {
+      id: "ses_01JABC0033",
+      sourceId: "src_01JABC0002",
+      resourceId: "res_01JABC0001",
+      status: "active",
+      startedAt: "2026-11-10T10:00:00Z",
+      finishedAt: null,
+      origin: null,
+    },
+  },
+};
 
-// A catch-all fetch stub: nothing in these flows may reach the network.
-const noNetworkFetch = async () => ({ ok: false, status: 599, text: async () => "" });
+/**
+ * One fetch seam for the whole archive pipeline (ticket 2.4): every /v1
+ * call is answered per path, everything else is the AI pass. Every /v1
+ * call is recorded with its parsed body so the tests assert the uploads
+ * directly. The transcript view ECHOES the accepted uploads keyed by
+ * segmentIndex — the server's idempotent (sessionId, segmentIndex) store —
+ * so a poll lands exactly the rows the Worker has produced.
+ */
+function apiFetch({
+  resolve = [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+  sessions = [],
+  segments = [],
+  finishes = [],
+  transcripts = null,
+} = {}) {
+  const v1Calls = [];
+  let resolveIndex = 0;
+  let sessionsIndex = 0;
+  let segmentsIndex = 0;
+  let transcriptsIndex = 0;
+  let finishesIndex = 0;
+  const uploads = new Map();
+  const answer = (scripted, fallbackBody) => {
+    if (scripted === null || scripted === undefined) {
+      return { status: 200, ok: true, json: async () => fallbackBody };
+    }
+    if (typeof scripted === "number") {
+      return {
+        status: scripted,
+        ok: false,
+        json: async () => ({ error: { code: "boom", message: "boom" } }),
+      };
+    }
+    return {
+      status: scripted.status,
+      ok: scripted.status < 400,
+      json: async () => scripted.body,
+    };
+  };
+  const echoView = () => ({
+    sessionId: "ses_01JABC0033",
+    sourceId: "src_01JABC0002",
+    resourceId: "res_01JABC0001",
+    sessionStatus: "active",
+    origin: "asr",
+    records: [...uploads.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([segmentIndex, upload]) => ({
+        startMs: upload.startMs,
+        endMs: upload.startMs + upload.durationMs,
+        text: "转写内容",
+        origin: "asr",
+        segmentIndex,
+      })),
+    gaps: [],
+    pending: [],
+    failed: [],
+  });
+  const fetchImpl = async (url, init) => {
+    const pathName = String(url).replace(/^https:\/\/api\.example\.com/, "");
+    if (pathName === "/v1/sources/resolve") {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return answer(resolve[resolveIndex++] ?? resolve[resolve.length - 1], { matched: false });
+    }
+    if (/^\/v1\/sources\/[^/]+\/sessions$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return answer(sessions[sessionsIndex++] ?? sessions[sessions.length - 1], SESSION_CREATED_BODY.body);
+    }
+    if (/^\/v1\/sessions\/[^/]+\/audio-segments$/.test(pathName)) {
+      const body = JSON.parse(init.body);
+            const scripted = segments[segmentsIndex] ?? segments[segments.length - 1];
+      segmentsIndex += 1;
+      const status = scripted === undefined ? 201 : scripted.status ?? scripted;
+      if (status < 400) {
+        // Only accepted uploads occupy the server's idempotent store.
+        uploads.set(body.segmentIndex, {
+          startMs: body.startMs,
+          durationMs: body.durationMs,
+        });
+      }
+      // The response Segment echoes the request (the contract's own shape),
+      // so a scripted status alone decides the verdict.
+      return {
+        status,
+        ok: status < 400,
+        json: async () => ({
+          segment: {
+            segmentIndex: body.segmentIndex,
+            startMs: body.startMs,
+            endMs: body.startMs + body.durationMs,
+            status: "pending",
+            audioMimeType: body.audioMimeType,
+          },
+        }),
+      };
+    }
+if (/^\/v1\/sessions\/[^/]+\/transcript$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method });
+      if (transcripts) {
+        return answer(transcripts[transcriptsIndex++] ?? transcripts[transcripts.length - 1], echoView());
+      }
+      return { status: 200, ok: true, json: async () => echoView() };
+    }
+    if (/^\/v1\/sessions\/[^/]+\/finish$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body || "{}") });
+      return answer(finishes[finishesIndex++] ?? finishes[finishes.length - 1], {
+        session: { id: "ses_01JABC0033", status: "finished", origin: "asr" },
+      });
+    }
+    if (/^\/v1\/sources\/[^/]+\/progress$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return { status: 200, ok: true, json: async () => ({ positionMs: 0, revision: 1 }) };
+    }
+    // The AI Provider passes (Topic ticks, the end-of-Session report).
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: JSON.stringify({ topics: [], quotes: [], todos: [] }) }, finish_reason: "stop" },
+        ],
+      }),
+    };
+  };
+  return { v1Calls, fetchImpl };
+}
 
 // The offscreen recorder's captureCut answer: one chunk as a data URL.
 function cutReply() {
@@ -2610,10 +1816,10 @@ function pinnedSettings(overrides = {}) {
 test("a wallclock l_ Session anchors to the video timeline on the first bridged position", async () => {
   const sentMessages = [];
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     sentMessages,
   });
 
@@ -2641,6 +1847,8 @@ test("a wallclock l_ Session anchors to the video timeline on the first bridged 
   await playTo(helpers.handleMediaPosition, 840, 960);
   await helpers.handleMediaPosition(mediaPositionMessage(960.4), { tab: { id: 7 } });
   await drain();
+  // The Workers' rows land via the §3.5 poll (the upload carries no text).
+  await helpers.pollTranscriptForTest();
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -2663,10 +1871,10 @@ test("a wallclock l_ Session anchors to the video timeline on the first bridged 
 test("a wallclock Session with no bridged position in the probe window stays wallclock", async () => {
   let now = 1_700_000_000_000;
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     dateNow: () => now,
   });
 
@@ -2701,10 +1909,10 @@ test("a wallclock Session with no bridged position in the probe window stays wal
 test("a live URL converts to replay when a finite-duration recording reports inside the probe window (0.1.66)", async () => {
   let now = 1_700_000_000_000;
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings({ segmentLengthSeconds: 15 }),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [15] }),
     dateNow: () => now,
   });
 
@@ -2729,10 +1937,10 @@ test("a live URL converts to replay when a finite-duration recording reports ins
 test("a live Session converts to replay when a finite-duration recording reports after the probe lapsed (0.1.64)", async () => {
   let now = 1_700_000_000_000;
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     dateNow: () => now,
   });
 
@@ -2774,10 +1982,10 @@ test("a live Session converts to replay when a finite-duration recording reports
 test("a late-detected live replay rewinds an empty Session and transcribes from 0:00", async () => {
   let now = 1_700_000_000_000;
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings({ segmentLengthSeconds: 15 }),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [15] }),
     dateNow: () => now,
   });
 
@@ -2796,6 +2004,7 @@ test("a late-detected live replay rewinds an empty Session and transcribes from 
     tab: { id: 7 },
   });
   await playTo(helpers.handleMediaPosition, 0, 15, { duration: 9272 });
+  await helpers.pollTranscriptForTest();
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2813,10 +2022,10 @@ test("a late-detected live replay rewinds an empty Session and transcribes from 
 test("a true live stream (infinite duration) stays wallclock after the probe lapsed", async () => {
   let now = 1_700_000_000_000;
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     dateNow: () => now,
   });
   await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
@@ -2833,10 +2042,10 @@ test("a true live stream (infinite duration) stays wallclock after the probe lap
 
 test("the first bridged position arms the drag baseline instead of marking a gap", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -2848,6 +2057,7 @@ test("the first bridged position arms the drag baseline instead of marking a gap
   await drain();
   // Stop short of the second 60s boundary: exactly one Segment exists.
   await playTo(helpers.handleMediaPosition, 60, 110);
+  await helpers.pollTranscriptForTest();
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2867,11 +2077,11 @@ test("the first bridged position arms the drag baseline instead of marking a gap
 test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skipped gap", async () => {
   const sentMessages = [];
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
     // The tail cut holds 60s of pre-seek audio; the post-seek Segment 120s.
-    transcribeImpl: asrTranscribe({ durations: [60] }),
     sentMessages,
   });
 
@@ -2881,6 +2091,7 @@ test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skippe
   await playTo(helpers.handleMediaPosition, 0, 60);
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
+  await helpers.pollTranscriptForTest();
 
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   // (a) The pre-seek audio landed as a tail record with pre-seek timestamps.
@@ -2928,11 +2139,11 @@ test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skippe
 
 test("a forward-drag landing snaps up to the Segment grid before resuming (0.1.60)", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
     // The tail cut holds 60s of pre-seek audio; the resumed Segments 60s.
-    transcribeImpl: asrTranscribe({ durations: [60, 60, 60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -2943,6 +2154,7 @@ test("a forward-drag landing snaps up to the Segment grid before resuming (0.1.6
   await playTo(helpers.handleMediaPosition, 0, 60);
   await helpers.handleMediaPosition(mediaPositionMessage(647), { tab: { id: 7 } });
   await drain();
+  await helpers.pollTranscriptForTest();
 
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -2978,10 +2190,10 @@ test("a forward-drag landing snaps up to the Segment grid before resuming (0.1.6
 test("a forward drag discards the in-flight partial Segment (0.1.62)", async () => {
   const sentMessages = [];
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60] }),
     sentMessages,
   });
 
@@ -3014,6 +2226,7 @@ test("a forward drag discards the in-flight partial Segment (0.1.62)", async () 
 
   // Resuming lands full grid cells only: [5:00, 6:00].
   await playTo(helpers.handleMediaPosition, 300, 360);
+  await helpers.pollTranscriptForTest();
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -3037,12 +2250,26 @@ test("a forward drag discards the in-flight partial Segment (0.1.62)", async () 
 
 test("re-listening a failed Segment retries it once and replaces the marker with no duplicates", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    // First pass: seg-0 fails, seg-1 transcribes; the re-listen retry of
-    // seg-0 then succeeds.
-    fetchImpl: noNetworkFetch,
+    // First pass: seg-0's upload is refused (a terminal 400 — the segment
+    // fails locally with its marker), seg-1 archives; the re-listen retry
+    // of seg-0 then uploads under its own free index and is accepted.
+    fetchImpl: apiFetch({
+      // The scripted list repeats its last entry, so the refused first
+      // upload must be followed by explicit 201s for every later Segment.
+      segments: [
+        { status: 400, body: { error: { code: "validation_failed", message: "boom" } } },
+        { status: 201, body: { segment: {} } },
+        { status: 201, body: { segment: {} } },
+        { status: 201, body: { segment: {} } },
+        { status: 201, body: { segment: {} } },
+        { status: 201, body: { segment: {} } },
+        { status: 201, body: { segment: {} } },
+        { status: 201, body: { segment: {} } },
+      ],
+    }).fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ failFirst: 1 }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -3054,6 +2281,7 @@ test("re-listening a failed Segment retries it once and replaces the marker with
   await playTo(helpers.handleMediaPosition, 0, 60);
   await playTo(helpers.handleMediaPosition, 60, 130);
   await playTo(helpers.handleMediaPosition, 130, 250);
+  await helpers.pollTranscriptForTest();
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => segment.status),
@@ -3068,6 +2296,7 @@ test("re-listening a failed Segment retries it once and replaces the marker with
   await playTo(helpers.handleMediaPosition, 0, 60);
   await playTo(helpers.handleMediaPosition, 60, 130);
 
+  await helpers.pollTranscriptForTest();
   // The retry landed under the failed Segment's own id: its marker is
   // replaced in place, the timeline stays single-copy and monotonic.
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
@@ -3093,6 +2322,7 @@ test("re-listening a failed Segment retries it once and replaces the marker with
   // once playback passes the old cursor frontier.
   await playTo(helpers.handleMediaPosition, 130, 240);
   await playTo(helpers.handleMediaPosition, 240, 360);
+  await helpers.pollTranscriptForTest();
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.equal(snapshot.segments.length, 6);
   assert.deepEqual(
@@ -3117,10 +2347,10 @@ test("re-listening a failed Segment retries it once and replaces the marker with
 
 test("an anchored l_ Session re-watching its skipped hole fills it and removes the fully filled marker", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [120, 120, 120, 120] }),
   });
 
   const started = await helpers.handleStartLearning({ url: LIVE_URL, tabId: 7 });
@@ -3143,6 +2373,7 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
   // re-watched hole audio, stamped at the in-hole position; the marker
   // shrinks to the unfilled tail.
   await playTo(helpers.handleMediaPosition, 120, 180);
+  await helpers.pollTranscriptForTest();
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -3152,6 +2383,8 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
     })),
     [{ id: "seg-fill-120", start: 120, duration: 60 }],
   );
+  // The view sync keeps the timeline video-time ordered: the fill's row
+  // (start 2:00) sorts before the shrunken marker (start 3:00).
   assert.deepEqual(
     snapshot.transcriptRecords.map((record) => ({
       text: record.text,
@@ -3159,8 +2392,8 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
       failed: record.failed === true,
     })),
     [
-      { text: "[已跳过 3:00–5:00]", start: 180, failed: true },
       { text: "转写内容", start: 120, failed: false },
+      { text: "[已跳过 3:00–5:00]", start: 180, failed: true },
     ],
   );
 
@@ -3168,6 +2401,7 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
   // crossing the old cursor frontier resumes the normal Segment flow.
   await playTo(helpers.handleMediaPosition, 180, 300);
   await playTo(helpers.handleMediaPosition, 300, 420);
+  await helpers.pollTranscriptForTest();
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -3200,10 +2434,10 @@ test("an anchored l_ Session re-watching its skipped hole fills it and removes t
 
 test("re-watching into a hole from its middle fills it and leaves the remaining head as the shrunken marker", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60, 60, 60, 60, 60, 60, 60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -3222,6 +2456,7 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
   await playTo(helpers.handleMediaPosition, 420, 540);
   await playTo(helpers.handleMediaPosition, 540, 600);
   await playTo(helpers.handleMediaPosition, 600, 720);
+  await helpers.pollTranscriptForTest();
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -3272,10 +2507,10 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
 
 test("seeking out of a hole mid-fill stops filling and re-entering the unfilled head refills it", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -3291,6 +2526,7 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
   await playTo(helpers.handleMediaPosition, 300, 350);
   await helpers.handleMediaPosition(mediaPositionMessage(30), { tab: { id: 7 } });
   await drain();
+  await helpers.pollTranscriptForTest();
   // Filling stopped: the marker keeps its full range intact and no further
   // records land for the abandoned window.
   let snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
@@ -3311,6 +2547,7 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
   await helpers.handleMediaPosition(mediaPositionMessage(200), { tab: { id: 7 } });
   await drain();
   await playTo(helpers.handleMediaPosition, 200, 300);
+  await helpers.pollTranscriptForTest();
   snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
     snapshot.segments.map((segment) => ({
@@ -3337,19 +2574,19 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
 });
 
 test("a failed hole-fill keeps the skipped marker intact for a later retry", async () => {
-  let attempts = 0;
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    // The pre-seek tail uploads (201); the in-hole fill's upload is then
+    // refused (a terminal 400) — its Segment fails locally and stays
+    // retryable.
+    fetchImpl: apiFetch({
+      segments: [
+        { status: 201, body: { segment: {} } },
+        { status: 400, body: { error: { code: "validation_failed", message: "boom" } } },
+      ],
+    }).fetchImpl,
     sendMessageImpl: cutReply(),
-    // The pre-seek tail transcribes; the in-hole fill then fails.
-    transcribeImpl: async () => {
-      attempts += 1;
-      if (attempts === 2) throw new Error("provider boom");
-      return [
-        { text: "转写内容", start: 0, duration: attempts === 1 ? 60 : 120, language: "zh" },
-      ];
-    },
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -3365,6 +2602,7 @@ test("a failed hole-fill keeps the skipped marker intact for a later retry", asy
   await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
   await drain();
   await playTo(helpers.handleMediaPosition, 300, 360);
+  await helpers.pollTranscriptForTest();
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   // The hole marker keeps its FULL range — a failed fill never shrinks it.
@@ -3390,10 +2628,10 @@ test("a failed hole-fill keeps the skipped marker intact for a later retry", asy
 
 test("a drag deep through a hole skips the unwatched window's fill and resumes at the new position", async () => {
   const helpers = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe({ durations: [60, 60, 60] }),
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
@@ -3413,6 +2651,7 @@ test("a drag deep through a hole skips the unwatched window's fill and resumes a
   await drain();
   await playTo(helpers.handleMediaPosition, 580, 600);
   await playTo(helpers.handleMediaPosition, 600, 720);
+  await helpers.pollTranscriptForTest();
 
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
@@ -3445,10 +2684,10 @@ test("a drag deep through a hole skips the unwatched window's fill and resumes a
 test("a worker restart keeps the anchored video timeline and its cursor", async () => {
   const sentMessages = [];
   const first = loadBackgroundHelpers({
+    stored: CREDENTIAL_STORE,
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     sentMessages,
   });
   const started = await first.handleStartLearning({ url: LIVE_URL, tabId: 7 });
@@ -3459,9 +2698,8 @@ test("a worker restart keeps the anchored video timeline and its cursor", async 
   // the snapshot rebuild the context. No re-probe, no wallclock re-arm.
   const second = loadBackgroundHelpers({
     settings: pinnedSettings(),
-    fetchImpl: noNetworkFetch,
+    fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
-    transcribeImpl: asrTranscribe(),
     sentMessages,
     offscreenDocument: false,
     stored: {

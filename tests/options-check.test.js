@@ -169,7 +169,6 @@ function loadOptionsPage({ stored = {} } = {}) {
       },
     },
     YTD_SETTINGS: require("../settings.js"),
-    YTD_SPEECH_PROVIDERS: require("../speech-providers.js"),
   };
   sandbox.globalThis = sandbox;
   vm.runInNewContext(read("options.js"), sandbox);
@@ -191,71 +190,23 @@ function loadOptionsPage({ stored = {} } = {}) {
       form.listeners.submit({ preventDefault() {} });
       await flush();
     },
-    // Radio inputs currently rendered in the Speech Provider field container.
-    radios() {
-      const found = [];
-      const walk = (node) => {
-        for (const child of node.children || []) {
-          if (typeof child !== "object" || child === null) continue;
-          if (child.type === "radio") found.push(child);
-          walk(child);
-        }
-      };
-      walk(elementById("speechProviderFields"));
-      return found;
-    },
   };
 }
 
-test("the Qwen section renders the 转写模式 radio and saves the choice into the provider config", async () => {
-  const stored = {
-    ytd_settings: {
-      aiApiKey: "sk-ai",
-      speechProvider: "qwen",
-      speechProviders: { qwen: { apiKey: "sk-qwen" } },
-    },
-  };
-  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
-  await page.flush();
+test("the options page carries no Speech Provider section (ticket 2.4, D10)", () => {
+  // The audio path archives through the learning service (the Worker holds
+  // the ASR credentials), so the config face shows no provider slots and
+  // loads no provider modules.
+  const html = read("options.html");
+  assert.doesNotMatch(html, /id="speechProvider"/);
+  assert.doesNotMatch(html, /speech-providers\.js/);
+  assert.doesNotMatch(html, /id="speechProviderFields"/);
+  assert.doesNotMatch(html, /api\.groq\.com/);
 
-  // The radio group renders with the definition's two options, defaulting to
-  // 分段转写, under the 转写模式 group label.
-  const radios = page.radios();
-  assert.deepEqual(radios.map((radio) => radio.id), [
-    "speech-qwen-mode-segment",
-    "speech-qwen-mode-realtime",
-  ]);
-  assert.deepEqual(radios.map((radio) => radio.value), ["segment", "realtime"]);
-  assert.equal(
-    radios.find((radio) => radio.value === "segment").checked,
-    true,
-    "segment is preselected when no stored mode exists",
-  );
-  assert.equal(radios.find((radio) => radio.value === "realtime").checked, false);
-  const groupLabel = page.elements.speechProviderFields.children.find(
-    (child) => child?.textContent === "转写模式",
-  );
-  assert.ok(groupLabel, "the 转写模式 group label renders");
-
-  // Choosing 实时转写 persists into speechProviders.qwen.mode on save,
-  // alongside the untouched credentials.
-  radios.find((radio) => radio.value === "realtime").listeners.change();
-  await page.submit();
-  const saved = page.stored.ytd_settings;
-  assert.equal(saved.speechProviders.qwen.mode, "realtime");
-  assert.equal(saved.speechProviders.qwen.apiKey, "sk-qwen");
-
-  // Reopening the page reloads with the stored value preselected.
-  const reloaded = loadOptionsPage({ stored: page.stored });
-  await reloaded.flush();
-  const reloadedRealtime = reloaded
-    .radios()
-    .find((radio) => radio.value === "realtime");
-  assert.equal(
-    reloadedRealtime.checked,
-    true,
-    "the stored realtime choice preselects the radio",
-  );
+  const js = read("options.js");
+  assert.doesNotMatch(js, /YTD_SPEECH_PROVIDERS/);
+  assert.doesNotMatch(js, /speechProviderSelect/);
+  assert.doesNotMatch(js, /sttApiKey/);
 });
 
 // --- Segment length field (#22): render, save, and migration survival -------
@@ -321,7 +272,7 @@ test("a stamped blob's tuned Segment length survives an options save", async () 
   assert.equal(page.elements.segmentLengthSeconds.value, 45);
   await page.submit();
   assert.equal(page.stored.ytd_settings.segmentLengthSeconds, 45);
-  assert.equal(page.stored.ytd_settings.settingsVersion, 3);
+  assert.equal(page.stored.ytd_settings.settingsVersion, 4);
 });
 
 test("the Segment length field markup matches the segmenter clamp and copy guidance", () => {
@@ -336,30 +287,38 @@ test("the Segment length field markup matches the segmenter clamp and copy guida
 
   // 0.1.61: the supported range is 5-60 seconds; the help copy says so and
   // points at the drag-grid coupling (shorter lengths skip less per drag).
+  // Ticket 2.4: the retired realtime mode is gone from the copy.
   const help = options.translate("zh-CN", "segmentLengthHelp");
   assert.match(help, /分段转写模式下每段采集的音频时长/);
   assert.match(help, /默认 30 秒/);
   assert.match(help, /可填范围 5～60 秒/);
-  assert.match(help, /实时转写模式下此字段不生效/);
   assert.match(help, /拖拽落点会对齐到该时长的整数倍边界/);
+  assert.doesNotMatch(help, /实时转写/);
 });
 
-test("other providers are unaffected: the Groq section renders no radio", async () => {
+test("saving drops stored ASR key fields and stamps v4 (ticket 2.4, D10)", async () => {
   const stored = {
     ytd_settings: {
       aiApiKey: "sk-ai",
+      settingsVersion: 3,
       speechProvider: "groq",
-      speechProviders: { groq: { apiKey: "gsk-x" } },
+      speechProviders: { groq: { apiKey: "gsk-gone" } },
+      sttApiKey: "stt-gone",
+      segmentLengthSeconds: 45,
     },
   };
-  const page = loadOptionsPage({ stored });
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
   await page.flush();
 
-  assert.deepEqual(page.radios(), []);
+  assert.equal(page.elements.segmentLengthSeconds.value, 45);
   await page.submit();
-  assert.deepEqual(page.stored.ytd_settings.speechProviders.groq, {
-    apiKey: "gsk-x",
-  });
+
+  const saved = page.stored.ytd_settings;
+  assert.equal(saved.segmentLengthSeconds, 45);
+  assert.equal(saved.settingsVersion, 4);
+  assert.equal("speechProvider" in saved, false);
+  assert.equal("speechProviders" in saved, false);
+  assert.equal("sttApiKey" in saved, false);
 });
 
 // --- Learning service fields (P6): load + save -------------------------------

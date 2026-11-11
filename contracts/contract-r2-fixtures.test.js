@@ -42,7 +42,8 @@ const GAP_REASONS = new Set(["skipped"]);
 // the acceptance range (session-segmenter.js: 5–60s, default 30).
 const SEGMENT_DURATION_MS = { min: 5000, max: 60000 };
 // The audio upload cap in encoded form, aligned with the Qwen Speech
-// Provider's documented 10 MB input limit (speech-providers.js).
+// Provider's documented 10 MB input limit (apps/worker, the server-side
+// transcription path since ticket 2.4).
 const MAX_ENCODED_AUDIO_BYTES = 10 * 1024 * 1024;
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;

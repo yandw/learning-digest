@@ -25,7 +25,7 @@ test("empty or invalid AI endpoint config falls back to the Bailian Qwen default
   const empty = settings.normalize({});
   assert.equal(empty.aiBaseUrl, "https://dashscope.aliyuncs.com/compatible-mode/v1");
   assert.equal(empty.aiModel, "qwen3.8-flash");
-  assert.equal(empty.settingsVersion, 3);
+  assert.equal(empty.settingsVersion, 4);
   assert.equal(
     settings.chatCompletionsUrl(),
     "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -45,55 +45,33 @@ test("empty or invalid AI endpoint config falls back to the Bailian Qwen default
   assert.equal(settings.isValidAiBaseUrl(""), false);
 });
 
-test("custom STT base URL, key, and model are preserved", () => {
-  const normalized = settings.normalize({
-    sttApiKey: "  stt-key  ",
-    sttBaseUrl: "https://api.example.com/stt/v1/",
-    sttModel: "  whisper-example  ",
-  });
-
-  assert.equal(normalized.sttBaseUrl, "https://api.example.com/stt/v1");
-  assert.equal(normalized.sttModel, "whisper-example");
-  assert.equal(normalized.sttApiKey, "stt-key");
-  assert.equal(
-    settings.sttTranscriptionsUrl(normalized.sttBaseUrl),
-    "https://api.example.com/stt/v1/audio/transcriptions",
-  );
-});
-
-test("empty or invalid STT endpoint config falls back to Groq defaults", () => {
-  const empty = settings.normalize({});
-  assert.equal(empty.sttBaseUrl, "https://api.groq.com/openai/v1");
-  assert.equal(empty.sttModel, "whisper-large-v3-turbo");
-  assert.equal(empty.sttApiKey, "");
-  assert.equal(
-    settings.sttTranscriptionsUrl(),
-    "https://api.groq.com/openai/v1/audio/transcriptions",
-  );
-
-  const invalid = settings.normalize({
-    sttBaseUrl: "not a url",
-    sttModel: "   ",
-  });
-  assert.equal(invalid.sttBaseUrl, settings.DEFAULTS.sttBaseUrl);
-  assert.equal(invalid.sttModel, settings.DEFAULTS.sttModel);
-});
-
-test("AI and STT provider fields normalize independently", () => {
-  // A broken AI config (legacy "custom") must not reset or clear the STT
-  // fields, and vice versa — the two providers are configured separately.
-  const normalized = settings.normalize({
-    provider: "custom",
-    aiApiKey: "custom-secret",
-    sttApiKey: "stt-secret",
+test("the v4 retirement drops the local ASR key config (ticket 2.4, D10)", () => {
+  // The audio path archives through the learning service now (the Worker
+  // holds the ASR credentials), so the plugin's config face carries no ASR
+  // keys: the Speech Provider slots AND the legacy STT fields are gone,
+  // and a stored blob's keys are dropped on the next read+persist.
+  const stored = settings.normalize({
+    settingsVersion: 3,
+    speechProvider: "groq",
+    speechProviders: { groq: { apiKey: "gsk-gone" } },
+    sttApiKey: "stt-gone",
     sttBaseUrl: "https://api.groq.com/openai/v1",
-    sttModel: "whisper-large-v3",
+    sttModel: "whisper-large-v3-turbo",
   });
 
-  assert.equal(normalized.aiApiKey, "");
-  assert.equal(normalized.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
-  assert.equal(normalized.sttApiKey, "stt-secret");
-  assert.equal(normalized.sttModel, "whisper-large-v3");
+  assert.equal(stored.settingsVersion, 4);
+  assert.equal("speechProvider" in stored, false);
+  assert.equal("speechProviders" in stored, false);
+  assert.equal("sttApiKey" in stored, false);
+  assert.equal("sttBaseUrl" in stored, false);
+  assert.equal("sttModel" in stored, false);
+
+  // The same for a fresh default blob: the keys never come back.
+  const fresh = settings.normalize({});
+  assert.equal("speechProvider" in fresh, false);
+  assert.equal("speechProviders" in fresh, false);
+  assert.equal("sttApiKey" in fresh, false);
+  assert.equal(settings.sttTranscriptionsUrl, undefined);
 });
 
 test("legacy custom migration clears only the AI key and is idempotent", () => {
@@ -120,94 +98,6 @@ test("legacy custom migration clears only the AI key and is idempotent", () => {
     aiApiKey: "new-deepseek-key",
   });
   assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
-});
-
-test("Speech Provider selection and per-provider credentials are preserved", () => {
-  const normalized = settings.normalize({
-    speechProvider: "groq",
-    speechProviders: {
-      groq: {
-        apiKey: "  gsk-test  ",
-        baseUrl: "https://api.example.com/v1/",
-        model: "  whisper-custom  ",
-      },
-    },
-  });
-
-  assert.equal(normalized.speechProvider, "groq");
-  assert.deepEqual(normalized.speechProviders.groq, {
-    apiKey: "gsk-test",
-    baseUrl: "https://api.example.com/v1/",
-    model: "whisper-custom",
-  });
-});
-
-test("Speech Provider settings default to Qwen with empty credentials", () => {
-  const normalized = settings.normalize({});
-
-  assert.equal(normalized.speechProvider, "qwen");
-  assert.deepEqual(normalized.speechProviders, {});
-});
-
-test("malformed Speech Provider credentials are dropped, not passed through", () => {
-  const normalized = settings.normalize({
-    speechProvider: 42,
-    speechProviders: {
-      groq: "not-an-object",
-      tencent: { apiKey: 7, secretId: "  id-1  " },
-    },
-  });
-
-  assert.equal(normalized.speechProvider, "qwen");
-  assert.equal(normalized.speechProviders.groq, undefined);
-  assert.deepEqual(normalized.speechProviders.tencent, { secretId: "id-1" });
-});
-
-test("legacy custom AI migration does not clear Speech Provider credentials", () => {
-  const normalized = settings.normalize({
-    provider: "custom",
-    aiApiKey: "custom-secret",
-    speechProvider: "groq",
-    speechProviders: { groq: { apiKey: "gsk-keep" } },
-  });
-
-  assert.equal(normalized.aiApiKey, "");
-  assert.equal(normalized.speechProviders.groq.apiKey, "gsk-keep");
-});
-
-test("the Qwen transcription mode is validated into the segment/realtime enum", () => {
-  // Both enum values pass through; the field is scoped to the qwen slot
-  // (spec #44), the only provider that declares it.
-  const realtime = settings.normalize({
-    speechProviders: { qwen: { mode: "realtime" } },
-  });
-  assert.equal(realtime.speechProviders.qwen.mode, "realtime");
-
-  const segment = settings.normalize({
-    speechProviders: { qwen: { mode: "segment" } },
-  });
-  assert.equal(segment.speechProviders.qwen.mode, "segment");
-
-  // Invalid and absent values fall back to the default segment mode.
-  for (const bad of ["yolo", "", "  ", 7, null]) {
-    const normalized = settings.normalize({
-      speechProviders: { qwen: { mode: bad } },
-    });
-    assert.equal(normalized.speechProviders.qwen.mode, "segment", String(bad));
-  }
-  const absent = settings.normalize({
-    speechProviders: { qwen: { apiKey: "sk-qwen" } },
-  });
-  assert.deepEqual(absent.speechProviders.qwen, {
-    apiKey: "sk-qwen",
-    mode: "segment",
-  });
-
-  // Other providers are untouched: no mode key is invented for them.
-  const groq = settings.normalize({
-    speechProviders: { groq: { apiKey: "gsk-keep" } },
-  });
-  assert.deepEqual(groq.speechProviders.groq, { apiKey: "gsk-keep" });
 });
 
 test("Segment length defaults to 30 seconds", () => {
@@ -266,7 +156,7 @@ test("a legacy blob with the old default Segment length migrates to 30", () => {
   const normalized = settings.normalize({ segmentLengthSeconds: 120 });
 
   assert.equal(normalized.segmentLengthSeconds, 30);
-  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(normalized.settingsVersion, 4);
 });
 
 test("a stamped blob keeps a hand-tuned Segment length", () => {
@@ -279,7 +169,7 @@ test("a stamped blob keeps a hand-tuned Segment length", () => {
   });
 
   assert.equal(normalized.segmentLengthSeconds, 45);
-  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(normalized.settingsVersion, 4);
 });
 
 test("an unstamped blob with a hand-tuned Segment length keeps it", () => {
@@ -299,7 +189,7 @@ test("a v2 blob at the old AI defaults migrates to the Bailian Qwen defaults", (
     aiModel: "deepseek/deepseek-v4.1-flash-1017",
   });
 
-  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(normalized.settingsVersion, 4);
   assert.equal(
     normalized.aiBaseUrl,
     "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -317,7 +207,7 @@ test("an unstamped blob at the old AI defaults migrates too", () => {
 
   assert.equal(normalized.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
   assert.equal(normalized.aiModel, settings.DEFAULTS.aiModel);
-  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(normalized.settingsVersion, 4);
 });
 
 test("a v2 blob with a customized AI endpoint passes through untouched", () => {
@@ -329,7 +219,7 @@ test("a v2 blob with a customized AI endpoint passes through untouched", () => {
 
   assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
   assert.equal(normalized.aiModel, "my-model");
-  assert.equal(normalized.settingsVersion, 3);
+  assert.equal(normalized.settingsVersion, 4);
 });
 
 test("a v2 blob with only one AI field customized keeps both stored values", () => {
@@ -356,10 +246,12 @@ test("a v2 blob with only one AI field customized keeps both stored values", () 
 });
 
 test("a blob stamped at the current version is never AI-migrated", () => {
-  // A user who deliberately re-picks the old provider on a v3 install keeps
-  // it: only pre-v3 stamps (or unstamped blobs) are migrated.
+  // A user who deliberately re-picks the old provider on a current install
+  // keeps it: only pre-v4 stamps (or unstamped blobs) are migrated. (The
+  // v4 bump re-runs the AI default migration once for v3 blobs — the same
+  // one-time semantics every version stamp carries.)
   const normalized = settings.normalize({
-    settingsVersion: 3,
+    settingsVersion: 4,
     aiBaseUrl: "https://openrouter.ai/api/v1",
     aiModel: "deepseek/deepseek-v4.1-flash-1017",
   });

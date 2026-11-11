@@ -436,9 +436,27 @@ test("media end auto-finishes the captions Session like any video Session", asyn
 
 // --- the fall-through: no captions → the capture flow, honestly -----------------
 
-test("without captions the capture flow takes over and the state says 无字幕", async () => {
+test("without captions the capture flow takes over as the ASR archive path", async () => {
   const { v1Calls, fetchImpl } = v1Fetch({
     resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    // The ASR Session's own poll: nothing produced yet (the stub file's
+    // captions-finished default would stamp a captions origin on it).
+    transcripts: [
+      {
+        status: 200,
+        body: {
+          sessionId: SESSION_CREATE.response.body.session.id,
+          sourceId: "src_01JABC0002",
+          resourceId: "res_01JABC0001",
+          sessionStatus: "active",
+          origin: null,
+          records: [],
+          gaps: [],
+          pending: [],
+          failed: [],
+        },
+      },
+    ],
   });
   const tabMessages = [];
   const helpers = loadBackgroundHelpers({
@@ -453,7 +471,6 @@ test("without captions the capture flow takes over and the state says 无字幕"
         ? { success: true, available: false, reason: "no_subtitle_track" }
         : { success: true },
     tabMessages,
-    transcribeImpl: async () => [{ text: "转写内容", start: 0, duration: 120, language: "zh" }],
     sendMessageImpl: (message) =>
       message.action === "captureCut"
         ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
@@ -465,11 +482,13 @@ test("without captions the capture flow takes over and the state says 无字幕"
   assert.equal(started.success, true);
   const pointer = helpers.readStored("ytd_active_capture");
   assert.equal(pointer.capturePath, "asr", "the capture flow is the ASR path");
-  assert.equal(pointer.serverSessionId ?? null, null, "no server Session on the capture path in this ticket");
+  // Ticket 2.4: the ASR path archives against its own server Session
+  // (§3.1 ran before any capture machinery).
+  assert.ok(pointer.serverSessionId, "the pointer carries the server Session id");
   assert.equal(
     v1Calls.some((call) => call.path.endsWith("/sessions")),
-    false,
-    "the ASR path's Session lifecycle is ticket 2.4's wiring, not this one",
+    true,
+    "POST sessions ran before capture",
   );
   assert.equal(
     v1Calls.some((call) => call.path.endsWith("/captions")),
@@ -485,12 +504,24 @@ test("without captions the capture flow takes over and the state says 无字幕"
   await helpers.handleEndLearning();
 });
 
-test("without captions and without a Speech Provider the start fails exactly as before", async () => {
-  const { fetchImpl } = v1Fetch({ resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }] });
+test("the 无字幕 fallback needs no ASR key config at all (D10)", async () => {
+  // Settings carry no Speech Provider fields anymore (v4 normalize drops
+  // them): the start still proceeds — the Worker holds the ASR credentials
+  // server-side, the plugin uploads audio and polls.
+  const storedSettings = {
+    provider: "deepseek",
+    aiApiKey: "test-key",
+    aiBaseUrl: "https://api.example.com/ai",
+    aiModel: "test-model",
+    apiBaseUrl: "https://api.example.com",
+    segmentLengthSeconds: 60,
+    summaryIntervalMinutes: 30,
+  };
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+  });
   const helpers = loadBackgroundHelpers({
-    // A KNOWN provider id with no credentials — the same refusal shape the
-    // pre-2.5 flow produced (an unknown provider id would throw).
-    settings: baseSettings({ speechProvider: "groq", speechProviders: {} }),
+    settings: storedSettings,
     stored: CREDENTIAL_STORE,
     tabsGet: async (tabId) => ({ id: tabId, url: BILI_P2, title: "视频课 P2" }),
     fetchImpl,
@@ -498,13 +529,24 @@ test("without captions and without a Speech Provider the start fails exactly as 
       message.action === "getBilibiliCaptions"
         ? { success: true, available: false, reason: "no_subtitle_track" }
         : { success: true },
+    sendMessageImpl: (message) =>
+      message.action === "captureCut"
+        ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
+        : { success: true },
   });
 
   const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
 
-  assert.equal(started.success, false);
-  assert.match(started.error, /Settings first/);
-  assert.equal(helpers.readStored("ytd_active_capture"), undefined);
+  assert.equal(started.success, true, started.error || "");
+  const pointer = helpers.readStored("ytd_active_capture");
+  assert.equal(pointer.capturePath, "asr");
+  assert.ok(pointer.serverSessionId);
+  assert.equal(
+    v1Calls.some((call) => call.path.endsWith("/sessions")),
+    true,
+  );
+
+  await helpers.handleEndLearning();
 });
 
 test("a non-bilibili page never probes for captions (xiaoe starts as before)", async () => {
@@ -545,12 +587,12 @@ test("a reopened panel sees the captions Session presented as captions", async (
 
   const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
   assert.equal(started.success, true);
-  assert.equal(started.transcribeMode, "captions");
+  assert.equal(started.capturePath, "captions");
 
   // The panel reopen path (getSessionState) presents the same shape.
   const state = await helpers.handleGetSessionState();
   assert.equal(state.active, true);
-  assert.equal(state.transcribeMode, "captions");
+  assert.equal(state.capturePath, "captions");
   assert.equal(state.state.transcriptOrigin, "captions");
 
   await helpers.handleEndLearning();

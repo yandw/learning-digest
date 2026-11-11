@@ -14,18 +14,10 @@ var YTD_SETTINGS = (() => {
     // end-of-session report pass, explain-selection).
     aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     aiModel: "qwen3.8-flash",
-    // Speech Transcription Provider: independent of the AI Provider above.
-    // Defaults to Groq's OpenAI-compatible endpoint, but the user can point
-    // it at any OpenAI-compatible /audio/transcriptions host.
-    sttApiKey: "",
-    sttBaseUrl: "https://api.groq.com/openai/v1",
-    sttModel: "whisper-large-v3-turbo",
-    // Speech Provider (Learning Digest): which provider transcribes Segments,
-    // and that provider's own credentials. Credentials are keyed by provider
-    // id so later providers (Tencent Cloud ASR, Qwen ASR) add their own
-    // slot without touching existing ones. Stored locally only.
-    speechProvider: "qwen",
-    speechProviders: {},
+    // (Ticket 2.4, D10) The local Speech Provider / STT key config is
+    // RETIRED: the audio path archives Segments through the learning
+    // service, whose Worker holds the ASR credentials server-side. The
+    // plugin's config face carries no ASR keys anymore (v4 below).
     // Session capture: target Segment length in seconds. The browser layer
     // hands this to session-segmenter.js, which clamps to the same range.
     segmentLengthSeconds: 30,
@@ -76,36 +68,9 @@ var YTD_SETTINGS = (() => {
     return typeof value === "string" && value.trim() ? value.trim() : fallback;
   }
 
-  // The Qwen provider's transcription mode (#45): "segment" (default) or
-  // "realtime". Scoped to the qwen slot — the only provider whose
-  // credentialFields declare the radio — so every other provider's stored
-  // credentials keep their exact shape.
-  function normalizeProviderTranscribeMode(providerId, credentials) {
-    if (providerId !== "qwen") return credentials;
-    return {
-      ...credentials,
-      mode: credentials.mode === "realtime" ? "realtime" : "segment",
-    };
-  }
-
-  /**
-   * Per-provider Speech Provider credentials: an object keyed by provider id
-   * whose values are objects of trimmed strings. Malformed entries are
-   * dropped rather than passed through.
-   */
-  function normalizeSpeechProviders(input) {
-    if (!input || typeof input !== "object" || Array.isArray(input)) return {};
-    const result = {};
-    for (const [providerId, credentials] of Object.entries(input)) {
-      if (!credentials || typeof credentials !== "object") continue;
-      const clean = {};
-      for (const [key, value] of Object.entries(credentials)) {
-        if (typeof value === "string") clean[key] = value.trim();
-      }
-      result[providerId] = normalizeProviderTranscribeMode(providerId, clean);
-    }
-    return result;
-  }
+  // The Qwen transcription-mode normalizer (#45) retired with the Speech
+  // Provider config itself (ticket 2.4, D10): no provider credentials are
+  // stored or normalized anymore.
 
   /**
    * Integer clamp shared by every ranged setting: finite numbers are floored
@@ -216,7 +181,14 @@ var YTD_SETTINGS = (() => {
   // installs that saved settings under an older default (see the Segment
   // and AI Provider migrations above). Callers persist the stamped object
   // once after migrate.
-  const SETTINGS_VERSION = 3;
+  //
+  // v4 (0.3.0, ticket 2.4 / D10): the local ASR key config is retired.
+  // There is nothing to translate — the fields are simply not emitted
+  // anymore, so a stored blob's speechProvider/speechProviders/stt* keys
+  // (the provider keys AND the legacy Groq STT fields) disappear on the
+  // next read+persist. The bump marks the retirement for any future code
+  // that needs to tell whether a blob predates it.
+  const SETTINGS_VERSION = 4;
   const LEGACY_SEGMENT_DEFAULT = 120;
   // Pre-0.1.51 AI Provider defaults. Only migrateAiProvider reads them, to
   // recognize blobs that still point at the old published provider.
@@ -239,19 +211,8 @@ var YTD_SETTINGS = (() => {
       aiModel: isLegacyCustom(input)
         ? DEFAULTS.aiModel
         : normalizeModel(migratedAi.aiModel, DEFAULTS.aiModel),
-      // Speech Transcription Provider fields are unrelated to the legacy
-      // "custom" AI provider migration, so they're never cleared by it.
-      sttApiKey:
-        typeof input.sttApiKey === "string" ? input.sttApiKey.trim() : "",
-      sttBaseUrl: normalizeBaseUrl(input.sttBaseUrl, DEFAULTS.sttBaseUrl),
-      sttModel: normalizeModel(input.sttModel, DEFAULTS.sttModel),
-      // Speech Provider fields are unrelated to the legacy "custom" AI
-      // provider migration, so they're never cleared by it.
-      speechProvider:
-        typeof input.speechProvider === "string" && input.speechProvider.trim()
-          ? input.speechProvider.trim()
-          : DEFAULTS.speechProvider,
-      speechProviders: normalizeSpeechProviders(input.speechProviders),
+      // (v4, D10) The Speech Provider / STT key fields are retired: never
+      // emitted, so stored ASR keys are dropped on the next read+persist.
       segmentLengthSeconds: normalizeSegmentLengthSeconds(
         migrateSegmentLength(input),
       ),
@@ -277,10 +238,6 @@ var YTD_SETTINGS = (() => {
     return `${normalizeBaseUrl(baseUrl, DEFAULTS.aiBaseUrl)}/chat/completions`;
   }
 
-  function sttTranscriptionsUrl(baseUrl = DEFAULTS.sttBaseUrl) {
-    return `${normalizeBaseUrl(baseUrl, DEFAULTS.sttBaseUrl)}/audio/transcriptions`;
-  }
-
   return {
     STORAGE_KEY,
     DEFAULTS,
@@ -290,7 +247,6 @@ var YTD_SETTINGS = (() => {
     normalize,
     migrateLegacyCustom,
     chatCompletionsUrl,
-    sttTranscriptionsUrl,
   };
 })();
 

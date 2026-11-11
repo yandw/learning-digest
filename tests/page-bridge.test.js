@@ -15,6 +15,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { createPageBridge, POSITION_INTERVAL_MS } = require("../page-bridge.js");
+const YTD_YOUTUBE_CAPTIONS_MODULE = require("../youtube-captions.js");
 
 // --- hand-rolled stubs -------------------------------------------------------
 
@@ -70,6 +71,9 @@ function stubEnvironment({
   location = {},
   title = "测试课程",
   createCaptionReader = undefined,
+  createYouTubeCaptionReader = undefined,
+  scripts = [],
+  fetch = undefined,
 } = {}) {
   const sent = [];
   const messageListeners = [];
@@ -98,7 +102,9 @@ function stubEnvironment({
   const documentStub = {
     title,
     querySelectorAll(selector) {
-      return selector === "video" ? videos : [];
+      if (selector === "video") return videos;
+      if (selector === "script") return scripts;
+      return [];
     },
   };
   const env = {
@@ -112,6 +118,10 @@ function stubEnvironment({
     console: { debug() {}, warn() {} },
   };
   if (createCaptionReader !== undefined) env.createCaptionReader = createCaptionReader;
+  if (createYouTubeCaptionReader !== undefined) {
+    env.createYouTubeCaptionReader = createYouTubeCaptionReader;
+  }
+  if (fetch !== undefined) env.fetch = fetch;
   const bridge = createPageBridge(env);
   return { bridge, sent, messageListeners, pagehideListeners, intervals, windowStub, documentStub };
 }
@@ -535,4 +545,160 @@ test("the factory is safe to require outside a page (no chrome, no timers)", () 
   // document/window/chrome: reaching this test proves nothing blew up and no
   // interval kept the Node process alive.
   assert.equal(typeof createPageBridge, "function");
+});
+
+// --- youtube captions command (Ticket 2.6, #69) ----------------------------------
+//
+// The getYouTubeCaptions command mirrors getBilibiliCaptions: the frame that
+// owns an embedded player response describing ITS OWN video answers (async —
+// the timedtext body may need a fetch); frames without one stay silent. The
+// reader lives in youtube-captions.js (loaded before this file in the
+// manifest; injectable as env.createYouTubeCaptionReader for tests).
+
+function stubYouTubeReader({ present = true, readResult, readThrows = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    create() {
+      return {
+        probe() {
+          calls.push({ kind: "probe" });
+          return present
+            ? { present: true, source: "embedded_script" }
+            : { present: false, source: null };
+        },
+        async read(options) {
+          calls.push({ kind: "read", options });
+          if (readThrows) throw readThrows;
+          return readResult;
+        },
+      };
+    },
+  };
+}
+
+const YT_CAPTIONS_READ_RESULT = {
+  available: true,
+  segments: [{ startMs: 1000, endMs: 3000, text: "字幕正文" }],
+  track: { language: "zh-Hans", asr: false, autoTranslated: false },
+};
+
+test("getYouTubeCaptions answers asynchronously with the reader's read result", async () => {
+  const reader = stubYouTubeReader({ readResult: YT_CAPTIONS_READ_RESULT });
+  const bridged = createPageBridge({
+    document: { title: "t", querySelectorAll: () => [] },
+    window: { location: { href: "https://www.youtube.com/watch?v=AbCdEfGh123" }, addEventListener() {} },
+    chrome: { runtime: { sendMessage() {}, onMessage: { addListener() {} } } },
+    setInterval() {
+      return 0;
+    },
+    console: { debug() {}, warn() {} },
+    createYouTubeCaptionReader: reader.create,
+  });
+  const responses = [];
+
+  const handled = bridged.handleMessage({ action: "getYouTubeCaptions" }, (r) =>
+    responses.push(r),
+  );
+
+  assert.equal(handled, true, "the async response is held open");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.deepEqual(responses[0].segments, YT_CAPTIONS_READ_RESULT.segments);
+  assert.deepEqual(reader.calls.map((call) => call.kind), ["probe", "read"]);
+});
+
+test("getYouTubeCaptions passes the studied interval through to the reader", async () => {
+  const reader = stubYouTubeReader({ readResult: YT_CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({
+    createYouTubeCaptionReader: reader.create,
+  });
+  const responses = [];
+
+  bridge.handleMessage(
+    { action: "getYouTubeCaptions", intervalStartMs: 1000, intervalEndMs: 5000 },
+    (r) => responses.push(r),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(reader.calls.find((call) => call.kind === "read").options, {
+    intervalStartMs: 1000,
+    intervalEndMs: 5000,
+  });
+});
+
+test("getYouTubeCaptions stays silent when the frame owns no player response", () => {
+  const reader = stubYouTubeReader({ present: false, readResult: YT_CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ createYouTubeCaptionReader: reader.create });
+  const responses = [];
+
+  const handled = bridge.handleMessage({ action: "getYouTubeCaptions" }, (r) => responses.push(r));
+
+  assert.equal(handled, false, "frames without an owned player response never answer");
+  assert.deepEqual(responses, []);
+});
+
+test("getYouTubeCaptions answers unavailable when the reader throws", async () => {
+  const reader = stubYouTubeReader({ readThrows: new Error("boom") });
+  const { bridge } = stubEnvironment({ createYouTubeCaptionReader: reader.create });
+  const responses = [];
+
+  bridge.handleMessage({ action: "getYouTubeCaptions" }, (r) => responses.push(r));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.equal(responses[0].available, false, "a failed read never invents captions");
+  assert.equal(typeof responses[0].reason, "string");
+});
+
+test("getYouTubeCaptions is ignored when no youtube reader is available", () => {
+  const { bridge } = stubEnvironment({});
+  const responses = [];
+
+  const handled = bridge.handleMessage({ action: "getYouTubeCaptions" }, (r) => responses.push(r));
+
+  assert.equal(handled, false);
+  assert.deepEqual(responses, []);
+});
+
+test("getYouTubeCaptions drives the shipped reader over the embedded script", async () => {
+  // No injected reader: the bridge wires the real youtube-captions.js the
+  // way the manifest loads it, over a stubbed watch page.
+  const playerResponse = {
+    videoDetails: { videoId: "AbCdEfGh123" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [
+          {
+            languageCode: "zh-Hans",
+            baseUrl: "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans",
+            isTranslatable: true,
+          },
+        ],
+        translationLanguages: [],
+      },
+    },
+  };
+  const { bridge } = stubEnvironment({
+    location: { href: "https://www.youtube.com/watch?v=AbCdEfGh123" },
+    scripts: [{ text: `var ytInitialPlayerResponse = ${JSON.stringify(playerResponse)};` }],
+    createYouTubeCaptionReader:
+      YTD_YOUTUBE_CAPTIONS_MODULE.createYouTubeCaptionReader,
+    // The page world's same-origin fetch, stubbed to fail fast here — the
+    // reader must answer honestly, never hang or invent.
+    fetch: async () => {
+      throw new Error("no network in tests");
+    },
+  });
+  const responses = [];
+
+  bridge.handleMessage({ action: "getYouTubeCaptions" }, (r) => responses.push(r));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.equal(responses[0].available, false, "a failed timedtext fetch is an honest unavailable");
+  assert.equal(responses[0].reason, "timedtext_failed");
 });

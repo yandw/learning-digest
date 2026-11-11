@@ -205,6 +205,8 @@
 
 **影响**：补学后再次生成自然覆盖新增材料（聚合范围随归档增长）；同资料多 Session 的来源与时间轴在输入中分别保留，citations 可跨 Session 指回各自记录。
 
+**多 Source 资料后果**：一个 Resource 可挂多个 Source（D5 预留的 1:N——分集、直播回放各自成 Source），而本决策的聚合把全部 Sessions 的记录按裸毫秒合并进单一时间轴：不同 Source 的行会按时间互相穿插，且模型输入只见 sessionId、不见 Source 身份（模型无法区分「第几集」）。回查不受影响——citations 的 sessionId 在服务端可解析回所属 Source（引用清洗按 Session 归属对账，Web 回跳锚定到具体记录）。按 Source 分节聚合（每集一节、分别归纳）留作后续演进；当前一轮验收样本以单 Source 为主。
+
 ## D18 · 用量口径：只记录不计费；两个记录时点都是产物落库时刻
 
 **决策**：`GET /v1/usage` 返回账号级累计：`audioSeconds`（转写时长，秒）、`summaryCount`（总结生成次数）、`summaryInputChars`（总结输入字符累计）、`updatedAt`（最后一次计数写入时间）。**只记录不计费**——价格、账单、付款与配额执行全部 out of scope（#49 Out of Scope）；本端点是 Web 查询入口的数据源，无时间窗与资源维度参数（后续计费口径若需要维度扩展，加端点或参数，不改本形态）。

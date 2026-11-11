@@ -156,7 +156,7 @@
 
 ### 3.0 环境准备（一次）
 
-1. [ ] 版本核对：扩展卡片 **0.2.13**、Web **0.1.5**、API **0.1.5**（第三轮零插件/Worker 变化，零 bump；版本矩阵见 §5.1）
+1. [ ] 版本核对：扩展卡片 **0.2.13**、Web **0.1.5**、API **0.1.6**（第三轮零插件/Worker 变化，零 bump；API 0.1.6 = 三轮 review 修正，版本矩阵见 §5.1）
 2. [ ] API/Web/worker 照 §2.0 启动；AI Provider 不需额外配置——API 默认 `LD_AI_PROVIDER` 空 = 确定性 stub（`LD_AI_API_KEY` 只在走真实 qwen 时需要，见 §5.3 / §5.5）
 3. [ ] §2.0 第 6 条的两门课样本已登记：课程 A（可学习、有逐字稿）与课程 B（只收藏不学习）
 4. [ ] 双账号配置沿用第一轮（round1 §2.0 第 2 条：两个邮箱、两个 Chrome profile）
@@ -244,6 +244,7 @@
 - **同步生成数十秒**：总结无渐进产出、不设轮询面（与 D12 的逐字稿轮询不同构）；真实 provider 下 POST 可长时间挂起（`LD_AI_TIMEOUT_MS` 默认 120s，API `server.timeout` 随之抬到 max(10s, aiTimeoutMs+5s)），Web 侧「生成中…」禁用等待、**不假超时**——状态只由 201/失败回落。异步化（任务下发 Worker）是 D16 预留演进，端点形态不因此改变。
 - **失败不落脏数据**：AI Provider 调用失败/超时/不可解析 → 502 `summary_generation_failed`，**不产生 Summary 记录、列表与用量都不出现本次尝试**；重试 = 用户再次发起。对比逐字稿的 `failed[]`：那是段级进行时状态（音频已入库、失败可排查），总结是原子产物——要么完整存在，要么不存在（§3.6.4 按此验收）。409 `no_transcript_to_summarize` 同样不发起 AI 调用、不计数。
 - **D17 · 生成输入与引用清洗**：生成范围 = 该 Resource **当前全部已归档材料**（全部 Sessions 的 records 全文 + gaps 跳过标记 + notes；active 与 finished 都计入；pending/failed/静音段不进输入），不接受客户端裁剪；prompt 外移 [prompts/course-summary.md](../prompts/course-summary.md)（D4 先例，代码只做变量填充）。**引用清洗丢弃策略**：模型返回的 citations 落库前逐条对账——sessionId 归属该 Resource、区间精确命中该 Session 的真实归档记录、quote 是记录文本的逐字摘句，对不上的引用**丢弃不落死链**（宁可少引用）；全部无效时 `citations=[]` 仍落正文。补学后再生成自然覆盖新增材料（聚合范围随归档增长）。
+- **多 Source 聚合**：一个 Resource 挂多个 Source（分集/直播回放，D5 的 1:N）时，聚合按裸毫秒合并排序、不同 Source 的行互相穿插，模型输入只见 sessionId 不见 Source 身份；回查仍正确（sessionId→sourceId 服务端可解析），按 Source 分节聚合留作后续演进（decisions.md D17「多 Source 资料后果」）；当前验收样本以单 Source 为主。
 - **D18 · 用量只记录不计费**：无价格、账单、付款与配额执行（#49 Out of Scope）；账号级累计、无时间窗与资源维度参数。`audioSeconds` 在音频段**首次 done 时**累加（静音段计入、失败/转写中不计、回写首存为准天然防重复）；`summaryCount`/`summaryInputChars` 在总结**成功落库时**记录；用量单调递增、契约无扣减路径。**全新账号 usage null**：从未产生用量时 `updatedAt=null`，Web 显示「从未产生用量」而非一排零（§3.6.3）。
 - **Markdown 渲染支持面刻意最小**（第三轮 review 裁量）：支持标题/列表/粗体/段落，其余 Markdown 语法字面降级展示；渲染路径**从不产出 HTML 字符串**（解析为纯文本 view model、`createElement`+`textContent` 建 DOM、零 innerHTML），quote 等用户可控文本只落文本节点——注入面在测试里钉住。
 - **worker lease 未做（沿用第二轮现状）**：claimed-but-unfinished 任务不会被重新排队（§2.7.5）；第三轮只读消费归档产物、不改变逐字稿管线语义，租约/重排仍属后续票。
@@ -260,7 +261,7 @@
 | --- | --- | --- |
 | 浏览器插件 | 0.2.13 | 根 `manifest.json` / `package.json` / `tests/release.test.js` 三处同步；0.2.9 B 站字幕（2.5）→ 0.2.10 YouTube 字幕（2.6）→ 0.2.11 ASR 路径切换 + D10 退役（2.4）→ 0.2.12 强制转写（2.7）→ 0.2.13 二轮 review 修正（词汇统一 + transcript-shapes 共享模块）。**第三轮零行为变化（课程总结只在 Web/API，D16），零 bump** |
 | Web 学习库 | 0.1.5 | `apps/web/package.json`；0.1.3 = 逐字稿回查（2.8）→ 0.1.4 = finished 后 pending 段标注排队 → **0.1.5 = 课程总结生成/历史/引用回跳 + 安全 Markdown 渲染（markdown.js，零 innerHTML）+ 用量入口（§3）** |
-| 后端 API | 0.1.5 | `apps/api/package.json`；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）→ 0.1.4 = requireSession 去重 + 崩溃窗口自愈 → **0.1.5 = AI Provider seam（stub/qwen）+ 总结端点（同步生成 + 引用清洗）+ 用量端点（§3）；对外代际 `/v1` 不变** |
+| 后端 API | 0.1.6 | `apps/api/package.json`；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）→ 0.1.4 = requireSession 去重 + 崩溃窗口自愈 → 0.1.5 = AI Provider seam（stub/qwen）+ 总结端点（同步生成 + 引用清洗）+ 用量端点（§3）→ **0.1.6 = 三轮 review 修正（qwen 超时信号按 generate 调用新建 + 系统提示补 [sourceId 位置] 标记说明）；对外代际 `/v1` 不变** |
 | 录播转写 Worker | 0.1.0 | `apps/worker/package.json`；首个可运行版本（2.3）：pull 循环 + stub/qwen provider seam。三轮无行为变化，零 bump |
 | 契约 | v1 + v2 + v3 | `contracts/contract-v1.md`（D1–D8）+ `contracts/contract-r2.md`（D9–D15）+ **`contracts/contract-r3.md`（D16–D18，三轮契约面：Summary/Citation/generation/Usage + 4 端点 + 409/502，已落地）**；prompt 外移 [prompts/course-summary.md](../prompts/course-summary.md)（D17） |
 

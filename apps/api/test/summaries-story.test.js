@@ -53,8 +53,8 @@ const SEGMENT = {
   audioBase64: "U3Rvcnktc2VnbWVudC1hdWRpbw==",
 };
 
-/** ASR provider keyed by the segment's source-timeline start; 210000 fails. */
-function storyAsrProvider() {
+/** Speech Provider keyed by the segment's source-timeline start; 210000 fails. */
+function storySpeechProvider() {
   return {
     id: "story-asr",
     transcribe: async ({ segment }) => {
@@ -107,7 +107,7 @@ test("story: generate while learning is unfinished -> catch-up session -> regene
       token: WORKER_TOKEN,
     });
 
-    // The resource: the fixture's bilibili P2 lesson.
+    // The resource: the fixture's bilibili P2 分集.
     const created = await harness.request("POST", "/v1/resources", {
       headers: authHeader(token),
       body: { url: "https://www.bilibili.com/video/BV1ab411L78c?p=2", title: TITLE },
@@ -150,7 +150,7 @@ test("story: generate while learning is unfinished -> catch-up session -> regene
     let done = 0;
     let failed = 0;
     for (let i = 0; i < 4; i += 1) {
-      const summary = await runOnce({ client: workerClient, provider: storyAsrProvider() });
+      const summary = await runOnce({ client: workerClient, provider: storySpeechProvider() });
       done += summary.done;
       failed += summary.failed;
     }
@@ -196,7 +196,7 @@ test("story: generate while learning is unfinished -> catch-up session -> regene
     // record on the same source, finished. ---
     const catchUpSession = await newSession();
     await upload(harness, token, catchUpSession.id, 0, 120000);
-    const drained = await runOnce({ client: workerClient, provider: storyAsrProvider() });
+    const drained = await runOnce({ client: workerClient, provider: storySpeechProvider() });
     assert.deepEqual(drained, { claimed: 1, done: 1, failed: 0 });
     await finishWithGaps(harness, token, catchUpSession.id, []);
 
@@ -263,5 +263,5 @@ test("story: generate while learning is unfinished -> catch-up session -> regene
 
 // The summary generation itself runs through the same deterministic stub
 // provider as the rest of the suite (config/env default; real AI calls
-// stay out of tests, D16). Only the Worker's ASR provider is scripted
+// stay out of tests, D16). Only the Worker's Speech Provider is scripted
 // above, so the archived records carry the fixture texts verbatim.

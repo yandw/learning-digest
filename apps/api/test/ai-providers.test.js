@@ -9,7 +9,10 @@
  * input material so the citation reconciliation can hold. The qwen
  * provider is tested for REQUEST SHAPE through an injected fetch (Bailian
  * compatible-mode chat/completions; no external network) — real calls
- * stay out of the test suite (D16: 真实调用留实测).
+ * stay out of the test suite (D16: 真实调用留实测). The per-call timeout
+ * signal is observed through the injectable `createTimeoutSignal` factory
+ * (round-3 review fix: a construction-time signal aborts once and would
+ * poison every later generation).
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -175,6 +178,70 @@ test("qwen provider: HTTP failure and unparseable payloads both throw (the route
     createQwenProvider({ apiKey: "k", fetchImpl: garbageFetch }).generate({ system: "s", user: "u" }),
     /unparseable/,
   );
+});
+
+test("qwen provider: the timeout signal is created fresh per generate() call, never once at construction", async () => {
+  const factoryCalls = [];
+  const signals = [];
+  const fetchImpl = async (_url, init) => {
+    signals.push(init.signal);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '{"content":"c","citations":[]}' } }] }),
+      text: async () => "",
+    };
+  };
+  const provider = createQwenProvider({
+    apiKey: "k",
+    fetchImpl,
+    timeoutMs: 120000,
+    createTimeoutSignal: (ms) => {
+      factoryCalls.push(ms);
+      return AbortSignal.timeout(ms);
+    },
+  });
+  await provider.generate({ system: "s", user: "u" });
+  await provider.generate({ system: "s", user: "u" });
+
+  // Every call hands fetch a NEW, un-aborted signal. A construction-time
+  // `AbortSignal.timeout` would be permanently aborted once timeoutMs
+  // elapsed, making every later generation fail (502 forever).
+  assert.equal(signals.length, 2);
+  assert.ok(signals[0] instanceof AbortSignal && signals[1] instanceof AbortSignal);
+  assert.notEqual(signals[0], signals[1]);
+  assert.ok(!signals[0].aborted && !signals[1].aborted);
+  // The timeout VALUE stays fixed at construction; only the signal is new.
+  assert.deepEqual(factoryCalls, [120000, 120000]);
+});
+
+test("qwen provider: a timed-out call does not poison the next one", async () => {
+  const fetchImpl = async (_url, init) => {
+    if (init.signal.aborted) {
+      throw new Error("This operation was aborted");
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ choices: [{ message: { content: '{"content":"ok","citations":[]}' } }] }),
+      text: async () => "",
+    };
+  };
+  let call = 0;
+  const provider = createQwenProvider({
+    apiKey: "k",
+    fetchImpl,
+    timeoutMs: 120000,
+    // First call's timeout has already fired (simulated elapsed timeout);
+    // every later call gets a fresh, live signal — the production
+    // regression this test pins (pre-fix: one shared construction-time
+    // signal stayed aborted, so the second call could never succeed).
+    createTimeoutSignal: (ms) => (call += 1) === 1 ? AbortSignal.abort() : AbortSignal.timeout(ms),
+  });
+
+  await assert.rejects(provider.generate({ system: "s", user: "u" }), /aborted/);
+  const second = await provider.generate({ system: "s", user: "u" });
+  assert.equal(second.content, "ok");
 });
 
 test("selectAiProvider: defaults to stub; qwen only with a key; unknown names fail loudly", () => {

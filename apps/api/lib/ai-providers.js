@@ -203,11 +203,24 @@ function parseSummaryPayload(text) {
 }
 
 /**
+ * A FRESH timeout signal per generate() call (round-3 review fix).
+ * `AbortSignal.timeout` built at provider construction would be
+ * permanently aborted once timeoutMs elapsed, poisoning every later
+ * generation (the qwen path would 502 forever after the first timeout);
+ * the value (`timeoutMs`) is fixed at construction, the signal is not.
+ * Injectable so tests can observe the signals handed to fetch.
+ */
+function createTimeoutSignal(timeoutMs) {
+  return AbortSignal.timeout(timeoutMs);
+}
+
+/**
  * Bailian compatible-mode chat/completions (worker/lib/providers/qwen.js
  * is the shape precedent — same endpoint family, different credential
- * ownership, D16). One request per generation: system + user messages.
+ * ownership, D16). One request per generation: system + user messages,
+ * one fresh timeout signal per request (createTimeoutSignal).
  */
-function createQwenProvider({ apiKey, baseUrl, model, fetchImpl, timeoutMs } = {}) {
+function createQwenProvider({ apiKey, baseUrl, model, fetchImpl, timeoutMs, createTimeoutSignal: timeoutSignalFactory } = {}) {
   const trimmedKey = typeof apiKey === "string" ? apiKey.trim() : "";
   if (!trimmedKey) {
     throw new Error("Qwen AI Provider requires an API key (env LD_AI_API_KEY; separate from the worker's speech credentials, D16)");
@@ -215,7 +228,8 @@ function createQwenProvider({ apiKey, baseUrl, model, fetchImpl, timeoutMs } = {
   const resolvedModel = (typeof model === "string" && model.trim()) || DEFAULTS.model;
   const resolvedBase = normalizeBaseUrl(baseUrl);
   const doFetch = fetchImpl || fetch;
-  const signal = fetchImpl ? undefined : AbortSignal.timeout(timeoutMs || DEFAULTS.timeoutMs);
+  const makeSignal = timeoutSignalFactory || createTimeoutSignal;
+  const resolvedTimeoutMs = timeoutMs || DEFAULTS.timeoutMs;
 
   async function generate({ system, user }) {
     const response = await doFetch(`${resolvedBase}/chat/completions`, {
@@ -231,7 +245,7 @@ function createQwenProvider({ apiKey, baseUrl, model, fetchImpl, timeoutMs } = {
           { role: "user", content: user },
         ],
       }),
-      signal,
+      signal: makeSignal(resolvedTimeoutMs),
     });
     if (!response.ok) {
       const body = typeof response.text === "function" ? await response.text().catch(() => "") : "";

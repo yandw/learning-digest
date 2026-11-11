@@ -142,8 +142,6 @@ function baseSettings(overrides = {}) {
     aiBaseUrl: "https://api.example.com/ai",
     aiModel: "test-model",
     apiBaseUrl: "https://api.example.com",
-    speechProvider: "groq",
-    speechProviders: { groq: { apiKey: "groq-key" } },
     segmentLengthSeconds: 60,
     summaryIntervalMinutes: 30,
     ...overrides,
@@ -173,14 +171,13 @@ test("开始学习 on a YouTube captions page archives the captions as-read (§3
     fetchImpl,
     tabMessageImpl: youtubeCaptionsTabMessage(),
     sentMessages,
-    // 全程零 ASR means the provider gate must not even be consulted.
-    settings: baseSettings({ speechProvider: "none", speechProviders: {} }),
+    settings: baseSettings(),
   });
 
   const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
 
   assert.equal(started.success, true, started.error || "");
-  assert.equal(started.transcribeMode, "captions");
+  assert.equal(started.capturePath, "captions");
 
   const captionsCall = v1Calls.find((call) => call.path.endsWith("/captions"));
   assert.ok(captionsCall, "POST /v1/sessions/{id}/captions went out");
@@ -279,9 +276,24 @@ test("a 409 transcript_origin_conflict surfaces verbatim on the YouTube path too
 
 // --- the fall-through: no captions → the capture flow, honestly -----------------
 
-test("without captions the capture flow takes over and the state says 无字幕", async () => {
+test("without captions the capture flow takes over as the ASR archive path", async () => {
   const { v1Calls, fetchImpl } = v1Fetch({
     resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    // The ASR Session's own poll: nothing produced yet.
+    transcripts: [
+      {
+        status: 200,
+        body: {
+          sessionId: SESSION_CREATE.response.body.session.id,
+          sessionStatus: "active",
+          origin: null,
+          records: [],
+          gaps: [],
+          pending: [],
+          failed: [],
+        },
+      },
+    ],
   });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
@@ -292,7 +304,6 @@ test("without captions the capture flow takes over and the state says 无字幕"
       message.action === "getYouTubeCaptions"
         ? { success: true, available: false, reason: "no_subtitle_track" }
         : { success: true },
-    transcribeImpl: async () => [{ text: "转写内容", start: 0, duration: 120, language: "zh" }],
     sendMessageImpl: (message) =>
       message.action === "captureCut"
         ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
@@ -301,9 +312,10 @@ test("without captions the capture flow takes over and the state says 无字幕"
 
   const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
 
-  assert.equal(started.success, true);
+  assert.equal(started.success, true, started.error || "");
   const pointer = helpers.readStored("ytd_active_capture");
   assert.equal(pointer.capturePath, "asr", "the capture flow is the ASR path");
+  assert.ok(pointer.serverSessionId, "the ASR path archives against its server Session");
   assert.equal(
     v1Calls.some((call) => call.path.endsWith("/captions")),
     false,
@@ -357,11 +369,11 @@ test("a reopened panel sees the YouTube captions Session presented as captions",
 
   const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
   assert.equal(started.success, true);
-  assert.equal(started.transcribeMode, "captions");
+  assert.equal(started.capturePath, "captions");
 
   const state = await helpers.handleGetSessionState();
   assert.equal(state.active, true);
-  assert.equal(state.transcribeMode, "captions");
+  assert.equal(state.capturePath, "captions");
   assert.equal(state.state.transcriptOrigin, "captions");
 
   await helpers.handleEndLearning();

@@ -21,6 +21,52 @@ function baseSettings(overrides = {}) {
   };
 }
 
+/**
+ * The archive pipeline's fetch seam (ticket 2.4): resolve / create /
+ * transcript / finish / progress answer per path; the AI pass answers with
+ * an empty report body.
+ */
+function archiveFlowFetch() {
+  return async (url, init) => {
+    const p = String(url).replace(/^https:\/\/api\.example\.com/, "");
+    if (p === "/v1/sources/resolve") {
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          matched: true,
+          resource: { id: "res_01JABC0001", title: "注意力机制详解", kind: "video", createdAt: "2026-11-10T08:00:00Z" },
+          source: {
+            id: "src_01JABC0002",
+            resourceId: "res_01JABC0001",
+            kind: "video",
+            url: REPLAY_URL,
+            platformId: "xiaoe-tech",
+            platformVideoId: "l_abc123def456",
+            episodeId: null,
+            platformScopeId: "app12345",
+            progress: { positionMs: 0, revision: 1 },
+          },
+        }),
+      };
+    }
+    if (/\/sessions$/.test(p)) {
+      return { status: 201, ok: true, json: async () => ({ session: { id: "ses_X", status: "active", origin: null } }) };
+    }
+    if (/transcript$/.test(p)) {
+      return { status: 200, ok: true, json: async () => ({ sessionId: "ses_X", sessionStatus: "active", origin: "asr", records: [], gaps: [], pending: [], failed: [] }) };
+    }
+    if (/finish$/.test(p)) {
+      return { status: 200, ok: true, json: async () => ({ session: { id: "ses_X", status: "finished", origin: "asr" } }) };
+    }
+    if (/progress$/.test(p)) {
+      return { status: 200, ok: true, json: async () => ({ positionMs: 0, revision: 1 }) };
+    }
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] }) };
+  };
+}
+
+
 // --- checkAuthNow: the startup probe -----------------------------------------
 
 test("checkAuthNow reports unconfigured when nothing is linked", async () => {
@@ -233,7 +279,14 @@ test("an unauthorized click skips the streamId fetch and starts no capture", asy
 test("a linked worker still starts capture exactly as before (PoC regression)", async () => {
   const sentMessages = [];
   const helpers = loadBackgroundHelpers({
-    settings: baseSettings(),
+    settings: baseSettings({ apiBaseUrl: "https://api.example.com" }),
+    // Ticket 2.4: the start archives through the API pipeline first (the
+    // linked credential drives resolve/create), so the flow needs the /v1
+    // seam and the credential in storage.
+    stored: {
+      ytd_auth_credential: { token: "ext-token", credentialGroupId: "grp_1", email: "l@e.com" },
+    },
+    fetchImpl: archiveFlowFetch(),
     sentMessages,
   });
 
@@ -242,7 +295,7 @@ test("a linked worker still starts capture exactly as before (PoC regression)", 
     tabId: 7,
     streamId: "pre-fetched-id",
   });
-  assert.equal(result.success, true);
+  assert.equal(result.success, true, result.error || "");
   const start = sentMessages.find((message) => message.action === "captureStart");
   assert.ok(start, "captureStart reached the offscreen recorder");
 });

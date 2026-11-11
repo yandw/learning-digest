@@ -31,6 +31,15 @@ var YTD_SESSION_ARCHIVE = (() => {
   const parseEnvelope = apiClient.parseEnvelope;
   const envelopeCode = apiClient.envelopeCode;
 
+  // Shared Transcript-shape helpers (transcript-shapes.js): the §2.2
+  // Segment check lives there now, shared with the caption readers. Same
+  // require-fallback discipline as api-client above.
+  const transcriptShapes =
+    typeof YTD_TRANSCRIPT_SHAPES !== "undefined"
+      ? YTD_TRANSCRIPT_SHAPES
+      : require("./transcript-shapes.js");
+  const isValidSegment = transcriptShapes.isValidSegment;
+
   // ============================================================
   // PATHS (§1: opaque ids are encoded — a hostile id must not change
   // the path shape)
@@ -86,19 +95,6 @@ var YTD_SESSION_ARCHIVE = (() => {
   // ============================================================
   // POST /v1/sessions/{id}/captions (§3.3)
   // ============================================================
-
-  function isValidSegment(segment) {
-    return (
-      !!segment &&
-      typeof segment === "object" &&
-      Number.isInteger(segment.startMs) &&
-      segment.startMs >= 0 &&
-      Number.isInteger(segment.endMs) &&
-      segment.endMs >= segment.startMs &&
-      typeof segment.text === "string" &&
-      segment.text.trim() !== ""
-    );
-  }
 
   /**
    * §3.3 request body: the read captions as-read. Null when anything is

@@ -527,6 +527,28 @@ test("presentTranscript interleaves an active session's pending and failed with 
   assert.equal(pending.jumpUrl, null);
 });
 
+test("presentTranscript marks a finished session's leftover pending as queued, not transcribing", () => {
+  // D15 evolution (round-2 review): finished 后 pending 随尾段 drain 渐进
+  // 清空,worker 停机且无租约时可滞留——视图标注排队而非终态
+  // (contract-r2 §2.5/§3.5)。
+  const view = {
+    sessionId: "ses_01JABC0033",
+    sourceId: "src_01JABC0002",
+    resourceId: "res_01JABC0009",
+    sessionStatus: "finished",
+    origin: "asr",
+    records: [],
+    gaps: [],
+    pending: [{ segmentIndex: 3, startMs: 90000, endMs: 120000, status: "pending" }],
+    failed: [],
+  };
+  const entries = presentTranscript(view, DETAIL_WITH_SESSIONS.sources);
+
+  assert.deepEqual(entries.map((e) => e.kind), ["pending"]);
+  assert.equal(entries[0].text, "转写排队中（会话已结束）");
+  assert.equal(entries[0].stamp, "1:30–2:00");
+});
+
 test("presentTranscript gives caption records no jump URL on platforms without seek support", () => {
   const view = sessionExampleById.get("api-session-transcript-captions-finished").response.body;
   const xiaoeSources = [

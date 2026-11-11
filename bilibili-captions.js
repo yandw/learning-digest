@@ -28,19 +28,16 @@
  * creates the reader over its own environment.
  */
 var YTD_BILIBILI_CAPTIONS = (() => {
-  // Segment shape of contract-r2 §2.2 minus origin (the server stamps it).
-  function isValidSegment(segment) {
-    return (
-      !!segment &&
-      typeof segment === "object" &&
-      Number.isInteger(segment.startMs) &&
-      segment.startMs >= 0 &&
-      Number.isInteger(segment.endMs) &&
-      segment.endMs >= segment.startMs &&
-      typeof segment.text === "string" &&
-      segment.text.trim() !== ""
-    );
-  }
+  // Shared Transcript-shape helpers (transcript-shapes.js): the §2.2
+  // Segment check and the coverage block live there now, shared with
+  // youtube-captions.js and session-archive.js. In Node tests we require
+  // them; in the content script the global arrives via the manifest's
+  // content-script load order.
+  const transcriptShapes =
+    typeof YTD_TRANSCRIPT_SHAPES !== "undefined"
+      ? YTD_TRANSCRIPT_SHAPES
+      : require("./transcript-shapes.js");
+  const { isValidSegment, computeCaptionCoverage } = transcriptShapes;
 
   function isValidCoverage(coverage) {
     if (!coverage || typeof coverage !== "object") return false;
@@ -86,50 +83,6 @@ var YTD_BILIBILI_CAPTIONS = (() => {
     if (segments.length === 0) return null;
     segments.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
     return segments;
-  }
-
-  /**
-   * Which ranges of [intervalStartMs, intervalEndMs] carry no caption
-   * segment — the coverage block the 强制转写 ticket consumes. Null when
-   * the interval itself is not well-formed (the caller then omits
-   * coverage instead of guessing an interval).
-   */
-  function computeCaptionCoverage(segments, intervalStartMs, intervalEndMs) {
-    const start = Number(intervalStartMs);
-    const end = Number(intervalEndMs);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
-      return null;
-    }
-    if (!Array.isArray(segments)) return null;
-    // Garbage in, no coverage out: any malformed segment makes the whole
-    // computation refuse (the 强制转写 input must never rest on a guessed
-    // union of half-parsed ranges).
-    if (!segments.every(isValidSegment)) return null;
-    const coveredRanges = [];
-    for (const segment of segments) {
-      if (!isValidSegment(segment)) continue;
-      const from = Math.max(segment.startMs, Math.round(start));
-      const to = Math.min(segment.endMs, Math.round(end));
-      if (to > from) coveredRanges.push([from, to]);
-    }
-    coveredRanges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    const merged = [];
-    for (const range of coveredRanges) {
-      const last = merged[merged.length - 1];
-      if (last && range[0] <= last[1]) {
-        last[1] = Math.max(last[1], range[1]);
-      } else {
-        merged.push([range[0], range[1]]);
-      }
-    }
-    const uncovered = [];
-    let cursor = Math.round(start);
-    for (const [from, to] of merged) {
-      if (from > cursor) uncovered.push({ startMs: cursor, endMs: from });
-      cursor = Math.max(cursor, to);
-    }
-    if (cursor < Math.round(end)) uncovered.push({ startMs: cursor, endMs: Math.round(end) });
-    return { covered: uncovered.length === 0, uncovered };
   }
 
   /**
@@ -352,6 +305,10 @@ var YTD_BILIBILI_CAPTIONS = (() => {
   return {
     createBilibiliCaptionReader,
     parseCaptionSegments,
+    // Re-exported from transcript-shapes.js: the shared §2.2 Segment check
+    // and coverage computation (existing consumers keep importing them
+    // from this module).
+    isValidSegment,
     computeCaptionCoverage,
     parseBridgeCaptionResponse,
   };

@@ -9,15 +9,16 @@ const path = require("node:path");
 
 const apiRoot = path.resolve(__dirname, "..");
 
-test("apps/api release metadata is 0.1.3", () => {
+test("apps/api release metadata is 0.1.4", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(apiRoot, "package.json"), "utf8"),
   );
   assert.equal(packageJson.name, "@learning-digest/api");
-  // 0.1.3 (ticket 2.3, issue #66): audio-segment upload + worker tasks
-  // (contract-r2 §3.4/§3.7; decisions D11/D13/D14/D15), wired onto 2.2's
-  // transcript write interface.
-  assert.equal(packageJson.version, "0.1.3");
+  // 0.1.4 (round-2 review fix): requireSession reuses sessions.js's
+  // account-scoped lookup, and the ingest crash-window self-heal — a
+  // resend of an already-stored segment re-enqueues its lost task
+  // (§3.4's 200 replay keeps 首存为准).
+  assert.equal(packageJson.version, "0.1.4");
   assert.equal(packageJson.private, true);
 });
 

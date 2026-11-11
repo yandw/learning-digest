@@ -163,3 +163,5 @@
 - 缺口三态分开（记录 / gap / failed）让「跳过」与「未取得文本」显式可区分（#49 第二轮要求），且每态有单一产生者：gap 只来自 finish 上报，failed 只来自 Worker 回写，缺记录只能是字幕不全或静音——三端不需要猜。
 
 **影响**：字幕提交时机由插件实现票定（建议路径承诺后、finish 前提交一次，使强制转写永远不需要撤销）；回看补录成功的跳过范围不再上报 gap；静音段（done 但无文本）不产生记录也不标记缺口。
+
+**演进（第二轮 review）**：初稿曾把「`finished` 后 `pending` 必为空」当作 TranscriptView 的不变量。实现落点与之不符：插件的常规收尾是先 finish 再 drain——`endActiveSession` 结束 Session 后继续以有限预算（15 拍）轮询，等尾段 `pending` 渐进清空；而 Worker 领取的租约（lease）重排未做，worker 停机且无租约时滞留任务不会被重排，`pending` 因此可在 `finished` 视图里滞留。契约（§2.5 / §3.5）据此改为「`finished` 后 `pending` 随尾段 drain 渐进清空」，客户端按 `sessionStatus` 把滞留段标注为排队而非终态；租约重排仍属 API 内部机制（§3.7），后续补上时该措辞可自然收敛回「必为空」。

@@ -171,13 +171,14 @@
 - **D12 · 轮询 TranscriptView**：无推送通道。ASR 路径 4s 拍 + 失败退避封顶 30s；字幕路径 15s 慢拍；终态 stand-down 不复活。Web 回查用同一端点同一形态。
 - **D13 · Worker pull 模型**：独立发布单元 0.1.0，claim 领取（音频 base64 内联 ≤10MB）、result 回写终态；API 无心跳/推送。**worker 串行并发（concurrency 1）+ 5s 空轮询**：吞吐上限人工可感，横向扩缩 = 多起 worker 进程（§2.7）。
 - **D14 · 临时音频**：done 即删、failed 保留至 Session 结束 + 宽限期（宽限清理是 API 部署侧职责，未实现——failed 段音频目前会在 `LD_API_AUDIO_DIR` 留存）；上传先落库再入队，重发永不覆盖。
-- **D15 · 字幕直归档 + 同区间单一路径**：字幕不全不补全；首次提交锁 origin、反向 409 `transcript_origin_conflict`（服务端第二道保险，插件决策面已在前置避免，人工验收不触发）；强制转写由客户端在归档前切路径（§2.5）；gaps 只收显式跳过。
+- **D15 · 字幕直归档 + 同区间单一路径**：字幕不全不补全；首次提交锁 origin、反向 409 `transcript_origin_conflict`（服务端第二道保险，插件决策面已在前置避免，人工验收不触发）；强制转写由客户端在归档前切路径（§2.5）；gaps 只收显式跳过。**演进（第二轮 review）**：`finished` 后 `pending` 不再承诺「必为空」——插件 `endActiveSession` 先 finish 后 drain（预算 15 拍），`pending` 随尾段渐进清空；worker 停机且无租约时可滞留，Web 详情页把滞留段标注为「转写排队中（会话已结束）」而非终态（§2.5 / §3.5）。
 - **SPA 软导航不注入**（沿用第一轮 P10b 限制）：站内软导航进入播放页不触发内容脚本注入；从学习库打开原地址（新标签页全量加载）不受影响。
 - **回跳尽力**（沿用第一轮 P12）：B 站 `t=`、YouTube `t=…s` 可带参定位；小鹅通、小红书仅展示时间戳（§2.6.3）。
 - **小红书图文纯文本笔记**：图文无逐字稿路径（无媒体可采集），只有小红书**视频**走 ASR（§2.4.4）；图文笔记行为沿用第一轮。
 - **YouTube PO-token 字幕轨**：需要 MAIN-world PO-token 授权的字幕轨未移植（2.6 明确不移植）——此类视频字幕不可读，走 ASR 回退（§2.2.3），属预期路径。
 - **lease 机制未做**（2.3 头注释）：claimed-but-unfinished 任务（worker 在 transcribing 中崩溃/被停）不会被重新排队——任务停 transcribing、对应段保持「转写中」，直到租约机制落地（API 侧，后续票）。§2.7.5 按现状记录。
 - **AI Provider key 待配置**：结束学习后的 AI 纪要 pass 沿用 PoC 本地 options 配置；未配置时纪要生成失败提示，不影响字幕/ASR 归档与回查。
+- **详情页 busy 粒度**（第二轮 review 裁量）：慢 API 下 `openDetail` 持锁使详情页整体 busy（加载态覆盖整页），分区加载留后续票优化。
 
 ## 5. 发布记录模板
 
@@ -187,10 +188,10 @@
 
 | 发布单元 | 版本 | 备注 |
 | --- | --- | --- |
-| 浏览器插件 | 0.2.12 | 根 `manifest.json` / `package.json` / `tests/release.test.js` 三处同步；0.2.9 B 站字幕（2.5）→ 0.2.10 YouTube 字幕（2.6）→ 0.2.11 ASR 路径切换 + D10 退役（2.4）→ 0.2.12 强制转写（2.7） |
-| Web 学习库 | 0.1.3 | `apps/web/package.json`；0.1.3 = 逐字稿回查（2.8） |
-| 后端 API | 0.1.3 | `apps/api/package.json`；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）；对外代际 `/v1` 不变 |
-| 录播转写 Worker | 0.1.0 | `apps/worker/package.json`；首个可运行版本（2.3）：pull 循环 + stub/qwen provider seam |
+| 浏览器插件 | 0.2.13 | 根 `manifest.json` / `package.json` / `tests/release.test.js` 三处同步；0.2.9 B 站字幕（2.5）→ 0.2.10 YouTube 字幕（2.6）→ 0.2.11 ASR 路径切换 + D10 退役（2.4）→ 0.2.12 强制转写（2.7）→ 0.2.13 二轮 review 修正（词汇统一 + transcript-shapes 共享模块） |
+| Web 学习库 | 0.1.4 | `apps/web/package.json`；0.1.3 = 逐字稿回查（2.8）→ 0.1.4 = finished 后 pending 段标注排队而非「转写中」 |
+| 后端 API | 0.1.4 | `apps/api/package.json`；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）→ 0.1.4 = requireSession 去重 + 崩溃窗口自愈（重发补建任务）；对外代际 `/v1` 不变 |
+| 录播转写 Worker | 0.1.0 | `apps/worker/package.json`；首个可运行版本（2.3）：pull 循环 + stub/qwen provider seam（二轮 review 仅修 run-once 头注释，无运行时行为变化，不 bump） |
 | 契约 | v1 + v2 | `contracts/contract-v1.md`（D1–D8）+ `contracts/contract-r2.md`（D9–D15，即二轮契约面）；第三轮 D16–D18 由三轮契约票补 |
 
 ### 5.2 自动化结果（随分支更新）

@@ -29,7 +29,7 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
    * @param {number} durationSeconds
    * @returns {{text: string, start: number, duration: number, failed: true}}
    */
-  function failedChunkRecord(offsetSeconds, durationSeconds) {
+  function failedSegmentRecord(offsetSeconds, durationSeconds) {
     return {
       text: `[${FAILED_SEGMENT_TEXT}]`,
       start: Math.floor(offsetSeconds),
@@ -39,21 +39,22 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
   }
 
   /**
-   * True when every chunk in the list failed outright, meaning the overall
+   * True when every Segment in the list failed outright, meaning the overall
    * transcription attempt produced no usable text at all. Callers use this
    * to decide whether to fall back to the No-Caption Video message instead
    * of returning a transcript made entirely of failure markers.
    *
-   * @param {Array<Array<object>>} chunkRecordLists
+   * @param {Array<Array<object>>} segmentRecordLists
    * @returns {boolean}
    */
-  function allChunksFailed(chunkRecordLists) {
-    if (!Array.isArray(chunkRecordLists) || chunkRecordLists.length === 0) {
+  function allSegmentsFailed(segmentRecordLists) {
+    if (!Array.isArray(segmentRecordLists) || segmentRecordLists.length === 0) {
       return true;
     }
-    // A chunk contributes "success" only if it produced at least one
-    // non-failed record; an empty or all-failed chunk list counts as failed.
-    return !chunkRecordLists.some(
+    // A Segment contributes "success" only if it produced at least one
+    // non-failed record; an empty or all-failed Segment list counts as
+    // failed.
+    return !segmentRecordLists.some(
       (records) =>
         Array.isArray(records) && records.some((record) => !record.failed),
     );
@@ -75,8 +76,8 @@ var YTD_SPEECH_TRANSCRIPTION = (() => {
 
   return {
     FAILED_SEGMENT_TEXT,
-    failedChunkRecord,
-    allChunksFailed,
+    failedSegmentRecord,
+    allSegmentsFailed,
     formatTimestamp,
   };
 })();

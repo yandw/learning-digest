@@ -16,7 +16,7 @@
  *
  * Failure semantics mirror speech-transcription.js: a failed Segment yields
  * a visible `[语音转录失败]` marker record in the Transcript (reusing
- * failedChunkRecord so the vocabulary stays identical) and never blocks or
+ * failedSegmentRecord so the vocabulary stays identical) and never blocks or
  * discards neighbouring Segments; when every Segment failed, the Session is
  * treated as having no Transcript (allSegmentsFailed).
  */
@@ -202,13 +202,13 @@ var YTD_SESSION_PIPELINE = (() => {
   /**
    * Marks a failed Segment done and swaps its failure-marker record for the
    * retry's records at the same position in the timeline. The marker is
-   * matched by its exact shape (failedChunkRecord over the Segment's own
+   * matched by its exact shape (failedSegmentRecord over the Segment's own
    * range), so gap markers and other Segments' annotations are never
    * touched. When the marker is absent (a pre-0.1.45 snapshot), the records
    * are appended — the Segment still becomes done, never duplicated.
    */
   function replaceFailureMarker(state, segment, records) {
-    const marker = speechTranscription.failedChunkRecord(
+    const marker = speechTranscription.failedSegmentRecord(
       segment.start,
       segment.duration,
     );
@@ -240,7 +240,7 @@ var YTD_SESSION_PIPELINE = (() => {
     // The failure marker covers the Segment's own time range so the gap is
     // visible in the Transcript instead of silently disappearing — the same
     // record shape speech-transcription.js stitches into its output.
-    const marker = speechTranscription.failedChunkRecord(
+    const marker = speechTranscription.failedSegmentRecord(
       segment.start,
       segment.duration,
     );
@@ -275,7 +275,7 @@ var YTD_SESSION_PIPELINE = (() => {
    * Lands the one visible marker record for a seek-forward skipped range
    * (#48): the Digest stays honest about the hole without inventing Segments
    * for audio that was never recorded. The marker shape mirrors
-   * failedChunkRecord (failed: true) so it renders and formats exactly like
+   * failedSegmentRecord (failed: true) so it renders and formats exactly like
    * the other visible annotations.
    *
    * A new range adjacent to (or overlapping) an existing gapSkipped marker
@@ -805,7 +805,7 @@ var YTD_SESSION_PIPELINE = (() => {
    * True when every captured Segment failed (or none produced any usable
    * text), meaning the Session has no Transcript at all. Callers use this to
    * surface "no transcript" instead of a Transcript made entirely of failure
-   * markers, mirroring speech-transcription.js:allChunksFailed.
+   * markers, mirroring speech-transcription.js:allSegmentsFailed.
    *
    * @param {object} state
    * @returns {boolean}

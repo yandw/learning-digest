@@ -239,10 +239,23 @@ function formatRange(startMs, endMs) {
  *   timestamp without a jump affordance, exactly like the notes);
  * - gap:    an explicitly skipped range (finish-reported, reason skipped)
  *           — nothing was captured, so no jump;
- * - pending: a still-transcribing audio segment (「转写中」);
+ * - pending: a still-transcribing audio segment (「转写中」; on a finished
+ *   session a leftover pending row is queued work the drain could not
+ *   finish — 「转写排队中（会话已结束）」, D15 evolution);
  * - failed: a failed audio segment with the contract error message verbatim.
  */
 const TIMELINE_KIND_ORDER = { record: 0, pending: 1, failed: 2, gap: 3 };
+
+/**
+ * The pending row's label. An active session's pending segment is
+ * 「转写中」; a finished session's leftover pending segment is work the
+ * end-of-session drain could not finish (worker 停机且无租约时滞留, D15
+ * evolution) — the view marks it queued instead of presenting a terminal
+ * state (contract-r2 §2.5/§3.5).
+ */
+function pendingLabel(sessionStatus) {
+  return sessionStatus === "finished" ? "转写排队中（会话已结束）" : "转写中";
+}
 
 export function presentTranscript(view, sources) {
   if (!view) {
@@ -275,7 +288,7 @@ export function presentTranscript(view, sources) {
       startMs: segment.startMs,
       endMs: segment.endMs,
       stamp: formatRange(segment.startMs, segment.endMs),
-      text: "转写中",
+      text: pendingLabel(view.sessionStatus),
       detail: null,
       jumpUrl: null,
     })),

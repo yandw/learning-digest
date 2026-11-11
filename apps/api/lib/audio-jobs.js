@@ -42,6 +42,7 @@ const {
   applySegmentDone,
   applySegmentFailed,
 } = require("./transcripts");
+const { findAccountSession } = require("./sessions");
 const { generateId } = require("./ids");
 
 // Transport guard for the audio-segment route: the contract caps the
@@ -141,10 +142,9 @@ function transcriptOriginConflictForAudio() {
 
 /** Lookup the caller's own Session (D2: other accounts read as unknown). */
 function requireSession({ store, accountId, sessionId }) {
-  const session =
-    store
-      .list("sessions")
-      .find((s) => s.id === sessionId && s.accountId === accountId) || null;
+  // sessions.js owns the account-scoped Session lookup (findAccountSession);
+  // this module only adds the throw so callers can keep the sync style.
+  const session = findAccountSession({ store, accountId, sessionId });
   if (!session) {
     throw notFoundSession();
   }
@@ -378,14 +378,62 @@ function applyTaskResult({ store, taskId, body }) {
 }
 
 /**
+ * Enqueue one pending transcription task for an already-stored segment.
+ * Shared by the first-write path and the crash-window self-heal below so
+ * "one stored segment ⇒ exactly one task" has a single implementation.
+ */
+function enqueueTranscriptionTask({ store, now, config, session, accountId, segment, audioBase64 }) {
+  const audioBytes = Buffer.from(audioBase64, "base64");
+  const taskId = generateId("tsk");
+  const audioFile = storeAudioFile({ config, bytes: audioBytes, taskId });
+
+  const task = {
+    taskId,
+    sessionId: session.id,
+    accountId,
+    sourceId: session.sourceId,
+    segmentIndex: segment.segmentIndex,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    audioMimeType: segment.audioMimeType,
+    audioFile,
+    status: "pending",
+    result: null,
+    createdAt: now(),
+    claimedAt: null,
+  };
+  store.set("transcriptionTasks", taskId, task);
+  return task;
+}
+
+/**
+ * The (sessionId, segmentIndex) → task lookup behind the crash-window
+ * self-heal: a task row is the only proof a stored segment will ever be
+ * transcribed.
+ */
+function findSegmentTask({ store, sessionId, segmentIndex }) {
+  return (
+    store
+      .list("transcriptionTasks")
+      .find(
+        (task) =>
+          task.sessionId === sessionId && task.segmentIndex === segmentIndex,
+      ) || null
+  );
+}
+
+/**
  * Store one audio segment (contract-r2 §3.4). Failure order matches the
  * captions path (2.2): 400 validation, 404 (D2), 409 finished (已结束不再
  * 接收 — also covers resends, so a late byte-level replay after finish is
  * the same stop signal as a new segment), 409 origin conflict via
  * claimAudioOrigin (D15). First write for the (sessionId, segmentIndex)
  * key wins and enqueues exactly one task; a repeat is a 200 replay of the
- * stored segment (no overwrite, no second task). Order is never enforced
- * — segmentIndex is the placement.
+ * stored segment (no overwrite, no second task) — unless the crash window
+ * between storing the segment and enqueueing its task swallowed the task,
+ * in which case the resend self-heals by enqueueing it (the resent audio
+ * bytes rebuild the audio file; the stored segment's fields stay 首存为准).
+ * Order is never enforced — segmentIndex is the placement.
  */
 function ingestAudioSegment({ store, now, config, accountId, sessionId, body }) {
   const fields = requireSegmentBody(body);
@@ -408,30 +456,34 @@ function ingestAudioSegment({ store, now, config, accountId, sessionId, body }) 
     },
   });
   if (!created) {
-    // 首存为准: replay the stored segment, never re-enqueue.
+    // 首存为准: replay the stored segment, never overwrite. But first the
+    // crash-window self-heal: if no task exists for this (sessionId,
+    // segmentIndex), the enqueue crashed after the segment was stored —
+    // rebuild the task from the resent audio and enqueue it, or the
+    // segment would stay pending forever while every resend replays 200.
+    if (!findSegmentTask({ store, sessionId, segmentIndex: segment.segmentIndex })) {
+      enqueueTranscriptionTask({
+        store,
+        now,
+        config,
+        session,
+        accountId,
+        segment,
+        audioBase64: fields.audioBase64,
+      });
+    }
     return { status: 200, body: { segment: presentSegment(segment) } };
   }
 
-  const audioBytes = Buffer.from(fields.audioBase64, "base64");
-  const taskId = generateId("tsk");
-  const audioFile = storeAudioFile({ config, bytes: audioBytes, taskId });
-
-  const task = {
-    taskId,
-    sessionId,
+  enqueueTranscriptionTask({
+    store,
+    now,
+    config,
+    session,
     accountId,
-    sourceId: session.sourceId,
-    segmentIndex: fields.segmentIndex,
-    startMs: fields.startMs,
-    endMs: fields.startMs + fields.durationMs,
-    audioMimeType: fields.audioMimeType,
-    audioFile,
-    status: "pending",
-    result: null,
-    createdAt: now(),
-    claimedAt: null,
-  };
-  store.set("transcriptionTasks", taskId, task);
+    segment,
+    audioBase64: fields.audioBase64,
+  });
 
   return { status: 201, body: { segment: presentSegment(segment) } };
 }

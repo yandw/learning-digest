@@ -13,8 +13,12 @@
  * Error split: a provider failure is TASK-level and becomes a
  * transcription_failed result write-back (the contract's only round-2
  * task error code, message carrying the provider detail for triage). A
- * claim/submit failure is CYCLE-level and propagates to the loop, which
- * logs and backs off — retrying is the next poll.
+ * submit failure lands in the same task-level catch and also attempts the
+ * failed write-back instead of propagating — the API's 幂等首存 keeps that
+ * safe (if the done result already landed, the failed write only replays
+ * the stored terminal status), so the risk is bounded. A claim failure, or
+ * a failed write-back that itself fails, is CYCLE-level and propagates to
+ * the loop, which logs and backs off — retrying is the next poll.
  */
 
 /**

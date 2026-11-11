@@ -199,6 +199,48 @@ test("audio-segment upload: byte-level replay answers 200 with the stored segmen
   }
 });
 
+test("audio-segment upload: crash-window self-heal — stored segment with a lost task re-enqueues on resend", async () => {
+  const { harness, store, token, sessionId } = await startSessionedApp();
+  try {
+    const first = await postSegment(harness, token, sessionId, {});
+    assert.equal(first.status, 201);
+
+    // Simulate the crash window between storing the segment and enqueueing
+    // its task: drop the task row, keep the stored segment. (Round-2 review
+    // fix: before the self-heal, every resend replayed 200 while the
+    // segment stayed pending forever.)
+    const lostTask = store.list("transcriptionTasks")[0];
+    assert.ok(lostTask, "the first upload must have enqueued exactly one task");
+    store.delete("transcriptionTasks", lostTask.taskId);
+    assert.equal(store.count("transcriptionTasks"), 0);
+
+    // The resend hits the idempotent path (segment already stored) but
+    // finds no task: it self-heals by re-enqueueing one.
+    const resend = await postSegment(harness, token, sessionId, {});
+    assert.equal(resend.status, 200);
+    assert.deepEqual(
+      resend.json.segment,
+      audioExampleById.get("api-audio-segment-duplicate-idempotent").response.body.segment,
+    );
+
+    const healed = store.list("transcriptionTasks");
+    assert.equal(healed.length, 1);
+    assert.equal(healed[0].sessionId, sessionId);
+    assert.equal(healed[0].segmentIndex, 1);
+    assert.equal(healed[0].status, "pending");
+    assert.notEqual(healed[0].taskId, lostTask.taskId);
+    assert.ok(healed[0].audioFile, "the healed task carries a rebuilt audio file");
+
+    // A further resend with the task present stays a plain replay: still
+    // exactly one task (no duplicate enqueue).
+    const replay = await postSegment(harness, token, sessionId, {});
+    assert.equal(replay.status, 200);
+    assert.equal(store.count("transcriptionTasks"), 1);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("audio-segment upload: replay with different bytes still answers the FIRST stored segment", async () => {
   const { harness, token, sessionId } = await startSessionedApp();
   try {

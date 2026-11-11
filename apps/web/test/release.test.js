@@ -14,13 +14,13 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.3", () => {
+test("apps/web release metadata is 0.1.4", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
-  // 0.1.3 (round 2, ticket 2.8 / #71): transcript read-back on the detail
-  // page — per-session blocks with origin badges, gaps, pending/failed
-  // rows and best-effort timestamp jumps via the round-1 seek builders.
-  assert.equal(packageJson.version, "0.1.3");
+  // 0.1.4 (round-2 review fix): a finished session's leftover pending
+  // segment presents as 「转写排队中（会话已结束）」 instead of 「转写中」
+  // (contract-r2 §2.5/§3.5 pending-drain semantics, D15 evolution).
+  assert.equal(packageJson.version, "0.1.4");
   assert.equal(packageJson.private, true);
 });
 

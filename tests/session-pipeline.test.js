@@ -85,7 +85,7 @@ test("transcribeFailed marks the Segment failed and annotates the Transcript wit
   assert.equal(state.segments[1].status, "failed");
   assert.deepEqual(state.transcriptRecords, [
     { text: "第一段", start: 0, duration: 5 },
-    speechTranscription.failedChunkRecord(120, 120),
+    speechTranscription.failedSegmentRecord(120, 120),
     { text: "第三段", start: 240, duration: 5 },
   ]);
   // Neighbouring Segments are untouched: still done, records intact.
@@ -699,7 +699,7 @@ test("a failed retry leaves the original marker in place", () => {
   state = sessionPipeline.applyEvent(state, { type: "transcribeFailed", segmentId: "seg-1" });
   assert.equal(state.segments[0].status, "failed");
   assert.deepEqual(state.transcriptRecords, [
-    speechTranscription.failedChunkRecord(0, 120),
+    speechTranscription.failedSegmentRecord(0, 120),
   ]);
 });
 

@@ -51,8 +51,15 @@ test("manifest uses minimized install-time permissions", () => {
       ],
       // Tickets 2.5/2.6 (#68/#69): the caption readers load before the
       // bridge so the getBilibiliCaptions/getYouTubeCaptions commands have
-      // their factory globals.
-      js: ["bilibili-captions.js", "youtube-captions.js", "page-bridge.js"],
+      // their factory globals. transcript-shapes.js (round-2 review fix)
+      // loads before both readers — they destructure its shared §2.2
+      // Segment check and coverage helper.
+      js: [
+        "transcript-shapes.js",
+        "bilibili-captions.js",
+        "youtube-captions.js",
+        "page-bridge.js",
+      ],
       run_at: "document_idle",
       // 0.1.64: xiaoe players can live inside iframes — the bridge must
       // reach them or position reporting and playback control both fail.
@@ -79,11 +86,10 @@ test("manifest uses minimized install-time permissions", () => {
     "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.12 (ticket 2.7, #70): the forced-transcription switch — the D15
-  // coverage check over the studied interval, the deferred captions archive
-  // with the 强制转写 / 按原样归档字幕 decision surface, and the
-  // same-Session captions→asr switch (同区间单一路径).
-  assert.equal(manifest.version, "0.2.12");
+  // 0.2.13 (round-2 review fix): the GLOSSARY-vocabulary rename of the
+  // failure-marker helpers and the shared transcript-shapes module behind
+  // the caption readers and the archive client.
+  assert.equal(manifest.version, "0.2.13");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -485,6 +491,9 @@ test("core Learning Digest modules ship in the release and load in the service w
     // Round-1 review fix: the shared §1 envelope + base-URL helpers behind
     // auth-gate/collect/learning-start/notes.
     "api-client.js",
+    // Round-2 review fix: the shared §2.2 Segment check + coverage helper
+    // behind bilibili-captions/youtube-captions/session-archive.
+    "transcript-shapes.js",
     "contracts/platform-video-id.js",
     "offscreen.js",
     "offscreen.html",
@@ -507,6 +516,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "transcript-shapes\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

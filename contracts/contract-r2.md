@@ -82,7 +82,7 @@
 | `pending` | 段状态[] | 是 | 转写中：`{ segmentIndex, startMs, endMs, status: "pending" \| "transcribing" }` |
 | `failed` | 段状态[] | 是 | 转写失败：`{ segmentIndex, startMs, endMs, error: { code, message } }`，第二轮 `error.code` 固定 `transcription_failed` |
 
-四个数组恒在场（可为空），客户端统一遍历。**状态单调**：`done` / `failed` 为终态不回退；`finished` 后 `pending` 必为空，视图即最终归档。captions 路径的 Session `pending` / `failed` 恒为空。
+四个数组恒在场（可为空），客户端统一遍历。**状态单调**：`done` / `failed` 为终态不回退；`finished` 后 `pending` 随尾段 drain 渐进清空（插件 `endActiveSession` 先 finish 后 drain，预算 15 拍），视图按 `sessionStatus` 把滞留段标注为排队而非终态——worker 停机且无租约时 `pending` 可滞留，不视作归档损坏。captions 路径的 Session `pending` / `failed` 恒为空。
 
 ## 3. 端点
 
@@ -131,7 +131,7 @@
 ### 3.5 GET /v1/sessions/{id}/transcript — 逐字稿轮询
 
 - 返回裸 TranscriptView（§2.5）。未登录 401；未知或其他账号的 Session 404。
-- **未结束/已结束语义**：`active` 时 `pending` / `failed` 可非空（「转写中」与失败反馈的展示依据）；`finished` 后 `pending` 必为空，视图即最终归档（可回查）。轮询频率与退避由插件实现票决定（D12）；服务端保证幂等读与状态单调。
+- **未结束/已结束语义**：`active` 时 `pending` / `failed` 可非空（「转写中」与失败反馈的展示依据）；`finished` 后 `pending` 随尾段 drain 渐进清空（插件 `endActiveSession` 先 finish 后 drain，预算 15 拍），视图即最终归档形态（可回查）——worker 停机且无租约时 `pending` 可滞留，视图把滞留段标注为排队而非终态。轮询频率与退避由插件实现票决定（D12）；服务端保证幂等读与状态单调。
 - 样例：`api-session-transcript-asr-active`（转写中 + 失败段）、`api-session-transcript-asr-finished`（gap + 失败段终态）、`api-session-transcript-captions-finished`（字幕路径全文）、`error-cross-account-session-transcript`。
 
 ### 3.6 GET /v1/resources/{id} — 资料详情（第二轮扩展）

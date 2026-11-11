@@ -1080,12 +1080,48 @@ const CAPTIONS_READERS = {
   },
 };
 
-async function readTabCaptions(tabId, platformId) {
+/**
+ * Ticket 2.7 (#70): the studied interval for the captions coverage check —
+ * the position the learner resumes into (本次学习起点) and the video's own
+ * duration (the honest start-time bound of 本次学习止点). Best-effort by
+ * design: a live stream (duration null), a not-yet-loaded player, or an
+ * unreachable bridge leaves the interval unknown, and the coverage check
+ * then never fires — the captions archive exactly as 2.5 shipped. A failed
+ * probe must never read as "captions unavailable": this runs BEFORE the
+ * captions read and its result only feeds the interval.
+ */
+async function probeCoverageInterval(tabId) {
+  try {
+    const answer = await chrome.tabs.sendMessage(tabId, { action: "getMediaPosition" });
+    if (!answer?.success) return null;
+    const position = Number(answer.position);
+    const duration = Number(answer.duration);
+    if (!Number.isFinite(position) || position < 0) return null;
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+    if (duration <= position) return null;
+    return {
+      intervalStartMs: Math.round(position * 1000),
+      intervalEndMs: Math.round(duration * 1000),
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function readTabCaptions(tabId, platformId, interval = null) {
   const reader = CAPTIONS_READERS[platformId];
   if (!reader) return { available: false, reason: "captions_not_supported" };
+  // Ticket 2.7: the interval rides the command when known — the page-side
+  // reader computes the coverage block over it (2.5/2.6 prepared this seam);
+  // without one the reader omits coverage instead of guessing an interval.
+  const message = { action: reader.command };
+  if (interval) {
+    message.intervalStartMs = interval.intervalStartMs;
+    message.intervalEndMs = interval.intervalEndMs;
+  }
   try {
     const response = await Promise.race([
-      chrome.tabs.sendMessage(tabId, { action: reader.command }),
+      chrome.tabs.sendMessage(tabId, message),
       new Promise((resolve) =>
         setTimeout(() => resolve(null), CAPTIONS_READ_TIMEOUT_MS),
       ),
@@ -1470,6 +1506,49 @@ async function startCaptionsSession(message, recognition, captions) {
   // P10 (decision 4): the lock and the progress writer are the capture
   // flow's own — 字幕路径走 P10 的目标锁定/进度写入不变.
   await beginProgressTracking(context);
+
+  // Ticket 2.7 (#70, D15): a read that does NOT cover the studied interval
+  // DEFERS the archive — the path commits when the learner chooses (字幕
+  // 按原样归档 via the panel's archive action or the finish-time default,
+  // or 强制转写 via the same-Session switch). The pending decision and the
+  // deferred as-read segments land in the Session state: the durable copy
+  // every resolution point reads, across worker restarts included. Nothing
+  // is submitted yet, so the server's origin lock can never conflict (the
+  // client-side timing is the first of the two 同区间单一路径 safeguards).
+  const coverage = captions.coverage;
+  if (coverage && coverage.covered === false && Array.isArray(coverage.uncovered) && coverage.uncovered.length > 0) {
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "captionsCoveragePending",
+      coveredRange: {
+        startMs: captions.segments.reduce(
+          (min, segment) => Math.min(min, segment.startMs),
+          Number.POSITIVE_INFINITY,
+        ),
+        endMs: captions.segments.reduce(
+          (max, segment) => Math.max(max, segment.endMs),
+          0,
+        ),
+      },
+      uncovered: coverage.uncovered,
+      segments: captions.segments,
+    });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state, { capturePath: "captions" });
+    console.log(
+      `[Learning Digest] 字幕学习已开始（覆盖不全，归档已推迟）: session=${context.sessionId} ` +
+        `serverSession=${context.serverSessionId} segments=${captions.segments.length}`,
+    );
+    chrome.storage.local.remove("ytd_last_start_failure").catch(() => {});
+    return {
+      success: true,
+      sessionId: context.sessionId,
+      kind: context.kind,
+      timestampKind: context.timestampKind,
+      capturePath: "captions",
+      state: context.state,
+    };
+  }
+
   broadcastSession(context.state, { capturePath: "captions" });
 
   // §3.3: archive as-read, then §3.5: poll the server view (first beat
@@ -2390,6 +2469,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // --- Ticket 2.7 (#70): 强制转写 + the pending decision's captions branch ---
+
+  if (message.action === "forceTranscribe") {
+    handleForceTranscribe()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "archiveCaptions") {
+    handleArchiveCaptionsNow()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.action === "regenerateReport") {
     // Retry path for a truncated or failed end-of-session global pass (#29).
     handleRegenerateReport(message)
@@ -2653,6 +2748,8 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // settlement of interrupted Segments) — see tests/background-capture.test.js.
   handleStartLearning,
   handleEndLearning,
+  handleForceTranscribe,
+  handleArchiveCaptionsNow,
   handleGetSessionState,
   handleClearSessionRecord,
   handleRestartFromBeginning,
@@ -3575,7 +3672,12 @@ async function handleStartLearning(message) {
     (recognition.platformId === "bilibili" || recognition.platformId === "youtube") &&
     recognition.kind === "video"
   ) {
-    const captions = await readTabCaptions(message.tabId, recognition.platformId);
+    // Ticket 2.7 (#70): the coverage check runs over the studied interval —
+    // the media position the learner resumes into and the video's duration.
+    // Unknown interval (live stream, unloaded player, dead bridge) → no
+    // coverage block → the captions archive exactly as 2.5 shipped.
+    const coverageInterval = await probeCoverageInterval(message.tabId);
+    const captions = await readTabCaptions(message.tabId, recognition.platformId, coverageInterval);
     if (captions.available) {
       return startCaptionsSession(message, recognition, captions);
     }
@@ -3588,6 +3690,17 @@ async function handleStartLearning(message) {
   // credential, both resolved here BEFORE any capture machinery: an
   // unfavorite page gets the 先收藏 guidance, and a dead service fails the
   // start instead of recording audio no transcript will ever explain.
+  return startCaptureFlowSession(message, recognition, captionsProbe);
+}
+
+/**
+ * The ASR capture-flow start (tickets 2.4/2.5), extracted from
+ * handleStartLearning so ticket 2.7's forced transcription can open a NEW
+ * Session on the same target without re-running the captions probe (D15:
+ * the forced Session goes straight to the asr path — re-probing would
+ * re-take the captions path and re-archive the same interval).
+ */
+async function startCaptureFlowSession(message, recognition, captionsProbe) {
   const settings = await getSettings();
   const credential = await readStoredAuthCredential();
   const resolution = await resolveSourceForTarget(
@@ -4331,6 +4444,22 @@ async function endActiveSession(context, { reason, report = true } = {}) {
       : context.segmenter.flush(finalPosition);
   if (tail) await dispatchSegment(context, tail);
 
+  // Ticket 2.7 (#70, D15): the pending coverage decision's DEFAULT
+  // resolution — the learner never chose, so the captions go out as-read
+  // (2.5's 原样语义) before the finish locks the Session. The deferred
+  // segments live in the Session state (durable across worker restarts);
+  // a failed archive surfaces honestly and never blocks the finish.
+  if (
+    context.capturePath === "captions" &&
+    !context.state.transcriptOrigin &&
+    Array.isArray(context.state.captionsCoverage?.segments) &&
+    context.state.captionsCoverage.segments.length > 0
+  ) {
+    await archiveCaptionsForContext(context, {
+      segments: context.state.captionsCoverage.segments,
+    });
+  }
+
   // Ticket 2.5 (#68): the captions Session finishes its server Session
   // here (§3.2) — 字幕 Session 结束（P11 触发）→finish. The 409 repeat
   // verdict is absorbed inside (already finished is not a local failure).
@@ -4400,6 +4529,162 @@ async function handleEndLearning() {
   const context = await ensureCaptureResumed();
   if (!context) return { success: false, error: "No active learning Session." };
   return endActiveSession(context, { reason: "explicit" });
+}
+
+/**
+ * Ticket 2.7 (#70): the panel's 强制转写 (D15 同区间单一路径). The switch
+ * happens BEFORE any archive submission whenever the origin still allows it:
+ *
+ * - the origin unlocked (no captions POST ever answered ok): the SAME
+ *   Session switches wholesale to the asr path — the captions are never
+ *   submitted, so the server's origin lock can never conflict. The
+ *   client-side timing is the first of the two single-path safeguards.
+ * - the origin already locked to captions: the contract has no un-archive —
+ *   the old Session keeps its captions (finished server-side, not undone)
+ *   and a NEW Session starts on the asr path (跨 Session 可换路径).
+ */
+async function handleForceTranscribe() {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) {
+    return { success: false, error: "当前没有进行中的学习会话" };
+  }
+  if (context.capturePath !== "captions") {
+    return { success: false, error: "本次学习已在语音转写路径上，无需再切换。" };
+  }
+  if (context.state.transcriptOrigin === "captions") {
+    // The server already holds this Session's captions (首存为准, D15):
+    // switching in place would meet 409 transcript_origin_conflict. The
+    // contract's answer is a new Session — the old one finishes (its
+    // captions stay), the new one re-walks the flow on the asr path.
+    await endActiveSession(context, { reason: "forceTranscribe", report: false });
+    return startForcedAsrSession(context);
+  }
+  return switchCaptionsContextToAsr(context);
+}
+
+/**
+ * The same-Session captions→asr switch (ticket 2.7, D15). The capture
+ * bootstrap runs FIRST: a failed switch leaves the Session on the captions
+ * path — the pending decision stays open, nothing is half-switched. After
+ * the machinery is live, the path flips (state through the machine, the
+ * pointer through persistence), the segmenter re-grids at the switch point
+ * (ASR covers FROM the switch onward — the pre-switch span stays with the
+ * captions decision the learner made), and the §3.5 poll re-arms on the asr
+ * cadence.
+ */
+async function switchCaptionsContextToAsr(context) {
+  try {
+    const streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: context.tabId,
+    });
+    await ensureOffscreen();
+    const started = await sendOffscreen(buildCaptureStartMessage(context, streamId));
+    if (!started?.success) throw new Error(started?.error || "capture start failed");
+  } catch (error) {
+    const message = error?.message || String(error);
+    console.error("[Learning Digest] 强制转写切换失败:", message);
+    // Chrome only allows tabCapture after the user has INVOKED the extension
+    // on the target tab; the actionable mapping is the start flow's own.
+    if (/not been invoked/i.test(message)) {
+      return {
+        success: false,
+        error:
+          "Chrome 要求在采集前先调用一次扩展：请在课程标签页上点击工具栏中的 Learning Digest 图标（点击即打开侧边栏并算作一次调用），然后重试强制转写。",
+      };
+    }
+    return { success: false, error: `无法开始音频采集：${message}` };
+  }
+
+  context.capturePath = "asr";
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "capturePathSwitched",
+    from: "captions",
+    to: "asr",
+  });
+
+  // The drag-detection baseline stays UNARMED: the captions phase never ran
+  // the seek machinery, so the first post-switch position arms it (never a
+  // drag), exactly like a fresh capture start.
+  const startAt =
+    context.timestampKind === "wallclock"
+      ? Math.max(0, Math.floor((Date.now() - context.startedAtMs) / 1000))
+      : (() => {
+          const position = Number(context.lastVideoPosition);
+          return Number.isFinite(position) && position > 0 ? Math.floor(position) : 0;
+        })();
+  context.segmenter = YTD_SEGMENTER.createSegmenter({
+    segmentLengthSeconds: context.segmentLengthSeconds,
+    startAt,
+    startIndex: 0,
+  });
+  if (context.timestampKind === "wallclock" && !context.liveTimer) {
+    // A live-kind Session switched to ASR: the wallclock timeline keeps its
+    // own tick feeding the scheduler (the position stream cannot).
+    startLiveTimer(context);
+  }
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  await persistContextPointer(context);
+  // Topic ticks are the capture path's own (the captions path runs none).
+  startSummaryTimer(context);
+
+  // The §3.5 poll re-arms on the asr cadence (first beat now): the switch
+  // itself submitted nothing, so the view fills as the Worker answers.
+  await pollTranscriptNow(context);
+
+  broadcastSession(context.state, { capturePath: "asr" });
+  console.log(
+    `[Learning Digest] 强制转写已切换（同区间单一路径）: session=${context.sessionId} ` +
+      `serverSession=${context.serverSessionId} startAt=${startAt}s`,
+  );
+  return {
+    success: true,
+    sessionId: context.sessionId,
+    capturePath: "asr",
+    state: context.state,
+  };
+}
+
+/**
+ * The archived branch's new Session (ticket 2.7, D15): the old Session is
+ * already finished (its captions kept server-side); the new one starts on
+ * the SAME tab against a FRESH server Session, skipping the captions probe.
+ */
+async function startForcedAsrSession(oldContext) {
+  const recognition = YTD_SOURCE_PLATFORMS.recognizePage(oldContext.sourceUrl);
+  if (recognition.kind === "none") {
+    return { success: false, error: "This page is not a recognized learning page." };
+  }
+  return startCaptureFlowSession(
+    { tabId: oldContext.tabId, url: oldContext.sourceUrl },
+    recognition,
+    null,
+  );
+}
+
+/**
+ * Ticket 2.7: the panel's 按原样归档字幕 — the pending decision's captions
+ * branch. The deferred segments (the durable copy in the Session state) go
+ * out as-read (§3.3 按原样归档) and the poll re-syncs the locked view. A
+ * committed path is a calm no-op: the origin locks once (首存为准).
+ */
+async function handleArchiveCaptionsNow() {
+  const context = await ensureCaptureResumed();
+  if (!context || context.ended) {
+    return { success: false, error: "当前没有进行中的学习会话" };
+  }
+  if (context.capturePath !== "captions") {
+    return { success: false, error: "本次学习已切换为语音转写，字幕不再归档。" };
+  }
+  if (context.state.transcriptOrigin) {
+    return { success: true, alreadyArchived: true, state: context.state };
+  }
+  const segments = context.state.captionsCoverage?.segments;
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return { success: false, error: "没有待归档的字幕。" };
+  }
+  await archiveCaptionsForContext(context, { segments });
+  await pollTranscriptNow(context);
+  return { success: true, state: context.state };
 }
 
 /**

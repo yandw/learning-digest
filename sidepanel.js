@@ -469,6 +469,13 @@ function setupEventListeners() {
     .getElementById("notesList")
     ?.addEventListener("click", handleNotesListClick);
 
+  // Ticket 2.7: the captions decision buttons (强制转写 / 按原样归档字幕)
+  // ride the transcript rows, which re-render per broadcast — one delegated
+  // listener covers every re-render.
+  document
+    .getElementById("sessionTranscript")
+    ?.addEventListener("click", handleCaptionsActionClick);
+
   // The selection toolbar serves both transcript surfaces (legacy rows and
   // session records), so it is wired once at startup.
   setupExplainFeature();
@@ -2358,6 +2365,10 @@ globalThis.__YTD_SESSION_TESTING__ = {
   // directly by the mock-DOM tests since the real listener only registers
   // on DOMContentLoaded.
   handleSessionUpdateMessage,
+  // Ticket 2.7 (#70): the captions decision surface's click dispatch, driven
+  // directly by the mock-DOM tests (the delegated listener registers on
+  // DOMContentLoaded).
+  handleCaptionsActionClick,
 };
 
 // ============================================================
@@ -2407,6 +2418,10 @@ const sessionUi = {
   // captions full text, captionsProbe the honest 无字幕 record.
   transcriptOrigin: null,
   captionsProbe: null,
+  // Ticket 2.7 (#70): the partial-coverage decision state — the covered
+  // range and the open 强制转写 / 按原样归档字幕 choice (the archive is
+  // deferred until the learner picks or the Session finishes).
+  captionsCoverage: null,
   transcriptStateSessionId: null,
   // End-button state machine (0.1.40): 结束学习 click or a report retry sets
   // reportGenerating until any end-time payload arrives; a failed pass keeps
@@ -2443,6 +2458,7 @@ function observeTranscriptState(state) {
     sessionUi.transcriptStateSessionId = state.sessionId;
     sessionUi.transcriptOrigin = null;
     sessionUi.captionsProbe = null;
+    sessionUi.captionsCoverage = null;
   }
   if (state.transcriptOrigin === "captions" || state.transcriptOrigin === "asr") {
     sessionUi.transcriptOrigin = state.transcriptOrigin;
@@ -2453,6 +2469,13 @@ function observeTranscriptState(state) {
     state.captionsProbe.available === false
   ) {
     sessionUi.captionsProbe = state.captionsProbe;
+  }
+  if (
+    state.captionsCoverage &&
+    typeof state.captionsCoverage === "object" &&
+    state.captionsCoverage.covered === false
+  ) {
+    sessionUi.captionsCoverage = state.captionsCoverage;
   }
 }
 
@@ -2489,8 +2512,20 @@ function renderSessionStatus() {
     const startedAt = formatSessionClock(sessionUi.startedAtMs);
     // Ticket 2.5 (#68): the captions path has nothing to wait for — the
     // transcript is the archived captions full text (字幕), not 转写中.
-    const transcriptLabel =
-      sessionUi.transcriptOrigin === "captions" ? "字幕" : "转写中";
+    // Ticket 2.7 (#70): a partial-coverage Session whose archive is deferred
+    // shows the open decision instead of either settled wording.
+    let transcriptLabel;
+    if (sessionUi.transcriptOrigin === "captions") {
+      transcriptLabel = "字幕";
+    } else if (
+      sessionUi.capturePath === "captions" &&
+      sessionUi.captionsCoverage &&
+      !sessionUi.transcriptOrigin
+    ) {
+      transcriptLabel = "字幕待选择";
+    } else {
+      transcriptLabel = "转写中";
+    }
     status.textContent = `${kindLabel} · ${modeLabel} · ${transcriptLabel} · 开始于 ${startedAt}`;
     return;
   }
@@ -2613,37 +2648,179 @@ function renderSessionTranscript(state) {
 }
 
 /**
- * Ticket 2.5 (#68): the transcript area's three states, distinguished under
- * the rows. With archived captions the rows ARE the 字幕 full text; with a
+ * Ticket 2.5 (#68) + 2.7 (#70): the transcript area's captions states,
+ * distinguished under the rows. With archived captions the rows ARE the 字幕
+ * full text; a partial-coverage Session (the archive deferred, nothing
+ * submitted) shows the covered range with the two decision entries; with a
  * recorded 无字幕 probe and nothing else to show, the honest empty state
- * names it and keeps the 可转写 hint (the forced-transcription entry's
- * semantics — the switch itself is ticket 2.7's).
+ * names it and says the ASR pipeline already took over (2.4's fallback).
+ * An archived captions Session keeps a new-learning-interval 强制转写
+ * entry while it runs — the contract has no un-archive, so that entry
+ * finishes this Session and opens a new one on the asr path.
  */
 function renderCaptionsStateNotice(container, state) {
   container.querySelectorAll(".session-captions-empty").forEach((row) => row.remove());
   const records = state.transcriptRecords || [];
-  if (records.length > 0) return;
-  const appendNotice = (text) => {
-    const row = document.createElement("div");
-    row.className = "session-record session-captions-empty";
-    const label = document.createElement("span");
-    label.className = "session-record-text";
-    label.textContent = text;
-    row.append(label);
-    container.appendChild(row);
-  };
-  if (state.transcriptOrigin === "captions") {
-    // Archived on the server but no usable rows on screen yet: the archive
-    // round trip is in flight — activity, never an invented empty state.
-    appendNotice("正在归档字幕全文…");
+  if (records.length === 0) {
+    if (renderCoverageDecisionNotice(container, state)) return;
+    const appendNotice = (text) => {
+      const row = document.createElement("div");
+      row.className = "session-record session-captions-empty";
+      const label = document.createElement("span");
+      label.className = "session-record-text";
+      label.textContent = text;
+      row.append(label);
+      container.appendChild(row);
+    };
+    if (state.transcriptOrigin === "captions") {
+      // Archived on the server but no usable rows on screen yet: the archive
+      // round trip is in flight — activity, never an invented empty state.
+      appendNotice("正在归档字幕全文…");
+      return;
+    }
+    if (
+      state.captionsProbe &&
+      state.captionsProbe.available === false &&
+      !(state.segments || []).some((segment) => segment.status === "pending")
+    ) {
+      appendNotice("本页未读取到可用字幕，本次学习已改用语音转写取得整个学习区间的逐字稿。");
+    }
     return;
   }
-  if (
-    state.captionsProbe &&
-    state.captionsProbe.available === false &&
-    !(state.segments || []).some((segment) => segment.status === "pending")
-  ) {
-    appendNotice("本页未读取到可用字幕，本次学习不产生字幕逐字稿。可转写：可改用语音转写取得整个学习区间的逐字稿。");
+  renderArchivedForceEntry(container, state);
+}
+
+/** The pending-coverage decision, active captions-path Sessions only. */
+function isPendingCoverageDecision(state) {
+  return Boolean(
+    state.status !== "ended" &&
+      sessionUi.active &&
+      sessionUi.capturePath === "captions" &&
+      !state.transcriptOrigin &&
+      state.captionsCoverage &&
+      state.captionsCoverage.covered === false &&
+      state.captionsCoverage.coveredRange,
+  );
+}
+
+/**
+ * The decision surface (Ticket 2.7): 「字幕覆盖 x–y，缺口将不转写，或选择
+ * 强制转写整个区间」 with both entries. Nothing has been submitted yet, so
+ * the switch keeps the SAME Session single-path (D15); archiving captions
+ * as-read commits the captions path instead. Returns true when rendered.
+ */
+function renderCoverageDecisionNotice(container, state) {
+  if (!isPendingCoverageDecision(state)) return false;
+  const coverage = state.captionsCoverage;
+  const notice = document.createElement("div");
+  notice.className = "session-record session-captions-empty";
+  const label = document.createElement("span");
+  label.className = "session-record-text";
+  label.textContent =
+    `字幕覆盖 ${sessionTimestampLabel(coverage.coveredRange.startMs / 1000)}` +
+    `–${sessionTimestampLabel(coverage.coveredRange.endMs / 1000)}` +
+    "，缺口将不转写，或选择强制转写整个区间。";
+  notice.append(label);
+  container.appendChild(notice);
+
+  const actions = document.createElement("div");
+  actions.className = "session-record session-captions-empty session-captions-decision";
+  const force = document.createElement("button");
+  force.className = "session-force-transcribe";
+  force.dataset.forceKind = "switch";
+  force.textContent = "强制转写整个区间";
+  const archive = document.createElement("button");
+  archive.className = "session-archive-captions";
+  archive.textContent = "按原样归档字幕";
+  actions.append(force, archive);
+  container.appendChild(actions);
+  return true;
+}
+
+/**
+ * The archived-captions Session's standing entry (Ticket 2.7): the captions
+ * are already on the server (首存为准), so forcing transcription here means
+ * finishing this Session and starting a NEW one on the asr path (D15 跨
+ * Session 可换路径). Nothing is undone — the copy says so.
+ */
+function renderArchivedForceEntry(container, state) {
+  if (state.status === "ended") return;
+  if (!sessionUi.active || sessionUi.capturePath !== "captions") return;
+  if (state.transcriptOrigin !== "captions") return;
+  const row = document.createElement("div");
+  row.className = "session-record session-captions-empty session-captions-decision";
+  const label = document.createElement("span");
+  label.className = "session-record-text";
+  label.textContent =
+    "字幕已按原样归档。要对整个学习区间改用语音转写，将结束本次学习并开启新的学习区间重新转写。";
+  const force = document.createElement("button");
+  force.className = "session-force-transcribe";
+  force.dataset.forceKind = "new";
+  force.textContent = "强制转写（新的学习区间）";
+  row.append(label, force);
+  container.appendChild(row);
+}
+
+// The D15 decision buttons' copy: the first click only arms the confirm
+// (an irreversible path decision must not ride a mis-click); the second
+// click sends. 弹窗 does not exist here — the button itself carries the
+// 确认文案.
+const CAPTIONS_FORCE_CONFIRM_COPY = {
+  switch: "再次点击确认：本次学习改用语音转写（字幕不再归档，已播放部分不补字幕）",
+  new: "再次点击确认：结束本次学习，并开启新的学习区间重新转写",
+};
+const CAPTIONS_FORCE_LABEL_COPY = { switch: "强制转写整个区间", new: "强制转写（新的学习区间）" };
+
+/** One click dispatch for the captions decision buttons (delegated). */
+function handleCaptionsActionClick(event) {
+  const button = event.target?.closest?.(".session-force-transcribe");
+  if (button) {
+    const kind = button.dataset.forceKind === "new" ? "new" : "switch";
+    if (!button.dataset.armed) {
+      // First click: arm the 确认文案 — the irreversible path decision must
+      // not ride a mis-click.
+      button.dataset.armed = "1";
+      button.textContent = CAPTIONS_FORCE_CONFIRM_COPY[kind];
+      return null;
+    }
+    button.dataset.armed = "";
+    button.textContent = CAPTIONS_FORCE_LABEL_COPY[kind];
+    return runCaptionsAction({ action: "forceTranscribe" });
+  }
+  if (event.target?.closest?.(".session-archive-captions")) {
+    return runCaptionsAction({ action: "archiveCaptions" });
+  }
+  return null;
+}
+
+/**
+ * Sends one captions-decision request and adopts the reply. A same-Session
+ * reply (the pre-archive switch) re-renders the view off the reply's state;
+ * a NEW Session reply (the archived branch's forced start) rides the full
+ * refresh funnel — the same path a missed start broadcast converges on.
+ */
+async function runCaptionsAction(message) {
+  try {
+    const result = await chrome.runtime.sendMessage(message);
+    if (!result?.success) {
+      if (result?.error) window.alert(result.error);
+      return result || null;
+    }
+    if (result.sessionId && sessionUi.sessionId && result.sessionId !== sessionUi.sessionId) {
+      void refreshSessionUI();
+      return result;
+    }
+    if (result.state) {
+      if (result.capturePath) sessionUi.capturePath = result.capturePath;
+      observeTranscriptState(result.state);
+      renderSessionStatus();
+      renderSessionTranscript(result.state);
+      renderLiveTopics(result.state);
+    }
+    return result;
+  } catch (error) {
+    window.alert(error?.message || String(error));
+    return null;
   }
 }
 
@@ -2667,8 +2844,14 @@ function renderCaptionsStateNotice(container, state) {
 function renderPendingSegments(container, state) {
   container.querySelectorAll(".session-pending").forEach((row) => row.remove());
   // The captions path (Ticket 2.5) records no audio: the capture bootstrap
-  // copy ("第一段逐字稿约 X 后出现…") would be a lie there.
-  if (sessionUi.transcriptOrigin === "captions") return;
+  // copy ("第一段逐字稿约 X 后出现…") would be a lie there — the pending
+  // coverage decision (Ticket 2.7) included, whose archive is deferred.
+  if (
+    sessionUi.transcriptOrigin === "captions" ||
+    (sessionUi.capturePath === "captions" && !sessionUi.transcriptOrigin)
+  ) {
+    return;
+  }
   const segments = state.segments || [];
   // The 无字幕 notice (Ticket 2.5) owns the empty state when the probe
   // found nothing: promising a first transcript row next to it would

@@ -1031,3 +1031,172 @@ test("pendingSegments survive a resume until the next poll corrects them", () =>
   });
   assert.equal(legacy.pendingSegments, undefined);
 });
+
+// --- coverage-pending + path switch (ticket 2.7, issue #70, D15) -----------------
+//
+// The forced-transcription state machine: a captions read that covers the
+// studied interval only partially lands a PENDING decision state (the
+// captions archive is deferred — D15's 建议: submit once, after the path is
+// committed, before finish), and the user's choice resolves it. Switching
+// the same Session captions→asr is the ONLY path change the contract knows
+// (同区间单一路径): the reverse direction would meet the server's origin
+// lock, so the machine refuses it outright.
+
+test("captionsCoveragePending lands the partial-coverage decision state", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsCoveragePending",
+    coveredRange: { startMs: 60000, endMs: 300000 },
+    uncovered: [{ startMs: 300000, endMs: 600000 }],
+    segments: [
+      { startMs: 60000, endMs: 90000, text: "第一段" },
+      { startMs: 270000, endMs: 300000, text: "最后一段" },
+    ],
+  });
+
+  assert.deepEqual(state.captionsCoverage, {
+    covered: false,
+    coveredRange: { startMs: 60000, endMs: 300000 },
+    uncovered: [{ startMs: 300000, endMs: 600000 }],
+    segments: [
+      { startMs: 60000, endMs: 90000, text: "第一段" },
+      { startMs: 270000, endMs: 300000, text: "最后一段" },
+    ],
+  });
+  assert.equal(state.transcriptOrigin, null, "nothing archived: the decision is open");
+});
+
+test("captionsCoveragePending refuses shapes that would guess the decision", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+  const event = (overrides = {}) => ({
+    type: "captionsCoveragePending",
+    coveredRange: { startMs: 60000, endMs: 300000 },
+    uncovered: [{ startMs: 300000, endMs: 600000 }],
+    segments: [{ startMs: 60000, endMs: 90000, text: "第一段" }],
+    ...overrides,
+  });
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, event({ uncovered: [] })),
+    "no uncovered range is not a pending decision",
+  );
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, event({ coveredRange: { startMs: 300000, endMs: 60000 } })),
+    "an inverted covered range is malformed",
+  );
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(
+        state,
+        event({ uncovered: [{ startMs: 600000, endMs: 300000 }] }),
+      ),
+    "an inverted uncovered range is malformed",
+  );
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(
+        state,
+        event({ segments: [{ startMs: 60000, endMs: 90000, text: "  " }] }),
+      ),
+    "an empty-text segment is not archivable",
+  );
+  assert.throws(() => sessionPipeline.applyEvent(state, event({ segments: "nope" })));
+});
+
+test("captionsCoveragePending after the origin locked is corruption", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsSynced",
+    origin: "captions",
+    records: [{ startMs: 0, endMs: 30000, text: "已归档" }],
+  });
+  assert.throws(() =>
+    sessionPipeline.applyEvent(state, {
+      type: "captionsCoveragePending",
+      coveredRange: { startMs: 0, endMs: 30000 },
+      uncovered: [{ startMs: 30000, endMs: 60000 }],
+      segments: [{ startMs: 0, endMs: 30000, text: "已归档" }],
+    }),
+  );
+});
+
+test("capturePathSwitched stamps the asr path on the same Session (D15 同区间单一路径)", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsCoveragePending",
+    coveredRange: { startMs: 0, endMs: 60000 },
+    uncovered: [{ startMs: 60000, endMs: 300000 }],
+    segments: [{ startMs: 0, endMs: 60000, text: "第一段" }],
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "capturePathSwitched",
+    from: "captions",
+    to: "asr",
+  });
+
+  assert.equal(state.capturePath, "asr");
+  assert.equal(state.transcriptOrigin, null, "the origin locks on the first audio view, not the switch");
+  assert.ok(state.captionsCoverage, "the coverage record stays (what the reader saw)");
+});
+
+test("capturePathSwitched accepts only the captions→asr direction, exactly once", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(state, { type: "capturePathSwitched", from: "asr", to: "captions" }),
+    "the reverse direction would meet the server's origin lock",
+  );
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(state, { type: "capturePathSwitched", from: "captions", to: "captions" }),
+  );
+  assert.throws(
+    () => sessionPipeline.applyEvent(state, { type: "capturePathSwitched", from: "captions" }),
+  );
+
+  state = sessionPipeline.applyEvent(state, { type: "capturePathSwitched", from: "captions", to: "asr" });
+  assert.throws(
+    () =>
+      sessionPipeline.applyEvent(state, { type: "capturePathSwitched", from: "captions", to: "asr" }),
+    "a switched Session is already single-path asr",
+  );
+});
+
+test("the coverage decision state and the switched path survive a resume", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsCoveragePending",
+    coveredRange: { startMs: 0, endMs: 60000 },
+    uncovered: [{ startMs: 60000, endMs: 300000 }],
+    segments: [{ startMs: 0, endMs: 60000, text: "第一段" }],
+  });
+  state = sessionPipeline.applyEvent(state, { type: "capturePathSwitched", from: "captions", to: "asr" });
+
+  const resumed = sessionPipeline.resumeFromSnapshot(JSON.parse(JSON.stringify(state)));
+  assert.equal(resumed.capturePath, "asr");
+  assert.deepEqual(resumed.captionsCoverage, state.captionsCoverage);
+
+  // A pending (unswitched) Session resumes with its decision still open.
+  let pending = sessionPipeline.createSession({ sessionId: "s2" });
+  pending = sessionPipeline.applyEvent(pending, {
+    type: "captionsCoveragePending",
+    coveredRange: { startMs: 0, endMs: 60000 },
+    uncovered: [{ startMs: 60000, endMs: 300000 }],
+    segments: [{ startMs: 0, endMs: 60000, text: "第一段" }],
+  });
+  const resumedPending = sessionPipeline.resumeFromSnapshot(
+    JSON.parse(JSON.stringify(pending)),
+  );
+  assert.equal(resumedPending.capturePath, undefined);
+  assert.deepEqual(resumedPending.captionsCoverage, pending.captionsCoverage);
+
+  // Snapshots from before ticket 2.7 carry neither field.
+  const legacy = sessionPipeline.resumeFromSnapshot({
+    sessionId: "s1",
+    status: "active",
+    segments: [],
+    transcriptRecords: [],
+    topics: [],
+  });
+  assert.equal(legacy.captionsCoverage, undefined);
+  assert.equal(legacy.capturePath, undefined);
+});

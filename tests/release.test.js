@@ -79,10 +79,11 @@ test("manifest uses minimized install-time permissions", () => {
     "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.11 (ticket 2.4, #67): the ASR archive path — the D11 audio-segment
-  // upload client, the §3.5 poll wiring, and the D10 retirement of the
-  // local Speech Provider config (on top of 2.6's YouTube captions path).
-  assert.equal(manifest.version, "0.2.11");
+  // 0.2.12 (ticket 2.7, #70): the forced-transcription switch — the D15
+  // coverage check over the studied interval, the deferred captions archive
+  // with the 强制转写 / 按原样归档字幕 decision surface, and the
+  // same-Session captions→asr switch (同区间单一路径).
+  assert.equal(manifest.version, "0.2.12");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

@@ -2134,6 +2134,30 @@ body {
   color: #d93025;
 }
 
+/* Ticket 2.7 (#70): the captions decision surface — the partial-coverage
+   notice's two entries (强制转写 / 按原样归档字幕) and the archived-captions
+   Session's standing new-interval entry. Buttons wrap under the notice text
+   and wrap their own labels across the narrow panel. */
+.session-captions-decision {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.session-captions-decision button {
+  background: var(--surface-raised, #fff);
+  border: 1px solid var(--border, #d0d5dd);
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+  white-space: normal;
+}
+
+.session-captions-decision button:hover {
+  border-color: var(--highlight, #1d4ed8);
+}
+
 /* A record the Overview jumped to, highlighted like the search's current
    match; the class is removed again after a short pause. */
 .session-record-jump {

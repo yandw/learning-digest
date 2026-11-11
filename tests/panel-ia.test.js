@@ -1460,7 +1460,7 @@ test("a captions Session's status line says 字幕 instead of 转写中", () => 
   ]);
 });
 
-test("the 无字幕 probe renders the explicit empty state with the 可转写 hint", () => {
+test("the 无字幕 probe renders the explicit empty state naming the ASR takeover", () => {
   const panel = loadPanel({ stored: {} });
 
   panel.session.showSessionMode({
@@ -1478,7 +1478,11 @@ test("the 无字幕 probe renders the explicit empty state with the 可转写 hi
   const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
   const notice = texts.join(" ");
   assert.match(notice, /未读取到可用字幕/);
-  assert.match(notice, /可转写/, "the forced-transcription entry keeps its semantic hint");
+  assert.match(
+    notice,
+    /已改用语音转写/,
+    "2.4's fallback already runs the ASR pipeline — the copy states the fact, not an offer",
+  );
   // 不误报: no caption row can exist when nothing was archived.
   assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
 });
@@ -1546,4 +1550,254 @@ test("the captions start toast does not claim 录制 (no audio is captured)", ()
   assert.ok(appended || toast, "the toast element exists");
   const target = appended || toast;
   assert.match(target.textContent, /已开始学习 · 字幕全文归档中/);
+});
+
+// --- forced-transcription decision UI (Ticket 2.7, #70) --------------------------
+//
+// The captions-path transcript area carries the D15 decision surface: a
+// partial-coverage read (the archive deferred, nothing submitted yet) shows
+// the covered range and the two entries — 强制转写整个区间 (two-step
+// confirm) and 按原样归档字幕; an already-archived captions Session keeps a
+// new-learning-interval 强制转写 entry (the contract has no un-archive).
+// The 无字幕 empty state says the ASR pipeline ALREADY took over (2.4).
+
+function pendingCoverageState(overrides = {}) {
+  return activeSessionState({
+    sessionId: "s_cov",
+    transcriptOrigin: null,
+    transcriptRecords: [],
+    captionsCoverage: {
+      covered: false,
+      coveredRange: { startMs: 60000, endMs: 300000 },
+      uncovered: [{ startMs: 300000, endMs: 600000 }],
+      segments: [{ startMs: 60000, endMs: 90000, text: "第一段" }],
+    },
+    ...overrides,
+  });
+}
+
+test("字幕覆盖不全的进行中会话明示覆盖范围，并给出两个决策入口", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: pendingCoverageState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  const joined = texts.join(" ");
+  assert.match(joined, /字幕覆盖 1:00–5:00/, "the covered range renders in source-timeline stamps");
+  assert.match(joined, /缺口将不转写/);
+  const force = findDescendants(transcript, "session-force-transcribe")[0];
+  const archive = findDescendants(transcript, "session-archive-captions")[0];
+  assert.match(force.textContent, /强制转写整个区间/, "the ASR entry is on the notice itself");
+  assert.match(archive.textContent, /按原样归档字幕/, "the captions-as-read entry is beside it");
+  assert.equal(
+    findDescendants(transcript, "session-record").length,
+    2,
+    "the 录制中 bootstrap spinner never lies on the captions path (no audio is recorded)",
+  );
+});
+
+test("the pending coverage status line does not claim 转写中 or archived 字幕", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: pendingCoverageState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+
+  const status = panel.elementById("sessionStatus").textContent;
+  assert.match(status, /字幕待选择/);
+  assert.doesNotMatch(status, /转写中/);
+  assert.doesNotMatch(status, /字幕 · /, "nothing is archived yet — the plain 字幕 badge would lie");
+});
+
+test("强制转写按钮两步确认：首次点击只进入确认文案，再次点击才发送", async () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: pendingCoverageState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const button = findDescendants(transcript, "session-force-transcribe")[0];
+
+  // First click: the confirm copy replaces the label; nothing is sent —
+  // an irreversible path decision must not ride a mis-click.
+  await panel.session.handleCaptionsActionClick({ target: button });
+  assert.equal(
+    panel.sentMessages.filter((message) => message.action === "forceTranscribe").length,
+    0,
+    "the first click sends nothing",
+  );
+  assert.match(button.textContent, /再次点击确认/);
+
+  // Second click: the switch request goes out.
+  await panel.session.handleCaptionsActionClick({ target: button });
+  const sent = panel.sentMessages.filter((message) => message.action === "forceTranscribe");
+  assert.equal(sent.length, 1);
+});
+
+test("按原样归档字幕点击发送 archiveCaptions（一步确认即可）", async () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: pendingCoverageState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const button = findDescendants(transcript, "session-archive-captions")[0];
+  await panel.session.handleCaptionsActionClick({ target: button });
+
+  const sent = panel.sentMessages.filter((message) => message.action === "archiveCaptions");
+  assert.equal(sent.length, 1, "archiving captions as-read is reversible-safe (首存为准) — one click");
+});
+
+test("the same-Session switch reply re-renders the transcript off the decision state", async () => {
+  const panel = loadPanel({ stored: {} });
+  panel.setNextResponse((message) => {
+    if (message.action === "forceTranscribe") {
+      return {
+        success: true,
+        sessionId: "s_cov",
+        capturePath: "asr",
+        state: activeSessionState({
+          sessionId: "s_cov",
+          transcriptOrigin: null,
+          transcriptRecords: [],
+          capturePath: "asr",
+        }),
+      };
+    }
+    return { success: true };
+  });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: pendingCoverageState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+  const transcript = panel.elementById("sessionTranscript");
+  const button = findDescendants(transcript, "session-force-transcribe")[0];
+  const rowsBefore = findDescendants(transcript, "session-force-transcribe").length;
+  await panel.session.handleCaptionsActionClick({ target: button });
+  await panel.session.handleCaptionsActionClick({ target: button });
+
+  // The reply's re-render runs off the switched state (capturePath asr): no
+  // further decision row is created — the same-Session switch is single-path
+  // asr, and the pending coverage decision is retired with it. (The mock DOM
+  // keeps the pre-switch row — its remove() is a no-op; the count proves no
+  // NEW row rode the reply.)
+  assert.equal(
+    findDescendants(transcript, "session-force-transcribe").length,
+    rowsBefore,
+    "the reply's re-render adds no further decision row",
+  );
+  const status = panel.elementById("sessionStatus").textContent;
+  assert.match(status, /转写中/, "the switched Session waits on the Worker like any ASR Session");
+});
+
+test("已归档字幕的进行中会话保留新学习区间的强制转写入口（契约无撤销）", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: captionsSessionState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  const joined = texts.join(" ");
+  assert.match(joined, /新的学习区间/, "the entry names the new-interval semantics");
+  assert.match(joined, /结束本次学习/, "and says the current Session finishes (nothing is undone)");
+  assert.match(
+    findDescendants(transcript, "session-force-transcribe")[0].textContent,
+    /强制转写/,
+  );
+});
+
+test("已结束的会话不再提供任何决策入口", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: captionsSessionState(),
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+  // The Session ends: the ended update's re-render adds no decision row —
+  // the surface retires with the active Session. (The mock DOM keeps the
+  // pre-end row — its remove() is a no-op; the count proves no NEW row rode
+  // the ended render.)
+  const transcript = panel.elementById("sessionTranscript");
+  const rowsBefore = findDescendants(transcript, "session-force-transcribe").length;
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      state: { ...captionsSessionState(), status: "ended" },
+    },
+    () => {},
+  );
+
+  assert.equal(
+    findDescendants(transcript, "session-force-transcribe").length,
+    rowsBefore,
+    "the ended render adds no decision row",
+  );
+  assert.equal(
+    findDescendants(transcript, "session-archive-captions").length,
+    0,
+    "the archive entry never existed on an archived-captions Session",
+  );
+  const status = panel.elementById("sessionStatus").textContent;
+  assert.match(status, /会话已结束/);
+});
+
+test("the 无字幕 empty state says the ASR pipeline already took over", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: activeSessionState({
+      transcriptOrigin: null,
+      captionsProbe: { available: false, reason: "no_subtitle_track" },
+      transcriptRecords: [],
+    }),
+    timestampKind: "video",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  const notice = texts.join(" ");
+  assert.match(notice, /未读取到可用字幕/);
+  assert.match(
+    notice,
+    /已改用语音转写/,
+    "2.4's fallback already runs the ASR pipeline — the copy must not read as a pending offer",
+  );
+  assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
 });

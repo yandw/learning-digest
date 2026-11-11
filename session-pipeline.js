@@ -136,6 +136,10 @@ var YTD_SESSION_PIPELINE = (() => {
         return onCaptionsSynced(state, event);
       case "captionsUnavailable":
         return onCaptionsUnavailable(state, event);
+      case "captionsCoveragePending":
+        return onCaptionsCoveragePending(state, event);
+      case "capturePathSwitched":
+        return onCapturePathSwitched(state, event);
       case "sessionEnd":
         return { ...state, status: "ended" };
       default:
@@ -567,6 +571,103 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
+   * Ticket 2.7 (#70): the partial-coverage decision state (D15 强制转写).
+   * The captions read found segments that do NOT cover the studied interval,
+   * so the captions archive is DEFERRED while the learner chooses: keep the
+   * captions as-read (then the archive lands and captionsSynced stamps the
+   * origin) or force-transcribe the whole interval on ASR (then
+   * capturePathSwitched re-grids the same Session — the captions are never
+   * submitted, so the server's origin lock can never conflict). The event
+   * carries everything the resolution needs: the covered range the panel
+   * displays (字幕覆盖 x–y), the uncovered ranges, and the as-read segments
+   * themselves — the durable copy the finish-time default archive reads even
+   * after a worker restart (the in-memory read is not the store; the
+   * snapshot is).
+   *
+   * Only a genuinely partial read may land here: an empty uncovered list is
+   * not a pending decision (the start would have archived), and the event is
+   * corruption once the origin locked (a pending decision after the server
+   * already has the captions has no resolution left). Malformed ranges or
+   * segments throw — the 强制转写 decision must never rest on guessed data.
+   */
+  function isValidMsRange(range) {
+    return (
+      !!range &&
+      typeof range === "object" &&
+      Number.isInteger(range.startMs) &&
+      range.startMs >= 0 &&
+      Number.isInteger(range.endMs) &&
+      range.endMs >= range.startMs
+    );
+  }
+
+  function isValidCoverageSegment(segment) {
+    return (
+      isValidMsRange(segment) &&
+      typeof segment.text === "string" &&
+      segment.text.trim() !== ""
+    );
+  }
+
+  function onCaptionsCoveragePending(state, event) {
+    if (state.transcriptOrigin === "captions" || state.transcriptOrigin === "asr") {
+      throw new Error("captionsCoveragePending requires an unlocked origin");
+    }
+    if (!isValidMsRange(event?.coveredRange)) {
+      throw new Error("captionsCoveragePending requires a well-formed coveredRange");
+    }
+    const uncovered = Array.isArray(event?.uncovered) ? event.uncovered : [];
+    if (uncovered.length === 0 || !uncovered.every(isValidMsRange)) {
+      throw new Error(
+        "captionsCoveragePending requires well-formed uncovered ranges (partial coverage only)",
+      );
+    }
+    const segments = Array.isArray(event?.segments) ? event.segments : [];
+    if (segments.length === 0 || !segments.every(isValidCoverageSegment)) {
+      throw new Error(
+        "captionsCoveragePending requires the as-read segments (the deferred archive's store)",
+      );
+    }
+    return {
+      ...state,
+      captionsCoverage: {
+        covered: false,
+        coveredRange: {
+          startMs: event.coveredRange.startMs,
+          endMs: event.coveredRange.endMs,
+        },
+        uncovered: uncovered.map((range) => ({ startMs: range.startMs, endMs: range.endMs })),
+        segments: segments.map((segment) => ({
+          startMs: segment.startMs,
+          endMs: segment.endMs,
+          text: segment.text,
+        })),
+      },
+    };
+  }
+
+  /**
+   * Ticket 2.7 (#70): the same-Session path switch (D15 同区间单一路径).
+   * captions→asr is the ONLY direction the contract knows — the reverse
+   * would meet the server's origin lock (409 transcript_origin_conflict) —
+   * and a Session switches at most once: after the switch it is single-path
+   * asr. The transcript origin stays untouched here (still null): it locks
+   * only when the first audio Segment's view syncs (D15: the FIRST
+   * submission locks the origin — the switch itself submits nothing).
+   */
+  function onCapturePathSwitched(state, event) {
+    if (event?.from !== "captions" || event?.to !== "asr") {
+      throw new Error(
+        "capturePathSwitched only supports the captions→asr direction (同区间单一路径)",
+      );
+    }
+    if (state.capturePath === "asr") {
+      throw new Error("capturePathSwitched requires a Session not already on the asr path");
+    }
+    return { ...state, capturePath: "asr" };
+  }
+
+  /**
    * Restores Session state from a persisted snapshot so the caller can keep
    * feeding events exactly where the Session left off. Snapshots from
    * before the Topic timeline carry the retired rollingSummary field and no
@@ -609,6 +710,41 @@ var YTD_SESSION_PIPELINE = (() => {
           typeof segment.id === "string" &&
           Number.isFinite(Number(segment.start)),
       );
+    }
+    // The switched capture path (ticket 2.7) rides the snapshot: a resumed
+    // switched Session stays asr (the pointer is the behavioral authority;
+    // this keeps the record honest for every state reader).
+    if (snapshot.capturePath === "captions" || snapshot.capturePath === "asr") {
+      restored.capturePath = snapshot.capturePath;
+    }
+    // The partial-coverage decision state (ticket 2.7) is durable: a resumed
+    // pending Session must still offer 强制转写 / 按原样归档字幕, and the
+    // finish-time default archive needs its deferred segments.
+    if (
+      snapshot.captionsCoverage &&
+      typeof snapshot.captionsCoverage === "object" &&
+      snapshot.captionsCoverage.covered === false &&
+      isValidMsRange(snapshot.captionsCoverage.coveredRange) &&
+      Array.isArray(snapshot.captionsCoverage.uncovered) &&
+      snapshot.captionsCoverage.uncovered.length > 0 &&
+      snapshot.captionsCoverage.uncovered.every(isValidMsRange) &&
+      Array.isArray(snapshot.captionsCoverage.segments) &&
+      snapshot.captionsCoverage.segments.length > 0 &&
+      snapshot.captionsCoverage.segments.every(isValidCoverageSegment)
+    ) {
+      restored.captionsCoverage = {
+        covered: false,
+        coveredRange: snapshot.captionsCoverage.coveredRange,
+        uncovered: snapshot.captionsCoverage.uncovered.map((range) => ({
+          startMs: range.startMs,
+          endMs: range.endMs,
+        })),
+        segments: snapshot.captionsCoverage.segments.map((segment) => ({
+          startMs: segment.startMs,
+          endMs: segment.endMs,
+          text: segment.text,
+        })),
+      };
     }
     // The 无字幕 probe result (Ticket 2.5) is durable state: a resumed
     // captions-path Session must keep saying 无字幕, not forget it.

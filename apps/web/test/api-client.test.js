@@ -1,7 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createApiClient } from "../public/js/api-client.js";
 import { createCredentialStore, CREDENTIALS_KEY } from "../public/js/credentials.js";
+
+// Round-2 contract fixtures (session-examples.json): the TranscriptView
+// samples are the authoritative shape for the Web's transcript read-back.
+const apiSessionExampleById = new Map(
+  JSON.parse(
+    fs.readFileSync(
+      path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "..", "..", "contracts", "fixtures", "session-examples.json"),
+      "utf8",
+    ),
+  ).samples.map((s) => [s.id, s]),
+);
 
 // The page's API access seam (pure module over an injectable fetch). Every
 // request carries the stored credential as `Authorization: Bearer <token>`;
@@ -270,4 +284,30 @@ test("updateResourceTitle() PATCHes /v1/resources/{id} with { title }", async ()
   assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
   assert.deepEqual(JSON.parse(fetcher.calls[0].init.body), { title: "新标题" });
   assert.equal(result.status, 200);
+});
+
+// --- session transcript (round 2, contract-r2 §3.5: Web 回查的二次拉取) -------
+
+test("getSessionTranscript() GETs /v1/sessions/{id}/transcript with the stored credential", async () => {
+  const view = apiSessionExampleById.get("api-session-transcript-captions-finished").response.body;
+  const fetcher = fakeFetch([{ status: 200, body: view }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.getSessionTranscript("ses_01JABC0031");
+
+  assert.equal(fetcher.calls[0].path, "/v1/sessions/ses_01JABC0031/transcript");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.equal(result.ok, true);
+  assert.equal(result.data.origin, "captions");
+  assert.deepEqual(result.data.records, view.records);
+});
+
+test("getSessionTranscript() encodes unsafe id characters", async () => {
+  const fetcher = fakeFetch([{ status: 404, body: { error: { code: "not_found", message: "x" } } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  await api.getSessionTranscript("ses/../../etc");
+
+  assert.equal(fetcher.calls[0].path, `/v1/sessions/${encodeURIComponent("ses/../../etc")}/transcript`);
 });

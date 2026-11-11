@@ -4,7 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { createLibraryFlow, presentListItem, presentDetail, presentNote, buildNoteJumpUrl, formatPosition, progressLabel } from "../public/js/library.js";
+import { createLibraryFlow, presentListItem, presentDetail, presentNote, presentSession, presentTranscript, buildNoteJumpUrl, formatPosition, formatDateTime, progressLabel } from "../public/js/library.js";
+
+// Pin the local timezone for the startedAt display tests below (set before
+// any Date is constructed, so formatDateTime's local accessors are
+// deterministic here: "…Z" instants render as their UTC clock reading).
+process.env.TZ = "UTC";
 
 // The library flow (pure module, P5): paste-to-collect inside the login
 // shell, the learning list, and the resource detail with retitle. It owns
@@ -32,10 +37,17 @@ const apiExampleById = new Map(
   JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, "api-examples.json"), "utf8"))
     .samples.map((s) => [s.id, s]),
 );
+// Round-2 contract fixtures: session lifecycle, TranscriptView shapes and
+// the resource-detail sessions[] extension.
+const sessionExampleById = new Map(
+  JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, "session-examples.json"), "utf8"))
+    .samples.map((s) => [s.id, s]),
+);
+const DETAIL_WITH_SESSIONS = sessionExampleById.get("api-resource-detail-with-sessions").response.body;
 
 /** Fake api: script the next result of each resource method; record calls. */
-function fakeApi({ createResult, listResult, detailResult, retitleResult } = {}) {
-  const calls = { create: [], list: 0, detail: [], retitle: [] };
+function fakeApi({ createResult, listResult, detailResult, retitleResult, transcriptResult, transcriptResults } = {}) {
+  const calls = { create: [], list: 0, detail: [], retitle: [], transcript: [] };
   return {
     calls,
     async createResource(body) {
@@ -53,6 +65,14 @@ function fakeApi({ createResult, listResult, detailResult, retitleResult } = {})
     async updateResourceTitle(id, title) {
       calls.retitle.push({ id, title });
       return retitleResult || { ok: true, status: 200, data: { resource: { id, title, kind: "webpage", createdAt: "2026-11-10T08:05:00Z" } } };
+    },
+    // Round-2 second pull (contract-r2 §3.5): one call per session block.
+    async getSessionTranscript(sessionId) {
+      calls.transcript.push(sessionId);
+      if (transcriptResults && transcriptResults[sessionId]) {
+        return transcriptResults[sessionId];
+      }
+      return transcriptResult || { ok: true, status: 200, data: sessionExampleById.get("api-session-transcript-asr-finished").response.body };
     },
     // login-flow methods exist on the seam but the library flow never calls them.
     async requestCode() { throw new Error("not used"); },
@@ -431,4 +451,167 @@ test("reset clears the list, detail and messages for the next session", async ()
   assert.equal(state.view, "list");
   assert.equal(state.notice, null);
   assert.equal(state.error, null);
+});
+
+// --- session transcript blocks (round 2, issue #71) ----------------------------
+
+test("formatDateTime renders the ISO instant as local YYYY-MM-DD HH:mm", () => {
+  // TZ is pinned to UTC at the top of this file, so the expectations are
+  // the UTC clock readings of the contract's ISO 8601 timestamps.
+  assert.equal(formatDateTime("2026-11-10T10:00:00Z"), "2026-11-10 10:00");
+  assert.equal(formatDateTime("2026-11-10T09:45:00Z"), "2026-11-10 09:45");
+  assert.equal(formatDateTime(null), null);
+  assert.equal(formatDateTime("not-a-date"), null);
+});
+
+test("presentSession maps one session block header: time, status, origin badge, summary", () => {
+  const [activeAsr, finishedAsr, finishedCaptions] = DETAIL_WITH_SESSIONS.sessions;
+
+  const active = presentSession(activeAsr);
+  assert.equal(active.id, "ses_01JABC0033");
+  assert.equal(active.startedAtText, "2026-11-10 10:00");
+  assert.equal(active.statusLabel, "进行中");
+  assert.equal(active.originLabel, "语音转写");
+  assert.equal(active.summaryText, "2 段文本 · 1 段转写失败");
+
+  const finished = presentSession(finishedAsr);
+  assert.equal(finished.statusLabel, "已结束");
+  assert.equal(finished.originLabel, "语音转写");
+  assert.equal(finished.summaryText, "1 段文本 · 1 处已跳过 · 1 段转写失败");
+
+  const captions = presentSession(finishedCaptions);
+  assert.equal(captions.originLabel, "字幕");
+  assert.equal(captions.summaryText, "2 段文本 · 1 处已跳过");
+});
+
+test("presentSession shows no origin badge and a no-transcript line for origin null", () => {
+  const presented = presentSession({
+    id: "ses_none",
+    sourceId: "src_01JABC0002",
+    status: "finished",
+    startedAt: "2026-11-10T08:00:00Z",
+    origin: null,
+    transcript: { recordCount: 0, gapCount: 0, failedCount: 0 },
+  });
+  assert.equal(presented.originLabel, null, "nothing archived yet -> no badge");
+  assert.equal(presented.summaryText, "本次学习未产生逐字稿");
+});
+
+test("presentTranscript merges records, gaps and failed into one startMs-ordered timeline", () => {
+  const view = sessionExampleById.get("api-session-transcript-asr-finished").response.body;
+  const entries = presentTranscript(view, DETAIL_WITH_SESSIONS.sources);
+
+  assert.deepEqual(entries.map((e) => e.kind), ["record", "gap", "failed"]);
+  assert.deepEqual(entries.map((e) => e.startMs), [60000, 150000, 210000]);
+
+  const [record, gap, failed] = entries;
+  assert.equal(record.stamp, "1:00");
+  assert.equal(record.text, "上一节我们留了一个问题：为什么要缩放点积");
+  assert.equal(record.jumpUrl, "https://www.bilibili.com/video/BV1ab411L78c?p=2&t=60", "reuses the note seek builder (bilibili t=)");
+  assert.equal(gap.stamp, "2:30–3:30");
+  assert.equal(gap.text, "已跳过");
+  assert.equal(gap.jumpUrl, null, "a skipped range has nothing to jump to");
+  assert.equal(failed.stamp, "3:30–4:00");
+  assert.equal(failed.text, "转写失败");
+  assert.equal(failed.detail, "Speech Provider 返回 400：音频解码失败", "the contract error message presents verbatim");
+});
+
+test("presentTranscript interleaves an active session's pending and failed with its records", () => {
+  const view = sessionExampleById.get("api-session-transcript-asr-active").response.body;
+  const entries = presentTranscript(view, DETAIL_WITH_SESSIONS.sources);
+
+  assert.deepEqual(entries.map((e) => e.kind), ["record", "record", "failed", "pending"]);
+  const pending = entries[3];
+  assert.equal(pending.stamp, "1:30–2:00");
+  assert.equal(pending.text, "转写中");
+  assert.equal(pending.jumpUrl, null);
+});
+
+test("presentTranscript gives caption records no jump URL on platforms without seek support", () => {
+  const view = sessionExampleById.get("api-session-transcript-captions-finished").response.body;
+  const xiaoeSources = [
+    { id: view.sourceId, url: "https://shop.xiaoe-tech.com/v_abc", platformId: "xiaoe-tech" },
+  ];
+  const entries = presentTranscript(view, xiaoeSources);
+
+  assert.deepEqual(entries.map((e) => e.kind), ["record", "record", "gap"]);
+  assert.equal(entries[0].stamp, "2:18");
+  assert.equal(entries[0].jumpUrl, null, "小鹅通 has no documented seek parameter -> 展示时间戳，不回跳");
+  assert.equal(entries[2].stamp, "5:00–6:00");
+  assert.equal(entries[2].text, "已跳过");
+});
+
+test("presentTranscript degrades to no stamp for an unusable startMs instead of throwing", () => {
+  const entries = presentTranscript(
+    {
+      sessionId: "s",
+      sourceId: null,
+      resourceId: "r",
+      sessionStatus: "finished",
+      origin: "captions",
+      records: [{ startMs: -5, endMs: 10, text: "x", origin: "captions" }],
+      gaps: [],
+      pending: [],
+      failed: [],
+    },
+    [],
+  );
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].stamp, null);
+  assert.equal(entries[0].text, "x");
+});
+
+test("presentTranscript returns an empty timeline for a missing view", () => {
+  assert.deepEqual(presentTranscript(null, []), []);
+});
+
+// --- transcript second pull (round 2 flow, issue #71) ---------------------------
+
+test("openDetail second-pulls each session's transcript view (contract-r2 §3.6)", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    transcriptResults: {
+      ses_01JABC0033: { ok: true, status: 200, data: sessionExampleById.get("api-session-transcript-asr-active").response.body },
+      ses_01JABC0032: { ok: true, status: 200, data: sessionExampleById.get("api-session-transcript-asr-finished").response.body },
+      ses_01JABC0031: { ok: true, status: 200, data: sessionExampleById.get("api-session-transcript-captions-finished").response.body },
+    },
+  });
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  // One §3.5 read per session block, in the detail's newest-first order.
+  assert.deepEqual(api.calls.transcript, ["ses_01JABC0033", "ses_01JABC0032", "ses_01JABC0031"]);
+  const transcripts = flow.getState().detail.transcripts;
+  assert.equal(transcripts["ses_01JABC0032"].origin, "asr");
+  assert.equal(transcripts["ses_01JABC0032"].gaps.length, 1);
+  assert.equal(transcripts["ses_01JABC0033"].pending.length, 1, "an active session keeps its pending segments");
+  assert.equal(transcripts["ses_01JABC0031"].origin, "captions");
+});
+
+test("a failed transcript second-pull leaves that block null without failing the detail", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    transcriptResults: {
+      ses_01JABC0032: { ok: false, status: 404, data: { error: { code: "not_found", message: "学习记录不存在或无权访问" } } },
+    },
+  });
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  assert.equal(flow.getState().view, "detail");
+  const transcripts = flow.getState().detail.transcripts;
+  assert.equal(transcripts["ses_01JABC0032"], null);
+  assert.ok(transcripts["ses_01JABC0033"], "the other blocks still load");
+});
+
+test("openDetail without sessions makes no transcript calls", async () => {
+  const api = fakeApi();
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  assert.equal(api.calls.transcript.length, 0, "round-1 details carry no sessions key");
+  assert.deepEqual(flow.getState().detail.transcripts, {});
 });

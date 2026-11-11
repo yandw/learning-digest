@@ -14,12 +14,13 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.2", () => {
+test("apps/web release metadata is 0.1.3", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
-  // 0.1.2 (round-1 review fixes): progressLabel's has-progress judgment is
-  // revision-based, so a revision-backed positionMs=0 still renders.
-  assert.equal(packageJson.version, "0.1.2");
+  // 0.1.3 (round 2, ticket 2.8 / #71): transcript read-back on the detail
+  // page — per-session blocks with origin badges, gaps, pending/failed
+  // rows and best-effort timestamp jumps via the round-1 seek builders.
+  assert.equal(packageJson.version, "0.1.3");
   assert.equal(packageJson.private, true);
 });
 

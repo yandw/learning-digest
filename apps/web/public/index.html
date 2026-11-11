@@ -133,6 +133,17 @@
             <ul id="detailNotesList" class="notes-list"></ul>
             <p id="notesEmpty" class="hint">这条资料还没有笔记；在插件侧边栏写下的笔记会出现在这里。</p>
           </div>
+
+          <h2 class="detail-subheading">逐字稿</h2>
+          <!-- Transcript read-back (round 2, #71): one block per study
+               session, newest first. The detail lists the sessions; each
+               block's full transcript is the per-session second pull
+               (GET /v1/sessions/{id}/transcript). Timestamps jump back on
+               platforms with a seek parameter, same as the notes. -->
+          <div id="detailTranscripts" class="transcripts-block">
+            <ul id="detailTranscriptsList" class="transcripts-list"></ul>
+            <p id="transcriptsEmpty" class="hint">这条资料还没有逐字稿；学习时记录的字幕或语音转写会按次出现在这里。</p>
+          </div>
         </section>
       </main>
     </div>

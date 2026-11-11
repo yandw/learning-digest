@@ -6,7 +6,15 @@
  * only builds elements from their snapshots and view models.
  */
 import { createLoginFlow } from "./login-flow.js";
-import { createLibraryFlow, presentListItem, presentDetail, presentNote, buildNoteJumpUrl } from "./library.js";
+import {
+  createLibraryFlow,
+  presentListItem,
+  presentDetail,
+  presentNote,
+  presentSession,
+  presentTranscript,
+  buildNoteJumpUrl,
+} from "./library.js";
 import { createApiClient } from "./api-client.js";
 import { createCredentialStore } from "./credentials.js";
 import { createSessionRevalidator } from "./session-revalidate.js";
@@ -71,6 +79,9 @@ const elements = {
   detailSources: byId("detailSources"),
   detailNotesList: byId("detailNotesList"),
   notesEmpty: byId("notesEmpty"),
+  // library: detail view, transcript read-back (round 2)
+  detailTranscriptsList: byId("detailTranscriptsList"),
+  transcriptsEmpty: byId("transcriptsEmpty"),
 };
 
 function setMessage(element, text) {
@@ -174,6 +185,74 @@ function renderDetailNote(note, sources) {
   return item;
 }
 
+/**
+ * One transcript timeline row (the merged records/gaps/pending/failed
+ * stream from presentTranscript): the mm:ss stamp plus the row text, and
+ * for failed rows the contract error message below. Like the note stamps,
+ * the stamp is a jump button only when the platform offers a seek
+ * parameter; otherwise it stays plain text — the jump decision lives in
+ * the pure module, this only renders it.
+ */
+function renderTranscriptEntry(entry) {
+  const item = el("li", `transcript-entry transcript-${entry.kind}`);
+  const line = el("p", "transcript-line");
+
+  if (entry.jumpUrl) {
+    const stamp = el("button", "link-btn note-stamp", entry.stamp);
+    stamp.type = "button";
+    stamp.title = "回到原视频的这个位置";
+    stamp.addEventListener("click", () => {
+      window.open(entry.jumpUrl, "_blank", "noopener");
+    });
+    line.appendChild(stamp);
+  } else if (entry.stamp) {
+    line.appendChild(el("span", "transcript-stamp", entry.stamp));
+  }
+  line.appendChild(el("span", "transcript-text", entry.text));
+  item.appendChild(line);
+
+  if (entry.detail) {
+    item.appendChild(el("p", "transcript-detail", entry.detail));
+  }
+  return item;
+}
+
+/**
+ * One session block (contract-r2 §3.6 sessions[]): the header from the
+ * detail (study time, status, origin badge, summary counts) plus the
+ * timeline of the per-session second pull stored in detail.transcripts —
+ * null marks a failed pull (header stays, body shows a load-failure line),
+ * an empty view reads as a session that produced no transcript.
+ */
+function renderSessionBlock(session, transcripts, sources) {
+  const presented = presentSession(session);
+  const item = el("li", "session-item");
+
+  const header = el("div", "session-header");
+  header.appendChild(el("span", "session-time", presented.startedAtText || ""));
+  header.appendChild(el("span", "badge badge-status", presented.statusLabel));
+  if (presented.originLabel) {
+    header.appendChild(el("span", "badge badge-origin", presented.originLabel));
+  }
+  item.appendChild(header);
+  item.appendChild(el("p", "session-summary", presented.summaryText));
+
+  const view = transcripts[session.id];
+  if (view === null) {
+    item.appendChild(el("p", "session-hint", "逐字稿加载失败，请稍后重试"));
+    return item;
+  }
+  const entries = presentTranscript(view, sources);
+  if (entries.length === 0) {
+    item.appendChild(el("p", "session-hint", "本次学习未产生逐字稿"));
+    return item;
+  }
+  const list = el("ul", "transcript-entries");
+  list.replaceChildren(...entries.map((entry) => renderTranscriptEntry(entry)));
+  item.appendChild(list);
+  return item;
+}
+
 function renderList(state) {
   elements.resourceList.replaceChildren(
     ...state.resources.map((item) => renderListItem(presentListItem(item))),
@@ -201,6 +280,17 @@ function renderDetail(state) {
     ...rawNotes.map((note) => renderDetailNote(note, state.detail.sources || [])),
   );
   elements.notesEmpty.hidden = rawNotes.length > 0;
+
+  // The transcript blocks render from the RAW detail too: sessions[] for
+  // the headers (newest first per contract-r2 §3.6), detail.transcripts
+  // for the per-session second-pull views, sources[] for the jump URLs.
+  const rawSessions = state.detail.sessions || [];
+  elements.detailTranscriptsList.replaceChildren(
+    ...rawSessions.map((session) =>
+      renderSessionBlock(session, state.detail.transcripts || {}, state.detail.sources || []),
+    ),
+  );
+  elements.transcriptsEmpty.hidden = rawSessions.length > 0;
 }
 
 // The library loads once per authenticated session: on resume, after a

@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("api-client.js", "settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "contracts/platform-video-id.js");
+importScripts("api-client.js", "settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "bilibili-captions.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -1056,6 +1056,341 @@ async function handleSeekLearningTarget({ tabId, positionMs } = {}) {
     // No bridge on the tab (closed mid-seek, or not an injected page).
     return { success: false, error: "课程页桥接不可用，请刷新课程页后重试" };
   }
+}
+
+/**
+ * Ticket 2.5 (#68): the bilibili captions path — 可用字幕优先直归档，全程零 ASR.
+ * The bridge's getBilibiliCaptions answer is normalized by the reader
+ * module; anything malformed, unreachable or timed out reads as 无字幕
+ * (不猜、不误报), which hands the start back to the capture flow.
+ */
+const CAPTIONS_READ_TIMEOUT_MS = 5_000;
+const CAPTIONS_POLL_INTERVAL_MS = 15_000;
+
+async function readTabCaptions(tabId) {
+  try {
+    const response = await Promise.race([
+      chrome.tabs.sendMessage(tabId, { action: "getBilibiliCaptions" }),
+      new Promise((resolve) =>
+        setTimeout(() => resolve(null), CAPTIONS_READ_TIMEOUT_MS),
+      ),
+    ]);
+    return YTD_BILIBILI_CAPTIONS.parseBridgeCaptionResponse(response);
+  } catch (_error) {
+    // No answering frame (the bridge is not injected, the page is loading,
+    // or the extension context was invalidated): an honest unavailable.
+    return { available: false, reason: "bridge_unreachable" };
+  }
+}
+
+/** The §3.1 create (session-archive.js): empty body, the resolved source. */
+async function postSessionCreate(settings, credential, sourceId) {
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_SESSION_ARCHIVE.createSessionPath(sourceId),
+  );
+  if (!apiUrl || !credential) {
+    return { ok: false, kind: "error", message: "学习服务地址未配置或账号未关联。" };
+  }
+  try {
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(YTD_SESSION_ARCHIVE.buildCreateSessionRequest()),
+    });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_error) {
+      data = null;
+    }
+    return YTD_SESSION_ARCHIVE.parseSessionResponse({ status: response.status, data });
+  } catch (_error) {
+    return { ok: false, kind: "error", message: "无法连接学习服务，请稍后重试。" };
+  }
+}
+
+/** The §3.3 archive: as-read segments; one idempotent resend on network drop. */
+async function postCaptionsArchive(settings, credential, sessionId, body) {
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_SESSION_ARCHIVE.captionsArchivePath(sessionId),
+  );
+  if (!apiUrl || !credential) {
+    return { ok: false, kind: "error", message: "学习服务地址未配置或账号未关联。" };
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let response = null;
+    try {
+      response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (_error) {
+      // Network drop: the resend is explicitly safe (§3.3 首存为准).
+      continue;
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_error) {
+      data = null;
+    }
+    return YTD_SESSION_ARCHIVE.parseCaptionsArchiveResponse({ status: response.status, data });
+  }
+  return { ok: false, kind: "error", message: "无法连接学习服务，字幕归档失败。" };
+}
+
+/**
+ * Archives the read captions for a running captions Session and lands the
+ * returned TranscriptView as Session state. Every non-ok verdict surfaces
+ * honestly (conflict feedback included) — the Session keeps running, and
+ * the origin stays unlocked locally when nothing was archived.
+ */
+async function archiveCaptionsForContext(context, captions) {
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const body = YTD_SESSION_ARCHIVE.buildCaptionsArchiveRequest({
+    segments: captions.segments,
+  });
+  if (!body) {
+    broadcastSession(context.state, {
+      captureNotice: "字幕读取结果无法归档，本次学习继续，但不会保存字幕逐字稿。",
+    });
+    return;
+  }
+  const outcome = await postCaptionsArchive(
+    settings,
+    credential,
+    context.serverSessionId,
+    body,
+  );
+  if (outcome.ok) {
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "captionsSynced",
+      origin: outcome.transcript.origin,
+      records: outcome.transcript.records,
+    });
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state);
+    return;
+  }
+  if (outcome.kind === "unauthorized") {
+    await handleCredentialsInvalidated("unauthorized");
+  }
+  // 如实呈现: the D15 verdicts carry the server's own message — the
+  // conflict feedback must never invent a kinder story.
+  broadcastSession(context.state, {
+    captureNotice: outcome.message || "字幕归档失败，本次学习继续。",
+  });
+}
+
+/** The §3.5 poll: re-sync the server view onto the Session state. */
+async function pollServerTranscript(context) {
+  if (!context || context.ended || !context.serverSessionId) return;
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_SESSION_ARCHIVE.transcriptPath(context.serverSessionId),
+  );
+  if (!apiUrl || !credential) return;
+  let response = null;
+  try {
+    response = await fetch(apiUrl, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${credential.token}` },
+    });
+  } catch (_error) {
+    return;
+  }
+  let data = null;
+  try {
+    data = await response.json();
+  } catch (_error) {
+    data = null;
+  }
+  const parsed = YTD_SESSION_ARCHIVE.parseTranscriptResponse({ status: response.status, data });
+  if (!parsed.ok) return;
+  const before = context.state;
+  for (const segment of YTD_SESSION_ARCHIVE.transcriptViewToPendingSegments(parsed.view)) {
+    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+      type: "segmentCaptured",
+      segment,
+    });
+  }
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "captionsSynced",
+    origin: parsed.view.origin,
+    records: parsed.view.records,
+  });
+  if (context.state !== before) {
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+    broadcastSession(context.state);
+  }
+}
+
+function startTranscriptPoll(context) {
+  if (context.transcriptTimer) clearInterval(context.transcriptTimer);
+  context.transcriptTimer = setInterval(() => {
+    void pollServerTranscript(context).catch((error) =>
+      debugLog("[Learning Digest BG] transcript poll error:", error),
+    );
+  }, CAPTIONS_POLL_INTERVAL_MS);
+}
+
+/** The poll's first beat happens now (the render must not wait 15s). */
+async function pollTranscriptNow(context) {
+  try {
+    await pollServerTranscript(context);
+  } catch (error) {
+    debugLog("[Learning Digest BG] transcript poll error:", error);
+  }
+  startTranscriptPoll(context);
+}
+
+/**
+ * The §3.2 finish for a captions Session. No gaps in this ticket: the
+ * archive is as-read (D15 — the subtitle track's own holes are not gaps),
+ * so the body carries none. A repeat finish (already finished elsewhere)
+ * is a calm no-op; a credential loss routes through the P7 handoff.
+ */
+async function finishServerSession(context) {
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_SESSION_ARCHIVE.finishPath(context.serverSessionId),
+  );
+  const body = YTD_SESSION_ARCHIVE.buildFinishRequest({ gaps: [] });
+  if (!apiUrl || !credential || !body) {
+    console.error(
+      "[Learning Digest] 学习服务不可用，服务端会话未收尾:",
+      context.serverSessionId,
+    );
+    return;
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let response = null;
+    try {
+      response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (_error) {
+      continue;
+    }
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_error) {
+      data = null;
+    }
+    const parsed = YTD_SESSION_ARCHIVE.parseFinishResponse({ status: response.status, data });
+    if (parsed.ok || parsed.kind === "alreadyFinished") return;
+    if (parsed.kind === "unauthorized") {
+      await handleCredentialsInvalidated("unauthorized");
+      return;
+    }
+    break;
+  }
+  console.error("[Learning Digest] 服务端会话收尾失败:", context.serverSessionId);
+}
+
+/**
+ * The captions-path start (Ticket 2.5): resolve, create the server Session
+ * (§3.1), then hand out a capture context whose capturePath is "captions"
+ * — the P10 lock and progress writer arm exactly as on the capture flow,
+ * while no audio capture, no Speech Provider and no offscreen document is
+ * ever involved (全程零 ASR).
+ */
+async function startCaptionsSession(message, recognition, captions) {
+  const settings = await getSettings();
+  const collectTarget = collectTargetFromTab({ id: message.tabId, url: message.url, title: "" });
+  const resolution = await resolveSourceForTarget(collectTarget);
+  if (!resolution.ok) {
+    return { success: false, error: resolution.message || "来源解析失败，请稍后重试。" };
+  }
+  if (!resolution.matched) {
+    return {
+      success: false,
+      needsFavorite: true,
+      error: "该页面还没有收藏到学习库：先收藏才能记录学习进度。",
+    };
+  }
+  const credential = await readStoredAuthCredential();
+  const created = await postSessionCreate(settings, credential, resolution.source.id);
+  if (!created.ok) {
+    if (created.kind === "unauthorized") {
+      await handleCredentialsInvalidated("unauthorized");
+    }
+    return { success: false, error: created.message || "学习会话创建失败，请稍后重试。" };
+  }
+
+  // The local transcriptOrigin stays null until the server answers the
+  // archive (D15: the FIRST submission locks the origin) — captionsSynced
+  // stamps it from the server's own view, so a rejected archive can never
+  // read as "captions locked" locally.
+  const state = YTD_SESSION_PIPELINE.createSession({
+    sessionId: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+  });
+  const context = createCaptureContext({
+    sessionId: state.sessionId,
+    tabId: message.tabId,
+    platformId: recognition.platformId,
+    kind: recognition.kind,
+    timestampKind: recognition.timestampKind,
+    startedAtMs: Date.now(),
+    sourceUrl: message.url,
+    segmentLengthSeconds: settings.segmentLengthSeconds,
+    transcribeMode: "segment",
+    state,
+    segmenter: YTD_SEGMENTER.createSegmenter({
+      segmentLengthSeconds: settings.segmentLengthSeconds,
+    }),
+    providerId: null,
+    credentials: null,
+    capturePath: "captions",
+    serverSessionId: created.session.id,
+  });
+  captureContext = context;
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, state);
+  await persistContextPointer(context);
+
+  // P10 (decision 4): the lock and the progress writer are the capture
+  // flow's own — 字幕路径走 P10 的目标锁定/进度写入不变.
+  await beginProgressTracking(context);
+  broadcastSession(context.state, { transcribeMode: "captions" });
+
+  // §3.3: archive as-read, then §3.5: poll the server view (first beat
+  // now, then the slow re-sync while the Session is active).
+  await archiveCaptionsForContext(context, captions);
+  await pollTranscriptNow(context);
+  console.log(
+    `[Learning Digest] 字幕学习已开始: session=${context.sessionId} ` +
+      `serverSession=${context.serverSessionId} segments=${captions.segments.length}`,
+  );
+  chrome.storage.local.remove("ytd_last_start_failure").catch(() => {});
+  return {
+    success: true,
+    sessionId: context.sessionId,
+    kind: context.kind,
+    timestampKind: context.timestampKind,
+    transcribeMode: "captions",
+    capturePath: "captions",
+    state: context.state,
+  };
 }
 
 /**
@@ -2391,6 +2726,8 @@ async function persistContextPointer(context) {
       startedAtMs: context.startedAtMs,
       segmentLengthSeconds: context.segmentLengthSeconds,
       transcribeMode: context.transcribeMode,
+      capturePath: context.capturePath,
+      serverSessionId: context.serverSessionId,
       pageTitle: context.pageTitle,
       sourceUrl: context.sourceUrl ?? null,
       cursorSeconds: context.segmenter ? context.segmenter.emittedUpTo : 0,
@@ -2488,6 +2825,13 @@ function resolveTranscribeMode(providerId, providerConfig) {
  *   re-watch of covered audio suppresses forwarding
  * @param {string} parts.providerId - selected Speech Provider id
  * @param {object} parts.credentials - that provider's credentials
+ * @param {"asr"|"captions"} [parts.capturePath] - the transcript path this
+ *   Session runs on (Ticket 2.5): "captions" means the direct-archive path
+ *   (no capture machinery, no Speech Provider, zero ASR); default "asr"
+ *   keeps the pre-2.5 capture behavior byte-identical
+ * @param {string|null} [parts.serverSessionId] - the server Session id
+ *   (contract-r2 §3.1) the captions path archives against; null when the
+ *   path never created one
  */
 function createCaptureContext({
   sessionId,
@@ -2508,6 +2852,8 @@ function createCaptureContext({
   segmenter,
   providerId,
   credentials,
+  capturePath,
+  serverSessionId,
 }) {
   return {
     sessionId,
@@ -2518,6 +2864,13 @@ function createCaptureContext({
     startedAtMs,
     segmentLengthSeconds,
     transcribeMode: transcribeMode === "realtime" ? "realtime" : "segment",
+    // Ticket 2.5 (#68): the transcript path. "captions" skips every capture
+    // scheduler/report branch; "asr" is the historical behavior.
+    capturePath: capturePath === "captions" ? "captions" : "asr",
+    // The server Session the captions path archives against (§3.1); the
+    // capture path's lifecycle wiring is ticket 2.4's and stays null here.
+    serverSessionId:
+      typeof serverSessionId === "string" && serverSessionId ? serverSessionId : null,
     // Absent until the bridge reports the page title; first write wins.
     pageTitle,
     // 0.1.57: the page URL the Session was started on, persisted with the
@@ -2704,8 +3057,12 @@ async function ensureCaptureResumed() {
   await rebuildProgressTracking(context);
 
   // The offscreen recorder survives a worker restart but not a browser
-  // restart; only the latter needs a fresh capture stream.
-  if (!(await chrome.offscreen.hasDocument())) {
+  // restart; only the latter needs a fresh capture stream. The captions
+  // path (Ticket 2.5) runs no capture machinery at all — 全程零 ASR.
+  if (
+    context.capturePath !== "captions" &&
+    !(await chrome.offscreen.hasDocument())
+  ) {
     try {
       const streamId = await chrome.tabCapture.getMediaStreamId({
         targetTabId: context.tabId,
@@ -2732,7 +3089,15 @@ async function ensureCaptureResumed() {
   if (context.timestampKind === "wallclock" && context.transcribeMode !== "realtime") {
     startLiveTimer(context);
   }
-  startSummaryTimer(context);
+  // The captions path runs no capture machinery and no Topic ticks: its
+  // transcript is the polled server view, so only the poll re-arms.
+  if (context.capturePath === "captions") {
+    startTranscriptPoll(context);
+  } else {
+    startSummaryTimer(context);
+  }
+  // (The resumed captions context re-syncs on the next interval beat; the
+  // archive-time poll already landed the view.)
   console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
 }
@@ -3118,6 +3483,19 @@ async function handleStartLearning(message) {
     };
   }
 
+  // Ticket 2.5 (#68): a bilibili video page tries the captions path first —
+  // 可用字幕优先直归档，全程零 ASR. An unavailable read hands the start to
+  // the capture flow below, with the probe result landed in the Session
+  // state as the honest 无字幕 record.
+  let captionsProbe = null;
+  if (recognition.platformId === "bilibili" && recognition.kind === "video") {
+    const captions = await readTabCaptions(message.tabId);
+    if (captions.available) {
+      return startCaptionsSession(message, recognition, captions);
+    }
+    captionsProbe = { available: false, reason: captions.reason };
+  }
+
   const settings = await getSettings();
   const providerId = settings.speechProvider;
   const credentials = settings.speechProviders[providerId] || {};
@@ -3139,8 +3517,16 @@ async function handleStartLearning(message) {
   const state = YTD_SESSION_PIPELINE.createSession({
     sessionId: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
   });
+  // Ticket 2.5: the 无字幕 probe result is durable Session state (the
+  // panel's honest empty-state across resume), not a forgotten side effect.
+  const seededState = captionsProbe
+    ? YTD_SESSION_PIPELINE.applyEvent(state, {
+        type: "captionsUnavailable",
+        reason: captionsProbe.reason,
+      })
+    : state;
   const context = createCaptureContext({
-    sessionId: state.sessionId,
+    sessionId: seededState.sessionId,
     tabId: message.tabId,
     platformId: recognition.platformId,
     kind: recognition.kind,
@@ -3149,7 +3535,7 @@ async function handleStartLearning(message) {
     sourceUrl: message.url,
     segmentLengthSeconds: settings.segmentLengthSeconds,
     transcribeMode: resolveTranscribeMode(providerId, credentials),
-    state,
+    state: seededState,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
     }),
@@ -3157,7 +3543,7 @@ async function handleStartLearning(message) {
     credentials,
   });
   captureContext = context;
-  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, state);
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, seededState);
   await persistContextPointer(context);
   // #48: a fresh wallclock Session probes for a bridged media position for
   // the first 10 seconds; anchoring re-aligns the whole timeline to the
@@ -3288,6 +3674,18 @@ async function handleMediaPosition(message, sender) {
     // reroute it (decision 4). P11: a reported pause is a key event —
     // the exact paused position writes immediately (暂停=立即写当前位置).
     feedLearningPosition(context, position, { paused: message.paused === true });
+  }
+  // Ticket 2.5: the captions path rides the position stream for progress
+  // and media-end only — no scheduler, no re-listen, no Segment dispatch
+  // (the transcript is the polled server view; 全程零 ASR).
+  if (context.capturePath === "captions") {
+    if (
+      message.ended &&
+      (context.kind === "replay" || context.kind === "course" || context.kind === "video")
+    ) {
+      await endActiveSession(context, { reason: "mediaEnded" });
+    }
+    return;
   }
   // Realtime Sessions (#47, #49) run no Segment schedule: no scheduler
   // feeds, no re-listen retries (there is no recorder to re-cut from). What
@@ -4175,19 +4573,29 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   context.ended = true;
   if (context.liveTimer) clearInterval(context.liveTimer);
   if (context.summaryTimer) clearInterval(context.summaryTimer);
+  if (context.transcriptTimer) clearInterval(context.transcriptTimer);
   // P10 (decision 4): the final progress write of the latest position (the
   // flush is bounded — throttle-bypassing cycles never wait on the network),
   // the writer stops, and the course tab list unlocks.
   await releaseLearningTarget(context);
+
+  // Ticket 2.5 (#68): the captions Session finishes its server Session
+  // here (§3.2) — 字幕 Session 结束（P11 触发）→finish. The 409 repeat
+  // verdict is absorbed inside (already finished is not a local failure).
+  if (context.serverSessionId) {
+    await finishServerSession(context);
+  }
 
   const finalPosition =
     context.timestampKind === "wallclock"
       ? (Date.now() - context.startedAtMs) / 1000
       : context.lastPosition;
   // Realtime Sessions (#47) have no Segments to flush: their Transcript is
-  // already complete (every finalized utterance landed as a record).
+  // already complete (every finalized utterance landed as a record). The
+  // captions path (Ticket 2.5) never runs a scheduler: its transcript is
+  // the polled server view, so there is no tail either.
   const tail =
-    context.transcribeMode === "realtime"
+    context.capturePath === "captions" || context.transcribeMode === "realtime"
       ? null
       : context.segmenter.flush(finalPosition);
   if (tail) await dispatchSegment(context, tail);
@@ -4230,9 +4638,13 @@ async function endActiveSession(context, { reason, report = true } = {}) {
     broadcastSession(context.state);
   }
 
-  await sendOffscreen({ action: "captureStop" });
-  if (await chrome.offscreen.hasDocument()) {
-    await chrome.offscreen.closeDocument();
+  // The captions path never created the offscreen document or the capture
+  // stream (Ticket 2.5): standing them down is the capture paths' job.
+  if (context.capturePath !== "captions") {
+    await sendOffscreen({ action: "captureStop" });
+    if (await chrome.offscreen.hasDocument()) {
+      await chrome.offscreen.closeDocument();
+    }
   }
   if (captureContext?.sessionId === context.sessionId) captureContext = null;
   return { success: true, reason, state: context.state, report: reportPayload };
@@ -4377,7 +4789,11 @@ async function handleGetSessionState() {
     sessionId: context.sessionId,
     kind: context.kind,
     timestampKind: context.timestampKind,
-    transcribeMode: context.transcribeMode,
+    // The captions path (Ticket 2.5) presents as "captions" — the panel's
+    // copy and transcript states key off it (no 录制 wording, no Segment
+    // wait); the internal transcribeMode stays "segment" for the shared
+    // resume machinery.
+    transcribeMode: context.capturePath === "captions" ? "captions" : context.transcribeMode,
     startedAtMs: context.startedAtMs,
     state: context.state,
   };

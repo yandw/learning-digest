@@ -12,6 +12,7 @@ test("createSession starts an active Session with empty state", () => {
     segments: [],
     transcriptRecords: [],
     topics: [],
+    transcriptOrigin: null,
   });
 });
 
@@ -923,4 +924,113 @@ test("settleInterruptedSegments is a no-op when nothing is pending", () => {
   const settled = sessionPipeline.settleInterruptedSegments(state);
   assert.equal(settled, state);
   assert.equal(settled.transcriptRecords.length, 1);
+});
+
+// --- captions path (Ticket 2.5, #68) ---------------------------------------------
+//
+// The captions path lands the server's TranscriptView as Session state:
+// captionsSynced maps the archived records to source-timeline rows, and a
+// probe that found no captions stays visible as 无字幕 state across resume.
+
+test("createSession carries the captions origin when the path commits to it", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1", transcriptOrigin: "captions" });
+  assert.equal(state.transcriptOrigin, "captions");
+});
+
+test("captionsSynced maps ms records to source-timeline rows and stamps the origin", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsSynced",
+    origin: "captions",
+    records: [
+      { startMs: 159000, endMs: 181000, text: "Q K V 三个矩阵各司其职" },
+      { startMs: 138000, endMs: 159000, text: "这一节我们把注意力分数放到矩阵上看" },
+    ],
+  });
+
+  assert.equal(state.transcriptOrigin, "captions");
+  assert.deepEqual(state.transcriptRecords, [
+    { start: 138, duration: 21, text: "这一节我们把注意力分数放到矩阵上看" },
+    { start: 159, duration: 22, text: "Q K V 三个矩阵各司其职" },
+  ]);
+});
+
+test("captionsSynced replaces the rows with the server view (首存为准 lives server-side)", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1", transcriptOrigin: "captions" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsSynced",
+    origin: "captions",
+    records: [{ startMs: 0, endMs: 1000, text: "旧" }],
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsSynced",
+    origin: "captions",
+    records: [
+      { startMs: 0, endMs: 1000, text: "新一" },
+      { startMs: 1000, endMs: 2000, text: "新二" },
+    ],
+  });
+
+  assert.deepEqual(
+    state.transcriptRecords.map((record) => record.text),
+    ["新一", "新二"],
+    "the poll's view is the truth, never appended onto stale rows",
+  );
+});
+
+test("captionsSynced ignores unusable records instead of corrupting the timeline", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsSynced",
+    origin: "captions",
+    records: [
+      { startMs: 0, endMs: 1000, text: "好的" },
+      { startMs: "x", endMs: 2000, text: "坏的" },
+      { startMs: 3000, endMs: 4000, text: "  " },
+      null,
+    ],
+  });
+
+  assert.deepEqual(state.transcriptRecords, [{ start: 0, duration: 1, text: "好的" }]);
+});
+
+test("captionsUnavailable records the honest 无字幕 probe result", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsUnavailable",
+    reason: "no_subtitle_track",
+  });
+
+  assert.deepEqual(state.captionsProbe, { available: false, reason: "no_subtitle_track" });
+  assert.equal(state.transcriptOrigin, null, "no captions means no locked origin");
+});
+
+test("captionsUnavailable refuses to claim captions were found", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+  assert.throws(() =>
+    sessionPipeline.applyEvent(state, { type: "captionsUnavailable", available: true }),
+  );
+});
+
+test("captions events survive a resume (the 无字幕 state is durable)", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1", transcriptOrigin: "captions" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "captionsSynced",
+    origin: "captions",
+    records: [{ startMs: 0, endMs: 1000, text: "第一段" }],
+  });
+  state = sessionPipeline.applyEvent(state, { type: "titleCaptured", title: "课程页" });
+
+  const resumed = sessionPipeline.resumeFromSnapshot(state);
+  assert.equal(resumed.transcriptOrigin, "captions");
+  assert.deepEqual(resumed.transcriptRecords, [{ start: 0, duration: 1, text: "第一段" }]);
+
+  let probed = sessionPipeline.createSession({ sessionId: "s2" });
+  probed = sessionPipeline.applyEvent(probed, {
+    type: "captionsUnavailable",
+    reason: "no_subtitle_track",
+  });
+  const resumedProbe = sessionPipeline.resumeFromSnapshot(probed);
+  assert.deepEqual(resumedProbe.captionsProbe, { available: false, reason: "no_subtitle_track" });
+  assert.equal(resumedProbe.transcriptOrigin, null);
 });

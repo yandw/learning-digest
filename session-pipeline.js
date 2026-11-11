@@ -40,16 +40,22 @@ var YTD_SESSION_PIPELINE = (() => {
   /**
    * Creates an active Session.
    *
-   * @param {{sessionId: string}} options
-   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], topics: object[]}}
+   * @param {{sessionId: string, transcriptOrigin?: "captions"|"asr"|null}} options
+   *   transcriptOrigin is set when the Session already committed to a
+   *   transcript path at start (Ticket 2.5: the captions path locks origin
+   *   "captions" at creation); it stays null for the capture paths.
+   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], topics: object[], transcriptOrigin: string|null}}
    */
-  function createSession({ sessionId }) {
+  function createSession({ sessionId, transcriptOrigin } = {}) {
     return {
       sessionId,
       status: "active",
       segments: [],
       transcriptRecords: [],
       topics: [],
+      transcriptOrigin: transcriptOrigin === "captions" || transcriptOrigin === "asr"
+        ? transcriptOrigin
+        : null,
     };
   }
 
@@ -124,6 +130,10 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTopicsAppended(state, event);
       case "titleCaptured":
         return onTitleCaptured(state, event);
+      case "captionsSynced":
+        return onCaptionsSynced(state, event);
+      case "captionsUnavailable":
+        return onCaptionsUnavailable(state, event);
       case "sessionEnd":
         return { ...state, status: "ended" };
       default:
@@ -450,6 +460,62 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
+   * Ticket 2.5 (#68): the captions path's view sync. The server's
+   * TranscriptView (contract-r2 §2.5) is the source of truth for a captions
+   * Session — 首存为准 lives server-side — so the event REPLACES the rows
+   * with the mapped view instead of appending onto stale ones. Records
+   * arrive as {startMs, endMs, text} on the source timeline (the same
+   * reference frame the progress position stream uses) and land as the
+   * seconds-based rows every panel/timeline consumer already reads.
+   * Unusable records are dropped, never guessed into the timeline; the
+   * origin stamps only when a valid one is given.
+   */
+  function onCaptionsSynced(state, event) {
+    const records = Array.isArray(event?.records) ? event.records : [];
+    const mapped = [];
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const startMs = Number(record.startMs);
+      const endMs = Number(record.endMs);
+      const text = typeof record.text === "string" ? record.text.trim() : "";
+      if (!Number.isFinite(startMs) || startMs < 0) continue;
+      if (!Number.isFinite(endMs) || endMs < startMs) continue;
+      if (text === "") continue;
+      mapped.push({
+        start: Math.round(startMs) / 1000,
+        duration: Math.max(0, Math.round(endMs - startMs) / 1000),
+        text,
+      });
+    }
+    mapped.sort((a, b) => a.start - b.start || a.duration - b.duration);
+    const next = { ...state, transcriptRecords: mapped };
+    if (event?.origin === "captions" || event?.origin === "asr") {
+      next.transcriptOrigin = event.origin;
+    }
+    return next;
+  }
+
+  /**
+   * Ticket 2.5 (#68): the honest 无字幕 record. A captions probe that found
+   * nothing lands here so the state (and the panel across a resume) keeps
+   * saying "无字幕" instead of silently forgetting. The event can only ever
+   * record UNAVAILABILITY — claiming captions were found through it is a
+   * corruption and throws.
+   */
+  function onCaptionsUnavailable(state, event) {
+    if (event?.available === true) {
+      throw new Error("captionsUnavailable can only record unavailability");
+    }
+    return {
+      ...state,
+      captionsProbe: {
+        available: false,
+        reason: typeof event?.reason === "string" && event.reason ? event.reason : "no_subtitle_track",
+      },
+    };
+  }
+
+  /**
    * Restores Session state from a persisted snapshot so the caller can keep
    * feeding events exactly where the Session left off. Snapshots from
    * before the Topic timeline carry the retired rollingSummary field and no
@@ -471,11 +537,30 @@ var YTD_SESSION_PIPELINE = (() => {
         ? snapshot.transcriptRecords
         : [],
       topics: Array.isArray(snapshot.topics) ? snapshot.topics : [],
+      transcriptOrigin:
+        snapshot.transcriptOrigin === "captions" || snapshot.transcriptOrigin === "asr"
+          ? snapshot.transcriptOrigin
+          : null,
     };
     // The captured page title (#32) rides along when the snapshot has one;
     // older snapshots simply resume titleless and can capture it later.
     if (typeof snapshot.title === "string" && snapshot.title) {
       restored.title = snapshot.title;
+    }
+    // The 无字幕 probe result (Ticket 2.5) is durable state: a resumed
+    // captions-path Session must keep saying 无字幕, not forget it.
+    if (
+      snapshot.captionsProbe &&
+      typeof snapshot.captionsProbe === "object" &&
+      snapshot.captionsProbe.available === false
+    ) {
+      restored.captionsProbe = {
+        available: false,
+        reason:
+          typeof snapshot.captionsProbe.reason === "string" && snapshot.captionsProbe.reason
+            ? snapshot.captionsProbe.reason
+            : "no_subtitle_track",
+      };
     }
     return restored;
   }

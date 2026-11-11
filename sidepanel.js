@@ -2405,6 +2405,12 @@ const sessionUi = {
   // transcript the report's timestamps jump into) stays visible after the
   // Session ends instead of being wiped by the 5s poll.
   reportShown: false,
+  // Ticket 2.5 (#68): the transcript path's display state, read from the
+  // sessionUpdate state — transcriptOrigin "captions" means the archived
+  // captions full text, captionsProbe the honest 无字幕 record.
+  transcriptOrigin: null,
+  captionsProbe: null,
+  transcriptStateSessionId: null,
   // End-button state machine (0.1.40): 结束学习 click or a report retry sets
   // reportGenerating until any end-time payload arrives; a failed pass keeps
   // reportError so the 开始总结 button doubles as the retry affordance.
@@ -2424,6 +2430,32 @@ function observeSessionTitle(state) {
   }
   if (typeof state.title === "string" && state.title) {
     sessionUi.title = state.title;
+  }
+}
+
+/**
+ * Ticket 2.5 (#68): remembers the transcript path's display state the same
+ * way the title is remembered — a new Session id starts clean, so a stale
+ * 字幕 badge can never bleed into the next Session. Tracks its own session
+ * id: observeSessionTitle updates the shared titleSessionId before this
+ * runs, so comparing against it would never see the switch.
+ */
+function observeTranscriptState(state) {
+  if (!state?.sessionId) return;
+  if (state.sessionId !== sessionUi.transcriptStateSessionId) {
+    sessionUi.transcriptStateSessionId = state.sessionId;
+    sessionUi.transcriptOrigin = null;
+    sessionUi.captionsProbe = null;
+  }
+  if (state.transcriptOrigin === "captions" || state.transcriptOrigin === "asr") {
+    sessionUi.transcriptOrigin = state.transcriptOrigin;
+  }
+  if (
+    state.captionsProbe &&
+    typeof state.captionsProbe === "object" &&
+    state.captionsProbe.available === false
+  ) {
+    sessionUi.captionsProbe = state.captionsProbe;
   }
 }
 
@@ -2458,7 +2490,11 @@ function renderSessionStatus() {
     sessionUi.timestampKind === "video" ? "已对齐视频时间轴" : "直播计时（墙钟）";
   if (sessionUi.active) {
     const startedAt = formatSessionClock(sessionUi.startedAtMs);
-    status.textContent = `${kindLabel} · ${modeLabel} · 转写中 · 开始于 ${startedAt}`;
+    // Ticket 2.5 (#68): the captions path has nothing to wait for — the
+    // transcript is the archived captions full text (字幕), not 转写中.
+    const transcriptLabel =
+      sessionUi.transcriptOrigin === "captions" ? "字幕" : "转写中";
+    status.textContent = `${kindLabel} · ${modeLabel} · ${transcriptLabel} · 开始于 ${startedAt}`;
     return;
   }
   status.textContent = kindLabel ? `${kindLabel} · 未开始转写` : kindLabel;
@@ -2581,8 +2617,44 @@ function renderSessionTranscript(state) {
 
   sessionUi.renderedRecords = records.length;
   renderPendingSegments(container, state);
+  renderCaptionsStateNotice(container, state);
   renderRealtimeDraft();
   container.scrollTop = container.scrollHeight;
+}
+
+/**
+ * Ticket 2.5 (#68): the transcript area's three states, distinguished under
+ * the rows. With archived captions the rows ARE the 字幕 full text; with a
+ * recorded 无字幕 probe and nothing else to show, the honest empty state
+ * names it and keeps the 可转写 hint (the forced-transcription entry's
+ * semantics — the switch itself is ticket 2.7's).
+ */
+function renderCaptionsStateNotice(container, state) {
+  container.querySelectorAll(".session-captions-empty").forEach((row) => row.remove());
+  const records = state.transcriptRecords || [];
+  if (records.length > 0) return;
+  const appendNotice = (text) => {
+    const row = document.createElement("div");
+    row.className = "session-record session-captions-empty";
+    const label = document.createElement("span");
+    label.className = "session-record-text";
+    label.textContent = text;
+    row.append(label);
+    container.appendChild(row);
+  };
+  if (state.transcriptOrigin === "captions") {
+    // Archived on the server but no usable rows on screen yet: the archive
+    // round trip is in flight — activity, never an invented empty state.
+    appendNotice("正在归档字幕全文…");
+    return;
+  }
+  if (
+    state.captionsProbe &&
+    state.captionsProbe.available === false &&
+    !(state.segments || []).some((segment) => segment.status === "pending")
+  ) {
+    appendNotice("本页未读取到可用字幕，本次学习不产生字幕逐字稿。可转写：可改用语音转写取得整个学习区间的逐字稿。");
+  }
 }
 
 /**
@@ -2610,9 +2682,17 @@ function renderRealtimeDraft() {
 function renderPendingSegments(container, state) {
   container.querySelectorAll(".session-pending").forEach((row) => row.remove());
   if (sessionUi.transcribeMode === "realtime") return;
+  // The captions path (Ticket 2.5) records no audio: the capture bootstrap
+  // copy ("第一段逐字稿约 X 后出现…") would be a lie there.
+  if (sessionUi.transcriptOrigin === "captions") return;
   const segments = state.segments || [];
+  // The 无字幕 notice (Ticket 2.5) owns the empty state when the probe
+  // found nothing: promising a first transcript row next to it would
+  // contradict the honest observation. Pending ASR segments still spin.
   const bootstrap =
-    segments.length === 0 && (state.transcriptRecords || []).length === 0;
+    segments.length === 0 &&
+    (state.transcriptRecords || []).length === 0 &&
+    !sessionUi.captionsProbe;
   if (bootstrap) {
     appendPendingRow(
       container,
@@ -3255,11 +3335,14 @@ function showRecordingToast() {
     toast.className = "recording-toast";
     document.body.appendChild(toast);
   }
-  // Realtime Sessions (#45) have no Segment wait to announce.
+  // Realtime Sessions (#45) have no Segment wait to announce; the captions
+  // path (Ticket 2.5) records no audio at all — its copy must not say 录制.
   toast.textContent =
-    sessionUi.transcribeMode === "realtime"
-      ? "已开始录制 · 实时转写已开启"
-      : `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
+    sessionUi.transcribeMode === "captions"
+      ? "已开始学习 · 字幕全文归档中"
+      : sessionUi.transcribeMode === "realtime"
+        ? "已开始录制 · 实时转写已开启"
+        : `已开始录制 · 逐字稿将在约 ${segmentLengthLabel()}后出现`;
   toast.classList.add("recording-toast-visible");
   clearTimeout(showRecordingToast.timer);
   showRecordingToast.timer = setTimeout(
@@ -3290,6 +3373,7 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
       sessionUi.lastSessionId = activeSessionId;
     }
     observeSessionTitle(state);
+    observeTranscriptState(state);
     // A new Session retires any previous Session's report state.
     sessionUi.reportShown = false;
     // ...and the 纪要 tab shows the generating hint until the new report
@@ -3331,6 +3415,11 @@ function showSessionMode({ active, kind, state, transcribeMode, timestampKind, s
   sessionUi.active = false;
   sessionUi.sessionId = null;
   sessionUi.renderedRecords = 0;
+  // The transcript path's display state retires with the Session (the ended
+  // broadcast re-derives it from its own state when it re-renders).
+  sessionUi.transcriptOrigin = null;
+  sessionUi.captionsProbe = null;
+  sessionUi.transcriptStateSessionId = null;
   // The ended (or idle) Session takes its rows with it; a new Session
   // reconciles from an empty row map.
   for (const row of sessionUi.recordRows.values()) row.remove();
@@ -3698,6 +3787,8 @@ function handleSessionUpdateMessage(message, sendResponse) {
       renderSessionStatus();
     }
     observeSessionTitle(message.state);
+    observeTranscriptState(message.state);
+    renderSessionStatus();
     renderSessionTranscript(message.state);
     renderLiveTopics(message.state);
     if (message.report) adoptSessionReport(message.report, message.sessionId);

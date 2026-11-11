@@ -28,6 +28,12 @@
  * - the seekMedia command: currentTime assignment + a play() attempt that
  *   tolerates autoplay-policy rejection, for P11 resume positioning.
  *
+ * Ticket 2.5 (#68) addition:
+ * - the getBilibiliCaptions command: the frame that can see a bilibili
+ *   subtitle track list answers with the caption reader's result (async).
+ *   The reader lives in bilibili-captions.js (loaded before this file in
+ *   the manifest; injectable as env.createCaptionReader for tests).
+ *
  * Structure: YTD_PAGE_BRIDGE.createPageBridge(env) builds every behavior
  * over an injected DOM/chrome/timer environment so the Node tests drive the
  * SAME code the content script runs (tests/page-bridge.test.js, hand-stubbed
@@ -67,6 +73,30 @@ var YTD_PAGE_BRIDGE = (() => {
     }
 
     let bridgedMedia = null;
+
+    /**
+     * The caption reader (Ticket 2.5, #68): created lazily over this
+     * bridge's own document/window so the reader shares the page state the
+     * position stream reads. The factory comes from the env injection
+     * (tests) or the bilibili-captions.js global (the shipped manifest
+     * loads it before this file); absent means the command stays ignored.
+     */
+    let captionReader = null;
+    function getCaptionReader() {
+      if (captionReader) return captionReader;
+      const factory =
+        env.createCaptionReader ||
+        (typeof YTD_BILIBILI_CAPTIONS !== "undefined" && YTD_BILIBILI_CAPTIONS
+          ? YTD_BILIBILI_CAPTIONS.createBilibiliCaptionReader
+          : null);
+      if (typeof factory !== "function") return null;
+      try {
+        captionReader = factory({ document: doc, window: win });
+      } catch (_error) {
+        return null;
+      }
+      return captionReader || null;
+    }
 
     /** (Re)binds the seek listeners to the current primary media: a drag is
      *  reported the moment the player starts seeking, not up to a second
@@ -155,14 +185,22 @@ var YTD_PAGE_BRIDGE = (() => {
      * - seekMedia (P10b, #63): resume positioning for P11 — positionMs →
      *   currentTime, clamped to the duration, plus a play() attempt whose
      *   autoplay-policy rejection does not fail the (already landed) seek.
+     * - getBilibiliCaptions (Ticket 2.5, #68): the caption reader's stage —
+     *   the frame that can see a subtitle track list answers (async: the
+     *   subtitle body may need a fetch); frames without any subtitle source
+     *   stay silent so only the owning frame's answer reaches the sender.
      *
      * With all_frames injection the message reaches every frame; frames
      * without media stay silent (return false) so only the frame holding
      * the player answers and the worker takes its response.
      *
-     * @returns {boolean} false: every response is synchronous.
+     * @returns {boolean} true when an async response is held open
+     *   (getBilibiliCaptions only); every other response is synchronous.
      */
     function handleMessage(message, sendResponse) {
+      if (message?.action === "getBilibiliCaptions") {
+        return handleCaptionsRequest(message, sendResponse);
+      }
       const isSeek = message?.action === "seekMedia";
       if (!isSeek && message?.action !== "restartFromBeginning" && message?.action !== "getMediaPosition") {
         return false;
@@ -213,6 +251,39 @@ var YTD_PAGE_BRIDGE = (() => {
         sendResponse({ success: false, error: error?.message || String(error) });
       }
       return false;
+    }
+
+    /**
+     * Ticket 2.5 (#68): the getBilibiliCaptions command. The caption reader
+     * (bilibili-captions.js, loaded before this file in the manifest) probes
+     * the page's subtitle sources; only a frame that can see a track list
+     * answers — the same only-the-owning-frame rule the media commands
+     * follow, extended to the async case with a held-open sendResponse.
+     * A reader failure answers available:false with an explicit reason: a
+     * failed read can never read as "captions found".
+     */
+    function handleCaptionsRequest(message, sendResponse) {
+      const reader = getCaptionReader();
+      if (!reader) return false;
+      let probe;
+      try {
+        probe = reader.probe();
+      } catch (_error) {
+        probe = { present: false, source: null };
+      }
+      if (!probe || !probe.present) return false;
+      const options = {};
+      if (message.intervalStartMs !== undefined) options.intervalStartMs = message.intervalStartMs;
+      if (message.intervalEndMs !== undefined) options.intervalEndMs = message.intervalEndMs;
+      reader
+        .read(options)
+        .then((result) => {
+          sendResponse({ success: true, ...result });
+        })
+        .catch((_error) => {
+          sendResponse({ success: true, available: false, reason: "subtitle_read_failed" });
+        });
+      return true;
     }
 
     /** The shipped content-script wiring: one message listener, the 1s

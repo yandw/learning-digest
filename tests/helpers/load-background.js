@@ -221,6 +221,10 @@ function loadBackgroundHelpers({
     // P10 learning-start: the course tab list, the locked-target state
     // machine and the progress write client (learning-start.js).
     YTD_LEARNING_START: require("../../learning-start.js"),
+    // Ticket 2.5 (#68): the Session archive client (contract-r2 §3.1/§3.2/
+    // §3.3/§3.5) and the page-side caption reader the bridge command uses.
+    YTD_SESSION_ARCHIVE: require("../../session-archive.js"),
+    YTD_BILIBILI_CAPTIONS: require("../../bilibili-captions.js"),
     YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
     YTD_REPORT_RENDER: require("../../report-render.js"),
     // The real settings module (require-able, pure): the identity stub this

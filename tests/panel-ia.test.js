@@ -1520,3 +1520,132 @@ test("describeCourseTargetResolution shows 上次学到 0:00 for a revision-back
     "a position without a revision is no progress",
   );
 });
+
+// --- captions-path transcript states (Ticket 2.5, #68) ---------------------------
+//
+// The 逐字稿 tab distinguishes the three states: 字幕 (the archived captions
+// full text, rendered from the server TranscriptView rows), 转写中 (the
+// existing pending spinner rows), and 无字幕 (the honest empty state with
+// the 可转写 hint — the 强制转写 entry point's semantics).
+
+function captionsSessionState(overrides = {}) {
+  return activeSessionState({
+    transcriptOrigin: "captions",
+    transcriptRecords: [
+      { start: 138, duration: 21, text: "这一节我们把注意力分数放到矩阵上看" },
+      { start: 159, duration: 22, text: "Q K V 三个矩阵各司其职" },
+    ],
+    ...overrides,
+  });
+}
+
+test("a captions Session's status line says 字幕 instead of 转写中", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: captionsSessionState(),
+    timestampKind: "video",
+  });
+
+  const status = panel.elementById("sessionStatus").textContent;
+  assert.match(status, /字幕/);
+  assert.doesNotMatch(status, /转写中/, "the captions path runs no ASR to wait for");
+
+  // The archived captions render as the full text (timestamped rows).
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  assert.deepEqual(texts, [
+    "这一节我们把注意力分数放到矩阵上看",
+    "Q K V 三个矩阵各司其职",
+  ]);
+});
+
+test("the 无字幕 probe renders the explicit empty state with the 可转写 hint", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: activeSessionState({
+      transcriptOrigin: null,
+      captionsProbe: { available: false, reason: "no_subtitle_track" },
+      transcriptRecords: [],
+    }),
+    timestampKind: "video",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  const notice = texts.join(" ");
+  assert.match(notice, /未读取到可用字幕/);
+  assert.match(notice, /可转写/, "the forced-transcription entry keeps its semantic hint");
+  // 不误报: no caption row can exist when nothing was archived.
+  assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
+});
+
+test("the 无字幕 empty state disappears once transcript records arrive", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: activeSessionState({
+      captionsProbe: { available: false, reason: "no_subtitle_track" },
+      transcriptRecords: [{ start: 0, duration: 30, text: "语音转写的第一段" }],
+    }),
+    timestampKind: "video",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  assert.deepEqual(texts, ["语音转写的第一段"]);
+  assert.equal(
+    findDescendants(transcript, "session-captions-empty").length,
+    0,
+    "records on screen retire the empty state",
+  );
+});
+
+test("the captions state resets with the Session (a new Session starts clean)", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: captionsSessionState({ sessionId: "s_old" }),
+    timestampKind: "video",
+  });
+  // A NEW Session (id changed) without captions state: no stale 字幕 status.
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: activeSessionState({ sessionId: "s_new" }),
+    timestampKind: "video",
+  });
+
+  const status = panel.elementById("sessionStatus").textContent;
+  assert.match(status, /转写中/, "the new Session is back on the capture path's wording");
+});
+
+test("the captions start toast does not claim 录制 (no audio is captured)", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: captionsSessionState(),
+    timestampKind: "video",
+    transcribeMode: "captions",
+  });
+  // The one-shot-per-Session toast keys off the same funnel.
+  panel.session.setSegmentLengthForCopy("30");
+  const toast = panel.elementById("recordingToast") || panel.createdElements.find((el) => el.id === "recordingToast");
+  // showSessionMode triggers the toast for a fresh Session id; assert via
+  // the created element the panel appended.
+  const appended = (panel.createdElements || []).find((el) => el.id === "recordingToast");
+  assert.ok(appended || toast, "the toast element exists");
+  const target = appended || toast;
+  assert.match(target.textContent, /已开始学习 · 字幕全文归档中/);
+});

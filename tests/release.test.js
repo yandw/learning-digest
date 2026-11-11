@@ -49,7 +49,9 @@ test("manifest uses minimized install-time permissions", () => {
         "https://www.xiaohongshu.com/explore/*",
         "https://www.xiaohongshu.com/discovery/item/*",
       ],
-      js: ["page-bridge.js"],
+      // Ticket 2.5 (#68): the bilibili caption reader loads before the
+      // bridge so the getBilibiliCaptions command has its factory global.
+      js: ["bilibili-captions.js", "page-bridge.js"],
       run_at: "document_idle",
       // 0.1.64: xiaoe players can live inside iframes — the bridge must
       // reach them or position reporting and playback control both fail.
@@ -73,9 +75,10 @@ test("manifest uses minimized install-time permissions", () => {
     "host_permissions must not include YouTube",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.8 (round-1 review fixes): shared api-client module extraction,
-  // wiring dedup, and the positionMs=0 progress edge.
-  assert.equal(manifest.version, "0.2.8");
+  // 0.2.9 (ticket 2.5, #68): the bilibili captions path — the caption
+  // reader module, the bridge getBilibiliCaptions command, and the
+  // server-Session archive client behind the zero-ASR captions flow.
+  assert.equal(manifest.version, "0.2.9");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -461,6 +464,11 @@ test("core Learning Digest modules ship in the release and load in the service w
     // P12 library notes: the pure note state machine (request build,
     // idempotent resend, draft policy).
     "notes.js",
+    // Ticket 2.5 (#68): the Session archive client (contract-r2 §3.1/§3.2/
+    // §3.3/§3.5) and the page-side bilibili caption reader behind the
+    // zero-ASR captions path.
+    "session-archive.js",
+    "bilibili-captions.js",
     // Round-1 review fix: the shared §1 envelope + base-URL helpers behind
     // auth-gate/collect/learning-start/notes.
     "api-client.js",
@@ -486,6 +494,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "speech-providers\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "bilibili-captions\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

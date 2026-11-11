@@ -34,6 +34,15 @@ test("GET / serves the shell with login and library views wired to main.js", asy
     assert.match(response.text, /id="resourceList"/);
     assert.match(response.text, /id="detailSection"/);
     assert.match(response.text, /src="\/vendor\/platform-video-id\.js"/);
+    // Round 3 (#75): the summaries block (generate button, history, content)
+    // mounts after the transcript block, and the usage entry lives in the
+    // account area with its panel below the topbar.
+    assert.match(response.text, /id="generateSummaryBtn"/);
+    assert.match(response.text, /id="summariesHistory"/);
+    assert.match(response.text, /id="summaryContent"/);
+    assert.match(response.text, /id="detailTranscripts"[\s\S]*id="detailSummaries"/);
+    assert.match(response.text, /id="usageBtn"/);
+    assert.match(response.text, /id="usagePanel"/);
   } finally {
     await web.close();
   }

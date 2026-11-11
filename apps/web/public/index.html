@@ -64,9 +64,16 @@
         </nav>
         <div class="account">
           <span id="accountEmail" class="account-email"></span>
+          <button id="usageBtn" type="button" class="link-btn account-usage-btn">用量</button>
           <button id="logoutBtn" type="button" class="secondary-btn">登出</button>
         </div>
       </header>
+      <!-- 用量查询入口（round 3, #75）：账号区「用量」展开的汇总面板。GET
+           /v1/usage 的口径读数——转写时长合计、总结次数、输入字符；无价格
+           （D18 只记录不计费）。 -->
+      <div id="usagePanel" class="usage-panel" hidden>
+        <p id="usageText" class="usage-text"></p>
+      </div>
       <main class="library-main">
         <!-- 学习列表视图：粘贴收藏 + 列表 -->
         <section id="listSection" aria-labelledby="libraryHeading">
@@ -143,6 +150,26 @@
           <div id="detailTranscripts" class="transcripts-block">
             <ul id="detailTranscriptsList" class="transcripts-list"></ul>
             <p id="transcriptsEmpty" class="hint">这条资料还没有逐字稿；学习时记录的字幕或语音转写会按次出现在这里。</p>
+          </div>
+
+          <h2 class="detail-subheading">课程总结</h2>
+          <!-- Course summary (round 3, #75): user-initiated generation over
+               the resource's archived transcripts + notes (contract-r3
+               §3.1). Generation runs synchronously and can take tens of
+               seconds — the button disables with 进行时文案 while in flight,
+               no fake timeout. The newest generation shows by default; the
+               history pills switch back to older ones. Citations quote the
+               verbatim transcript text with a stamp that jumps back on
+               platforms with a seek parameter. -->
+          <div id="detailSummaries" class="summaries-block">
+            <div class="summaries-toolbar">
+              <button id="generateSummaryBtn" type="button" class="primary-btn">生成总结</button>
+              <span class="hint">把已归档的逐字稿和笔记归纳成一份课程总结；补学后可再次生成。</span>
+            </div>
+            <p id="summariesError" class="error" role="alert" hidden></p>
+            <ul id="summariesHistory" class="summaries-history" hidden></ul>
+            <div id="summaryContent" class="summary-content" hidden></div>
+            <p id="summariesEmpty" class="hint">还没有课程总结；点击「生成总结」生成第一份。</p>
           </div>
         </section>
       </main>

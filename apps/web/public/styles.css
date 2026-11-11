@@ -592,3 +592,174 @@ form input:focus {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+
+/* ---------- 用量入口（round 3, #75） ---------- */
+
+.account .account-usage-btn {
+  margin: 0;
+  font-size: 14px;
+}
+
+.usage-panel {
+  padding: 10px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.usage-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+/* ---------- 课程总结（round 3, #75） ---------- */
+
+.summaries-block {
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.summaries-block p {
+  margin: 0;
+}
+
+.summaries-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.summaries-toolbar .primary-btn {
+  width: auto;
+  white-space: nowrap;
+}
+
+.summaries-toolbar .hint {
+  color: #9aa5b1;
+}
+
+.summaries-history {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.summary-history-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.summary-history-btn:hover {
+  color: var(--accent);
+  border-color: #bfdbfe;
+}
+
+.summary-history-btn.active {
+  color: var(--accent);
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  font-weight: 600;
+}
+
+.summary-content {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.summary-meta {
+  color: var(--ink-soft);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.summary-content h3,
+.summary-content h4,
+.summary-content h5 {
+  margin: 14px 0 6px;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.summary-content h3 {
+  font-size: 15px;
+}
+
+.summary-content p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+  margin: 0 0 8px;
+}
+
+.summary-content .summary-meta {
+  white-space: normal;
+}
+
+.summary-list {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.summary-list li {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.summary-citations-heading {
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.summary-citations {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.citation-item {
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+}
+
+.citation-quote {
+  margin: 0 0 6px;
+  color: var(--ink);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.citation-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.citation-meta .note-stamp {
+  margin: 0;
+}
+
+.citation-session {
+  font-size: 13px;
+  color: var(--ink-soft);
+}

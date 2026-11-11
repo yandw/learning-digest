@@ -17,6 +17,18 @@ const apiSessionExampleById = new Map(
   ).samples.map((s) => [s.id, s]),
 );
 
+// Round-3 contract fixtures (summary-examples.json): the authoritative
+// request/response shapes for generation, the history list, the summary
+// detail and the usage read (contract-r3.md §3.1-§3.4).
+const apiSummaryExampleById = new Map(
+  JSON.parse(
+    fs.readFileSync(
+      path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "..", "..", "contracts", "fixtures", "summary-examples.json"),
+      "utf8",
+    ),
+  ).samples.map((s) => [s.id, s]),
+);
+
 // The page's API access seam (pure module over an injectable fetch). Every
 // request carries the stored credential as `Authorization: Bearer <token>`;
 // a 401 on an authenticated call means the credential expired or was
@@ -310,4 +322,81 @@ test("getSessionTranscript() encodes unsafe id characters", async () => {
   await api.getSessionTranscript("ses/../../etc");
 
   assert.equal(fetcher.calls[0].path, `/v1/sessions/${encodeURIComponent("ses/../../etc")}/transcript`);
+});
+
+// --- course summary + usage endpoints (round 3, contract-r3 §3.1-§3.4, #75) ----
+
+test("generateSummary() POSTs /v1/resources/{id}/summaries with the contract's empty body", async () => {
+  const generated = apiSummaryExampleById.get("api-summary-generate-bilibili").response.body;
+  const fetcher = fakeFetch([{ status: 201, body: generated }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.generateSummary("res_01JABC0001");
+
+  assert.equal(fetcher.calls[0].path, "/v1/resources/res_01JABC0001/summaries");
+  assert.equal(fetcher.calls[0].init.method, "POST");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.deepEqual(JSON.parse(fetcher.calls[0].init.body), {}, "the contract request body is an empty object");
+  assert.equal(result.status, 201);
+  assert.equal(result.data.summary.id, "sum_01JABC0051");
+});
+
+test("generateSummary() encodes unsafe id characters", async () => {
+  const fetcher = fakeFetch([{ status: 404, body: { error: { code: "not_found", message: "x" } } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  await api.generateSummary("res/../../etc");
+
+  assert.equal(fetcher.calls[0].path, `/v1/resources/${encodeURIComponent("res/../../etc")}/summaries`);
+});
+
+test("listSummaries() GETs /v1/resources/{id}/summaries with the stored credential", async () => {
+  const list = apiSummaryExampleById.get("api-summaries-list").response.body;
+  const fetcher = fakeFetch([{ status: 200, body: list }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.listSummaries("res_01JABC0001");
+
+  assert.equal(fetcher.calls[0].path, "/v1/resources/res_01JABC0001/summaries");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.equal(result.data.summaries.length, 2);
+  assert.equal(result.data.summaries[0].citationCount, 4);
+});
+
+test("getSummary() GETs /v1/summaries/{id} with the id in the path", async () => {
+  const detail = apiSummaryExampleById.get("api-summary-detail").response.body;
+  const fetcher = fakeFetch([{ status: 200, body: detail }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.getSummary("sum_01JABC0052");
+
+  assert.equal(fetcher.calls[0].path, "/v1/summaries/sum_01JABC0052");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(result.ok, true);
+  assert.equal(result.data.summary.citations.length, 4);
+});
+
+test("getSummary() encodes unsafe id characters", async () => {
+  const fetcher = fakeFetch([{ status: 404, body: { error: { code: "not_found", message: "x" } } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  await api.getSummary("sum/../../etc");
+
+  assert.equal(fetcher.calls[0].path, `/v1/summaries/${encodeURIComponent("sum/../../etc")}`);
+});
+
+test("getUsage() GETs /v1/usage with the stored credential", async () => {
+  const usage = apiSummaryExampleById.get("api-usage").response.body;
+  const fetcher = fakeFetch([{ status: 200, body: usage }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.getUsage();
+
+  assert.equal(fetcher.calls[0].path, "/v1/usage");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.equal(result.data.audioSeconds, 120);
+  assert.equal(result.data.summaryCount, 2);
+  assert.equal(result.data.summaryInputChars, 4140);
 });

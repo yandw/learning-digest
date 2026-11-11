@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { createLibraryFlow, presentListItem, presentDetail, presentNote, presentSession, presentTranscript, buildNoteJumpUrl, formatPosition, formatDateTime, progressLabel } from "../public/js/library.js";
+import { createLibraryFlow, presentListItem, presentDetail, presentNote, presentSession, presentTranscript, buildNoteJumpUrl, formatPosition, formatDateTime, progressLabel, presentSummary, presentSummariesList, presentUsage } from "../public/js/library.js";
 
 // Pin the local timezone for the startedAt display tests below (set before
 // any Date is constructed, so formatDateTime's local accessors are
@@ -44,10 +44,33 @@ const sessionExampleById = new Map(
     .samples.map((s) => [s.id, s]),
 );
 const DETAIL_WITH_SESSIONS = sessionExampleById.get("api-resource-detail-with-sessions").response.body;
+// Round-3 contract fixtures: generation, the history list, the summary
+// detail and the usage read (contract-r3.md §3.1-§3.4, ticket 3.3).
+const summaryExampleById = new Map(
+  JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, "summary-examples.json"), "utf8"))
+    .samples.map((s) => [s.id, s]),
+);
+const SUMMARY_LIST = summaryExampleById.get("api-summaries-list").response.body.summaries;
+const SUMMARY_DETAIL = summaryExampleById.get("api-summary-detail").response.body.summary;
+const USAGE = summaryExampleById.get("api-usage").response.body;
 
 /** Fake api: script the next result of each resource method; record calls. */
-function fakeApi({ createResult, listResult, detailResult, retitleResult, transcriptResult, transcriptResults } = {}) {
-  const calls = { create: [], list: 0, detail: [], retitle: [], transcript: [] };
+function fakeApi({
+  createResult,
+  listResult,
+  detailResult,
+  detailResults,
+  retitleResult,
+  transcriptResult,
+  transcriptResults,
+  summariesListResult,
+  summariesListResults,
+  generateResult,
+  generateResults,
+  summaryDetailById,
+  summaryDetailResult,
+} = {}) {
+  const calls = { create: [], list: 0, detail: [], retitle: [], transcript: [], summariesList: [], generate: [], summaryDetail: [] };
   return {
     calls,
     async createResource(body) {
@@ -60,6 +83,9 @@ function fakeApi({ createResult, listResult, detailResult, retitleResult, transc
     },
     async getResourceDetail(id) {
       calls.detail.push(id);
+      if (detailResults && detailResults.length > 0) {
+        return detailResults.shift();
+      }
       return detailResult || { ok: true, status: 200, data: apiExampleById.get("api-resources-detail-with-notes").response.body };
     },
     async updateResourceTitle(id, title) {
@@ -73,6 +99,30 @@ function fakeApi({ createResult, listResult, detailResult, retitleResult, transc
         return transcriptResults[sessionId];
       }
       return transcriptResult || { ok: true, status: 200, data: sessionExampleById.get("api-session-transcript-asr-finished").response.body };
+    },
+    // Round-3 summary endpoints (contract-r3 §3.1-§3.3). The default list is
+    // empty — most details never generated; generate/getSummary results are
+    // scripted per test (or queued with the *Results arrays for sequences).
+    async listSummaries(resourceId) {
+      calls.summariesList.push(resourceId);
+      if (summariesListResults && summariesListResults.length > 0) {
+        return summariesListResults.shift();
+      }
+      return summariesListResult || { ok: true, status: 200, data: { summaries: [] } };
+    },
+    async generateSummary(resourceId) {
+      calls.generate.push(resourceId);
+      if (generateResults && generateResults.length > 0) {
+        return generateResults.shift();
+      }
+      return generateResult || { ok: true, status: 201, data: summaryExampleById.get("api-summary-generate-bilibili").response.body };
+    },
+    async getSummary(summaryId) {
+      calls.summaryDetail.push(summaryId);
+      if (summaryDetailById && summaryDetailById[summaryId]) {
+        return summaryDetailById[summaryId];
+      }
+      return summaryDetailResult || { ok: true, status: 200, data: summaryExampleById.get("api-summary-detail").response.body };
     },
     // login-flow methods exist on the seam but the library flow never calls them.
     async requestCode() { throw new Error("not used"); },
@@ -636,4 +686,358 @@ test("openDetail without sessions makes no transcript calls", async () => {
 
   assert.equal(api.calls.transcript.length, 0, "round-1 details carry no sessions key");
   assert.deepEqual(flow.getState().detail.transcripts, {});
+});
+
+// --- course summary presentation (round 3, ticket 3.3, contract-r3) -----------
+
+test("presentSummary maps the summary detail to rendered blocks and meta", () => {
+  const presented = presentSummary(SUMMARY_DETAIL, DETAIL_WITH_SESSIONS.sessions, DETAIL_WITH_SESSIONS.sources);
+
+  assert.equal(presented.id, "sum_01JABC0052");
+  // The body renders through the safe markdown view models: block kinds only,
+  // no HTML string anywhere.
+  assert.deepEqual(presented.blocks.map((b) => b.kind), ["h1", "h2", "ul", "h2", "ul", "h2", "ul"]);
+  assert.equal(presented.blocks[0].runs[0].text, "注意力机制详解 P2：自注意力 · 课程总结");
+  assert.equal(presented.generatedAtText, "2026-11-10 12:30");
+  assert.equal(presented.citationCount, 4);
+});
+
+test("presentSummary maps citations with quote, stamp, jump URL and session attribution", () => {
+  // After the catch-up the detail's sessions[] includes ses_34 (the fixture
+  // story's fourth session, same bilibili source).
+  const sessions = [
+    ...DETAIL_WITH_SESSIONS.sessions,
+    { id: "ses_01JABC0034", sourceId: "src_01JABC0002", status: "finished", startedAt: "2026-11-10T12:00:00Z", origin: "asr", transcript: { recordCount: 1, gapCount: 0, failedCount: 0 } },
+  ];
+  const presented = presentSummary(SUMMARY_DETAIL, sessions, DETAIL_WITH_SESSIONS.sources);
+
+  const first = presented.citations[0];
+  assert.equal(first.quote, "注意力分数的计算，就是把查询向量和键向量做点积");
+  assert.equal(first.stamp, "0:30–1:00", "the segmentRef range on the source timeline");
+  assert.equal(first.jumpUrl, "https://www.bilibili.com/video/BV1ab411L78c?p=2&t=30", "reuses the note seek builder through the session's source");
+  assert.equal(first.sessionStartedAtText, "2026-11-10 10:00");
+  assert.equal(first.sessionOriginLabel, "语音转写");
+
+  // The catch-up citation (ses_34) rides the same source mapping.
+  const catchUp = presented.citations.find((c) => c.quote === "最后我们补一段：注意力机制在长序列下的处理思路");
+  assert.ok(catchUp, "the fixture's catch-up citation is present");
+  assert.equal(catchUp.jumpUrl, "https://www.bilibili.com/video/BV1ab411L78c?p=2&t=120");
+});
+
+test("presentSummary degrades a citation whose session is not among the detail's sessions", () => {
+  const summary = {
+    ...SUMMARY_DETAIL,
+    citations: SUMMARY_DETAIL.citations.map((c) => ({ ...c, segmentRef: { ...c.segmentRef, sessionId: "ses_missing" } })),
+  };
+  const presented = presentSummary(summary, DETAIL_WITH_SESSIONS.sessions, DETAIL_WITH_SESSIONS.sources);
+
+  assert.equal(presented.citations.length, 4);
+  for (const citation of presented.citations) {
+    assert.equal(citation.jumpUrl, null, "no source mapping -> no jump, stamp only");
+    assert.equal(citation.sessionStartedAtText, null);
+    assert.equal(citation.sessionOriginLabel, null);
+  }
+});
+
+test("presentSummary gives no jump URL on platforms without seek support", () => {
+  const sessions = [{ id: "ses_xe", sourceId: "src_xe", status: "finished", startedAt: "2026-11-10T08:00:00Z", origin: "captions", transcript: { recordCount: 1, gapCount: 0, failedCount: 0 } }];
+  const sources = [{ id: "src_xe", url: "https://shop.xiaoe-tech.com/v_abc", platformId: "xiaoe-tech" }];
+  const summary = { ...SUMMARY_DETAIL, citations: [{ quote: "小鹅通的引用", segmentRef: { sessionId: "ses_xe", startMs: 65000, endMs: 90000 } }] };
+
+  const presented = presentSummary(summary, sessions, sources);
+  assert.equal(presented.citations[0].stamp, "1:05–1:30");
+  assert.equal(presented.citations[0].jumpUrl, null, "小鹅通 has no documented seek parameter -> 展示时间戳，不回跳");
+  assert.equal(presented.citations[0].sessionStartedAtText, "2026-11-10 08:00");
+  assert.equal(presented.citations[0].sessionOriginLabel, "字幕");
+});
+
+test("presentSummary handles a summary with no citations and degrades on null", () => {
+  const empty = { ...SUMMARY_DETAIL, citations: [] };
+  const presented = presentSummary(empty, DETAIL_WITH_SESSIONS.sessions, DETAIL_WITH_SESSIONS.sources);
+  assert.deepEqual(presented.citations, []);
+  assert.equal(presented.citationCount, 0);
+
+  assert.equal(presentSummary(null, [], []), null);
+});
+
+// --- history list presentation (contract-r3 §3.2: 历次倒序可回查) ---------------
+
+test("presentSummariesList numbers generations newest-first with time and citationCount", () => {
+  // The import line already carries presentSummariesList; the fixture list
+  // is the contract's two-generation story (newest first).
+  const presented = presentSummariesList(SUMMARY_LIST);
+  assert.deepEqual(
+    presented.map((item) => [item.id, item.ordinal, item.generatedAtText, item.citationCount]),
+    [
+      ["sum_01JABC0052", 2, "2026-11-10 12:30", 4],
+      ["sum_01JABC0051", 1, "2026-11-10 10:20", 3],
+    ],
+  );
+});
+
+test("presentSummariesList handles an empty history and tolerates junk input", () => {
+  assert.deepEqual(presentSummariesList([]), []);
+  assert.deepEqual(presentSummariesList(null), []);
+});
+
+// --- usage presentation (round 3, contract-r3 §2.4/§3.4, D18 只记录不计费) -------
+
+test("presentUsage renders the account usage line on the contract fixture's口径", () => {
+  const presented = presentUsage(USAGE);
+  // audioSeconds 120 -> the same mm:ss rendering as everywhere else on the
+  // page; no price, no billing wording (D18).
+  assert.match(presented.text, /转写 2:00/);
+  assert.match(presented.text, /总结 2 次/);
+  assert.match(presented.text, /输入 4140 字符/);
+  assert.match(presented.text, /更新于 2026-11-10 12:30/);
+  assert.doesNotMatch(presented.text, /价|费用|配额/);
+});
+
+test("presentUsage reports 从未产生用量 when updatedAt is null", () => {
+  assert.equal(
+    presentUsage({ audioSeconds: 0, summaryCount: 0, summaryInputChars: 0, updatedAt: null }).text,
+    "从未产生用量",
+  );
+  assert.equal(presentUsage(null).text, "从未产生用量");
+  assert.equal(presentUsage(undefined).text, "从未产生用量");
+});
+
+test("presentUsage renders hours-long totals and zero readings without crashing", () => {
+  const presented = presentUsage({ audioSeconds: 3661, summaryCount: 0, summaryInputChars: 0, updatedAt: "2026-11-10T08:00:00Z" });
+  assert.match(presented.text, /转写 1:01:01/);
+  assert.match(presented.text, /总结 0 次/);
+  assert.match(presented.text, /输入 0 字符/);
+});
+
+// --- summaries flow state machine (round 3, ticket 3.3) -------------------------
+// The generation is synchronous and can take tens of seconds — the flow
+// keeps an explicit generating state (button disabled + 进行时文案 on the page,
+// no fake timeout), debounces re-entry, and refreshes the history + focuses
+// the new generation on 201. Errors present the contract envelope verbatim.
+
+test("openDetail also loads the summaries history and focuses the newest generation", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResult: { ok: true, status: 200, data: { summaries: SUMMARY_LIST } },
+    summaryDetailById: {
+      sum_01JABC0052: { ok: true, status: 200, data: { summary: SUMMARY_DETAIL } },
+    },
+  });
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  assert.deepEqual(api.calls.summariesList, ["res_01JABC0001"]);
+  assert.deepEqual(api.calls.summaryDetail, ["sum_01JABC0052"], "only the newest summary's full form is pulled; older ones load on switch");
+  const state = flow.getState();
+  assert.equal(state.summaries.length, 2);
+  assert.equal(state.activeSummaryId, "sum_01JABC0052");
+  assert.equal(state.summaryDetails["sum_01JABC0052"].id, "sum_01JABC0052");
+  assert.equal(state.summariesError, null);
+  assert.equal(state.generating, false);
+});
+
+test("openDetail with an empty summaries history pulls no summary detail", async () => {
+  const api = fakeApi({ detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS } });
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  assert.deepEqual(flow.getState().summaries, []);
+  assert.equal(flow.getState().activeSummaryId, null);
+  assert.deepEqual(api.calls.summaryDetail, []);
+});
+
+test("a failed summaries list read shows the envelope without failing the detail", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResult: { ok: false, status: 500, data: { error: { code: "internal_error", message: "服务器开小差了" } } },
+  });
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  assert.equal(flow.getState().view, "detail");
+  assert.equal(flow.getState().summariesError, "服务器开小差了");
+});
+
+test("generateSummary POSTs once, refreshes the history and focuses the new generation", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResults: [
+      { ok: true, status: 200, data: { summaries: [SUMMARY_LIST[1]] } },
+      { ok: true, status: 200, data: { summaries: SUMMARY_LIST } },
+    ],
+    summaryDetailById: {
+      sum_01JABC0051: { ok: true, status: 200, data: { summary: summaryExampleById.get("api-summary-generate-bilibili").response.body.summary } },
+      sum_01JABC0052: { ok: true, status: 200, data: { summary: SUMMARY_DETAIL } },
+    },
+    generateResult: { ok: true, status: 201, data: summaryExampleById.get("api-summary-generate-after-catch-up").response.body },
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+  assert.equal(flow.getState().activeSummaryId, "sum_01JABC0051");
+
+  const result = await flow.generateSummary();
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(api.calls.generate, ["res_01JABC0001"]);
+  assert.equal(api.calls.summariesList.length, 2, "the history is refreshed after 201");
+  const state = flow.getState();
+  assert.equal(state.activeSummaryId, "sum_01JABC0052", "the new generation is on display");
+  assert.equal(api.calls.summaryDetail[api.calls.summaryDetail.length - 1], "sum_01JABC0052");
+  assert.equal(state.generating, false);
+  assert.equal(state.summariesError, null);
+});
+
+test("generateSummary ignores a second click while a generation is in flight", async () => {
+  let releaseGenerate;
+  const pendingGenerate = new Promise((resolve) => { releaseGenerate = resolve; });
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    generateResults: [pendingGenerate],
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+
+  const first = flow.generateSummary();
+  assert.equal(flow.getState().generating, true, "the generating state is observable mid-flight");
+
+  const second = await flow.generateSummary();
+  assert.equal(second.ok, false);
+  assert.deepEqual(api.calls.generate, ["res_01JABC0001"], "the re-entry never reached the API");
+
+  releaseGenerate({ ok: true, status: 201, data: summaryExampleById.get("api-summary-generate-bilibili").response.body });
+  const result = await first;
+  assert.equal(result.ok, true);
+  assert.equal(flow.getState().generating, false);
+});
+
+test("generateSummary presents the 409 no_transcript_to_summarize envelope verbatim", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    generateResult: {
+      ok: false,
+      status: 409,
+      data: { error: { code: "no_transcript_to_summarize", message: "这门资料还没有可总结的逐字稿，先学习并归档后再生成" } },
+    },
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+
+  const result = await flow.generateSummary();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(flow.getState().summariesError, "这门资料还没有可总结的逐字稿，先学习并归档后再生成");
+  assert.equal(flow.getState().generating, false);
+  assert.equal(api.calls.summariesList.length, 1, "a failed generation does not refresh the history");
+});
+
+test("generateSummary presents the 502 summary_generation_failed envelope verbatim", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    generateResult: {
+      ok: false,
+      status: 502,
+      data: { error: { code: "summary_generation_failed", message: "总结生成失败，请稍后重试；本次尝试不产生总结记录" } },
+    },
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+
+  const result = await flow.generateSummary();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 502);
+  assert.equal(flow.getState().summariesError, "总结生成失败，请稍后重试；本次尝试不产生总结记录");
+});
+
+test("showSummary switches the focused generation and reuses cached details", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResult: { ok: true, status: 200, data: { summaries: SUMMARY_LIST } },
+    summaryDetailById: {
+      sum_01JABC0052: { ok: true, status: 200, data: { summary: SUMMARY_DETAIL } },
+      sum_01JABC0051: { ok: true, status: 200, data: { summary: summaryExampleById.get("api-summary-generate-bilibili").response.body.summary } },
+    },
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+
+  await flow.showSummary("sum_01JABC0051");
+
+  assert.equal(flow.getState().activeSummaryId, "sum_01JABC0051");
+  assert.deepEqual(api.calls.summaryDetail, ["sum_01JABC0052", "sum_01JABC0051"], "the older generation's full form is pulled on first switch");
+  assert.equal(flow.getState().summaryDetails["sum_01JABC0051"].id, "sum_01JABC0051");
+
+  await flow.showSummary("sum_01JABC0052");
+
+  assert.equal(flow.getState().activeSummaryId, "sum_01JABC0052");
+  assert.equal(api.calls.summaryDetail.length, 2, "switching back reuses the cache");
+});
+
+test("a failed summary detail pull marks that entry null without breaking the flow", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResult: { ok: true, status: 200, data: { summaries: SUMMARY_LIST } },
+    summaryDetailById: {
+      sum_01JABC0052: { ok: false, status: 404, data: { error: { code: "not_found", message: "总结不存在或无权访问" } } },
+    },
+  });
+  const flow = flowWith({ api });
+
+  await flow.openDetail("res_01JABC0001");
+
+  assert.equal(flow.getState().view, "detail");
+  assert.equal(flow.getState().summaryDetails["sum_01JABC0052"], null);
+});
+
+test("a generation landing after navigating away does not touch the other resource's view", async () => {
+  let releaseGenerate;
+  const pendingGenerate = new Promise((resolve) => { releaseGenerate = resolve; });
+  const api = fakeApi({
+    detailResults: [
+      { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+      // A different resource (the plain webpage from the list fixture): no
+      // sessions, no summaries.
+      { ok: true, status: 200, data: { resource: apiExampleById.get("api-resources-list").response.body.resources[0].resource, sources: apiExampleById.get("api-resources-list").response.body.resources[0].sources, notes: [] } },
+    ],
+    generateResults: [pendingGenerate],
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+
+  const pending = flow.generateSummary();
+  // The user backs out and opens another resource while the POST is in flight.
+  flow.backToList();
+  await flow.openDetail("res_01JABC0010");
+
+  releaseGenerate({ ok: true, status: 201, data: summaryExampleById.get("api-summary-generate-bilibili").response.body });
+  const result = await pending;
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(api.calls.summariesList, ["res_01JABC0001", "res_01JABC0010"], "the late history refresh never happens for the old resource");
+  assert.deepEqual(flow.getState().summaries, [], "the open resource's view stays its own");
+  assert.equal(flow.getState().activeSummaryId, null);
+  assert.equal(flow.getState().generating, false);
+});
+
+test("reset clears the summaries state for the next session", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResult: { ok: true, status: 200, data: { summaries: SUMMARY_LIST } },
+    summaryDetailById: { sum_01JABC0052: { ok: true, status: 200, data: { summary: SUMMARY_DETAIL } } },
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+
+  flow.reset();
+
+  const state = flow.getState();
+  assert.deepEqual(state.summaries, []);
+  assert.equal(state.activeSummaryId, null);
+  assert.deepEqual(state.summaryDetails, {});
+  assert.equal(state.summariesError, null);
+  assert.equal(state.generating, false);
 });

@@ -121,5 +121,28 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("GET", `/v1/sessions/${encodeURIComponent(String(id))}/transcript`);
   }
 
-  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, getSessionTranscript };
+  // Course summary + usage (round 3, contract-r3 §3.1-§3.4). Generation is
+  // the user-initiated POST whose contract body is an empty object — the
+  // Resource comes from the path, the account from the credential (D17:
+  // no client-side input trimming). The synchronous generation can take
+  // tens of seconds; there is no timeout here and none is faked.
+  function generateSummary(resourceId) {
+    return request("POST", `/v1/resources/${encodeURIComponent(String(resourceId))}/summaries`, {
+      body: {},
+    });
+  }
+
+  function listSummaries(resourceId) {
+    return request("GET", `/v1/resources/${encodeURIComponent(String(resourceId))}/summaries`);
+  }
+
+  function getSummary(summaryId) {
+    return request("GET", `/v1/summaries/${encodeURIComponent(String(summaryId))}`);
+  }
+
+  function getUsage() {
+    return request("GET", "/v1/usage");
+  }
+
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage };
 }

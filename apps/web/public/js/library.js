@@ -20,9 +20,12 @@
  * (P3), which swaps the shell back to the login view.
  *
  * Presentation helpers (formatPosition / progressLabel / platformLabel /
- * kindLabel / presentListItem / presentDetail) are the data-level view
- * model; the page builds DOM from them without adding logic.
+ * kindLabel / presentListItem / presentDetail / presentSummary /
+ * presentSummariesList / presentUsage) are the data-level view model; the
+ * page builds DOM from them without adding logic.
  */
+
+import { renderMarkdown } from "./markdown.js";
 
 // Display labels. Platform names follow GLOSSARY.md's Source Platforms;
 // kinds follow contract §2.1/§2.2.
@@ -357,6 +360,91 @@ export function buildNoteJumpUrl(note, sources) {
 }
 
 /**
+ * View model for one Course Summary (round 3, ticket 3.3; contract-r3
+ * §2.1/§2.2). The body renders through the SAFE markdown view models
+ * (markdown.js — plain-text runs, no HTML string anywhere), and each
+ * citation carries:
+ * - quote:     the verbatim transcript excerpt (rendered as text, never
+ *              markup — it is user-controlled);
+ * - stamp:     the segmentRef range on the source timeline (0:30–1:00),
+ *              degrading to null on unusable ranges;
+ * - jumpUrl:   the best-effort seek URL through the SAME builder the
+ *              notes/transcript use (SEEK_PARAM_BUILDERS). Citations name
+ *              a SESSION, so the session's sourceId comes from the
+ *              detail's sessions[]; a session outside that list (or a
+ *              platform without seek support) gets null -> stamp only;
+ * - session attribution: which study session the quote came from
+ *              (startedAt text + origin badge), null when unknown.
+ *
+ * A null summary (a failed detail pull) maps to null — the page shows a
+ * load-failure hint instead of content.
+ */
+export function presentSummary(summary, sessions, sources) {
+  if (!summary) {
+    return null;
+  }
+  const sessionById = new Map((sessions || []).map((session) => [session.id, session]));
+  return {
+    id: summary.id,
+    blocks: renderMarkdown(summary.content),
+    generatedAtText: formatDateTime(summary.generatedAt),
+    citations: (summary.citations || []).map((citation) => {
+      const session = sessionById.get(citation.segmentRef && citation.segmentRef.sessionId);
+      const startMs = citation.segmentRef && citation.segmentRef.startMs;
+      const endMs = citation.segmentRef && citation.segmentRef.endMs;
+      return {
+        quote: citation.quote,
+        stamp: formatRange(startMs, endMs),
+        jumpUrl: buildNoteJumpUrl(
+          { sourceId: session ? session.sourceId : null, positionMs: startMs },
+          sources,
+        ),
+        sessionStartedAtText: session ? formatDateTime(session.startedAt) : null,
+        sessionOriginLabel: session ? sessionOriginLabel(session.origin) : null,
+      };
+    }),
+    citationCount: (summary.citations || []).length,
+  };
+}
+
+/**
+ * View models for the history list (contract-r3 §3.2: 历次生成，generatedAt
+ * 倒序，历史保留可回查). The list arrives newest-first from the API; the
+ * ordinal is the generation number — the newest item is 第 N 次 (N = list
+ * length), the oldest 第 1 次. Junk input renders as nothing.
+ */
+export function presentSummariesList(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+  return items.map((item, index) => ({
+    id: item.id,
+    ordinal: items.length - index,
+    generatedAtText: formatDateTime(item.generatedAt),
+    citationCount: item.citationCount,
+  }));
+}
+
+/**
+ * View model for the account usage line (round 3, contract-r3 §2.4/§3.4;
+ * D18 只记录不计费 — no price, no billing, no quota wording anywhere).
+ * audioSeconds renders with the same mm:ss formatting as every other
+ * duration on the page. Before the first recorded write the API answers
+ * updatedAt null — the entry then reads 「从未产生用量」 instead of a row of
+ * zeroes. Junk input degrades to the same line.
+ */
+export function presentUsage(usage) {
+  if (!usage || usage.updatedAt === null || usage.updatedAt === undefined) {
+    return { text: "从未产生用量" };
+  }
+  const audioText = formatPosition(usage.audioSeconds * 1000) || "0:00";
+  const updatedText = formatDateTime(usage.updatedAt) || "";
+  return {
+    text: `累计用量：转写 ${audioText} · 总结 ${usage.summaryCount} 次 · 输入 ${usage.summaryInputChars} 字符 · 更新于 ${updatedText}`,
+  };
+}
+
+/**
  * @param {object} options
  * @param {object} options.api createApiClient-shaped seam:
  *   { createResource, listResources, getResourceDetail, updateResourceTitle }
@@ -371,9 +459,18 @@ export function createLibraryFlow({ api, identity }) {
   let notice = null;
   let error = null;
   let busy = false;
+  // Round-3 Course Summary state (contract-r3 §3.1-§3.3), reset per detail:
+  // summaries is the history (newest first, §3.2 projections), activeId the
+  // generation on display, summaryDetails the id -> full summary cache
+  // (null marks a failed pull), generating the explicit in-flight flag.
+  let summaries = [];
+  let activeSummaryId = null;
+  let summaryDetails = {};
+  let summariesError = null;
+  let generating = false;
 
   function getState() {
-    return { view, resources, detail, notice, error, busy };
+    return { view, resources, detail, notice, error, busy, summaries, activeSummaryId, summaryDetails, summariesError, generating };
   }
 
   function envelopeMessage(data) {
@@ -440,6 +537,50 @@ export function createLibraryFlow({ api, identity }) {
    * the header from the detail and a load-failure line) instead of failing
    * the whole detail; a detail without sessions skips the pull entirely.
    */
+  /**
+   * Pull one generation's full form (contract-r3 §3.3) into the cache.
+   * A failed pull marks the entry null (the page shows a load-failure
+   * hint for it) instead of failing the flow; a pull that lands after the
+   * user navigated to another resource is discarded.
+   */
+  async function fetchSummaryDetail(summaryId) {
+    const resourceId = detail ? detail.resource.id : null;
+    const result = await api.getSummary(summaryId);
+    if (!detail || detail.resource.id !== resourceId) {
+      return;
+    }
+    summaryDetails[summaryId] =
+      result.ok && result.data && result.data.summary ? result.data.summary : null;
+  }
+
+  /**
+   * Load the summaries history (contract-r3 §3.2, newest first) and focus
+   * one generation — focusId, or the newest when unspecified. An empty
+   * history focuses nothing; a failed list read presents the envelope
+   * verbatim without failing the whole detail.
+   */
+  async function loadSummaries({ focusId } = {}) {
+    if (!detail) {
+      return;
+    }
+    const resourceId = detail.resource.id;
+    const result = await api.listSummaries(resourceId);
+    if (!detail || detail.resource.id !== resourceId) {
+      return;
+    }
+    if (!result.ok) {
+      summariesError = envelopeMessage(result.data);
+      return;
+    }
+    summaries = (result.data && result.data.summaries) || [];
+    summariesError = null;
+    const target = focusId || (summaries.length > 0 ? summaries[0].id : null);
+    activeSummaryId = target;
+    if (target) {
+      await fetchSummaryDetail(target);
+    }
+  }
+
   async function openDetail(id) {
     busy = true;
     const result = await api.getResourceDetail(id);
@@ -453,12 +594,19 @@ export function createLibraryFlow({ api, identity }) {
     notice = null;
     view = "detail";
     detail.transcripts = {};
-    await Promise.all(
-      (detail.sessions || []).map(async (session) => {
-        const transcript = await api.getSessionTranscript(session.id);
-        detail.transcripts[session.id] = transcript.ok ? transcript.data : null;
-      }),
-    );
+    summaries = [];
+    activeSummaryId = null;
+    summaryDetails = {};
+    summariesError = null;
+    await Promise.all([
+      Promise.all(
+        (detail.sessions || []).map(async (session) => {
+          const transcript = await api.getSessionTranscript(session.id);
+          detail.transcripts[session.id] = transcript.ok ? transcript.data : null;
+        }),
+      ),
+      loadSummaries(),
+    ]);
     busy = false;
     return { ok: true };
   }
@@ -476,6 +624,11 @@ export function createLibraryFlow({ api, identity }) {
     notice = null;
     error = null;
     busy = false;
+    summaries = [];
+    activeSummaryId = null;
+    summaryDetails = {};
+    summariesError = null;
+    generating = false;
   }
 
   /**
@@ -504,5 +657,56 @@ export function createLibraryFlow({ api, identity }) {
     return { ok: true };
   }
 
-  return { getState, load, collect, openDetail, backToList, retitle, reset };
+  /**
+   * User-initiated summary generation (round 3, ticket 3.3; contract-r3
+   * §3.1). The POST runs synchronously server-side and can take tens of
+   * seconds — no timeout is faked; the explicit `generating` flag holds
+   * the button disabled and the 进行时文案 on the page. Re-entry while a
+   * generation is in flight is ignored (the contract leaves repeat-click
+   * debounce to this side, §1).
+   *
+   * 201 -> refresh the history and focus the NEW generation (每次生成一条
+   * 新记录, §1 幂等例外); the history stays untouched on failure. Every
+   * failure presents the contract envelope verbatim — 409
+   * no_transcript_to_summarize and 502 summary_generation_failed included;
+   * a 401 is the api client's interceptor's to handle. A landing that
+   * arrives after the user navigated to another resource refreshes
+   * nothing (the state belongs to the resource it was started on).
+   */
+  async function generateSummary() {
+    if (generating || !detail) {
+      return { ok: false };
+    }
+    const resourceId = detail.resource.id;
+    generating = true;
+    summariesError = null;
+    const result = await api.generateSummary(resourceId);
+    generating = false;
+    if (!result.ok) {
+      summariesError = envelopeMessage(result.data);
+      return { ok: false, status: result.status };
+    }
+    if (detail && detail.resource.id === resourceId) {
+      const newId = result.data && result.data.summary ? result.data.summary.id : undefined;
+      await loadSummaries({ focusId: newId });
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Switch the displayed generation (历次回查): the id goes first so the
+   * click feels immediate, the full form is pulled once and cached.
+   */
+  async function showSummary(summaryId) {
+    if (!detail) {
+      return { ok: false };
+    }
+    activeSummaryId = summaryId;
+    if (summaryDetails[summaryId] === undefined) {
+      await fetchSummaryDetail(summaryId);
+    }
+    return { ok: true };
+  }
+
+  return { getState, load, collect, openDetail, backToList, retitle, generateSummary, showSummary, reset };
 }

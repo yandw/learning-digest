@@ -14,6 +14,9 @@ import {
   presentSession,
   presentTranscript,
   buildNoteJumpUrl,
+  presentSummary,
+  presentSummariesList,
+  presentUsage,
 } from "./library.js";
 import { createApiClient } from "./api-client.js";
 import { createCredentialStore } from "./credentials.js";
@@ -82,6 +85,16 @@ const elements = {
   // library: detail view, transcript read-back (round 2)
   detailTranscriptsList: byId("detailTranscriptsList"),
   transcriptsEmpty: byId("transcriptsEmpty"),
+  // library: detail view, course summary + history (round 3)
+  generateSummaryBtn: byId("generateSummaryBtn"),
+  summariesError: byId("summariesError"),
+  summariesHistory: byId("summariesHistory"),
+  summaryContent: byId("summaryContent"),
+  summariesEmpty: byId("summariesEmpty"),
+  // usage entry (round 3): the account-area toggle + summary panel
+  usageBtn: byId("usageBtn"),
+  usagePanel: byId("usagePanel"),
+  usageText: byId("usageText"),
 };
 
 function setMessage(element, text) {
@@ -253,6 +266,143 @@ function renderSessionBlock(session, transcripts, sources) {
   return item;
 }
 
+/**
+ * Inline runs (the safe markdown view models) -> text nodes, <strong> for
+ * bold runs. No HTML string is ever built: whatever the content (AI body,
+ * user-controlled citation quotes) lands in a text node.
+ */
+function appendRuns(node, runs) {
+  for (const run of runs) {
+    node.appendChild(run.bold ? el("strong", null, run.text) : document.createTextNode(run.text));
+  }
+}
+
+/**
+ * One markdown block view model -> an element. Heading kinds nest inside
+ * the detail's outline (h1 -> h3, h2 -> h4, h3 -> h5); list items render
+ * as plain li text; paragraph soft-wraps keep their line breaks via
+ * white-space: pre-wrap.
+ */
+function renderSummaryBlock(block) {
+  if (block.kind === "ul") {
+    const list = el("ul", "summary-list");
+    for (const runs of block.items) {
+      const item = el("li");
+      appendRuns(item, runs);
+      list.appendChild(item);
+    }
+    return list;
+  }
+  const headings = { h1: "h3", h2: "h4", h3: "h5" };
+  const node = el(headings[block.kind] || "p");
+  appendRuns(node, block.runs);
+  return node;
+}
+
+/**
+ * One citation (contract-r3 §2.2): the verbatim quote as text, the range
+ * stamp on the source timeline, the session attribution, and the
+ * best-effort jump — the jump decision lives in the pure module (null on
+ * platforms without seek support), this only renders it, like the note
+ * and transcript stamps.
+ */
+function renderCitation(citation) {
+  const item = el("li", "citation-item");
+  item.appendChild(el("p", "citation-quote", `「${citation.quote}」`));
+
+  const meta = el("div", "citation-meta");
+  if (citation.jumpUrl) {
+    const stamp = el("button", "link-btn note-stamp", citation.stamp || "");
+    stamp.type = "button";
+    stamp.title = "回到原视频的这个位置";
+    stamp.addEventListener("click", () => {
+      window.open(citation.jumpUrl, "_blank", "noopener");
+    });
+    meta.appendChild(stamp);
+  } else if (citation.stamp) {
+    meta.appendChild(el("span", "transcript-stamp", citation.stamp));
+  }
+  if (citation.sessionStartedAtText) {
+    meta.appendChild(el("span", "citation-session", `来自 ${citation.sessionStartedAtText} 的学习`));
+  }
+  if (citation.sessionOriginLabel) {
+    meta.appendChild(el("span", "badge badge-origin", citation.sessionOriginLabel));
+  }
+  item.appendChild(meta);
+  return item;
+}
+
+/**
+ * The history pills (contract-r3 §3.2, newest first): ordinal + time +
+ * citationCount per generation; clicking one switches the displayed
+ * generation (showSummary pulls and caches its full form).
+ */
+function renderSummaryHistory(state) {
+  const items = presentSummariesList(state.summaries);
+  elements.summariesHistory.hidden = items.length === 0;
+  elements.summariesHistory.replaceChildren(
+    ...items.map((item) => {
+      const li = el("li");
+      const btn = el(
+        "button",
+        "summary-history-btn",
+        `第 ${item.ordinal} 次 · ${item.generatedAtText} · ${item.citationCount} 条引用`,
+      );
+      btn.type = "button";
+      btn.setAttribute("aria-pressed", item.id === state.activeSummaryId ? "true" : "false");
+      if (item.id === state.activeSummaryId) {
+        btn.classList.add("active");
+      }
+      btn.addEventListener("click", () => {
+        act(() => library.showSummary(item.id));
+      });
+      li.appendChild(btn);
+      return li;
+    }),
+  );
+}
+
+/**
+ * The displayed generation: meta line, the safe-rendered body blocks and
+ * the citation list. null marks a failed detail pull (load-failure hint);
+ * an empty history shows only the empty hint.
+ */
+function renderSummaryContent(state) {
+  const hasHistory = state.summaries.length > 0;
+  elements.summariesEmpty.hidden = hasHistory || state.generating;
+
+  const summary = state.activeSummaryId ? state.summaryDetails[state.activeSummaryId] : null;
+  if (!state.activeSummaryId || summary === undefined) {
+    elements.summaryContent.hidden = true;
+    elements.summaryContent.replaceChildren();
+    return;
+  }
+  elements.summaryContent.hidden = false;
+  if (summary === null) {
+    elements.summaryContent.replaceChildren(el("p", "session-hint", "总结加载失败，请稍后重试"));
+    return;
+  }
+
+  const presented = presentSummary(
+    summary,
+    state.detail ? state.detail.sessions || [] : [],
+    state.detail ? state.detail.sources || [] : [],
+  );
+  const parts = [el("p", "summary-meta", `生成于 ${presented.generatedAtText} · ${presented.citationCount} 条引用`)];
+  for (const block of presented.blocks) {
+    parts.push(renderSummaryBlock(block));
+  }
+  if (presented.citations.length > 0) {
+    parts.push(el("p", "summary-citations-heading", "原文引用"));
+    const list = el("ul", "summary-citations");
+    for (const citation of presented.citations) {
+      list.appendChild(renderCitation(citation));
+    }
+    parts.push(list);
+  }
+  elements.summaryContent.replaceChildren(...parts);
+}
+
 function renderList(state) {
   elements.resourceList.replaceChildren(
     ...state.resources.map((item) => renderListItem(presentListItem(item))),
@@ -291,6 +441,12 @@ function renderDetail(state) {
     ),
   );
   elements.transcriptsEmpty.hidden = rawSessions.length > 0;
+
+  // The course summary block (round 3): the history pills and the displayed
+  // generation render from the flow's summaries state; the citations need
+  // the detail's sessions[]/sources[] for attribution and jump URLs.
+  renderSummaryHistory(state);
+  renderSummaryContent(state);
 }
 
 // The library loads once per authenticated session: on resume, after a
@@ -334,9 +490,14 @@ function render() {
   elements.detailSection.hidden = libraryState.view !== "detail";
   elements.collectBtn.disabled = libraryState.busy;
   elements.saveTitleBtn.disabled = libraryState.busy;
+  // 生成中状态（round 3）：按钮禁用 + 进行时文案；同步生成可达数十秒，
+  // 不假超时——状态只由 201/失败回落。
+  elements.generateSummaryBtn.disabled = libraryState.generating || libraryState.busy;
+  elements.generateSummaryBtn.textContent = libraryState.generating ? "生成中…" : "生成总结";
 
   setMessage(elements.libraryNotice, libraryState.notice);
   setMessage(elements.libraryError, libraryState.error);
+  setMessage(elements.summariesError, libraryState.summariesError);
 
   if (libraryState.view === "list") {
     renderList(libraryState);
@@ -378,6 +539,8 @@ elements.logoutBtn.addEventListener("click", () => {
     const result = await flow.logout();
     // Leave no trace of the previous session's library.
     library.reset();
+    elements.usagePanel.hidden = true;
+    elements.usageText.textContent = "";
     return result;
   });
 });
@@ -403,6 +566,21 @@ elements.collectForm.addEventListener("submit", (event) => {
 elements.backToListBtn.addEventListener("click", () => {
   library.backToList();
   render();
+});
+
+// 生成总结（round 3, contract-r3 §3.1）：先起 POST 再立刻 render，让生成中
+// 状态（按钮禁用 + 生成中…）在请求飞行期间就可见——act 完成后的那次 render
+// 只能展示结果。
+elements.generateSummaryBtn.addEventListener("click", () => {
+  act(async () => {
+    const libraryState = library.getState();
+    if (!libraryState.detail) {
+      return { ok: false };
+    }
+    const pending = library.generateSummary();
+    render();
+    return await pending;
+  });
 });
 
 elements.editTitleBtn.addEventListener("click", () => {
@@ -455,6 +633,33 @@ async function refreshAccount() {
   // view; other failures just leave the stored email displayed.
   render();
 }
+
+// --- usage entry (round 3, contract-r3 §3.4, D18 只记录不计费) -----------------
+// The account-area toggle re-reads GET /v1/usage on every open so the
+// numbers follow the latest generation; a 401 routes through the shared
+// interceptor (credential cleared, back to the login view). The decision
+// lives in the pure modules (api-client's wrapper, presentUsage's line);
+// this is fetch-and-fill binding only, like refreshAccount above.
+
+async function refreshUsage() {
+  elements.usageText.textContent = "用量加载中…";
+  const result = await api.getUsage();
+  if (elements.usagePanel.hidden) {
+    return; // closed while in flight
+  }
+  elements.usageText.textContent = result.ok
+    ? presentUsage(result.data).text
+    : (result.data && result.data.error && result.data.error.message) || "用量加载失败，请稍后重试";
+}
+
+elements.usageBtn.addEventListener("click", () => {
+  if (elements.usagePanel.hidden) {
+    elements.usagePanel.hidden = false;
+    void refreshUsage();
+  } else {
+    elements.usagePanel.hidden = true;
+  }
+});
 
 // P7 linked logout, pull side: a logout on the extension (same credential
 // group) cannot push to this page. While logged in, the next visibility or

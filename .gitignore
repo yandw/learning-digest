@@ -1,5 +1,7 @@
-# Secrets — your real keys live here, never commit them
-config.js
+# Secrets — your real keys live here, never commit them.
+# Root-anchored: the extension's local key config. Nested units (apps/*/lib)
+# version their config modules as code (see apps/worker/lib/config.js).
+/config.js
 
 # OS / editor cruft
 .DS_Store

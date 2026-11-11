@@ -4,25 +4,125 @@
 
 Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest.
 
-Learning Digest is a Chrome side panel for studying long course lessons on learning platforms. You open a lesson, start a Session, and the extension captures the lesson audio in fixed-length Segments, transcribes each Segment exactly once through your chosen Speech Provider, keeps a rolling summary up to date, and builds a full-session digest when the Session ends. A Session is one continuous learning act, typically one lesson of two to three hours.
+Learning Digest is a personal learning library plus a Chrome side panel for studying long course lessons on learning platforms. You collect a lesson link in the web library or from the extension, start a Session, and the extension captures the lesson audio in fixed-length Segments and sends them to your backend, where the configured Speech Provider transcribes each Segment exactly once. The web library keeps your collection, playback positions, timestamped notes, every Session's Transcript, and on-demand course summaries in one place.
 
-- Capture lesson audio on supported course platforms (first platform: xiaoe-tech.com) and turn it into a searchable, timestamped Transcript.
-- Follow along with a Rolling Summary that is refreshed as new Segments are transcribed.
-- Finish with a Session Digest built from the rolling summary and the full transcript.
-- Study in the original language, Simplified Chinese, or an aligned bilingual view.
-- Save timestamped notes from selected transcript text, and explain selected terms with your own AI key.
+- Collect lesson links on supported course platforms (first platform: xiaoe-tech.com) and any web page, and open the original page in one click.
+- Resume study from the last recorded position, or start over; the extension records positions per Source and supports timestamped notes.
+- Follow a Session as Segments are transcribed; Bilibili and other video platforms contribute captions directly when available, and captured audio flows through the backend transcription worker otherwise.
+- Generate a course summary on demand from everything archived so far, with citations that trace back to the original text and timestamp.
+- Study in the original language, Simplified Chinese, or an aligned bilingual view; explain selected terms with your own AI key.
 
-Learning Digest is a bring-your-own-key project installed locally from GitHub. It is not available through the Chrome Web Store, does not include API credits, and does not run a developer-operated server.
+The productization line (0.2.x) adds the web library, backend API, transcription worker, and account linking to the frozen proof-of-concept extension (0.1.x). It is a bring-your-own-key project installed locally from GitHub. It is not available through the Chrome Web Store.
 
-## Project status
+## The four units
 
-This repository is an early proof of concept. The platform and provider seams are in place:
+| Unit | Location | Role |
+| --- | --- | --- |
+| Browser extension | repo root (`manifest.json`) | account linking, collection, course-tab selection, playback position, notes, captions/audio capture (Chrome MV3 side panel) |
+| Web library | `apps/web/` | invite login, collection, library list and detail, transcripts, course summaries, usage |
+| Backend API | `apps/api/` | identity, resources and sources, sessions, progress, notes, transcripts, summary generation, usage |
+| Transcription worker | `apps/worker/` | pulls transcription tasks from the API, runs the Speech Provider, writes timestamped records back |
 
-- the Session pipeline state machine and per-session persistence;
-- the Speech Provider registry with three providers: Groq, Tencent Cloud ASR, and Qwen (Bailian) ASR;
-- the AI Provider features (analysis, explanation, translation, notes) inherited from the seed project.
+`contracts/` holds the shared `/v1` interface contract, platform video-ID extraction rules, and JSON fixtures consumed by all units' tests. Domain vocabulary: [GLOSSARY.md](GLOSSARY.md). Data flow: [PRIVACY.md](PRIVACY.md). Contract decisions: [contracts/decisions.md](contracts/decisions.md).
 
-Source Platform capture for xiaoe-tech.com and all three Speech Providers (Groq, Tencent Cloud ASR, Qwen ASR) are implemented. Transcription quality, latency, and cost on real lessons are not measured yet; the PoC evaluation report ([docs/poc-evaluation.md](docs/poc-evaluation.md)) records what is verified in code and the manual measurements needed for the go/no-go decision.
+All units are plain HTML, CSS, and JavaScript on Node builtins with no build step and no npm dependencies. Node 20 or newer is required (global `fetch`, `AbortSignal.timeout`).
+
+## Run the four units (development)
+
+Four processes in four terminals. Nothing needs installing first.
+
+1. Register an invited email (before starting the API):
+
+```bash
+cd apps/api
+node scripts/invite.js add you@example.com   # repeatable; `list` to inspect
+```
+
+2. Start the API (port 8787):
+
+```bash
+cd apps/api
+npm start          # state in data/state.json, dev mailer writes data/outbox.jsonl
+```
+
+3. Start the transcription worker (pull model; deterministic stub provider by default):
+
+```bash
+cd apps/worker
+LD_WORKER_TOKEN=dev-worker-token npm start
+```
+
+The token must match `LD_API_WORKER_TOKEN` given to the API (unset there means the worker endpoints answer 401). Real ASR: `LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...` (see the environment tables below).
+
+4. Start the web library (port 8080, proxies `/v1` to the API):
+
+```bash
+cd apps/web
+npm start          # LD_API_UPSTREAM defaults to http://127.0.0.1:8787
+```
+
+5. Load the extension: open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and select the exact repo root folder (the one containing `manifest.json`). The extension Settings page exposes the 学习服务 base URLs; the defaults already point at the local development servers.
+
+6. Walk the flow: open `http://127.0.0.1:8080`, log in with the invited email, take the verification code from the dev outbox (`data/outbox.jsonl` next to `apps/api/`, also printed to the API's stdout), then open the extension side panel and follow the authorization guide. After linking, open a lesson page, save it from the panel, start a Session, and watch playback positions, transcripts, and summaries land in the web library.
+
+Real email delivery, real ASR, and real AI generation are stubbed until configured: the dev mailer writes codes to the outbox file, the worker defaults to the stub Speech Provider, and the API defaults to the stub AI Provider. Real providers need the keys listed in the environment tables.
+
+## Testing
+
+```bash
+npm test                    # extension (root tests/), 695 cases
+node --test contracts/      # shared contract fixtures, 52 cases
+cd apps/api    && npm test  # API, 187 cases
+cd apps/worker && npm test  # worker, 25 cases
+cd apps/web    && npm test  # web, 156 cases
+npm run check               # release-shape check (manifest, allowlist, importScripts, content_scripts)
+npm run package             # zip the extension
+```
+
+All suites pass (1115 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
+
+The complete test-case list, grouped by unit and feature area with the verifying file for every automated case, plus the manual acceptance cases and known-limitation observations, is in [docs/test-cases.md](docs/test-cases.md). Manual acceptance checklists (real platforms, real keys, tabCapture authorization) live in [docs/round1-acceptance.md](docs/round1-acceptance.md) and [docs/round2-acceptance.md](docs/round2-acceptance.md).
+
+## Environment variables
+
+### apps/api (`server.js`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8787` | listen port (`0` = ephemeral) |
+| `LD_API_STATE_FILE` | `data/state.json` | embedded store (read once at startup) |
+| `LD_API_INVITE_SEED` | `data/invites.seed.json` | invited-email seed |
+| `LD_API_OUTBOX_FILE` | `data/outbox.jsonl` | dev-mailer outbox (verification codes) |
+| `LD_API_WORKER_TOKEN` | unset (worker endpoints 401) | worker service credential for `/v1/worker/tasks/*` |
+| `LD_API_AUDIO_DIR` | system temp dir | temp audio for uploaded segments (deleted on success) |
+| `LD_AI_PROVIDER` | `stub` | `qwen` = Bailian compatible-mode for course summaries |
+| `LD_AI_API_KEY` | unset | Bailian key for `LD_AI_PROVIDER=qwen`, separate from the worker's speech key |
+| `LD_AI_MODEL` | `qwen3.8-flash` | model override |
+| `LD_AI_BASE_URL` | Bailian compatible-mode | endpoint override |
+| `LD_AI_TIMEOUT_MS` | `120000` | per-generation fetch timeout |
+
+### apps/worker (`worker.js`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LD_WORKER_API_BASE` | `http://127.0.0.1:8787` | API base |
+| `LD_WORKER_TOKEN` | unset | worker service credential (must match the API's `LD_API_WORKER_TOKEN`) |
+| `LD_WORKER_PROVIDER` | `stub` | `qwen` = Bailian qwen3-asr-flash |
+| `QWEN_API_KEY` | unset | Bailian speech key (required when the provider is `qwen`; checked at startup) |
+| `LD_WORKER_POLL_INTERVAL_MS` | `5000` | idle poll interval |
+| `LD_WORKER_ERROR_BACKOFF_MS` | poll interval | sleep after a failed cycle |
+| `LD_WORKER_QWEN_BASE_URL`, `LD_WORKER_QWEN_MODEL` | Bailian, `qwen3-asr-flash` | endpoint/model overrides |
+
+### apps/web (`server.js`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | listen port |
+| `LD_API_UPSTREAM` | `http://127.0.0.1:8787` | `/v1` proxy target |
+
+### Browser extension (Settings page)
+
+The extension keeps on the device only what belongs there: the AI API key for in-panel AI features, the session and Segment settings, and the 学习服务 base URLs used for account linking. Session transcription and course summaries run server-side with server-configured keys; no Speech Provider key is stored in the extension, and the settings migration removes legacy ASR keys on first read. Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 
 ## Install with your coding agent
 
@@ -59,7 +159,7 @@ Because this is an unpacked extension, it does not update automatically. After d
 
 ## Set up your API keys
 
-Learning Digest uses your own AI provider API key (Alibaba Cloud Bailian by default) for summaries, explanations, translation, and note features. Session transcription uses a Speech Provider, Qwen ASR on Bailian by default, with its own key.
+Learning Digest uses your own AI provider API key (Alibaba Cloud Bailian by default) for the in-panel AI features: explanations, translation, and note helpers. Session transcription and course summaries run in your backend, where the Speech Provider key (worker) and the AI key (API) are configured through environment variables, not in the extension.
 
 ### Get an AI provider API key
 
@@ -83,45 +183,48 @@ Model: qwen3.8-flash
 
 Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your Bailian API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
 
-### Speech Provider key
+### Speech Provider key (backend)
 
-Session transcription defaults to Qwen ASR on Alibaba Cloud Bailian:
+Session transcription defaults to Qwen ASR on Alibaba Cloud Bailian, configured in the transcription worker through environment variables:
 
 ```text
 Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3-asr-flash
 ```
 
-Add a Bailian API key in the Speech Provider section of Settings. Groq Whisper and Tencent Cloud ASR are also built in and selectable in the same section; provider limits and evaluation status are in [docs/poc-evaluation.md](docs/poc-evaluation.md).
-
-Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
+Set `LD_WORKER_PROVIDER=qwen` and `QWEN_API_KEY` on the worker, and give the API and the worker a shared `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN` pair. Course summaries use their own `LD_AI_PROVIDER=qwen` plus `LD_AI_API_KEY` on the API. Until these are set, the worker and the API run deterministic stub providers so the whole flow can be exercised without keys.
 
 ## Use Learning Digest
 
-1. Open a lesson page on a supported course platform (xiaoe-tech.com today).
-2. Start a Session from the side panel.
-3. Read the timestamped Transcript as Segments are transcribed, or choose **Original**, **中文**, or **双语**.
-4. Watch the Rolling Summary refresh as the Session progresses.
-5. Open **Overview** for AI-generated chapters and key quotes.
+1. Log in to the web library with an invited email and link the extension from the authorization page.
+2. Collect a lesson link (paste it in the web library or save the current page from the panel).
+3. Open the lesson page, pick its tab in the panel, and start a Session.
+4. Read the timestamped Transcript as Segments complete, or choose **Original**, **中文**, or **双语**.
+5. Watch the Rolling Summary refresh as the Session progresses; pause or drag freely, the last played position is what gets saved.
 6. Select transcript text when you want an AI explanation, or save it directly as a timestamped note.
-7. End the Session to generate the Session Digest.
+7. End the Session to generate the Session Digest; every Session's transcript is archived and readable from the web library.
+8. Generate a course summary whenever you like, unfinished courses included, and regenerate after more study.
 
 ## What works today
 
 - Google Chrome 116 or newer, using the Side Panel API.
-- The Session pipeline state machine with per-session persistence (resume after closing the tab mid-lesson).
-- The Speech Provider registry with Groq, Tencent Cloud ASR, and Qwen ASR.
-- AI overviews, selected-text explanations, translation, and local notes against transcripts already in the cache.
-- Local notes and a local cache for recent transcript and digest results.
-- Alibaba Cloud Bailian (qwen3.8-flash) for all published AI features. Other providers require a local code adaptation and are not supported by this published version.
+- Invited email + verification-code login on the web library, with the extension linked as one credential group that signs out together.
+- Collection with platform-aware source matching, per-Source playback positions with optimistic concurrency, and timestamped notes.
+- Session transcription through the backend worker: Bilibili-style captions archived directly when available, captured audio through the configured Speech Provider otherwise, at roughly 30 seconds per Segment.
+- Course summaries generated on demand from all archived transcripts and notes, with citations that trace back to the original text and timestamp, and a usage panel.
+- Alibaba Cloud Bailian (qwen3.8-flash) for the in-panel AI features. Other providers require a local code adaptation and are not supported by this published version.
 
-Source Platform capture for xiaoe-tech.com is implemented; real-lesson provider evaluation is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
+Real-lesson provider evaluation from the PoC is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 
 ## AI pricing
 
 Bailian uses tiered pricing for `qwen3.8-flash`: the per-million-token rate depends on the input token size of each request. Current rates are listed on the [official model pricing page](https://help.aliyun.com/zh/model-studio/model-pricing). Check the official page before relying on these prices.
 
-Session transcription is billed by your Speech Provider. Groq's current Whisper pricing is listed on Groq's official pricing page; a typical lesson costs a small fraction of a cent per hour of audio.
+Session transcription is billed by your Speech Provider. A typical lesson costs a small fraction of a cent per hour of audio at current flash-model rates.
+
+## Manual acceptance
+
+Automated suites verify logic against contracts and stubs. Phase-one acceptance additionally requires real-platform walkthroughs (four-platform sample videos, background-tab tabCapture authorization, at least one real-ASR end-to-end run). The checklists are in [docs/round1-acceptance.md](docs/round1-acceptance.md) and [docs/round2-acceptance.md](docs/round2-acceptance.md).
 
 ## Remix it with your coding agent
 
@@ -133,7 +236,7 @@ Learning Digest uses plain HTML, CSS, and JavaScript with no build step, so it i
 - Build customized summary templates per course or topic.
 - Turn saved notes into a spaced-repetition vocabulary notebook.
 - Add another Source Platform adapter (the registry seam is ready).
-- Tune Segment length and summary cadence per provider (start from [docs/poc-evaluation.md](docs/poc-evaluation.md)).
+- Group sources into courses; the Resource and Source model already reserves the relationship.
 
 When you remix, first open the exact Learning Digest project folder that Chrome loaded through **Load unpacked** in your coding agent. Working on a guessed or copied folder silently changes nothing in the extension Chrome actually runs.
 

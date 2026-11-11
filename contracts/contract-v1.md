@@ -8,6 +8,7 @@
 - 来源识别与 Platform Video ID 提取规则：[platform-video-id-rules.md](platform-video-id-rules.md)
 - 契约决策记录（含 Session 缓到第二轮）：[decisions.md](decisions.md)
 - 第二轮扩展（Session / 逐字稿归档 / 音频任务）：[contract-r2.md](contract-r2.md)
+- 第三轮扩展（课程总结 / 用量）：[contract-r3.md](contract-r3.md)
 
 ## 1. 通用约定
 

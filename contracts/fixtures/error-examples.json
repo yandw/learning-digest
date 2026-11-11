@@ -1,6 +1,6 @@
 {
   "$contract": "learning-digest-contracts/v1",
-  "description": "/v1 错误响应固定样例。错误体统一为 { error: { code, message } }；进度冲突额外携带 current（服务端当前进度与版本）。auth 标记样例的凭据状态：none=未携带凭据，expired=已失效或被联动撤销的凭据，valid=有效凭据。跨账号访问统一返回 404 not_found（隔离语义：不向调用方透露资源存在与否）。样例引用 api-examples.json 中的 src_/res_ id；res_01JZZZZ 系列为「另一账号」的数据。第二轮样例（Ticket 2.1，contract-r2.md）追加在文件尾部：Session 生命周期（finish/upload 已结束 409、跨账号 404）、段元数据校验 400、同区间单一路径冲突 409，以及 Worker 凭据 401 与未知任务 404；ses_01JZZZZ / tsk_01JZZZZ 为「另一账号」系列的 Session 与任务。",
+  "description": "/v1 错误响应固定样例。错误体统一为 { error: { code, message } }；进度冲突额外携带 current（服务端当前进度与版本）。auth 标记样例的凭据状态：none=未携带凭据，expired=已失效或被联动撤销的凭据，valid=有效凭据。跨账号访问统一返回 404 not_found（隔离语义：不向调用方透露资源存在与否）。样例引用 api-examples.json 中的 src_/res_ id；res_01JZZZZ 系列为「另一账号」的数据。第二轮样例（Ticket 2.1，contract-r2.md）追加在文件尾部：Session 生命周期（finish/upload 已结束 409、跨账号 404）、段元数据校验 400、同区间单一路径冲突 409，以及 Worker 凭据 401 与未知任务 404；ses_01JZZZZ / tsk_01JZZZZ 为「另一账号」系列的 Session 与任务。第三轮样例（Ticket 3.1，contract-r3.md）继续追加在尾部：总结生成的 401/404/409（无逐字稿）/502（生成失败，不落脏数据）、总结列表与详情的跨账号 404、用量查询 401；sum_01JZZZZ 为「另一账号」系列的总结。",
   "samples": [
     {
       "id": "error-unauthorized-missing-token",
@@ -328,6 +328,102 @@
         "status": 404,
         "body": {
           "error": { "code": "not_found", "message": "任务不存在" }
+        }
+      }
+    },
+    {
+      "id": "error-summary-generate-unauthorized",
+      "description": "第三轮 · 未登录生成总结：课程总结同样要求有效凭据，未携带凭据返回 401",
+      "auth": "none",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/summaries" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+        }
+      }
+    },
+    {
+      "id": "error-summary-generate-cross-account",
+      "description": "第三轮 · 跨账号隔离：对另一账号的资料生成总结，返回 404，不发起任何生成（D2）",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JZZZZ9999/summaries" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-summary-generate-no-transcript",
+      "description": "第三轮 · 无逐字稿可生成：该 Resource 名下没有任何已归档逐字稿记录（res_01JABC0010 是普通网页，从未开始学习；只有 gaps/failed/静音段同样算无文本），返回 409，不发起 AI 调用、不产生记录",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0010/summaries" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": { "code": "no_transcript_to_summarize", "message": "这门资料还没有可总结的逐字稿，先学习并归档后再生成" }
+        }
+      }
+    },
+    {
+      "id": "error-summary-generate-failed",
+      "description": "第三轮 · 生成失败反馈形态（D16）：AI Provider 调用失败/超时/返回不可解析，返回 502；不落脏数据——不产生 Summary 记录，列表与用量不出现本次尝试，重试即用户再次发起",
+      "auth": "valid",
+      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/summaries" },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 502,
+        "body": {
+          "error": { "code": "summary_generation_failed", "message": "总结生成失败，请稍后重试；本次尝试不产生总结记录" }
+        }
+      }
+    },
+    {
+      "id": "error-summaries-list-cross-account",
+      "description": "第三轮 · 跨账号隔离：读取另一账号资料的总结列表，返回 404，不透露存在性",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/resources/res_01JZZZZ9999/summaries" },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-cross-account-summary",
+      "description": "第三轮 · 跨账号隔离：读取另一账号的总结详情，返回 404（sum_01JZZZZ 为另一账号的总结）",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/summaries/sum_01JZZZZ9996" },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": { "code": "not_found", "message": "总结不存在或无权访问" }
+        }
+      }
+    },
+    {
+      "id": "error-usage-unauthorized",
+      "description": "第三轮 · 未登录查用量：GET /v1/usage 要求有效凭据，未携带凭据返回 401",
+      "auth": "none",
+      "endpoint": { "method": "GET", "path": "/v1/usage" },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
         }
       }
     }

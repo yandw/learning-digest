@@ -218,6 +218,19 @@ function endpointTemplate(method, pathname) {
   if (method === "POST" && segs.length === 5 && segs[1] === "worker" && segs[2] === "tasks" && segs[4] === "result") {
     return "POST /v1/worker/tasks/{id}/result";
   }
+  // Round-3 surface (contract-r3.md, ticket #73): course summary generation,
+  // history list, summary detail and account usage. Round-3 error samples in
+  // error-examples.json classify here.
+  if (method === "POST" && segs.length === 4 && segs[1] === "resources" && segs[3] === "summaries") {
+    return "POST /v1/resources/{id}/summaries";
+  }
+  if (method === "GET" && segs.length === 4 && segs[1] === "resources" && segs[3] === "summaries") {
+    return "GET /v1/resources/{id}/summaries";
+  }
+  if (method === "GET" && segs.length === 3 && segs[0] === "v1" && segs[1] === "summaries") {
+    return "GET /v1/summaries/{id}";
+  }
+  if (method === "GET" && joined === "v1/usage") return "GET /v1/usage";
   return null;
 }
 
@@ -487,13 +500,20 @@ test("api-examples keep idempotency and revision invariants", () => {
 
 // --- error-examples.json ----------------------------------------------------
 
-// status ↔ error.code mapping from contract-v1.md §4 and contract-r2.md §4
-// (the round-2 409 codes are additive; round-1 codes are unchanged).
+// status ↔ error.code mapping from contract-v1.md §4, contract-r2.md §4 and
+// contract-r3.md §4 (the round-2 and round-3 codes are additive; round-1
+// codes are unchanged).
 const ERROR_CODE_BY_STATUS = {
   400: new Set(["invalid_url", "validation_failed"]),
   401: new Set(["unauthorized"]),
   404: new Set(["not_found"]),
-  409: new Set(["progress_revision_conflict", "session_already_finished", "transcript_origin_conflict"]),
+  409: new Set([
+    "progress_revision_conflict",
+    "session_already_finished",
+    "transcript_origin_conflict",
+    "no_transcript_to_summarize",
+  ]),
+  502: new Set(["summary_generation_failed"]),
 };
 
 test("error-examples parse, sit on the /v1 surface, and use the error envelope", () => {

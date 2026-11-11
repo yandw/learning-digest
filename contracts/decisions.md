@@ -1,6 +1,6 @@
 # 契约决策记录（第一轮、第二轮）
 
-状态：契约的一部分。记录三端实现必须遵守、且在实现前需要说清理由的契约级裁量。上游决策 1/2/3/4（#49 已确认）不在此重复，只记录其契约化落点。D1–D8 属第一轮（[contract-v1.md](contract-v1.md)），D9–D15 属第二轮（[contract-r2.md](contract-r2.md)）。
+状态：契约的一部分。记录三端实现必须遵守、且在实现前需要说清理由的契约级裁量。上游决策 1/2/3/4（#49 已确认）不在此重复，只记录其契约化落点。D1–D8 属第一轮（[contract-v1.md](contract-v1.md)），D9–D15 属第二轮（[contract-r2.md](contract-r2.md)），D16–D18 属第三轮（[contract-r3.md](contract-r3.md)）。
 
 ## D1 · 第一轮契约不含服务端 Session —— 进度按账号 + Source 保存
 
@@ -165,3 +165,55 @@
 **影响**：字幕提交时机由插件实现票定（建议路径承诺后、finish 前提交一次，使强制转写永远不需要撤销）；回看补录成功的跳过范围不再上报 gap；静音段（done 但无文本）不产生记录也不标记缺口。
 
 **演进（第二轮 review）**：初稿曾把「`finished` 后 `pending` 必为空」当作 TranscriptView 的不变量。实现落点与之不符：插件的常规收尾是先 finish 再 drain——`endActiveSession` 结束 Session 后继续以有限预算（15 拍）轮询，等尾段 `pending` 渐进清空；而 Worker 领取的租约（lease）重排未做，worker 停机且无租约时滞留任务不会被重排，`pending` 因此可在 `finished` 视图里滞留。契约（§2.5 / §3.5）据此改为「`finished` 后 `pending` 随尾段 drain 渐进清空」，客户端按 `sessionStatus` 把滞留段标注为排队而非终态；租约重排仍属 API 内部机制（§3.7），后续补上时该措辞可自然收敛回「必为空」。
+
+---
+
+第三轮决策（Ticket 3.1，issue #73；结构与端点见 [contract-r3.md](contract-r3.md)）：
+
+## D16 · 课程总结服务端生成：AI Provider 凭据收归 API，与 Worker 的 Speech Provider seam 并列独立
+
+**决策**：总结生成只发生在服务端——`POST /v1/resources/{id}/summaries` 由 API 聚合材料、调用 AI Provider、落库并同步返回 201。插件与 Web 不持有 AI Provider 凭据、不直连模型服务（D10 同款理由：凭据随客户端分发等于公开；服务端持有才可控用量、可替换 Provider、可注入测试替身）。AI Provider 的身份只在 Summary 的 `generation` 元数据中以不透明字符串记录（`provider` / `model`），不暴露凭据或端点。
+
+**归属与理由（ASR 在 Worker、AI 在 API）**：两个 Provider seam 并列但归属不同单元，由输入性质决定——
+
+- 转写的输入是**音频字节**：重负载、长任务，需要 pull 模型把音频交接给独立进程（D13），Worker 因此持有 Speech Provider 凭据与音频。
+- 总结的输入是**已落库的结构化材料**（transcript records / gaps + notes，D17）：无音频字节、无流水线，生成是单请求-单产物，同步完成即可。材料本来就在 API 手里（逐字稿轮询、资料详情都由 API 出），在 API 内调用 AI Provider 免去二次交接——不需要总结任务下发 Worker，也不需要第三条 claim/result 通道。
+- 演进预留：若未来总结需要异步化（超长上下文、重试预算、批量回补），可按 D13 预留的形态在 Worker 增加任务类型，本契约端点不因此改变。
+
+**双 Provider**：默认部署 `qwen`（产品路径），测试注入 stub（Testing Decisions「替代 AI Provider 使测试可重复」）；`provider`/`model` 是不透明字符串，不构成三端约定的枚举。
+
+**生成语义**：
+
+- **每次主动生成 = 一条新记录**（历史保留可回查）：POST 永远创建新 Summary，不做首存去重——是否值得重新归纳由用户判断（用户故事 28/29），服务端无法替用户决定；防抖是 Web 实现票的职责。
+- **同步生成**：组装 → AI Provider → 落库 → 201 在同一请求内完成。总结无渐进产出，不设轮询面（与 D12 的逐字稿轮询不同构）。
+- **失败反馈形态：不落脏数据**——AI Provider 调用失败、超时或返回不可解析时返回 502 `summary_generation_failed`，不产生 Summary 记录，列表与用量都不出现本次尝试（D18 同口径）；重试即用户再次发起。对比逐字稿的 `failed[]`：那是段级进行时状态（音频已入库、失败可排查、将来可重转），而总结是原子产物——要么完整存在，要么不存在；失败条目没有可回查的正文，只会污染回查列表。
+
+**影响**：API 部署配置新增 AI Provider 凭据（与 Worker 的 Speech Provider 凭据相互独立）；插件与 Web 无任何 Provider 感知；无逐字稿可生成时返回 409 `no_transcript_to_summarize`，不发起 AI 调用。
+
+## D17 · 生成输入 = 全部 Sessions 的 transcripts(records/gaps) + notes；prompt 外移 prompts/course-summary.md
+
+**决策**：生成范围固定为该 Resource **当前全部已归档材料**，不接受客户端裁剪（请求体为空对象 `{}`）：
+
+- 每个 Session（`active` 与 `finished` 均计入——未学完可生成）的 TranscriptView：`records` 全文按 `startMs` 升序，行首带 `[sessionId 起点–终点]` 来源标记（毫秒，来源视频时间轴）；`gaps` 以「已跳过，该范围未取得文本」标记进入输入。
+- 该 Resource 全部 notes：时间戳笔记带 Source 与位置，普通网页笔记按序。
+- **不进输入**：`pending` 与 `failed` 段（没有文本）、静音段（done 无记录——没有文本）。空缺信息只以跳过标记与字幕缺失的自然断点呈现，模型不编造缺失内容。
+- **prompt 外移** [prompts/course-summary.md](../prompts/course-summary.md)：系统提示、用户模板与变量（`{resourceTitle}` / `{transcriptLines}` / `{gapLines}` / `{noteLines}`）都在该文件，实现票加载模板填变量，不把 prompt 散落进代码。先例是仓库 prompts/ 目录的 `topic-tick.md` / `session-report.md`（PoC #48 的纪要 prompt 形态）；PoC D4 的原则不变——prompt 是纯模板，代码只做变量填充。
+- **引用清洗**：模型返回的 citations 在落库前逐条对账——`segmentRef` 必须命中该 Resource 某 Session 的真实归档记录（sessionId 归属该 Resource、区间对上记录、quote 是记录文本的逐字摘句），对不上的引用丢弃。引用是回查锚点（spec #49「通过原文和时间戳回查实际来源」），落库死链等于给用户坏的回查入口。
+- **`inputChars` 口径**：提交给 AI Provider 的完整输入字符数（组装后的 prompt 全文，含模板与来源标记），与用量的 `summaryInputChars` 同源（D18）。
+
+**理由**：材料只会累积（契约无删除逐字稿的端点），「当前全部已归档」是服务端可独立判定的范围；逐字稿行带来源标记让模型产出的引用可回指真实记录，是引用清洗可机械执行的前提；输入含 notes 与跳过标记是「归纳学习者的理解、不编造缺失」的输入基础。
+
+**影响**：补学后再次生成自然覆盖新增材料（聚合范围随归档增长）；同资料多 Session 的来源与时间轴在输入中分别保留，citations 可跨 Session 指回各自记录。
+
+## D18 · 用量口径：只记录不计费；两个记录时点都是产物落库时刻
+
+**决策**：`GET /v1/usage` 返回账号级累计：`audioSeconds`（转写时长，秒）、`summaryCount`（总结生成次数）、`summaryInputChars`（总结输入字符累计）、`updatedAt`（最后一次计数写入时间）。**只记录不计费**——价格、账单、付款与配额执行全部 out of scope（#49 Out of Scope）；本端点是 Web 查询入口的数据源，无时间窗与资源维度参数（后续计费口径若需要维度扩展，加端点或参数，不改本形态）。
+
+**记录时点**：
+
+- `audioSeconds`：音频段任务**首次 done 时**（Worker 回写 done 落库时刻）按段时长（`endMs − startMs`）累加；`audioSeconds` = 累计毫秒 ÷ 1000 向下取整。失败段不计（没有产出文本）、转写中不计；静音段（done + `records: []`）**计入**——音频真实转写过；同段至多计一次（回写首存为准天然保证，重试类增强引入后也不重复计数）。
+- `summaryCount` / `summaryInputChars`：总结**成功落库时**（201 响应的同一时刻）记录——`summaryCount` +1，`summaryInputChars` += 该次 `generation.inputChars`。生成失败不落库也不计数（与 D16「不落脏数据」一致）。
+
+**理由**：两个时点都是「产物诞生」的时刻——文本产物（逐字稿记录 / 总结）落库才计用量，与 D14「done 即删音频」的产物观一致；进行中与失败态都不代表已交付的成果。字符量用 Unicode 码点数而非 token 数：token 计数随各 Provider 的 tokenizer 不同，字符数三端可一致复现，且与 Summary 元数据的「输入规模」同源可对账。
+
+**影响**：用量单调递增，无扣减路径（契约无删除端点）；`updatedAt` 只在计数写入时前进。样例链（`summary-examples.json` 的 `api-usage`）固定了整条口径：done 段求和 120 秒、2 次生成、1876+2264=4140 字符。

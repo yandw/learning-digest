@@ -924,3 +924,69 @@ test("settleInterruptedSegments is a no-op when nothing is pending", () => {
   assert.equal(settled, state);
   assert.equal(settled.transcriptRecords.length, 1);
 });
+
+// --- transcriptViewUpdated (ticket 2.4, issue #67) ------------------------------
+//
+// The API TranscriptView (contract-r2 §2.5) is the render source for the
+// 逐字稿 tab in the server-side ASR path. The pipeline stores the latest
+// polled view ON the Session state so the snapshot persists it (a panel
+// reopen or worker restart renders the last known view) and every
+// broadcast carries it.
+
+const VIEW_A = {
+  sessionId: "ses_1",
+  sourceId: "src_1",
+  resourceId: "res_1",
+  sessionStatus: "active",
+  origin: "asr",
+  records: [{ startMs: 0, endMs: 30000, text: "第一段", origin: "asr" }],
+  gaps: [],
+  pending: [{ segmentIndex: 1, startMs: 30000, endMs: 60000, status: "pending" }],
+  failed: [],
+};
+
+test("transcriptViewUpdated stores the polled view on the Session state", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcriptViewUpdated",
+    view: VIEW_A,
+  });
+  assert.deepEqual(state.transcriptView, VIEW_A);
+  // Other events never disturb the stored view.
+  state = sessionPipeline.applyEvent(state, {
+    type: "segmentCaptured",
+    segment: { id: "seg-1", start: 0, duration: 30 },
+  });
+  assert.deepEqual(state.transcriptView, VIEW_A);
+});
+
+test("a transcriptViewUpdated without the four-array shape is rejected", () => {
+  const state = sessionPipeline.createSession({ sessionId: "s1" });
+  assert.throws(() =>
+    sessionPipeline.applyEvent(state, { type: "transcriptViewUpdated", view: null }),
+  );
+  assert.throws(() =>
+    sessionPipeline.applyEvent(state, {
+      type: "transcriptViewUpdated",
+      view: { ...VIEW_A, records: "nope" },
+    }),
+  );
+});
+
+test("resumeFromSnapshot preserves the stored transcript view", () => {
+  const state = sessionPipeline.applyEvent(
+    sessionPipeline.createSession({ sessionId: "s1" }),
+    { type: "transcriptViewUpdated", view: VIEW_A },
+  );
+  const resumed = sessionPipeline.resumeFromSnapshot(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(resumed.transcriptView, VIEW_A);
+  // Snapshots from before the pipeline carried no view — resume stays clean.
+  const legacy = sessionPipeline.resumeFromSnapshot({
+    sessionId: "s1",
+    status: "active",
+    segments: [],
+    transcriptRecords: [],
+    topics: [],
+  });
+  assert.equal(legacy.transcriptView, undefined);
+});

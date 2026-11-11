@@ -124,6 +124,8 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTopicsAppended(state, event);
       case "titleCaptured":
         return onTitleCaptured(state, event);
+      case "transcriptViewUpdated":
+        return onTranscriptViewUpdated(state, event);
       case "sessionEnd":
         return { ...state, status: "ended" };
       default:
@@ -450,6 +452,31 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
+   * Stores the latest polled API TranscriptView (contract-r2 §2.5, ticket
+   * 2.4) on the Session state. The view rides the state object so every
+   * snapshot persists it and every broadcast carries it — a panel reopen or
+   * a worker restart renders the last known view without a fresh poll. The
+   * four-array shape is re-checked here so a malformed view can never enter
+   * the state; the poller's parser (transcript-pipeline.js) normally
+   * guarantees it.
+   */
+  function onTranscriptViewUpdated(state, event) {
+    const view = event?.view;
+    if (!view || typeof view !== "object" || Array.isArray(view)) {
+      throw new Error("transcriptViewUpdated requires a TranscriptView object");
+    }
+    if (
+      !Array.isArray(view.records) ||
+      !Array.isArray(view.gaps) ||
+      !Array.isArray(view.pending) ||
+      !Array.isArray(view.failed)
+    ) {
+      throw new Error("transcriptViewUpdated requires a TranscriptView object");
+    }
+    return { ...state, transcriptView: view };
+  }
+
+  /**
    * Restores Session state from a persisted snapshot so the caller can keep
    * feeding events exactly where the Session left off. Snapshots from
    * before the Topic timeline carry the retired rollingSummary field and no
@@ -476,6 +503,20 @@ var YTD_SESSION_PIPELINE = (() => {
     // older snapshots simply resume titleless and can capture it later.
     if (typeof snapshot.title === "string" && snapshot.title) {
       restored.title = snapshot.title;
+    }
+    // The last polled API TranscriptView (ticket 2.4) rides along when the
+    // snapshot has one; the shape check keeps a corrupted blob out.
+    const view = snapshot.transcriptView;
+    if (
+      view &&
+      typeof view === "object" &&
+      !Array.isArray(view) &&
+      Array.isArray(view.records) &&
+      Array.isArray(view.gaps) &&
+      Array.isArray(view.pending) &&
+      Array.isArray(view.failed)
+    ) {
+      restored.transcriptView = view;
     }
     return restored;
   }

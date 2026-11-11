@@ -113,5 +113,13 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     });
   }
 
-  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle };
+  // Session transcript (contract-r2 §3.5): the per-Session second pull the
+  // detail page does after GET /v1/resources/{id} — the detail's sessions[]
+  // carries only the transcript summary counts, the full TranscriptView is
+  // read here (contract-r2 §3.6).
+  function getSessionTranscript(id) {
+    return request("GET", `/v1/sessions/${encodeURIComponent(String(id))}/transcript`);
+  }
+
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, getSessionTranscript };
 }

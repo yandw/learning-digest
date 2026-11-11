@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("api-client.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "contracts/platform-video-id.js");
+importScripts("api-client.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "youtube-captions.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -1059,23 +1059,38 @@ async function handleSeekLearningTarget({ tabId, positionMs } = {}) {
 }
 
 /**
- * Ticket 2.5 (#68): the bilibili captions path — 可用字幕优先直归档，全程零 ASR.
- * The bridge's getBilibiliCaptions answer is normalized by the reader
- * module; anything malformed, unreachable or timed out reads as 无字幕
- * (不猜、不误报), which hands the start back to the capture flow.
+ * Ticket 2.5 (#68) + 2.6 (#69): the captions path — 可用字幕优先直归档，全程
+ * 零 ASR. The bridge's captions answer is read per platform (bilibili's
+ * getBilibiliCaptions, youtube's getYouTubeCaptions) and normalized by that
+ * platform's reader module; anything malformed, unreachable or timed out
+ * reads as 无字幕 (不猜、不误报), which hands the start back to the capture
+ * flow. A platform with no captions reader never probes at all.
  */
 const CAPTIONS_READ_TIMEOUT_MS = 5_000;
 const CAPTIONS_POLL_INTERVAL_MS = 15_000;
 
-async function readTabCaptions(tabId) {
+const CAPTIONS_READERS = {
+  bilibili: {
+    command: "getBilibiliCaptions",
+    parse: (response) => YTD_BILIBILI_CAPTIONS.parseBridgeCaptionResponse(response),
+  },
+  youtube: {
+    command: "getYouTubeCaptions",
+    parse: (response) => YTD_YOUTUBE_CAPTIONS.parseBridgeCaptionResponse(response),
+  },
+};
+
+async function readTabCaptions(tabId, platformId) {
+  const reader = CAPTIONS_READERS[platformId];
+  if (!reader) return { available: false, reason: "captions_not_supported" };
   try {
     const response = await Promise.race([
-      chrome.tabs.sendMessage(tabId, { action: "getBilibiliCaptions" }),
+      chrome.tabs.sendMessage(tabId, { action: reader.command }),
       new Promise((resolve) =>
         setTimeout(() => resolve(null), CAPTIONS_READ_TIMEOUT_MS),
       ),
     ]);
-    return YTD_BILIBILI_CAPTIONS.parseBridgeCaptionResponse(response);
+    return reader.parse(response);
   } catch (_error) {
     // No answering frame (the bridge is not injected, the page is loading,
     // or the extension context was invalidated): an honest unavailable.
@@ -3551,13 +3566,16 @@ async function handleStartLearning(message) {
     };
   }
 
-  // Ticket 2.5 (#68): a bilibili video page tries the captions path first —
-  // 可用字幕优先直归档，全程零 ASR. An unavailable read hands the start to
-  // the capture flow below, with the probe result landed in the Session
-  // state as the honest 无字幕 record.
+  // Tickets 2.5/2.6 (#68/#69): a bilibili or youtube video page tries the
+  // captions path first — 可用字幕优先直归档，全程零 ASR. An unavailable read
+  // hands the start to the capture flow below, with the probe result landed
+  // in the Session state as the honest 无字幕 record.
   let captionsProbe = null;
-  if (recognition.platformId === "bilibili" && recognition.kind === "video") {
-    const captions = await readTabCaptions(message.tabId);
+  if (
+    (recognition.platformId === "bilibili" || recognition.platformId === "youtube") &&
+    recognition.kind === "video"
+  ) {
+    const captions = await readTabCaptions(message.tabId, recognition.platformId);
     if (captions.available) {
       return startCaptionsSession(message, recognition, captions);
     }

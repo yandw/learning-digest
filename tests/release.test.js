@@ -49,9 +49,10 @@ test("manifest uses minimized install-time permissions", () => {
         "https://www.xiaohongshu.com/explore/*",
         "https://www.xiaohongshu.com/discovery/item/*",
       ],
-      // Ticket 2.5 (#68): the bilibili caption reader loads before the
-      // bridge so the getBilibiliCaptions command has its factory global.
-      js: ["bilibili-captions.js", "page-bridge.js"],
+      // Tickets 2.5/2.6 (#68/#69): the caption readers load before the
+      // bridge so the getBilibiliCaptions/getYouTubeCaptions commands have
+      // their factory globals.
+      js: ["bilibili-captions.js", "youtube-captions.js", "page-bridge.js"],
       run_at: "document_idle",
       // 0.1.64: xiaoe players can live inside iframes — the bridge must
       // reach them or position reporting and playback control both fail.
@@ -78,29 +79,31 @@ test("manifest uses minimized install-time permissions", () => {
     "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.9 (ticket 2.5, #68): the bilibili captions path — the caption
-  // reader module, the bridge getBilibiliCaptions command, and the
-  // server-Session archive client behind the zero-ASR captions flow.
-  assert.equal(manifest.version, "0.2.9");
+  // 0.2.11 (ticket 2.4, #67): the ASR archive path — the D11 audio-segment
+  // upload client, the §3.5 poll wiring, and the D10 retirement of the
+  // local Speech Provider config (on top of 2.6's YouTube captions path).
+  assert.equal(manifest.version, "0.2.11");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
 });
 
 test("no legacy YouTube caption-collection code remains", () => {
-  // P10b (#63) re-scoped youtube.com to a round-1 Source Platform: its only
-  // legitimate runtime presence is the page-bridge injection match in the
-  // manifest (pinned shape above) and the Source Platform adapter (pure URL
-  // recognition, not in these runtime files). host_permissions must not
-  // include YouTube (asserted above — no server-side fetching), and the PoC
-  // caption pipeline stays retired everywhere, manifest included.
+  // P10b (#63) re-scoped youtube.com to a round-1 Source Platform; ticket
+  // 2.6 (#69) adds the captions path for it: the worker routes through the
+  // youtube-captions.js reader module (its own release file, tested in
+  // isolation), and the runtime files below still never embed the PoC
+  // caption machinery themselves — no timedtext URLs, no player internals,
+  // no caption-track parsing outside the reader. host_permissions must not
+  // include YouTube (asserted above — the reader fetches same-origin from
+  // the content script), and the PoC files stay retired.
   const runtime = ["background.js", "sidepanel.js", "options.js", "settings.js"]
     .map(read)
     .join("\n");
   const manifest = read("manifest.json");
 
-  assert.doesNotMatch(runtime, /youtube|youtu\.be|timedtext|movie_player/i);
-  assert.doesNotMatch(runtime, /captionTrack|caption track/i);
+  assert.doesNotMatch(runtime, /timedtext|movie_player|captionTrack|caption track/i);
+  assert.doesNotMatch(runtime, /youtu\.be/i);
   assert.doesNotMatch(manifest, /timedtext|movie_player|captionTrack|caption track/i);
   for (const removed of ["captions.js", "content.js"]) {
     assert.equal(
@@ -471,6 +474,10 @@ test("core Learning Digest modules ship in the release and load in the service w
     // zero-ASR captions path.
     "session-archive.js",
     "bilibili-captions.js",
+    // Ticket 2.6 (#69): the youtube caption reader — the ported
+    // youtube-digest captions mechanism over the watch page's embedded
+    // player response.
+    "youtube-captions.js",
     // Ticket 2.4 (#67): the D11 audio-segment upload client behind the ASR
     // archive path.
     "transcript-pipeline.js",
@@ -499,6 +506,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

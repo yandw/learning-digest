@@ -91,11 +91,36 @@ var YTD_PAGE_BRIDGE = (() => {
           : null);
       if (typeof factory !== "function") return null;
       try {
-        captionReader = factory({ document: doc, window: win });
+        captionReader = factory({ document: doc, window: win, fetch: env.fetch });
       } catch (_error) {
         return null;
       }
       return captionReader || null;
+    }
+
+    /**
+     * The YouTube caption reader (Ticket 2.6, #69): created lazily over
+     * this bridge's own document/window — the reader discovers the watch
+     * page's embedded ytInitialPlayerResponse and reads the timedtext
+     * tracks the same page state the position stream sees. Same env
+     * injection (env.createYouTubeCaptionReader) and loaded-before rule as
+     * the bilibili reader.
+     */
+    let youtubeCaptionReader = null;
+    function getYouTubeCaptionReader() {
+      if (youtubeCaptionReader) return youtubeCaptionReader;
+      const factory =
+        env.createYouTubeCaptionReader ||
+        (typeof YTD_YOUTUBE_CAPTIONS !== "undefined" && YTD_YOUTUBE_CAPTIONS
+          ? YTD_YOUTUBE_CAPTIONS.createYouTubeCaptionReader
+          : null);
+      if (typeof factory !== "function") return null;
+      try {
+        youtubeCaptionReader = factory({ document: doc, window: win, fetch: env.fetch });
+      } catch (_error) {
+        return null;
+      }
+      return youtubeCaptionReader || null;
     }
 
     /** (Re)binds the seek listeners to the current primary media: a drag is
@@ -189,6 +214,9 @@ var YTD_PAGE_BRIDGE = (() => {
      *   the frame that can see a subtitle track list answers (async: the
      *   subtitle body may need a fetch); frames without any subtitle source
      *   stay silent so only the owning frame's answer reaches the sender.
+     * - getYouTubeCaptions (Ticket 2.6, #69): the same rule over the watch
+     *   page's embedded ytInitialPlayerResponse — only the frame whose
+     *   player response describes the video its own URL names answers.
      *
      * With all_frames injection the message reaches every frame; frames
      * without media stay silent (return false) so only the frame holding
@@ -199,7 +227,10 @@ var YTD_PAGE_BRIDGE = (() => {
      */
     function handleMessage(message, sendResponse) {
       if (message?.action === "getBilibiliCaptions") {
-        return handleCaptionsRequest(message, sendResponse);
+        return handleCaptionsRequest(message, sendResponse, getCaptionReader);
+      }
+      if (message?.action === "getYouTubeCaptions") {
+        return handleCaptionsRequest(message, sendResponse, getYouTubeCaptionReader);
       }
       const isSeek = message?.action === "seekMedia";
       if (!isSeek && message?.action !== "restartFromBeginning" && message?.action !== "getMediaPosition") {
@@ -254,16 +285,18 @@ var YTD_PAGE_BRIDGE = (() => {
     }
 
     /**
-     * Ticket 2.5 (#68): the getBilibiliCaptions command. The caption reader
-     * (bilibili-captions.js, loaded before this file in the manifest) probes
-     * the page's subtitle sources; only a frame that can see a track list
-     * answers — the same only-the-owning-frame rule the media commands
-     * follow, extended to the async case with a held-open sendResponse.
-     * A reader failure answers available:false with an explicit reason: a
-     * failed read can never read as "captions found".
+     * Tickets 2.5/2.6 (#68/#69): the getBilibiliCaptions and
+     * getYouTubeCaptions commands. The platform's caption reader (loaded
+     * before this file in the manifest) probes the page's caption sources;
+     * only a frame that owns an answer — a visible track list, or an
+     * embedded player response describing its own video — answers — the
+     * same only-the-owning-frame rule the media commands follow, extended
+     * to the async case with a held-open sendResponse. A reader failure
+     * answers available:false with an explicit reason: a failed read can
+     * never read as "captions found".
      */
-    function handleCaptionsRequest(message, sendResponse) {
-      const reader = getCaptionReader();
+    function handleCaptionsRequest(message, sendResponse, readerGetter) {
+      const reader = readerGetter();
       if (!reader) return false;
       let probe;
       try {

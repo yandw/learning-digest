@@ -148,6 +148,154 @@ export function presentNote(note) {
 }
 
 /**
+ * "2026-11-10T10:00:00Z" -> "2026-11-10 10:00" in the viewer's local time
+ * (the contract's ISO 8601 UTC instants, contract-v1 §1). Unusable inputs
+ * render nothing rather than a broken stamp.
+ */
+export function formatDateTime(iso) {
+  if (typeof iso !== "string" || iso === "") {
+    return null;
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const twoDigits = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${twoDigits(date.getMonth() + 1)}-${twoDigits(date.getDate())} ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`;
+}
+
+/**
+ * Origin badge for one study session (contract-r2 §2.1): the path the
+ * session's transcript came from — captions reads 字幕, asr reads 语音转写;
+ * origin null (nothing archived yet) shows no badge.
+ */
+export function sessionOriginLabel(origin) {
+  if (origin === "captions") {
+    return "字幕";
+  }
+  if (origin === "asr") {
+    return "语音转写";
+  }
+  return null;
+}
+
+const SESSION_STATUS_LABELS = {
+  active: "进行中",
+  finished: "已结束",
+};
+
+/**
+ * "0 段文本" is never a part — an all-zero summary reads as its own line.
+ */
+function transcriptSummaryText(summary) {
+  const parts = [];
+  if (summary.recordCount > 0) {
+    parts.push(`${summary.recordCount} 段文本`);
+  }
+  if (summary.gapCount > 0) {
+    parts.push(`${summary.gapCount} 处已跳过`);
+  }
+  if (summary.failedCount > 0) {
+    parts.push(`${summary.failedCount} 段转写失败`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "本次学习未产生逐字稿";
+}
+
+/**
+ * View model for one session block header (contract-r2 §3.6 sessions[]):
+ * the study time, the lifecycle status, the origin badge and the transcript
+ * summary counts carried by the detail response (the full transcript text
+ * arrives through the per-session second pull, see presentTranscript).
+ */
+export function presentSession(session) {
+  const summary = session.transcript || { recordCount: 0, gapCount: 0, failedCount: 0 };
+  return {
+    id: session.id,
+    sourceId: session.sourceId === undefined || session.sourceId === null ? null : session.sourceId,
+    statusLabel: SESSION_STATUS_LABELS[session.status] || session.status,
+    startedAtText: formatDateTime(session.startedAt),
+    originLabel: sessionOriginLabel(session.origin),
+    summaryText: transcriptSummaryText(summary),
+  };
+}
+
+/** "150000, 210000" -> "2:30–3:30" on the source-video timeline; null when
+ * either end is unusable (the view degrades instead of a broken range). */
+function formatRange(startMs, endMs) {
+  const start = formatPosition(startMs);
+  const end = formatPosition(endMs);
+  return start && end ? `${start}–${end}` : null;
+}
+
+/**
+ * One transcript timeline row. The four TranscriptView arrays (contract-r2
+ * §2.5) merge into a single startMs-ordered stream — the client "统一遍历"
+ * the contract calls for — with a kind per row:
+ * - record: a text segment; the stamp is the segment's start on the source
+ *   timeline and, when the platform offers a seek parameter, a jump URL
+ *   built by the SAME builder the round-1 note stamps use
+ *   (SEEK_PARAM_BUILDERS via buildNoteJumpUrl: bilibili t=, youtube t=..s;
+ *   小鹅通/小红书 and plain webpages get null -> the page shows the
+ *   timestamp without a jump affordance, exactly like the notes);
+ * - gap:    an explicitly skipped range (finish-reported, reason skipped)
+ *           — nothing was captured, so no jump;
+ * - pending: a still-transcribing audio segment (「转写中」);
+ * - failed: a failed audio segment with the contract error message verbatim.
+ */
+const TIMELINE_KIND_ORDER = { record: 0, pending: 1, failed: 2, gap: 3 };
+
+export function presentTranscript(view, sources) {
+  if (!view) {
+    return [];
+  }
+  const entries = [
+    ...(view.records || []).map((record) => ({
+      kind: "record",
+      startMs: record.startMs,
+      endMs: record.endMs,
+      stamp: formatPosition(record.startMs),
+      text: record.text,
+      detail: null,
+      jumpUrl: buildNoteJumpUrl(
+        { sourceId: view.sourceId, positionMs: record.startMs },
+        sources,
+      ),
+    })),
+    ...(view.gaps || []).map((gap) => ({
+      kind: "gap",
+      startMs: gap.startMs,
+      endMs: gap.endMs,
+      stamp: formatRange(gap.startMs, gap.endMs),
+      text: "已跳过",
+      detail: null,
+      jumpUrl: null,
+    })),
+    ...(view.pending || []).map((segment) => ({
+      kind: "pending",
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      stamp: formatRange(segment.startMs, segment.endMs),
+      text: "转写中",
+      detail: null,
+      jumpUrl: null,
+    })),
+    ...(view.failed || []).map((segment) => ({
+      kind: "failed",
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      stamp: formatRange(segment.startMs, segment.endMs),
+      text: "转写失败",
+      detail: (segment.error && segment.error.message) || null,
+      jumpUrl: null,
+    })),
+  ];
+  return entries.sort(
+    (a, b) =>
+      a.startMs - b.startMs || TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind],
+  );
+}
+
+/**
  * Best-effort jump-back to the note's position on the original platform
  * (ticket #61: 回原平台对应位置按平台能力尽力实现). Only platforms with a
  * documented seek parameter get a URL — bilibili appends `t=<seconds>` to
@@ -269,12 +417,21 @@ export function createLibraryFlow({ api, identity }) {
     return { ok: true, status: result.status };
   }
 
-  /** Open the detail view for one resource (contract §3.3). */
+  /**
+   * Open the detail view for one resource (contract §3.3, extended by
+   * contract-r2 §3.6). The detail's sessions[] carries each study session
+   * plus only the transcript SUMMARY counts ({ recordCount, gapCount,
+   * failedCount }) — the contract pins the full text to the per-Session
+   * second pull through GET /v1/sessions/{id}/transcript (§3.5), one read
+   * per block here. A failed pull leaves that block null (the page renders
+   * the header from the detail and a load-failure line) instead of failing
+   * the whole detail; a detail without sessions skips the pull entirely.
+   */
   async function openDetail(id) {
     busy = true;
     const result = await api.getResourceDetail(id);
-    busy = false;
     if (!result.ok) {
+      busy = false;
       error = envelopeMessage(result.data);
       return { ok: false };
     }
@@ -282,6 +439,14 @@ export function createLibraryFlow({ api, identity }) {
     error = null;
     notice = null;
     view = "detail";
+    detail.transcripts = {};
+    await Promise.all(
+      (detail.sessions || []).map(async (session) => {
+        const transcript = await api.getSessionTranscript(session.id);
+        detail.transcripts[session.id] = transcript.ok ? transcript.data : null;
+      }),
+    );
+    busy = false;
     return { ok: true };
   }
 

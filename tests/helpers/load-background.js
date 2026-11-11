@@ -216,9 +216,12 @@ function loadBackgroundHelpers({
     // machine and the progress write client (learning-start.js).
     YTD_LEARNING_START: require("../../learning-start.js"),
     // Ticket 2.5 (#68): the Session archive client (contract-r2 §3.1/§3.2/
-    // §3.3/§3.5) and the page-side caption reader the bridge command uses.
+    // §3.3/§3.5) and the page-side caption readers the bridge commands use
+    // (Ticket 2.6, #69 adds the youtube reader).
     YTD_SESSION_ARCHIVE: require("../../session-archive.js"),
     YTD_BILIBILI_CAPTIONS: require("../../bilibili-captions.js"),
+    // Ticket 2.6 (#69): the youtube caption reader the bridge command uses.
+    YTD_YOUTUBE_CAPTIONS: require("../../youtube-captions.js"),
     // Ticket 2.4 (#67): the D11 audio-segment upload client the ASR path's
     // dispatch/poll wiring reads.
     YTD_TRANSCRIPT_PIPELINE: require("../../transcript-pipeline.js"),

@@ -40,16 +40,22 @@ var YTD_SESSION_PIPELINE = (() => {
   /**
    * Creates an active Session.
    *
-   * @param {{sessionId: string}} options
-   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], topics: object[]}}
+   * @param {{sessionId: string, transcriptOrigin?: "captions"|"asr"|null}} options
+   *   transcriptOrigin is set when the Session already committed to a
+   *   transcript path at start (Ticket 2.5: the captions path locks origin
+   *   "captions" at creation); it stays null for the capture paths.
+   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], topics: object[], transcriptOrigin: string|null}}
    */
-  function createSession({ sessionId }) {
+  function createSession({ sessionId, transcriptOrigin } = {}) {
     return {
       sessionId,
       status: "active",
       segments: [],
       transcriptRecords: [],
       topics: [],
+      transcriptOrigin: transcriptOrigin === "captions" || transcriptOrigin === "asr"
+        ? transcriptOrigin
+        : null,
     };
   }
 
@@ -126,6 +132,10 @@ var YTD_SESSION_PIPELINE = (() => {
         return onTitleCaptured(state, event);
       case "transcriptViewUpdated":
         return onTranscriptViewUpdated(state, event);
+      case "captionsSynced":
+        return onCaptionsSynced(state, event);
+      case "captionsUnavailable":
+        return onCaptionsUnavailable(state, event);
       case "sessionEnd":
         return { ...state, status: "ended" };
       default:
@@ -452,28 +462,108 @@ var YTD_SESSION_PIPELINE = (() => {
   }
 
   /**
-   * Stores the latest polled API TranscriptView (contract-r2 §2.5, ticket
-   * 2.4) on the Session state. The view rides the state object so every
-   * snapshot persists it and every broadcast carries it — a panel reopen or
-   * a worker restart renders the last known view without a fresh poll. The
-   * four-array shape is re-checked here so a malformed view can never enter
-   * the state; the poller's parser (transcript-pipeline.js) normally
-   * guarantees it.
+   * Ticket 2.4 (#67): the ASR path's view sync — the server's TranscriptView
+   * (contract-r2 §2.5) is the source of truth for what the Worker has
+   * produced, mapped by session-archive.js's view→row mappers before the
+   * event lands. `records` are the mapped text rows PLUS the failed
+   * segments' visible failure rows (the server's own 契约文案, never a local
+   * guess); `pendingSegments` are the transcribing Segments as pending
+   * rows. Both arrive as seconds-based rows the panel already renders.
+   *
+   * The replacement keeps the plugin-local failed:true annotations — the
+   * seek-skipped gap markers (#48) and the upload-failure markers — because
+   * the server view does not know about them (gaps are reported once at
+   * finish, §3.2; a failed upload never reached the server). Everything
+   * else the server view replaces wholesale. The origin stamps only when a
+   * valid one is given (D15: the server's own lock state is authoritative).
    */
   function onTranscriptViewUpdated(state, event) {
-    const view = event?.view;
-    if (!view || typeof view !== "object" || Array.isArray(view)) {
-      throw new Error("transcriptViewUpdated requires a TranscriptView object");
+    const mapped = Array.isArray(event?.records) ? event.records : null;
+    const mappedPending = Array.isArray(event?.pendingSegments)
+      ? event.pendingSegments
+      : null;
+    if (!mapped || !mappedPending) {
+      throw new Error(
+        "transcriptViewUpdated requires mapped records and pendingSegments arrays",
+      );
     }
-    if (
-      !Array.isArray(view.records) ||
-      !Array.isArray(view.gaps) ||
-      !Array.isArray(view.pending) ||
-      !Array.isArray(view.failed)
-    ) {
-      throw new Error("transcriptViewUpdated requires a TranscriptView object");
+    // Plugin-local annotations the server view cannot see ride through the
+    // replacement (the seek-gap machinery matches them by this shape).
+    const kept = state.transcriptRecords.filter((record) => record?.failed === true);
+    const transcriptRecords = [...kept, ...mapped].sort(
+      (a, b) => a.start - b.start || a.duration - b.duration,
+    );
+    const pendingSegments = [];
+    for (const segment of mappedPending) {
+      if (!segment || typeof segment !== "object") continue;
+      if (typeof segment.id !== "string" || segment.id === "") continue;
+      const start = Number(segment.start);
+      const duration = Number(segment.duration);
+      if (!Number.isFinite(start) || start < 0) continue;
+      if (!Number.isFinite(duration) || duration < 0) continue;
+      pendingSegments.push({ ...segment, status: "pending" });
     }
-    return { ...state, transcriptView: view };
+    const next = { ...state, transcriptRecords, pendingSegments };
+    if (event?.origin === "captions" || event?.origin === "asr") {
+      next.transcriptOrigin = event.origin;
+    }
+    return next;
+  }
+
+  /**
+   * Ticket 2.5 (#68): the captions path's view sync. The server's
+   * TranscriptView (contract-r2 §2.5) is the source of truth for a captions
+   * Session — 首存为准 lives server-side — so the event REPLACES the rows
+   * with the mapped view instead of appending onto stale ones. Records
+   * arrive as {startMs, endMs, text} on the source timeline (the same
+   * reference frame the progress position stream uses) and land as the
+   * seconds-based rows every panel/timeline consumer already reads.
+   * Unusable records are dropped, never guessed into the timeline; the
+   * origin stamps only when a valid one is given.
+   */
+  function onCaptionsSynced(state, event) {
+    const records = Array.isArray(event?.records) ? event.records : [];
+    const mapped = [];
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const startMs = Number(record.startMs);
+      const endMs = Number(record.endMs);
+      const text = typeof record.text === "string" ? record.text.trim() : "";
+      if (!Number.isFinite(startMs) || startMs < 0) continue;
+      if (!Number.isFinite(endMs) || endMs < startMs) continue;
+      if (text === "") continue;
+      mapped.push({
+        start: Math.round(startMs) / 1000,
+        duration: Math.max(0, Math.round(endMs - startMs) / 1000),
+        text,
+      });
+    }
+    mapped.sort((a, b) => a.start - b.start || a.duration - b.duration);
+    const next = { ...state, transcriptRecords: mapped };
+    if (event?.origin === "captions" || event?.origin === "asr") {
+      next.transcriptOrigin = event.origin;
+    }
+    return next;
+  }
+
+  /**
+   * Ticket 2.5 (#68): the honest 无字幕 record. A captions probe that found
+   * nothing lands here so the state (and the panel across a resume) keeps
+   * saying "无字幕" instead of silently forgetting. The event can only ever
+   * record UNAVAILABILITY — claiming captions were found through it is a
+   * corruption and throws.
+   */
+  function onCaptionsUnavailable(state, event) {
+    if (event?.available === true) {
+      throw new Error("captionsUnavailable can only record unavailability");
+    }
+    return {
+      ...state,
+      captionsProbe: {
+        available: false,
+        reason: typeof event?.reason === "string" && event.reason ? event.reason : "no_subtitle_track",
+      },
+    };
   }
 
   /**
@@ -498,25 +588,42 @@ var YTD_SESSION_PIPELINE = (() => {
         ? snapshot.transcriptRecords
         : [],
       topics: Array.isArray(snapshot.topics) ? snapshot.topics : [],
+      transcriptOrigin:
+        snapshot.transcriptOrigin === "captions" || snapshot.transcriptOrigin === "asr"
+          ? snapshot.transcriptOrigin
+          : null,
     };
     // The captured page title (#32) rides along when the snapshot has one;
     // older snapshots simply resume titleless and can capture it later.
     if (typeof snapshot.title === "string" && snapshot.title) {
       restored.title = snapshot.title;
     }
-    // The last polled API TranscriptView (ticket 2.4) rides along when the
-    // snapshot has one; the shape check keeps a corrupted blob out.
-    const view = snapshot.transcriptView;
+    // The server-side transcribing Segments (ticket 2.4) ride along when the
+    // snapshot has them; a resumed ASR Session keeps its 转写中 rows until
+    // the next poll corrects them.
+    if (Array.isArray(snapshot.pendingSegments)) {
+      restored.pendingSegments = snapshot.pendingSegments.filter(
+        (segment) =>
+          segment &&
+          typeof segment === "object" &&
+          typeof segment.id === "string" &&
+          Number.isFinite(Number(segment.start)),
+      );
+    }
+    // The 无字幕 probe result (Ticket 2.5) is durable state: a resumed
+    // captions-path Session must keep saying 无字幕, not forget it.
     if (
-      view &&
-      typeof view === "object" &&
-      !Array.isArray(view) &&
-      Array.isArray(view.records) &&
-      Array.isArray(view.gaps) &&
-      Array.isArray(view.pending) &&
-      Array.isArray(view.failed)
+      snapshot.captionsProbe &&
+      typeof snapshot.captionsProbe === "object" &&
+      snapshot.captionsProbe.available === false
     ) {
-      restored.transcriptView = view;
+      restored.captionsProbe = {
+        available: false,
+        reason:
+          typeof snapshot.captionsProbe.reason === "string" && snapshot.captionsProbe.reason
+            ? snapshot.captionsProbe.reason
+            : "no_subtitle_track",
+      };
     }
     return restored;
   }

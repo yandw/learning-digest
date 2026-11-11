@@ -65,7 +65,12 @@ function stubVideo({
   return video;
 }
 
-function stubEnvironment({ videos = [], location = {}, title = "测试课程" } = {}) {
+function stubEnvironment({
+  videos = [],
+  location = {},
+  title = "测试课程",
+  createCaptionReader = undefined,
+} = {}) {
   const sent = [];
   const messageListeners = [];
   const pagehideListeners = [];
@@ -106,6 +111,7 @@ function stubEnvironment({ videos = [], location = {}, title = "测试课程" } 
     },
     console: { debug() {}, warn() {} },
   };
+  if (createCaptionReader !== undefined) env.createCaptionReader = createCaptionReader;
   const bridge = createPageBridge(env);
   return { bridge, sent, messageListeners, pagehideListeners, intervals, windowStub, documentStub };
 }
@@ -384,6 +390,120 @@ test("unknown actions are ignored", () => {
   const responses = [];
 
   const handled = bridge.handleMessage({ action: "nope" }, (r) => responses.push(r));
+
+  assert.equal(handled, false);
+  assert.deepEqual(responses, []);
+});
+
+// --- bilibili captions command (Ticket 2.5, #68) ---------------------------------
+//
+// The page-bridge factory grows one more command: getBilibiliCaptions hands
+// the caption reader (bilibili-captions.js, injected for tests) the stage.
+// The frame that can see a subtitle track list answers (async — the reader
+// may fetch the subtitle body); frames without any subtitle source stay
+// silent so only the owning frame's answer reaches the sender.
+
+function stubCaptionReader({ present = true, readResult, readThrows = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    create() {
+      return {
+        probe() {
+          calls.push({ kind: "probe" });
+          return present ? { present: true, source: "page_state" } : { present: false, source: null };
+        },
+        async read(options) {
+          calls.push({ kind: "read", options });
+          if (readThrows) throw readThrows;
+          return readResult;
+        },
+      };
+    },
+  };
+}
+
+const CAPTIONS_READ_RESULT = {
+  available: true,
+  segments: [{ startMs: 138000, endMs: 159000, text: "这一节我们把注意力分数放到矩阵上看" }],
+  track: { lan: "zh-CN", ai: false },
+};
+
+test("getBilibiliCaptions answers asynchronously with the reader's read result", async () => {
+  const reader = stubCaptionReader({ readResult: CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ videos: [stubVideo()] });
+  // Same injection the shipped auto-start does with the loaded module.
+  const bridged = createPageBridge({
+    document: { title: "t", querySelectorAll: () => [] },
+    window: { location: { href: "https://www.bilibili.com/video/BVx?p=1" }, addEventListener() {} },
+    chrome: { runtime: { sendMessage() {}, onMessage: { addListener() {} } } },
+    setInterval() {
+      return 0;
+    },
+    console: { debug() {}, warn() {} },
+    createCaptionReader: reader.create,
+  });
+  const responses = [];
+
+  const handled = bridged.handleMessage({ action: "getBilibiliCaptions" }, (r) =>
+    responses.push(r),
+  );
+
+  assert.equal(handled, true, "the async response is held open");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.deepEqual(responses[0].segments, CAPTIONS_READ_RESULT.segments);
+  assert.deepEqual(reader.calls.map((call) => call.kind), ["probe", "read"]);
+});
+
+test("getBilibiliCaptions passes the studied interval through to the reader", async () => {
+  const reader = stubCaptionReader({ readResult: CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ videos: [stubVideo()], createCaptionReader: reader.create });
+  const responses = [];
+
+  bridge.handleMessage(
+    { action: "getBilibiliCaptions", intervalStartMs: 1000, intervalEndMs: 5000 },
+    (r) => responses.push(r),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(reader.calls.find((call) => call.kind === "read").options, {
+    intervalStartMs: 1000,
+    intervalEndMs: 5000,
+  });
+});
+
+test("getBilibiliCaptions stays silent when the page has no subtitle source", () => {
+  const reader = stubCaptionReader({ present: false, readResult: CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ videos: [], createCaptionReader: reader.create });
+  const responses = [];
+
+  const handled = bridge.handleMessage({ action: "getBilibiliCaptions" }, (r) => responses.push(r));
+
+  assert.equal(handled, false, "frames without a subtitle source never answer");
+  assert.deepEqual(responses, []);
+});
+
+test("getBilibiliCaptions answers unavailable when the reader throws", async () => {
+  const reader = stubCaptionReader({ readThrows: new Error("boom") });
+  const { bridge } = stubEnvironment({ videos: [], createCaptionReader: reader.create });
+  const responses = [];
+
+  bridge.handleMessage({ action: "getBilibiliCaptions" }, (r) => responses.push(r));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.equal(responses[0].available, false, "a failed read never invents captions");
+  assert.equal(typeof responses[0].reason, "string");
+});
+
+test("getBilibiliCaptions is ignored when no caption reader is available", () => {
+  const { bridge } = stubEnvironment({ videos: [stubVideo()] });
+  const responses = [];
+
+  const handled = bridge.handleMessage({ action: "getBilibiliCaptions" }, (r) => responses.push(r));
 
   assert.equal(handled, false);
   assert.deepEqual(responses, []);

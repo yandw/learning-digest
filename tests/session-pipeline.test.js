@@ -12,6 +12,7 @@ test("createSession starts an active Session with empty state", () => {
     segments: [],
     transcriptRecords: [],
     topics: [],
+    transcriptOrigin: null,
   });
 });
 
@@ -927,60 +928,100 @@ test("settleInterruptedSegments is a no-op when nothing is pending", () => {
 
 // --- transcriptViewUpdated (ticket 2.4, issue #67) ------------------------------
 //
-// The API TranscriptView (contract-r2 §2.5) is the render source for the
-// 逐字稿 tab in the server-side ASR path. The pipeline stores the latest
-// polled view ON the Session state so the snapshot persists it (a panel
-// reopen or worker restart renders the last known view) and every
-// broadcast carries it.
+// The ASR path's view sync: the polled server TranscriptView lands as
+// MAPPED rows (session-archive.js's view→row mappers run in the background
+// before the event) — text rows plus failed segments' 契约文案 failure rows,
+// and the transcribing Segments as pending rows. The replacement keeps the
+// plugin-local failed:true annotations (seek-gap markers, upload-failure
+// markers) the server view cannot see.
 
-const VIEW_A = {
-  sessionId: "ses_1",
-  sourceId: "src_1",
-  resourceId: "res_1",
-  sessionStatus: "active",
-  origin: "asr",
-  records: [{ startMs: 0, endMs: 30000, text: "第一段", origin: "asr" }],
-  gaps: [],
-  pending: [{ segmentIndex: 1, startMs: 30000, endMs: 60000, status: "pending" }],
-  failed: [],
-};
-
-test("transcriptViewUpdated stores the polled view on the Session state", () => {
+test("transcriptViewUpdated lands mapped rows and pending segments on the state", () => {
   let state = sessionPipeline.createSession({ sessionId: "s1" });
   state = sessionPipeline.applyEvent(state, {
     type: "transcriptViewUpdated",
-    view: VIEW_A,
+    origin: "asr",
+    records: [
+      { start: 30, duration: 30, text: "第二段" },
+      { start: 0, duration: 30, text: "第一段" },
+      { start: 60, duration: 30, failed: true, text: "[Speech Provider 返回 429，重试后仍失败]" },
+    ],
+    pendingSegments: [
+      { id: "srv_2", start: 90, duration: 30, status: "pending" },
+    ],
   });
-  assert.deepEqual(state.transcriptView, VIEW_A);
-  // Other events never disturb the stored view.
-  state = sessionPipeline.applyEvent(state, {
-    type: "segmentCaptured",
-    segment: { id: "seg-1", start: 0, duration: 30 },
-  });
-  assert.deepEqual(state.transcriptView, VIEW_A);
+  assert.equal(state.transcriptOrigin, "asr");
+  assert.deepEqual(
+    state.transcriptRecords.map((record) => record.text),
+    ["第一段", "第二段", "[Speech Provider 返回 429，重试后仍失败]"],
+    "rows sort by start; the failed row rides the server message verbatim",
+  );
+  assert.deepEqual(state.pendingSegments, [
+    { id: "srv_2", start: 90, duration: 30, status: "pending" },
+  ]);
 });
 
-test("a transcriptViewUpdated without the four-array shape is rejected", () => {
+test("transcriptViewUpdated replaces server rows but keeps local seek-gap markers", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "gapSkipped",
+    start: 120,
+    duration: 30,
+  });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcriptViewUpdated",
+    origin: "asr",
+    records: [{ start: 0, duration: 30, text: "第一段" }],
+    pendingSegments: [],
+  });
+  assert.deepEqual(
+    state.transcriptRecords.map((record) => record.text),
+    ["第一段", "[已跳过 2:00–2:30]"],
+    "the server view replaces rows; the local #48 marker rides through",
+  );
+
+  // A later poll replaces again without duplicating the marker.
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcriptViewUpdated",
+    origin: "asr",
+    records: [
+      { start: 0, duration: 30, text: "第一段" },
+      { start: 30, duration: 30, text: "第二段" },
+    ],
+    pendingSegments: [],
+  });
+  assert.deepEqual(
+    state.transcriptRecords.map((record) => record.text),
+    ["第一段", "第二段", "[已跳过 2:00–2:30]"],
+  );
+});
+
+test("a transcriptViewUpdated without the mapped arrays is rejected", () => {
   const state = sessionPipeline.createSession({ sessionId: "s1" });
   assert.throws(() =>
-    sessionPipeline.applyEvent(state, { type: "transcriptViewUpdated", view: null }),
+    sessionPipeline.applyEvent(state, { type: "transcriptViewUpdated" }),
   );
   assert.throws(() =>
     sessionPipeline.applyEvent(state, {
       type: "transcriptViewUpdated",
-      view: { ...VIEW_A, records: "nope" },
+      records: "nope",
+      pendingSegments: [],
     }),
   );
 });
 
-test("resumeFromSnapshot preserves the stored transcript view", () => {
-  const state = sessionPipeline.applyEvent(
-    sessionPipeline.createSession({ sessionId: "s1" }),
-    { type: "transcriptViewUpdated", view: VIEW_A },
-  );
+test("pendingSegments survive a resume until the next poll corrects them", () => {
+  let state = sessionPipeline.createSession({ sessionId: "s1" });
+  state = sessionPipeline.applyEvent(state, {
+    type: "transcriptViewUpdated",
+    origin: "asr",
+    records: [],
+    pendingSegments: [{ id: "srv_0", start: 0, duration: 30, status: "pending" }],
+  });
   const resumed = sessionPipeline.resumeFromSnapshot(JSON.parse(JSON.stringify(state)));
-  assert.deepEqual(resumed.transcriptView, VIEW_A);
-  // Snapshots from before the pipeline carried no view — resume stays clean.
+  assert.deepEqual(resumed.pendingSegments, [
+    { id: "srv_0", start: 0, duration: 30, status: "pending" },
+  ]);
+  // Snapshots from before the pipeline carried none — resume stays clean.
   const legacy = sessionPipeline.resumeFromSnapshot({
     sessionId: "s1",
     status: "active",
@@ -988,5 +1029,5 @@ test("resumeFromSnapshot preserves the stored transcript view", () => {
     transcriptRecords: [],
     topics: [],
   });
-  assert.equal(legacy.transcriptView, undefined);
+  assert.equal(legacy.pendingSegments, undefined);
 });

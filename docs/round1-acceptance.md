@@ -1,6 +1,6 @@
 # 第一轮联调验收清单与发布记录
 
-对应 [#62](https://github.com/yandw/learning-digest/issues/62)（spec #49 第一轮）。验收门槛原文见 [docs/productization-four-part-plan-v0.1.md](productization-four-part-plan-v0.1.md)「集成门槛」表第一轮行：受邀账号登录 Web 并授权插件；四站各一条可播放可定位视频验证收藏、开始学习记进度、续学/从头、时间戳笔记；另验 B 站多分集独立进度、普通网页与小红书图文收藏、授权门槛、双账号隔离。
+对应 [#62](https://github.com/yandw/learning-digest/issues/62)（spec #49 第一轮）。第二轮验收清单与当前发布记录模板见 [round2-acceptance.md](round2-acceptance.md)（#72）；统一发布时两份清单一起走，版本矩阵以 round2 §5.1 为准。验收门槛原文见 [docs/productization-four-part-plan-v0.1.md](productization-four-part-plan-v0.1.md)「集成门槛」表第一轮行：受邀账号登录 Web 并授权插件；四站各一条可播放可定位视频验证收藏、开始学习记进度、续学/从头、时间戳笔记；另验 B 站多分集独立进度、普通网页与小红书图文收藏、授权门槛、双账号隔离。
 
 - 可自动化的部分（接口边界、契约样例、回归）已在集成分支 `productization/integration` 全绿，见 §1。
 - 需要真实环境的部分（四站真实课程、tabCapture 后台标签页授权实测）是 §2 的人工步骤清单。
@@ -138,6 +138,8 @@
 
 ### 3.1 版本矩阵
 
+> 本表是第一轮时点（tip `28ac699`）的快照；统一发布的最新矩阵（含 apps/worker 与契约 v2 面）以 [round2-acceptance.md](round2-acceptance.md) §5.1 为准。
+
 | 发布单元 | 版本 | 备注 |
 | --- | --- | --- |
 | 浏览器插件 | 0.2.8 | 根 `manifest.json` / `package.json` / `tests/release.test.js` 三处同步；0.2.8 为第一轮评审修复（api-client 抽取、接线去重、positionMs=0 边缘） |
@@ -146,6 +148,8 @@
 | 契约 | v1 | `contracts/contract-v1.md` + decisions D1–D8 |
 
 ### 3.2 自动化结果（随分支更新）
+
+> 第一轮时点数字；二轮 tip 的最新实测见 [round2-acceptance.md](round2-acceptance.md) §5.2。
 
 | 套件 | 命令 | 结果 | 日期 |
 | --- | --- | --- | --- |
@@ -170,7 +174,7 @@
 
 ### 3.4 真实 ASR 链路联调（发布前要求，占位）
 
-计划文档「发布前真实服务联调」：用一份授权课程跑至少一次真实 ASR 完整链路，连同四站浏览器验收和字幕路径一起形成发布记录。
+计划文档「发布前真实服务联调」：用一份授权课程跑至少一次真实 ASR 完整链路，连同四站浏览器验收和字幕路径一起形成发布记录。第二轮起 ASR 已服务端化（D10：worker + `QWEN_API_KEY`），联调占位与 env 配置以 [round2-acceptance.md](round2-acceptance.md) §5.4 / §5.3 为准。
 
 - [ ] 授权课程：______（可复用 §3.3 样本）
 - [ ] Speech Provider 与 key：______（试用者自配，key 只存浏览器本地；参考 [docs/manual-verification.md](manual-verification.md) §2）

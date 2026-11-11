@@ -198,12 +198,12 @@
 
 | 套件 | 命令 | 结果 | 日期 |
 | --- | --- | --- | --- |
-| contracts | `node --test contracts/` | 43 pass / 0 fail | 2026-11-12（tip 121b9ee） |
-| apps/api | `cd apps/api && npm test` | 158 pass / 0 fail | 同上 |
+| contracts | `node --test contracts/` | 43 pass / 0 fail | 2026-11-12（tip 4ff0023，r2 review fixes） |
+| apps/api | `cd apps/api && npm test` | 159 pass / 0 fail | 同上 |
 | apps/worker | `cd apps/worker && npm test` | 25 pass / 0 fail | 同上 |
-| apps/web | `cd apps/web && npm test` | 117 pass / 0 fail | 同上 |
+| apps/web | `cd apps/web && npm test` | 118 pass / 0 fail | 同上 |
 | 插件（根） | `npm test` | 695 pass / 0 fail | 同上 |
-| 发布检查 | `npm run check` | passed（44 allowlist） | 同上 |
+| 发布检查 | `npm run check` | passed（45 allowlist） | 同上 |
 
 ### 5.3 环境配置清单（部署/联调）
 

@@ -1,6 +1,6 @@
 # 第一轮联调验收清单与发布记录
 
-对应 [#62](https://github.com/yandw/learning-digest/issues/62)（spec #49 第一轮）。第二轮验收清单与当前发布记录模板见 [round2-acceptance.md](round2-acceptance.md)（#72）；统一发布时两份清单一起走，版本矩阵以 round2 §5.1 为准。验收门槛原文见 [docs/productization-four-part-plan-v0.1.md](productization-four-part-plan-v0.1.md)「集成门槛」表第一轮行：受邀账号登录 Web 并授权插件；四站各一条可播放可定位视频验证收藏、开始学习记进度、续学/从头、时间戳笔记；另验 B 站多分集独立进度、普通网页与小红书图文收藏、授权门槛、双账号隔离。
+对应 [#62](https://github.com/yandw/learning-digest/issues/62)（spec #49 第一轮）。第二/三轮验收清单与当前发布记录模板见 [round2-acceptance.md](round2-acceptance.md)（#72 / #76，该文档已扩展为二/三轮统一入口）；统一发布时两份清单一起走，版本矩阵以 round2 §5.1 为准。验收门槛原文见 [docs/productization-four-part-plan-v0.1.md](productization-four-part-plan-v0.1.md)「集成门槛」表第一轮行：受邀账号登录 Web 并授权插件；四站各一条可播放可定位视频验证收藏、开始学习记进度、续学/从头、时间戳笔记；另验 B 站多分集独立进度、普通网页与小红书图文收藏、授权门槛、双账号隔离。
 
 - 可自动化的部分（接口边界、契约样例、回归）已在集成分支 `productization/integration` 全绿，见 §1。
 - 需要真实环境的部分（四站真实课程、tabCapture 后台标签页授权实测）是 §2 的人工步骤清单。

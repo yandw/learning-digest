@@ -9,14 +9,15 @@ const path = require("node:path");
 
 const apiRoot = path.resolve(__dirname, "..");
 
-test("apps/api release metadata is 0.1.1", () => {
+test("apps/api release metadata is 0.1.2", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(apiRoot, "package.json"), "utf8"),
   );
   assert.equal(packageJson.name, "@learning-digest/api");
-  // 0.1.1 (round-1 review fixes): platformVideoIdFormats unified onto the
-  // shared contracts module, isoSeconds dedupe.
-  assert.equal(packageJson.version, "0.1.1");
+  // 0.1.2 (ticket 2.2, issue #65): Session lifecycle + captions direct
+  // archive + transcript polling + resource-detail sessions[] extension
+  // (contract-r2 §3.1–3.3, §3.5–3.6; decisions D9/D15).
+  assert.equal(packageJson.version, "0.1.2");
   assert.equal(packageJson.private, true);
 });
 

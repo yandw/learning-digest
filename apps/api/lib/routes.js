@@ -19,6 +19,8 @@ const {
 } = require("./resources");
 const { saveProgress } = require("./progress");
 const { createNote } = require("./notes");
+const { createSession, finishSession, findAccountSession } = require("./sessions");
+const { archiveCaptions, getTranscript } = require("./transcripts");
 const { registerAudioJobRoutes } = require("./audio-jobs");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
@@ -213,6 +215,61 @@ function registerRoutes(ctx) {
       accountId: credential.accountId,
       sourceId: params.id,
       body,
+    });
+  });
+
+  // POST /v1/sources/:id/sessions — start one study session (contract-r2
+  // §3.1; decision D9): 201 with the active Session, origin not locked yet.
+  // The round-1 progress endpoint above is intentionally untouched (D9);
+  // cross-account and unknown sources are the same 404 (D2).
+  router.add("POST", "/v1/sources/:id/sessions", async ({ req, params }) => {
+    const credential = requireCredential(req);
+    return createSession({
+      store,
+      accountId: credential.accountId,
+      sourceId: params.id,
+      now,
+    });
+  });
+
+  // POST /v1/sessions/:id/finish — close one study session (contract-r2
+  // §3.2): finishedAt server-generated, optional gaps into the transcript.
+  // Finish is a state transition: a repeat is 409 session_already_finished;
+  // cross-account and unknown sessions are the same 404 (D2).
+  router.add("POST", "/v1/sessions/:id/finish", async ({ req, params, body }) => {
+    const credential = requireCredential(req);
+    return finishSession({
+      store,
+      accountId: credential.accountId,
+      sessionId: params.id,
+      body,
+      now,
+    });
+  });
+
+  // POST /v1/sessions/:id/captions — direct captions archive (contract-r2
+  // §3.3; decision D15): as-read segments, first submission locks origin
+  // "captions" (201), a resend answers the stored archive (200), a session
+  // already locked to asr is 409 transcript_origin_conflict. The session
+  // lookup result is passed in so lib/transcripts.js stays one-way
+  // importable (sessions.js already imports it for the finish-time gaps).
+  router.add("POST", "/v1/sessions/:id/captions", async ({ req, params, body }) => {
+    const credential = requireCredential(req);
+    return archiveCaptions({
+      store,
+      session: findAccountSession({ store, accountId: credential.accountId, sessionId: params.id }),
+      body,
+    });
+  });
+
+  // GET /v1/sessions/:id/transcript — transcript polling / Web read-back
+  // (contract-r2 §3.5; decision D12): the bare TranscriptView, four arrays
+  // always present. Idempotent read; cross-account is the same 404 (D2).
+  router.add("GET", "/v1/sessions/:id/transcript", async ({ req, params }) => {
+    const credential = requireCredential(req);
+    return getTranscript({
+      store,
+      session: findAccountSession({ store, accountId: credential.accountId, sessionId: params.id }),
     });
   });
 

@@ -22,6 +22,8 @@ const { createNote } = require("./notes");
 const { createSession, finishSession, findAccountSession } = require("./sessions");
 const { archiveCaptions, getTranscript } = require("./transcripts");
 const { registerAudioJobRoutes } = require("./audio-jobs");
+const { registerSummaryRoutes } = require("./summaries");
+const { usageView } = require("./usage");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -43,7 +45,7 @@ function requireEmail(body) {
 }
 
 function registerRoutes(ctx) {
-  const { router, store, mailer, now, config } = ctx;
+  const { router, store, mailer, now, config, aiProvider } = ctx;
 
   /**
    * Extract the Bearer token from the Authorization header, or null when
@@ -332,10 +334,22 @@ function registerRoutes(ctx) {
     };
   });
 
+  // GET /v1/usage — account usage totals (contract-r3 §3.4; decision D18):
+  // the bare Usage, account-scoped by the presented credential. Read-only
+  // record of what landed (done audio seconds, successful generations).
+  router.add("GET", "/v1/usage", async ({ req }) => {
+    const credential = requireCredential(req);
+    return { status: 200, body: usageView({ store, accountId: credential.accountId }) };
+  });
+
   // --- Round 2: audio ingestion + transcription tasks (ticket 2.3) ---
   // Registered from lib/audio-jobs.js; shares the requireCredential guard
   // above for the user-facing upload endpoint.
   registerAudioJobRoutes({ router, store, now, config, requireCredential, bearerToken });
+
+  // --- Round 3: course summary generation + AI Provider seam (ticket 3.2,
+  // contract-r3 §3.1–3.3; decisions D16/D17) ---
+  registerSummaryRoutes({ router, store, now, requireCredential, aiProvider });
 }
 
 module.exports = { registerRoutes };

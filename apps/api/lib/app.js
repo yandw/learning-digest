@@ -10,6 +10,7 @@ const { createRouter } = require("./router");
 const { respondJson, respondError, readJsonBody } = require("./http");
 const { isApiPath, applyCors } = require("./cors");
 const { registerRoutes } = require("./routes");
+const { selectAiProvider } = require("./ai-providers");
 const { createMemoryMailer } = require("./mailer");
 const { createMemoryStore } = require("./persistence");
 const { loadSeedInvites } = require("./invites");
@@ -40,6 +41,21 @@ const DEFAULT_CONFIG = Object.freeze({
   // Temporary audio directory for uploaded segments (D14: bytes are temp
   // files outside the repo; the store keeps only paths).
   audioDir: path.join(os.tmpdir(), "ld-api-audio"),
+  // AI Provider seam for course summaries (contract-r3 §3.1; decision
+  // D16). aiProviderName "" selects the deterministic stub (tests and bare
+  // starts); "qwen" is the product path (Bailian compatible-mode) and
+  // requires aiApiKey — env LD_AI_API_KEY, deliberately separate from the
+  // worker's speech credentials (different owner and lifecycle, D16).
+  // aiModel overrides the provider's default model (one model per config,
+  // the round-3 product decision); aiBaseUrl overrides the endpoint.
+  aiProviderName: "",
+  aiApiKey: "",
+  aiModel: "",
+  aiBaseUrl: "",
+  // The AI call happens inside the POST (synchronous generation, D16) —
+  // the per-request fetch timeout, and the socket idle window is raised
+  // to cover it so a slow provider cannot outlive its connection.
+  aiTimeoutMs: 120000,
 });
 
 /**
@@ -49,6 +65,9 @@ const DEFAULT_CONFIG = Object.freeze({
  * @param {object} [options.mailer] Mailer seam implementation
  * @param {() => number} [options.now] injectable clock (ms epoch)
  * @param {object} [options.config] config overrides over DEFAULT_CONFIG
+ * @param {object} [options.aiProvider] AI Provider instance ({ id, model,
+ *   generate }) overriding the config/env selection — the test seam for
+ *   repeatable summaries and fault injection (D16 Testing Decisions)
  * @param {string} [options.seedFile] invited-email seed file to load
  * @returns {import("node:http").Server}
  */
@@ -63,13 +82,18 @@ function createApp(options = {}) {
   loadSeedInvites(store, options.seedFile, now);
 
   const router = createRouter();
-  registerRoutes({ router, store, mailer, now, config, seedFile: options.seedFile });
+  const aiProvider = options.aiProvider || selectAiProvider(config);
+  registerRoutes({ router, store, mailer, now, config, seedFile: options.seedFile, aiProvider });
 
   const server = http.createServer((req, res) => {
     dispatch(req, res, router, config);
   });
   server.timeout = 10_000;
   server.requestTimeout = 10_000;
+  // Synchronous summary generation (D16) awaits the AI Provider inside the
+  // POST; keep the socket's idle window wider than the provider timeout so
+  // a slow-but-successful generation is still deliverable.
+  server.timeout = Math.max(server.timeout, config.aiTimeoutMs + 5_000);
   return server;
 }
 

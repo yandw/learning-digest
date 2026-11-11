@@ -44,6 +44,7 @@ const {
 } = require("./transcripts");
 const { findAccountSession } = require("./sessions");
 const { generateId } = require("./ids");
+const { recordAudioSeconds } = require("./usage");
 
 // Transport guard for the audio-segment route: the contract caps the
 // encoded audio at 10MB (contract-r2 §3.4); the JSON envelope and metadata
@@ -330,7 +331,7 @@ function requireResultBody(body) {
  * applySegmentDone/applySegmentFailed (no-ops once terminal, so a
  * double-submitted result can never double-append records).
  */
-function applyTaskResult({ store, taskId, body }) {
+function applyTaskResult({ store, taskId, body, now }) {
   const task = store.get("transcriptionTasks", taskId);
   if (!task) {
     throw notFoundTask();
@@ -351,6 +352,16 @@ function applyTaskResult({ store, taskId, body }) {
       sessionId: task.sessionId,
       segmentIndex: task.segmentIndex,
       records: fields.records,
+    });
+    // D18: audioSeconds accrues at the first-done write-back — this branch
+    // only runs for a non-terminal task (the replay path above returns
+    // early), so a resend can never double-record. Silent segments (empty
+    // records) count too; failed/transcribing never reach this branch.
+    recordAudioSeconds({
+      store,
+      accountId: task.accountId,
+      durationMs: task.endMs - task.startMs,
+      now,
     });
     // D14: a done task's audio has no second consumer — delete immediately.
     deleteAudioFile(task.audioFile);
@@ -521,7 +532,7 @@ function registerAudioJobRoutes({ router, store, now, config, requireCredential,
   // POST /v1/worker/tasks/:id/result — worker credential only (§3.7).
   router.add("POST", "/v1/worker/tasks/:id/result", async ({ req, params, body }) => {
     requireWorkerCredential({ req, config, bearerToken });
-    return applyTaskResult({ store, taskId: params.id, body });
+    return applyTaskResult({ store, taskId: params.id, body, now });
   });
 }
 

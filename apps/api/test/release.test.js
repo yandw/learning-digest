@@ -9,16 +9,17 @@ const path = require("node:path");
 
 const apiRoot = path.resolve(__dirname, "..");
 
-test("apps/api release metadata is 0.1.4", () => {
+test("apps/api release metadata is 0.1.5", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(apiRoot, "package.json"), "utf8"),
   );
   assert.equal(packageJson.name, "@learning-digest/api");
-  // 0.1.4 (round-2 review fix): requireSession reuses sessions.js's
-  // account-scoped lookup, and the ingest crash-window self-heal — a
-  // resend of an already-stored segment re-enqueues its lost task
-  // (§3.4's 200 replay keeps 首存为准).
-  assert.equal(packageJson.version, "0.1.4");
+  // 0.1.5 (round 3, ticket 3.2 / issue #74): course summary endpoints
+  // (POST /v1/resources/{id}/summaries + list/detail), the AI Provider
+  // seam (lib/ai-providers.js: stub + qwen, env LD_AI_*), GET /v1/usage
+  // and the D18 usage recording (audioSeconds at first-done,
+  // summaryCount/inputChars at landing).
+  assert.equal(packageJson.version, "0.1.5");
   assert.equal(packageJson.private, true);
 });
 

@@ -1,5 +1,5 @@
 /**
- * Production entrypoint for @learning-digest/api 0.1.0. Zero dependencies:
+ * Production entrypoint for @learning-digest/api. Zero dependencies:
  * node:http plus node builtins only.
  *
  * Environment:
@@ -11,6 +11,17 @@
  *                         (contract-r2 §3.7; unset = worker endpoints 401)
  *   LD_API_AUDIO_DIR      temp audio directory for uploaded segments
  *                         (D14; default a system temp dir)
+ *   LD_AI_PROVIDER        AI Provider for course summaries (D16):
+ *                         unset/"stub" = deterministic stub; "qwen" =
+ *                         Bailian compatible-mode (product path)
+ *   LD_AI_API_KEY         Bailian API key for LD_AI_PROVIDER=qwen.
+ *                         Deliberately separate from the Worker's speech
+ *                         credentials (QWEN_API_KEY over there): different
+ *                         seam owner, credential and lifecycle (D16)
+ *   LD_AI_MODEL           model override (default qwen3.8-flash for qwen,
+ *                         one model behind config per the round-3 decision)
+ *   LD_AI_BASE_URL        endpoint override (default Bailian compatible-mode)
+ *   LD_AI_TIMEOUT_MS      per-generation fetch timeout (default 120000)
  *
  * The real email service account is undecided (decision 3 note in the
  * ticket): until it exists, codes are delivered by the dev mailer to the
@@ -38,6 +49,11 @@ function main(env = process.env) {
     config: {
       workerToken: env.LD_API_WORKER_TOKEN || "",
       audioDir: env.LD_API_AUDIO_DIR || path.join(os.tmpdir(), "ld-api-audio"),
+      aiProviderName: env.LD_AI_PROVIDER || "",
+      aiApiKey: env.LD_AI_API_KEY || "",
+      aiModel: env.LD_AI_MODEL || "",
+      aiBaseUrl: env.LD_AI_BASE_URL || "",
+      aiTimeoutMs: Number.parseInt(env.LD_AI_TIMEOUT_MS || "", 10) || 120000,
     },
   });
 

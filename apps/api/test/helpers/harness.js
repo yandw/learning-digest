@@ -6,6 +6,8 @@
  * - store:  generic collection store (defaults to a temp-file FileStore)
  * - mailer: dev/memory mailer (defaults to memory spy)
  * - now:    injectable clock for expiry/cooldown determinism
+ * - aiProvider: AI Provider instance for summary generation (D16 test
+ *   seam; omitted = config/env selection, defaulting to the stub)
  */
 const os = require("node:os");
 const fs = require("node:fs");
@@ -34,6 +36,7 @@ async function startApp(options = {}) {
     now: options.now,
     config: options.config,
     seedFile: options.seedFile,
+    aiProvider: options.aiProvider,
   });
   await new Promise((resolve) => {
     app.listen(0, "127.0.0.1", resolve);

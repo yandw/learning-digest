@@ -225,7 +225,9 @@ function loadBackgroundHelpers({
     // §3.3/§3.5) and the page-side caption reader the bridge command uses.
     YTD_SESSION_ARCHIVE: require("../../session-archive.js"),
     YTD_BILIBILI_CAPTIONS: require("../../bilibili-captions.js"),
-    YTD_SPEECH_PROVIDERS: require("../../speech-providers.js"),
+    // Ticket 2.4 (#67): the D11 audio-segment upload client the ASR path's
+    // dispatch/poll wiring reads.
+    YTD_TRANSCRIPT_PIPELINE: require("../../transcript-pipeline.js"),
     YTD_REPORT_RENDER: require("../../report-render.js"),
     // The real settings module (require-able, pure): the identity stub this
     // used to be predated the versioned migration in normalize() and hid it

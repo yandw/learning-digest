@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("api-client.js", "settings.js", "speech-transcription.js", "speech-providers.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "bilibili-captions.js", "contracts/platform-video-id.js");
+importScripts("api-client.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -1194,14 +1194,14 @@ async function archiveCaptionsForContext(context, captions) {
 
 /** The §3.5 poll: re-sync the server view onto the Session state. */
 async function pollServerTranscript(context) {
-  if (!context || context.ended || !context.serverSessionId) return;
+  if (!context || context.ended || !context.serverSessionId) return false;
   const settings = await getSettings();
   const credential = await readStoredAuthCredential();
   const apiUrl = YTD_AUTH_GATE.buildApiUrl(
     settings.apiBaseUrl,
     YTD_SESSION_ARCHIVE.transcriptPath(context.serverSessionId),
   );
-  if (!apiUrl || !credential) return;
+  if (!apiUrl || !credential) return false;
   let response = null;
   try {
     response = await fetch(apiUrl, {
@@ -1209,7 +1209,7 @@ async function pollServerTranscript(context) {
       headers: { Authorization: `Bearer ${credential.token}` },
     });
   } catch (_error) {
-    return;
+    return false;
   }
   let data = null;
   try {
@@ -1218,35 +1218,111 @@ async function pollServerTranscript(context) {
     data = null;
   }
   const parsed = YTD_SESSION_ARCHIVE.parseTranscriptResponse({ status: response.status, data });
-  if (!parsed.ok) return;
-  const before = context.state;
-  for (const segment of YTD_SESSION_ARCHIVE.transcriptViewToPendingSegments(parsed.view)) {
+  if (!parsed.ok) {
+    // Ticket 2.4: the ASR poll does not swallow auth loss — a revoked
+    // credential routes the P7 handoff (capture stops, panel re-gates).
+    if (context.capturePath === "asr" && parsed.kind === "unauthorized") {
+      void handleCredentialsInvalidated("unauthorized");
+    }
+    return false;
+  }
+  if (context.capturePath === "captions") {
+    const before = context.state;
+    for (const segment of YTD_SESSION_ARCHIVE.transcriptViewToPendingSegments(parsed.view)) {
+      context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+        type: "segmentCaptured",
+        segment,
+      });
+    }
     context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-      type: "segmentCaptured",
-      segment,
+      type: "captionsSynced",
+      origin: parsed.view.origin,
+      records: parsed.view.records,
     });
+    if (context.state !== before) {
+      await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+      broadcastSession(context.state);
+    }
+    return true;
   }
-  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-    type: "captionsSynced",
-    origin: parsed.view.origin,
-    records: parsed.view.records,
-  });
-  if (context.state !== before) {
-    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
-    broadcastSession(context.state);
+  // Ticket 2.4 (ASR): the transcript tab renders the Worker's rows, the
+  // 契约文案 failure rows and the 转写中 pendings, all from one mapped view.
+  await adoptAsrTranscriptView(context, parsed.view);
+  // §3.5's terminal semantics: finished with nothing pending is the final
+  // archive (状态单调) — the poll stands down; a finished-but-draining view
+  // rides the end-budget rule in the schedule chain.
+  if (
+    parsed.view.sessionStatus === "finished" &&
+    parsed.view.pending.length === 0
+  ) {
+    context.transcriptPollDone = true;
+    stopTranscriptPoll(context);
   }
+  return true;
 }
 
 function startTranscriptPoll(context) {
-  if (context.transcriptTimer) clearInterval(context.transcriptTimer);
-  context.transcriptTimer = setInterval(() => {
-    void pollServerTranscript(context).catch((error) =>
-      debugLog("[Learning Digest BG] transcript poll error:", error),
-    );
-  }, CAPTIONS_POLL_INTERVAL_MS);
+  stopTranscriptPoll(context);
+  if (context.capturePath === "captions") {
+    // 2.5's captions cadence: one slow re-sync keeps the tab honest without
+    // hammering the service for an archive that never changes.
+    context.transcriptTimer = setInterval(() => {
+      void pollServerTranscript(context).catch((error) =>
+        debugLog("[Learning Digest BG] transcript poll error:", error),
+      );
+    }, CAPTIONS_POLL_INTERVAL_MS);
+    return;
+  }
+  // Ticket 2.4 (ASR): the Worker turns a Segment around within seconds, so
+  // a tighter fixed cadence drives the 转写中 → row transitions; a network
+  // miss doubles the wait (capped) instead of hammering a dead service.
+  // After the Session ends (P11 收尾) the poll keeps draining on a budget —
+  // the tail Segments' results land visibly — and stands down when the
+  // budget runs out or the terminal view arrives.
+  const scheduleNext = () => {
+    // The terminal view stood the poll down (状态单调): no re-arm, even
+    // from pollTranscriptNow's post-beat startTranscriptPoll.
+    if (context.transcriptPollDone) return;
+    if (context.ended) {
+      context.transcriptDrainBudget = (context.transcriptDrainBudget ?? 0) - 1;
+      if (context.transcriptDrainBudget < 0) {
+        return;
+      }
+    }
+    const failures = context.transcriptBackoffFailures || 0;
+    const delay = failures
+      ? Math.min(
+          YTD_TRANSCRIPT_PIPELINE.MAX_TRANSCRIPT_POLL_BACKOFF_MS,
+          YTD_TRANSCRIPT_PIPELINE.TRANSCRIPT_POLL_INTERVAL_MS * 2 ** failures,
+        )
+      : YTD_TRANSCRIPT_PIPELINE.TRANSCRIPT_POLL_INTERVAL_MS;
+    context.transcriptTimer = setTimeout(async () => {
+      context.transcriptTimer = null;
+      try {
+        const answered = await pollServerTranscript(context);
+        context.transcriptBackoffFailures = answered
+          ? 0
+          : (context.transcriptBackoffFailures || 0) + 1;
+      } catch (error) {
+        debugLog("[Learning Digest BG] transcript poll error:", error);
+        context.transcriptBackoffFailures = (context.transcriptBackoffFailures || 0) + 1;
+      }
+      scheduleNext();
+    }, delay);
+  };
+  scheduleNext();
 }
 
-/** The poll's first beat happens now (the render must not wait 15s). */
+function stopTranscriptPoll(context) {
+  if (!context) return;
+  if (context.transcriptTimer) {
+    clearTimeout(context.transcriptTimer);
+    clearInterval(context.transcriptTimer);
+    context.transcriptTimer = null;
+  }
+}
+
+/** The poll's first beat happens now (the render must not wait for the cadence). */
 async function pollTranscriptNow(context) {
   try {
     await pollServerTranscript(context);
@@ -1257,10 +1333,13 @@ async function pollTranscriptNow(context) {
 }
 
 /**
- * The §3.2 finish for a captions Session. No gaps in this ticket: the
- * archive is as-read (D15 — the subtitle track's own holes are not gaps),
- * so the body carries none. A repeat finish (already finished elsewhere)
- * is a calm no-op; a credential loss routes through the P7 handoff.
+ * The §3.2 finish (contract-r2 §3.2). The captions path reports no gaps
+ * (D15 — the subtitle track's own holes are not gaps); the ASR path
+ * reports the Session's seek-skipped ranges (ticket 2.4: the §3.2 gaps are
+ * exactly the ranges the learner skipped past and no transcript will ever
+ * cover — re-watched fills already shrank their markers). A repeat finish
+ * (already finished elsewhere) is a calm no-op; a credential loss routes
+ * through the P7 handoff.
  */
 async function finishServerSession(context) {
   const settings = await getSettings();
@@ -1269,7 +1348,15 @@ async function finishServerSession(context) {
     settings.apiBaseUrl,
     YTD_SESSION_ARCHIVE.finishPath(context.serverSessionId),
   );
-  const body = YTD_SESSION_ARCHIVE.buildFinishRequest({ gaps: [] });
+  const gaps =
+    context.capturePath === "captions"
+      ? []
+      : YTD_TRANSCRIPT_PIPELINE.buildFinishGaps(
+          context.state.transcriptRecords.filter((record) =>
+            YTD_SESSION_PIPELINE.isGapSkippedRecord(record),
+          ),
+        );
+  const body = YTD_SESSION_ARCHIVE.buildFinishRequest({ gaps });
   if (!apiUrl || !credential || !body) {
     console.error(
       "[Learning Digest] 学习服务不可用，服务端会话未收尾:",
@@ -2364,23 +2451,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
-  // --- Realtime transcription events (qwen3-asr-flash-realtime, #46) ---
-  //
-  // The offscreen WebSocket client streams server findings unsolicited.
-  // One shared dispatch: the handlers differ, the plumbing (loud catch,
-  // no response held open) is identical for every realtime action.
-
-  const realtimeHandler = REALTIME_EVENT_HANDLERS[message.action];
-  if (realtimeHandler) {
-    realtimeHandler(message).catch((error) =>
-      console.error(
-        `[Learning Digest] ${message.action} handling failed:`,
-        error?.message || error,
-      ),
-    );
-    return false;
-  }
-
   // Unknown action - still send a response to prevent hanging
   debugLog("[Learning Digest BG] Unknown action:", message.action);
   sendResponse({ success: false, error: "Unknown action" });
@@ -2616,12 +2686,11 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // Capture death (#captureEnded): the offscreen recorder's one-shot notice
   // that its stream went inactive; see tests/background-capture.test.js.
   handleCaptureEnded,
-  // Realtime forwarding (#46): offscreen's unsolicited WebSocket findings;
-  // see tests/background-capture.test.js.
-  handleRealtimePartial,
-  handleRealtimeUtterance,
-  handleRealtimeError,
-  handleRealtimeGaveUp,
+  // Ticket 2.4 (#67): the ASR archive pipeline — the segment upload and the
+  // transcript poll adoption the wiring tests drive directly; see
+  // tests/plugin-transcript-pipeline-flow.test.js.
+  dispatchSegment,
+  pollServerTranscript,
   readLastStartFailure: () => chrome.storage.local.get("ytd_last_start_failure"),
 };
 
@@ -2631,7 +2700,8 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
 //
 // The thin browser layer in front of the pure pieces:
 // session-pipeline.js (state machine), session-segmenter.js (timing math),
-// source-platforms.js (URL recognition), speech-providers.js (transcription),
+// source-platforms.js (URL recognition), transcript-pipeline.js (the D11
+// segment upload) and session-archive.js (the Session contract client),
 // session-persistence.js (incremental snapshots). Everything timed or
 // browser-bound lives here so the core modules stay pure and unit-tested.
 //
@@ -2671,15 +2741,6 @@ let captureContext = null;
  */
 let lastEndedSessionId = null;
 
-function dataUrlToBlob(dataUrl, fallbackMime = "audio/webm") {
-  const [header, base64] = String(dataUrl).split(",");
-  const mime = /data:([^;]+)/.exec(header)?.[1] || fallbackMime;
-  const binary = atob(base64 || "");
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
-
 async function sendOffscreen(message) {
   try {
     return await chrome.runtime.sendMessage(message);
@@ -2711,11 +2772,11 @@ function broadcastSession(state, extra = {}) {
 }
 
 async function persistContextPointer(context) {
-  // Session metadata only — Speech Provider credentials are re-read from
-  // settings on rebuild and are never duplicated here. cursorSeconds (#48)
-  // carries the segmenter cursor across a restart for the two cases where
-  // it runs ahead of the persisted Segments: the mid-video anchor and the
-  // seek-forward jump (the skipped range produces no Segment records).
+  // Session metadata only — the API credential is re-read from storage on
+  // rebuild and is never duplicated here. cursorSeconds (#48) carries the
+  // segmenter cursor across a restart for the two cases where it runs ahead
+  // of the persisted Segments: the mid-video anchor and the seek-forward
+  // jump (the skipped range produces no Segment records).
   await chrome.storage.local.set({
     [ACTIVE_CAPTURE_KEY]: {
       sessionId: context.sessionId,
@@ -2725,19 +2786,11 @@ async function persistContextPointer(context) {
       timestampKind: context.timestampKind,
       startedAtMs: context.startedAtMs,
       segmentLengthSeconds: context.segmentLengthSeconds,
-      transcribeMode: context.transcribeMode,
       capturePath: context.capturePath,
       serverSessionId: context.serverSessionId,
       pageTitle: context.pageTitle,
       sourceUrl: context.sourceUrl ?? null,
       cursorSeconds: context.segmenter ? context.segmenter.emittedUpTo : 0,
-      // Realtime timeline state (#50), so a worker restart rebuilds the
-      // hold/resume and covered-range bookkeeping instead of re-recognizing
-      // what the windows already cover.
-      playbackWindows: context.playbackWindows || [],
-      playbackWindowStart: context.playbackWindowStart ?? null,
-      realtimeOriginSeconds: context.realtimeOriginSeconds ?? 0,
-      realtimeHoldUntilSeconds: context.realtimeHoldUntilSeconds ?? null,
     },
   });
 }
@@ -2765,37 +2818,6 @@ function segmentsEndSeconds(state) {
 }
 
 /**
- * The Session timeline position (seconds from Session start) the Transcript
- * records have reached: the end of the last record. For a realtime Session
- * (#49) this is the playback position — video-kind utterances stamp at
- * video positions — and it bounds where seek detection resumes after a
- * worker restart, the same job segmentsEndSeconds does for segment mode.
- */
-function lastUtteranceEndSeconds(state) {
-  return state.transcriptRecords.reduce(
-    (end, record) => Math.max(end, Number(record?.start) + Number(record?.duration) || 0),
-    0,
-  );
-}
-
-/**
- * Transcription mode (#45, widened by #49): realtime streaming engages for
- * the Qwen provider explicitly configured 实时转写, on ANY Session kind —
- * replay/course Sessions stamp their utterances at video positions (see
- * mapUtteranceStart), live Sessions keep stream time. This is distinct from
- * the cut-cadence `mode` ("wallclock"|"video") below.
- *
- * @param {string} providerId - selected Speech Provider id
- * @param {object} providerConfig - that provider's stored credentials
- * @returns {"segment"|"realtime"}
- */
-function resolveTranscribeMode(providerId, providerConfig) {
-  return providerId === "qwen" && providerConfig?.mode === "realtime"
-    ? "realtime"
-    : "segment";
-}
-
-/**
  * The in-memory capture context, one shape for both creation sites. The
  * factory owns every field's default so handleStartLearning (fresh Session)
  * and ensureCaptureResumed (rebuilt from storage) cannot drift apart.
@@ -2808,23 +2830,12 @@ function resolveTranscribeMode(providerId, providerConfig) {
  * @param {string} parts.timestampKind
  * @param {number} parts.startedAtMs - wall-clock Session start
  * @param {number} parts.segmentLengthSeconds
- * @param {"segment"|"realtime"} [parts.transcribeMode] - resolved at start;
- *   pre-0.1.43 pointers without the field fall back to "segment" (#45)
  * @param {string} [parts.pageTitle] - page title reported by the bridge (#32)
  * @param {string} [parts.sourceUrl] - URL of the page the Session was started
  *   on (0.1.57): the icon-click flow compares it to detect a course switch
  *   and auto-end the stale Session; absent on pre-0.1.57 pointers
  * @param {object} parts.state - Session state from session-pipeline.js
  * @param {object} parts.segmenter - scheduler from session-segmenter.js
- * @param {object[]} [parts.playbackWindows] - closed captured playback ranges
- *   (#50), from the pointer on a rebuild
- * @param {number|null} [parts.playbackWindowStart] - the open range's start
- * @param {number} [parts.realtimeOriginSeconds] - the recognition origin the
- *   utterance offsets count from (#50)
- * @param {number|null} [parts.realtimeHoldUntilSeconds] - non-null while a
- *   re-watch of covered audio suppresses forwarding
- * @param {string} parts.providerId - selected Speech Provider id
- * @param {object} parts.credentials - that provider's credentials
  * @param {"asr"|"captions"} [parts.capturePath] - the transcript path this
  *   Session runs on (Ticket 2.5): "captions" means the direct-archive path
  *   (no capture machinery, no Speech Provider, zero ASR); default "asr"
@@ -2841,17 +2852,10 @@ function createCaptureContext({
   timestampKind,
   startedAtMs,
   segmentLengthSeconds,
-  transcribeMode,
   pageTitle,
   sourceUrl,
-  playbackWindows,
-  playbackWindowStart,
-  realtimeOriginSeconds,
-  realtimeHoldUntilSeconds,
   state,
   segmenter,
-  providerId,
-  credentials,
   capturePath,
   serverSessionId,
 }) {
@@ -2863,12 +2867,11 @@ function createCaptureContext({
     timestampKind,
     startedAtMs,
     segmentLengthSeconds,
-    transcribeMode: transcribeMode === "realtime" ? "realtime" : "segment",
     // Ticket 2.5 (#68): the transcript path. "captions" skips every capture
-    // scheduler/report branch; "asr" is the historical behavior.
+    // scheduler/report branch; "asr" is the D10 server-side pipeline.
     capturePath: capturePath === "captions" ? "captions" : "asr",
-    // The server Session the captions path archives against (§3.1); the
-    // capture path's lifecycle wiring is ticket 2.4's and stays null here.
+    // The server Session (contract-r2 §3.1) both paths archive against:
+    // captions archives directly, asr uploads audio Segments (ticket 2.4).
     serverSessionId:
       typeof serverSessionId === "string" && serverSessionId ? serverSessionId : null,
     // Absent until the bridge reports the page title; first write wins.
@@ -2889,27 +2892,22 @@ function createCaptureContext({
     // position). A rebuilt context resumes from the persisted cursor (> 0
     // once anything was captured), so restarts arm immediately.
     seekBaselineArmed: segmenter.emittedUpTo > 0,
-    // Realtime timeline state (#50): playbackWindows are the CLOSED ranges
-    // the player traversed while capturing (they cover silent stretches a
-    // done Segment would cover in segment mode); playbackWindowStart is the
-    // open one. realtimeOriginSeconds is the video position the live
-    // recognition session counts its utterance offsets from (re-based on
-    // every drag); realtimeHoldUntilSeconds is non-null while a re-watch of
-    // covered audio suppresses forwarding, and names the position where
-    // capture resumes.
-    playbackWindows: Array.isArray(playbackWindows) ? playbackWindows : [],
-    playbackWindowStart: playbackWindowStart ?? null,
-    realtimeOriginSeconds: Number(realtimeOriginSeconds) || 0,
-    realtimeHoldUntilSeconds: realtimeHoldUntilSeconds ?? null,
-    // The last VIDEO position the page bridge reported (#49), updated on
-    // every bridged report. Realtime video-kind Sessions stamp finalized
-    // utterances from this (mapUtteranceStart); null until the first
-    // report lands — never persisted, a rebuilt context re-learns it
-    // within one bridge tick.
+    // The last VIDEO position the page bridge reported, updated on
+    // every bridged report; null until the first report lands — never
+    // persisted, a rebuilt context re-learns it within one bridge tick.
     lastVideoPosition: null,
     pendingChunks: [],
-    providerId,
-    credentials,
+    // Ticket 2.4 (#67): once true, no further Segment uploads this Session
+    // (the origin locked to captions, the server Session finished or
+    // vanished under us) — the truth is surfaced once, then respected.
+    transcriptStopped: false,
+    transcriptTimer: null,
+    transcriptBackoffFailures: 0,
+    // The §3.5 terminal state (finished view with nothing pending) flips
+    // this once: the schedule chain honors it and stands down — a re-arm
+    // after the terminal beat (pollTranscriptNow's own) must not resurrect
+    // a poll whose archive is final (状态单调).
+    transcriptPollDone: false,
     liveTimer: null,
     summaryTimer: null,
     // #48 probe window deadline (ms): set only for a FRESH wallclock Session
@@ -2946,10 +2944,10 @@ function createCaptureContext({
 /**
  * The captureStart payload for the offscreen document, one builder for both
  * call sites (handleStartLearning's fresh Session and
- * ensureCaptureResumed's mid-Session restart) so a resumed realtime Session
- * can never drift from a fresh one. The Qwen key rides the message only in
- * realtime mode (spec #44: message-only transport, never persisted); the
- * segment recorder ignores it.
+ * ensureCaptureResumed's mid-Session restart) so a resumed Session can
+ * never drift from a fresh one. The recorder cuts Segments on this mode's
+ * cadence; transcription is server-side (ticket 2.4) and never rides the
+ * message.
  */
 function buildCaptureStartMessage(context, streamId) {
   return {
@@ -2957,19 +2955,6 @@ function buildCaptureStartMessage(context, streamId) {
     streamId,
     segmentLengthSeconds: context.segmentLengthSeconds,
     mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
-    // Consumed by the offscreen realtime path (spec #44); the segment
-    // recorder ignores it.
-    transcribeMode: context.transcribeMode,
-    // The realtime WebSocket handshake needs the Qwen key (spec #44:
-    // message-only transport, never persisted); the segment recorder
-    // ignores it. originSeconds (#50) re-bases a resumed Session's
-    // recognition at its persisted resume point.
-    ...(context.transcribeMode === "realtime"
-      ? {
-          apiKey: context.credentials.apiKey,
-          originSeconds: Number(context.realtimeOriginSeconds) || 0,
-        }
-      : {}),
   };
 }
 
@@ -3023,32 +3008,11 @@ async function ensureCaptureResumed() {
       ),
       startIndex: resumedState.segments.length,
     }),
-    providerId: settings.speechProvider,
-    credentials: settings.speechProviders[settings.speechProvider] || {},
   });
-  // Realtime Sessions have no Segments bounding the cursor, so seek
-  // detection (#49) rebuilds its baseline from the last Transcript record's
-  // end: without it, the first post-restart report reads as a seek from 0
-  // and falsely marks the already-transcribed head as skipped.
-  if (context.transcribeMode === "realtime") {
-    context.lastPosition = Math.max(
-      context.lastPosition,
-      lastUtteranceEndSeconds(resumedState),
-    );
-    // The offscreen document restarts its recognition session on the fresh
-    // captureStart, so the origin re-bases at the resume point: never below
-    // the last persisted record's end (utterance offsets would re-stamp
-    // already-covered ranges).
-    if (context.timestampKind === "video") {
-      context.realtimeOriginSeconds = Math.max(
-        context.realtimeOriginSeconds,
-        lastUtteranceEndSeconds(resumedState),
-      );
-    }
-  }
+  void settings;
   // A resumed context always carries a meaningful drag-detection baseline
-  // (the persisted cursor, plus the last utterance's end above): the first
-  // post-restart report must detect drags, not arm the baseline.
+  // (the persisted cursor): the first post-restart report must detect
+  // drags, not arm the baseline.
   context.seekBaselineArmed = true;
   captureContext = context;
   // P10: a recording Session that survived a worker restart keeps its
@@ -3084,20 +3048,24 @@ async function ensureCaptureResumed() {
       );
     }
   }
-  // The live tick exists to feed the scheduler on the wallclock timeline;
-  // realtime Sessions (#47) schedule nothing, so their tick is not armed.
-  if (context.timestampKind === "wallclock" && context.transcribeMode !== "realtime") {
+  // The live tick exists to feed the scheduler on the wallclock timeline.
+  if (context.timestampKind === "wallclock") {
     startLiveTimer(context);
   }
   // The captions path runs no capture machinery and no Topic ticks: its
-  // transcript is the polled server view, so only the poll re-arms.
+  // transcript is the polled server view, so only the poll re-arms. The ASR
+  // path (ticket 2.4) resumes BOTH: the segment scheduler feeding the
+  // archive upload, and the transcript poll (its first beat re-syncs the
+  // view the dying worker last saw).
   if (context.capturePath === "captions") {
     startTranscriptPoll(context);
   } else {
+    // ASR: the poll re-arms first (a fresh worker must re-sync the view
+    // before the first new beat elapses) and the Topic tick backstop arms
+    // as on any capture Session.
+    startTranscriptPoll(context);
     startSummaryTimer(context);
   }
-  // (The resumed captions context re-syncs on the next interval beat; the
-  // archive-time poll already landed the view.)
   console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
 }
@@ -3127,7 +3095,6 @@ async function handleRestartFromBeginning() {
     // the bridge's seek events arrive. Sessions with existing coverage keep
     // the normal re-listen/no-duplicate behavior.
     if (
-      context.transcribeMode !== "realtime" &&
       context.state.segments.length === 0 &&
       context.state.transcriptRecords.length === 0
     ) {
@@ -3363,11 +3330,10 @@ async function produceSessionReport(state, meta = null) {
  * Feeds the scheduler one position reading (video position for replay and
  * course pages, wall-clock elapsed for live) and dispatches whatever
  * Segments completed. Feeding is idempotent: the scheduler's cursor only
- * moves forward. Realtime Sessions (#47) never schedule: they have no
- * recorder to cut from, so a dispatched Segment could only ever fail.
+ * moves forward.
  */
 function feedPosition(context, positionSeconds) {
-  if (context.ended || context.transcribeMode === "realtime") return;
+  if (context.ended) return;
   context.lastPosition = Math.max(context.lastPosition, positionSeconds);
   for (const segment of context.segmenter.recordPosition(positionSeconds)) {
     void dispatchSegment(context, segment);
@@ -3375,17 +3341,63 @@ function feedPosition(context, positionSeconds) {
 }
 
 /**
- * One Segment end to end: append it to the Session, cut its audio from the
- * recorder (consuming any backstop chunk first), transcribe exactly once,
- * then feed the result back into the state machine. Every transition is
- * persisted and broadcast so a close at any point loses at most the
- * in-flight Segment. Retry dispatches (#48) pass an explicit segmentId —
- * the FAILED Segment's own id — so the result replaces that Segment's
- * failure marker instead of appending a new entry.
+ * The data URL's base64 payload and MIME — the recorder already encoded the
+ * Segment (D11 transports exactly that base64), so no re-encoding happens.
+ */
+function dataUrlParts(dataUrl, fallbackMime = "audio/webm") {
+  const [header, base64] = String(dataUrl).split(",");
+  const mime = /data:([^;]+)/.exec(header)?.[1] || fallbackMime;
+  return { mime, base64: base64 || "" };
+}
+
+/**
+ * The server-side transcript adopter (ticket 2.4): the polled §3.5 view is
+ * the source of truth for what the Worker produced. session-archive.js's
+ * mappers turn it into the seconds-based rows and pending Segments the
+ * state machine (transcriptViewUpdated) and the panel already render. No-op
+ * when nothing changed, so the poll never churns storage or the panel.
+ */
+async function adoptAsrTranscriptView(context, view) {
+  const records = YTD_SESSION_ARCHIVE.transcriptViewToTranscriptRecords(view);
+  const pendingSegments = YTD_SESSION_ARCHIVE.transcriptViewToPendingSegments(view);
+  const before = context.state;
+  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+    type: "transcriptViewUpdated",
+    origin: view.origin,
+    records,
+    pendingSegments,
+  });
+  if (context.state === before) return;
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  broadcastSession(context.state);
+}
+
+/**
+ * One Segment end to end (ticket 2.4, D10/D11): append it to the Session,
+ * cut its audio from the recorder (consuming any backstop chunk first), and
+ * upload it to the API as a D11 audio-segment — the Worker transcribes it
+ * server-side and the transcript poll lands the result. The upload replays
+ * byte-for-byte on network failures (the (sessionId, segmentIndex) key is
+ * idempotent) and the terminal verdicts stop or surface honestly:
  *
- * @returns {Promise<boolean>} true when the Segment transcribed cleanly —
- * hole-fill callers shrink the skipped marker only on this outcome, so a
- * failed fill never swallows the hole it was filling.
+ * - 409 transcript_origin_conflict: the Session locked to the captions path
+ *   (D15, 2.5's scenario) — the server's message is surfaced verbatim and
+ *   no further audio uploads this Session;
+ * - 409 session_already_finished: closed under us — same stop;
+ * - 401: the P7 credentials-invalidated handoff ends the Session;
+ * - 404 (D2): not our Session — stop;
+ * - validation/network: the Segment fails locally (its marker keeps the
+ *   bookkeeping honest) and the reason is loud in the console.
+ *
+ * Every transition is persisted and broadcast so a close at any point loses
+ * at most the in-flight Segment. Retry dispatches (#48) pass an explicit
+ * segmentId — the FAILED Segment's own id, whose index the server never
+ * stored (a failed upload left nothing behind) — so the re-watched audio
+ * uploads fresh under that free index.
+ *
+ * @returns {Promise<boolean>} true when the Segment was accepted by the API
+ *   — hole-fill callers shrink the skipped marker only on this outcome, so
+ *   a failed fill never swallows the hole it was filling.
  */
 async function dispatchSegment(context, segment, segmentId = `seg-${segment.index}`) {
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
@@ -3395,39 +3407,7 @@ async function dispatchSegment(context, segment, segmentId = `seg-${segment.inde
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
   broadcastSession(context.state);
 
-  try {
-    const queued = context.pendingChunks.shift();
-    const cut = queued || (await sendOffscreen({ action: "captureCut" }));
-    if (!cut || cut.error) throw new Error(cut?.error || "no audio chunk");
-    const blob = dataUrlToBlob(cut.dataUrl, cut.mimeType);
-    const records = await YTD_SPEECH_PROVIDERS.transcribeSegment(
-      context.providerId,
-      blob,
-      context.credentials,
-    );
-    // Provider records are Segment-relative; the Transcript needs absolute
-    // Session timestamps.
-    const absoluteRecords = records.map((record) => ({
-      ...record,
-      start: record.start + segment.start,
-    }));
-    context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-      type: "transcribeOk",
-      segmentId,
-      records: absoluteRecords,
-    });
-    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
-    broadcastSession(context.state);
-    return true;
-  } catch (error) {
-    // Loud on purpose: a failed Segment shows up in the panel only as an
-    // anonymous [语音转录失败] marker, so this console.error is the only
-    // place the reason (provider error body, audio shape, credentials)
-    // ever surfaces. Not gated by DEBUG.
-    console.error(
-      `[Learning Digest] Segment ${segmentId} transcription failed:`,
-      error?.message || error,
-    );
+  const settleFailed = async () => {
     context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
       type: "transcribeFailed",
       segmentId,
@@ -3435,6 +3415,92 @@ async function dispatchSegment(context, segment, segmentId = `seg-${segment.inde
     await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
     broadcastSession(context.state);
     return false;
+  };
+
+  // No server Session (the start could not create one) or a pipeline that
+  // stopped under us: the Segment is recorded for bookkeeping only — its
+  // audio is discarded without a pointless recorder cut.
+  if (!context.serverSessionId || context.transcriptStopped) {
+    await discardRecordedAudio(context);
+    return settleFailed();
+  }
+
+  try {
+    const queued = context.pendingChunks.shift();
+    const cut = queued || (await sendOffscreen({ action: "captureCut" }));
+    if (!cut || cut.error) throw new Error(cut?.error || "no audio chunk");
+    const { base64 } = dataUrlParts(cut.dataUrl, cut.mimeType);
+    // The server-side ordinal is this Segment's position in the Session
+    // state (stable across worker restarts, unique per dispatch — fill and
+    // retry Segments occupy their own positions like any other).
+    const segmentIndex = context.state.segments.findIndex(
+      (candidate) => candidate.id === segmentId,
+    );
+    const body = YTD_TRANSCRIPT_PIPELINE.buildAudioSegmentBody({
+      segmentIndex: Math.max(0, segmentIndex),
+      startSeconds: segment.start,
+      durationSeconds: segment.duration,
+      audioBase64: base64,
+      audioMimeType:
+        typeof cut.mimeType === "string" && cut.mimeType ? cut.mimeType : "audio/webm",
+    });
+    if (!body) throw new Error("音频段超出契约校验范围");
+    const settings = await getSettings();
+    const credential = await readStoredAuthCredential();
+    const verdict = await YTD_TRANSCRIPT_PIPELINE.uploadAudioSegment({
+      fetchImpl: fetch,
+      apiBaseUrl: settings.apiBaseUrl,
+      token: credential?.token || "",
+      sessionId: context.serverSessionId,
+      body,
+    });
+    if (verdict.kind === "ok") {
+      // The server owns the text now: the Segment settles done locally with
+      // no records — the transcript poll lands the Worker's rows.
+      context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
+        type: "transcribeOk",
+        segmentId,
+        records: [],
+      });
+      await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+      broadcastSession(context.state);
+      return true;
+    }
+    if (verdict.kind === "originConflict" || verdict.kind === "finished" || verdict.kind === "notFound") {
+      // 如实呈现: the server's own message, then the pipeline stands down —
+      // no further audio uploads this Session. The transcript poll keeps
+      // running so the tab renders whichever side owns the view now.
+      context.transcriptStopped = true;
+      broadcastSession(context.state, { captureNotice: verdict.message });
+      return settleFailed();
+    }
+    if (verdict.kind === "unauthorized") {
+      await settleFailed();
+      // P7 handoff: the linked-logout path stops the capture and re-gates
+      // the panel (the poll's own 401 rides the same hook).
+      void handleCredentialsInvalidated("unauthorized");
+      return false;
+    }
+    // invalid / network: the Segment is poison (its body broke the contract)
+    // or the network budget ran out. Loud on purpose: this console.error is
+    // the only place the reason surfaces; the panel sees the Segment vanish
+    // from the transcript rather than a made-up state.
+    console.error(
+      `[Learning Digest] Segment ${segmentId} upload failed (${verdict.kind}):`,
+      verdict.message,
+    );
+    if (verdict.kind === "network") {
+      broadcastSession(context.state, {
+        captureNotice: "有音频段多次上传失败，该段可能缺失于逐字稿中。",
+      });
+    }
+    return settleFailed();
+  } catch (error) {
+    console.error(
+      `[Learning Digest] Segment ${segmentId} upload failed:`,
+      error?.message || error,
+    );
+    return settleFailed();
   }
 }
 
@@ -3496,22 +3562,33 @@ async function handleStartLearning(message) {
     captionsProbe = { available: false, reason: captions.reason };
   }
 
+  // Ticket 2.4 (#67, D10): local Speech Providers are retired — the audio
+  // path archives through the API like the captions path does. The ASR
+  // pipeline needs a Source (§3.1 creates the Session on it) and the linked
+  // credential, both resolved here BEFORE any capture machinery: an
+  // unfavorite page gets the 先收藏 guidance, and a dead service fails the
+  // start instead of recording audio no transcript will ever explain.
   const settings = await getSettings();
-  const providerId = settings.speechProvider;
-  const credentials = settings.speechProviders[providerId] || {};
-  // The gate follows the SELECTED Speech Provider's declared credential
-  // fields (the password-typed ones, same rule the options page enforces on
-  // save), not a hard-coded apiKey check: Tencent has no apiKey.
-  const missingFields =
-    YTD_SPEECH_PROVIDERS.missingProviderCredentials(providerId, credentials);
-  if (missingFields.length) {
-    const provider = YTD_SPEECH_PROVIDERS.getSpeechProvider(providerId);
+  const credential = await readStoredAuthCredential();
+  const resolution = await resolveSourceForTarget(
+    collectTargetFromTab({ id: message.tabId, url: message.url, title: "" }),
+  );
+  if (!resolution.ok) {
+    return { success: false, error: resolution.message || "来源解析失败，请稍后重试。" };
+  }
+  if (!resolution.matched || !resolution.source?.id) {
     return {
       success: false,
-      error:
-        `Add ${missingFields.join(", ")} for ${provider?.label || providerId} ` +
-        "in Settings first.",
+      needsFavorite: true,
+      error: "该页面还没有收藏到学习库：先收藏才能记录学习进度。",
     };
+  }
+  const created = await postSessionCreate(settings, credential, resolution.source.id);
+  if (!created.ok) {
+    if (created.kind === "unauthorized") {
+      await handleCredentialsInvalidated("unauthorized");
+    }
+    return { success: false, error: created.message || "学习会话创建失败，请稍后重试。" };
   }
 
   const state = YTD_SESSION_PIPELINE.createSession({
@@ -3534,13 +3611,11 @@ async function handleStartLearning(message) {
     startedAtMs: Date.now(),
     sourceUrl: message.url,
     segmentLengthSeconds: settings.segmentLengthSeconds,
-    transcribeMode: resolveTranscribeMode(providerId, credentials),
     state: seededState,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
     }),
-    providerId,
-    credentials,
+    serverSessionId: created.session.id,
   });
   captureContext = context;
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, seededState);
@@ -3574,6 +3649,11 @@ async function handleStartLearning(message) {
     const message = error?.message || String(error);
     console.error("[Learning Digest] startLearning failed:", message);
     await recordStartAttempt(message, context.sessionId);
+    // The server Session already exists (§3.1 ran before capture): close it
+    // so a failed capture never leaves an active orphan server-side.
+    if (context.serverSessionId) {
+      await finishServerSession(context);
+    }
     // Chrome only allows tabCapture after the user has INVOKED the extension
     // on the target tab (a toolbar icon click); a side-panel button click
     // does not count. Turn the raw English API error into an actionable
@@ -3591,25 +3671,26 @@ async function handleStartLearning(message) {
     };
   }
 
-  // Realtime Sessions (#47) schedule nothing (see feedPosition): no live
-  // tick, and the wallclock timeline stands for the whole Session.
-  if (context.timestampKind === "wallclock" && context.transcribeMode !== "realtime") {
+  if (context.timestampKind === "wallclock") {
     startLiveTimer(context);
   }
   startSummaryTimer(context);
-  broadcastSession(context.state, { transcribeMode: context.transcribeMode });
+  broadcastSession(context.state);
   // P10 (decision 4): the Session is recording — lock the learning target
-  // and arm the progress writer (the resolve re-issued here keeps
-  // expectedRevision fresh at write time). Awaited so the persisted lock
-  // lands before the panel learns the Session started.
+  // and arm the progress writer. Awaited so the persisted lock lands
+  // before the panel learns the Session started.
   await beginProgressTracking(context);
+  // Ticket 2.4: the transcript poll starts on the first beat — the view
+  // the Worker builds lands in the panel as soon as the first Segment's
+  // task settles, without waiting a full interval first.
+  await pollTranscriptNow(context);
   // The one-line "capture is live" marker: when this is absent after an
   // icon click, the Session never started and the reason is in the
   // startLearning failure log above.
   console.log(
     `[Learning Digest] 采集已开始: session=${context.sessionId} ` +
       `mode=${context.timestampKind === "wallclock" ? "直播(墙钟)" : "录播(媒体位置)"} ` +
-      `segment=${context.segmentLengthSeconds}s provider=${context.providerId}`,
+      `segment=${context.segmentLengthSeconds}s serverSession=${context.serverSessionId}`,
   );
   chrome.storage.local.remove("ytd_last_start_failure").catch(() => {});
   return {
@@ -3617,7 +3698,7 @@ async function handleStartLearning(message) {
     sessionId: context.sessionId,
     kind: context.kind,
     timestampKind: context.timestampKind,
-    transcribeMode: context.transcribeMode,
+    capturePath: context.capturePath,
     state: context.state,
   };
 }
@@ -3664,8 +3745,7 @@ async function handleMediaPosition(message, sender) {
     return;
   }
   const position = Number(message.position);
-  // The video position every consumer below reads: realtime video-kind
-  // Sessions stamp finalized utterances from it (#49), the segment-mode
+  // The video position every consumer below reads; the segment-mode
   // seek/anchor logic follows the same stream as before.
   if (Number.isFinite(position) && position >= 0) {
     context.lastVideoPosition = position;
@@ -3679,39 +3759,6 @@ async function handleMediaPosition(message, sender) {
   // and media-end only — no scheduler, no re-listen, no Segment dispatch
   // (the transcript is the polled server view; 全程零 ASR).
   if (context.capturePath === "captions") {
-    if (
-      message.ended &&
-      (context.kind === "replay" || context.kind === "course" || context.kind === "video")
-    ) {
-      await endActiveSession(context, { reason: "mediaEnded" });
-    }
-    return;
-  }
-  // Realtime Sessions (#47, #49) run no Segment schedule: no scheduler
-  // feeds, no re-listen retries (there is no recorder to re-cut from). What
-  // still rides the position stream: the #48 probe (a wallclock Session
-  // anchors to the video timeline so utterances stamp at video positions
-  // from the anchor on), the #48 seek-forward hole marker, and media-end
-  // auto-stop. A wallclock Session whose probe lapsed stays on stream-time
-  // stamps for its whole life, exactly as pre-#49.
-  if (context.transcribeMode === "realtime") {
-    if (context.timestampKind !== "video") {
-      // 0.1.64 live-replay recovery, same as the segment path below.
-      if (!(await convertLiveRecordingIfReplay(context, message, position))) {
-        await probeForAnchor(context, position);
-        if (context.timestampKind !== "video") return;
-      }
-    }
-    if (Number.isFinite(position)) {
-      await handleRealtimeDrag(context, position);
-      // Drag detection compares against the last REPORTED position (not a
-      // monotonic frontier): after a backward drag the baseline is the
-      // landing point, so the next drag measures from there.
-      context.lastPosition = position;
-    }
-    // Media end auto-ends replay/course/video Sessions ("video" = the P10b
-    // stations' playback pages, #63); live ends only via the explicit end
-    // action.
     if (
       message.ended &&
       (context.kind === "replay" || context.kind === "course" || context.kind === "video")
@@ -4237,337 +4284,6 @@ async function handleCaptureEnded(message, _sender) {
   await endActiveSession(context, { reason: "captureEnded" });
 }
 
-/**
- * The realtime client's one-shot give-up notice: every reconnect backoff
- * attempt failed, the offscreen document already released the WebSocket and
- * the capture, and no further transcription is possible this Session.
- * Handled like captureEnded — loud log, notice broadcast first, honest
- * auto-end — so the learner keeps the transcript collected so far and the
- * digest built from it, instead of a zombie Session with a dead stream.
- * A repeated notice finds the context ended (or the pointer cleared) and
- * is a no-op.
- */
-async function handleRealtimeGaveUp(_message) {
-  const context = await ensureCaptureResumed();
-  if (!context || context.ended) return;
-  console.error(
-    "[Learning Digest] realtime WebSocket gave up after repeated reconnect failures, auto-ending session",
-  );
-  broadcastSession(context.state, {
-    realtimeNotice: { message: "实时转写连接失败，会话自动结束。" },
-  });
-  await endActiveSession(context, { reason: "realtimeGaveUp" });
-}
-
-// ============================================================
-// REALTIME TRANSCRIPTION PIPELINE (#46 offscreen client, #47 handling)
-// ============================================================
-//
-// The offscreen document owns the realtime WebSocket and streams the
-// server's findings as unsolicited messages. The worker turns them into
-// pipeline activity: a partial is a lightweight panel-only broadcast (the
-// panel owns the draft display), a finalized utterance feeds the state
-// machine as an utteranceCaptured event — a plain Transcript record, no
-// Segment, failed: true for a failed utterance so it lands as the segment
-// path's failure-marker record — an error surfaces loudly, and a final
-// give-up (every reconnect attempt failed) auto-ends the Session honestly
-// like captureEnded does. Topic ticks run on the same content thresholds
-// as segment mode: isTopicTickDue reads transcriptRecords coverage, which
-// utterance records grow like any other, and a check runs right after each
-// utterance (the 60s summary timer stays armed as the backstop). Without
-// an active capture the events are dropped: the offscreen document cannot
-// outlive its Session.
-
-async function handleRealtimePartial(message) {
-  const context = await ensureCaptureResumed();
-  if (!context || context.ended) return;
-  // Lightweight and state-free on purpose: partials stream at speaking
-  // pace, and the full state would ship the whole Transcript every time.
-  // The panel replaces its draft with this text; no state churn here.
-  try {
-    chrome.runtime
-      .sendMessage({
-        action: "sessionUpdate",
-        sessionId: context.sessionId,
-        realtimePartial: { text: String(message?.text || "") },
-      })
-      .catch(() => {});
-  } catch (_error) {
-    // Side panel closed; the next state broadcast re-syncs it.
-  }
-}
-
-/**
- * The Session-timeline start second for one finalized realtime utterance
- * (#49): a wallclock Session keeps the offscreen stream time as today; a
- * video-kind Session (replay/course, or a live Session that anchored via
- * the #48 probe) stamps at the VIDEO position the speech belongs to. The
- * utterance finalizes ~0.4s after its speech ended, so the last bridged
- * video position minus the utterance duration approximates where the
- * speech began. Clamped to ≥ 0 and ≥ the segmenter cursor — the anchor or
- * seek target — so a record never lands before the Session's video
- * timeline begins (the cursor only moves there via #48's anchor/seek).
- * Before the first bridged report there is no position to read and the
- * stream time stands in: a ≤1s window at Session start, stamped
- * approximately (a D7-class corner, accepted).
- *
- * @param {object} context - the active capture context
- * @param {{start?: number, duration?: number}} message - the offscreen event
- * @returns {number} the record's start second (NaN passes through: the
- *   pipeline drops a record without a finite start, as before)
- */
-function mapUtteranceStart(context, message) {
-  const start = Number(message?.start);
-  if (context.timestampKind !== "video") return start;
-  // Absolute video time = the recognition session's origin (re-based on
-  // every drag, #50) plus the utterance's offset inside that session. The
-  // old "last bridged position minus duration" heuristic smeared stamps
-  // across seeks; the origin makes every stamp tied to the session that
-  // heard the audio.
-  const origin = Number(context.realtimeOriginSeconds) || 0;
-  return Math.max(origin, origin + (Number.isFinite(start) ? start : 0));
-}
-
-/**
- * Realtime drag handling (#50), the video-timeline twin of the segment
- * path's seek/re-listen logic: every drag closes the open playback window
- * at the pre-drag position and re-bases recognition at the landing point.
- * A forward drag marks the skipped range; a backward drag consults the
- * timeline view — landing on covered audio (success records or silent
- * playback windows alike) enters a hold that suppresses forwarding until
- * playback reaches the next capture point, while landing on a hole or
- * failure captures from the landing point and shrinks the hole's tail the
- * new session will actually cover. Wallclock Sessions never get here (the
- * caller gates on timestampKind).
- *
- * @param {object} context - the active capture context
- * @param {number} position - the bridged position
- */
-async function handleRealtimeDrag(context, position) {
-  if (!context.seekBaselineArmed) {
-    // The first bridged position arms detection and is never itself a
-    // drag. A non-zero start position (mid-video open) re-bases recognition
-    // there so utterance offsets count from the real position.
-    context.seekBaselineArmed = true;
-    openPlaybackWindow(context, position);
-    if (position - context.realtimeOriginSeconds > FORWARD_DRAG_THRESHOLD_SECONDS) {
-      await rebaseRealtimeCapture(context, position, false);
-      await persistContextPointer(context);
-    }
-    return;
-  }
-  const previous = context.lastPosition;
-  const forwardDrag =
-    Number.isFinite(previous) &&
-    position - previous > FORWARD_DRAG_THRESHOLD_SECONDS;
-  const backwardDrag = Number.isFinite(previous) && position < previous;
-
-  // Hold bookkeeping runs before drag handling: advancing onto the resume
-  // point ends the hold; a drag supersedes it either way.
-  if (context.realtimeHoldUntilSeconds !== null && !forwardDrag && !backwardDrag) {
-    extendPlaybackWindow(context, position);
-    if (position >= context.realtimeHoldUntilSeconds) {
-      const resumeAt = context.realtimeHoldUntilSeconds;
-      context.realtimeHoldUntilSeconds = null;
-      context.realtimeOriginSeconds = resumeAt;
-      await sendOffscreen({ action: "captureRealtimeResume", originSeconds: resumeAt });
-      await persistContextPointer(context);
-    }
-    return;
-  }
-
-  if (!forwardDrag && !backwardDrag) {
-    extendPlaybackWindow(context, position);
-    return;
-  }
-
-  // Any drag closes the open window at the pre-drag position and opens a
-  // fresh one at the landing: everything played from here counts as captured
-  // coverage (silent stretches included), however the landing is handled.
-  closePlaybackWindow(context, Number.isFinite(previous) ? previous : position);
-  context.realtimeHoldUntilSeconds = null;
-  openPlaybackWindow(context, position);
-
-  if (forwardDrag) {
-    // The pointer is persisted BEFORE the gap marker lands: a worker death
-    // mid-drag must never resume below the jumped position.
-    context.segmenter.jumpTo(position);
-    await persistContextPointer(context);
-    if (position - previous > 0) {
-      context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-        type: "gapSkipped",
-        start: previous,
-        duration: position - previous,
-      });
-      await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
-        chrome.storage.local,
-        context.state,
-      );
-      broadcastSession(context.state);
-    }
-  }
-
-  const view = YTD_SESSION_TIMELINE.buildTimelineView(
-    context.state,
-    context.playbackWindows,
-  );
-  const captureFrom = YTD_SESSION_TIMELINE.nextCaptureStart(view, position);
-  if (captureFrom > position) {
-    // Landing on covered audio: hold — no audio is forwarded (no duplicate
-    // recognition, no double billing) until playback reaches the resume
-    // point.
-    context.realtimeHoldUntilSeconds = captureFrom;
-    await rebaseRealtimeCapture(context, position, true);
-    await persistContextPointer(context);
-    return;
-  }
-  // Capture from the landing point. Backward into a hole: its tail is about
-  // to be covered by the new session, so shrink the marker now; a later
-  // drag away from the hole re-marks what actually stays unwatched.
-  if (backwardDrag && YTD_SESSION_TIMELINE.isCoveredAt(view, position) === false) {
-    await shrinkHoleTail(context, position);
-  }
-  await rebaseRealtimeCapture(context, position, false);
-  await persistContextPointer(context);
-}
-
-/**
- * Applies gapFilled for the part of the covering gapSkipped marker that
- * starts at the landing position: the new recognition session covers
- * [position, markerEnd) live, so the marker keeps only its unwatched head.
- * No-op when no marker covers the position.
- */
-async function shrinkHoleTail(context, position) {
-  const marker = context.state.transcriptRecords.find(
-    (record) =>
-      YTD_SESSION_PIPELINE.isGapSkippedRecord(record) &&
-      position >= record.start &&
-      position < record.start + record.duration,
-  );
-  if (!marker) return;
-  const markerEnd = marker.start + marker.duration;
-  context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-    type: "gapFilled",
-    filledStart: position,
-    filledEnd: markerEnd,
-  });
-  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
-    chrome.storage.local,
-    context.state,
-  );
-  broadcastSession(context.state);
-}
-
-/**
- * Re-bases the realtime recognition session at the landing point (#50):
- * the offscreen document finishes the half-sentence on the old connection,
- * closes it, and opens a new one counting its utterance offsets from
- * `originSeconds` (held, when asked, so covered re-watches are not
- * forwarded). The context origin only moves once the rebase lands.
- */
-async function rebaseRealtimeCapture(context, originSeconds, hold) {
-  const result = await sendOffscreen({
-    action: "captureRebase",
-    originSeconds,
-    hold: hold === true,
-  });
-  if (result && result.error) {
-    // #50 error handling: keep the transcript, surface the failure, and do
-    // not move the origin — no plausible-looking stamps from an unknown
-    // base. The session keeps running; the next drag retries the rebase.
-    console.error(
-      "[Learning Digest] realtime rebase failed:",
-      result.error,
-    );
-    return;
-  }
-  context.realtimeOriginSeconds = originSeconds;
-}
-
-function openPlaybackWindow(context, position) {
-  context.playbackWindowStart = position;
-}
-
-function extendPlaybackWindow(context, position) {
-  if (context.playbackWindowStart === null) {
-    context.playbackWindowStart = position;
-  }
-}
-
-function closePlaybackWindow(context, end) {
-  if (context.playbackWindowStart === null) return;
-  const start = context.playbackWindowStart;
-  context.playbackWindowStart = null;
-  if (end > start) {
-    context.playbackWindows.push({ start, end });
-  }
-}
-
-async function handleRealtimeUtterance(message) {
-  const context = await ensureCaptureResumed();
-  // A trailing utterance after the Session ended is dropped: the offscreen
-  // client finishes its session.finish handshake after the end broadcast.
-  if (!context || context.ended) {
-    debugLog("[Learning Digest BG] realtimeUtterance dropped: no active Session");
-    return;
-  }
-  // #50: utterances carry the origin of the recognition session that heard
-  // them; a frame from a superseded (pre-rebase) connection stamps against
-  // an origin the context no longer has and is dropped. Frames without the
-  // field predate the rebase protocol and are accepted as-is.
-  if (
-    message?.originSeconds !== undefined &&
-    Number(message.originSeconds) !== Number(context.realtimeOriginSeconds)
-  ) {
-    debugLog(
-      "[Learning Digest BG] stale realtimeUtterance dropped:",
-      message.originSeconds,
-      "!== current origin",
-      context.realtimeOriginSeconds,
-    );
-    return;
-  }
-  const next = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-    type: "utteranceCaptured",
-    text: message?.text,
-    start: mapUtteranceStart(context, message),
-    duration: message?.duration,
-    failed: message?.failed === true,
-  });
-  // An invalid payload is a pipeline no-op: nothing to persist or broadcast.
-  if (next === context.state) return;
-  context.state = next;
-  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
-  broadcastSession(context.state);
-  // Same content thresholds as segment mode: the record may have completed
-  // the coverage the tick was waiting for.
-  await maybeRunTopicTick(context);
-}
-
-async function handleRealtimeError(message) {
-  // Loud regardless of Session state: a realtime failure is otherwise only
-  // visible as a silently dead transcript stream.
-  console.error(
-    "[Learning Digest] realtime transcription error:",
-    message?.message || "(no reason given)",
-  );
-  const context = await ensureCaptureResumed();
-  if (!context || context.ended) return;
-  broadcastSession(context.state, {
-    realtimeNotice: { message: String(message?.message || "实时转写出现错误") },
-  });
-}
-
-// The router's dispatch map for the offscreen realtime events: unsolicited,
-// fire-and-forget. Connection-level failures alert (realtimeError); a final
-// give-up auto-ends the Session (realtimeGaveUp).
-const REALTIME_EVENT_HANDLERS = {
-  realtimePartial: handleRealtimePartial,
-  realtimeUtterance: handleRealtimeUtterance,
-  realtimeError: handleRealtimeError,
-  realtimeGaveUp: handleRealtimeGaveUp,
-};
-
 async function endActiveSession(context, { reason, report = true } = {}) {
   if (context.ended) return { success: true, reason, state: context.state };
   context.ended = true;
@@ -4579,6 +4295,22 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   // the writer stops, and the course tab list unlocks.
   await releaseLearningTarget(context);
 
+  const finalPosition =
+    context.timestampKind === "wallclock"
+      ? (Date.now() - context.startedAtMs) / 1000
+      : context.lastPosition;
+  // The captions path (Ticket 2.5) never runs a scheduler: its transcript
+  // is the polled server view, so there is no tail. The ASR path (Ticket
+  // 2.4) uploads the trailing partial Segment FIRST — a Segment arriving
+  // after finish would meet 409 session_already_finished (§3.4 已结束不再
+  // 接收) — and then the finish closes the Session (§3.2) with the
+  // seek-skipped ranges as gaps.
+  const tail =
+    context.capturePath === "captions"
+      ? null
+      : context.segmenter.flush(finalPosition);
+  if (tail) await dispatchSegment(context, tail);
+
   // Ticket 2.5 (#68): the captions Session finishes its server Session
   // here (§3.2) — 字幕 Session 结束（P11 触发）→finish. The 409 repeat
   // verdict is absorbed inside (already finished is not a local failure).
@@ -4586,19 +4318,13 @@ async function endActiveSession(context, { reason, report = true } = {}) {
     await finishServerSession(context);
   }
 
-  const finalPosition =
-    context.timestampKind === "wallclock"
-      ? (Date.now() - context.startedAtMs) / 1000
-      : context.lastPosition;
-  // Realtime Sessions (#47) have no Segments to flush: their Transcript is
-  // already complete (every finalized utterance landed as a record). The
-  // captions path (Ticket 2.5) never runs a scheduler: its transcript is
-  // the polled server view, so there is no tail either.
-  const tail =
-    context.capturePath === "captions" || context.transcribeMode === "realtime"
-      ? null
-      : context.segmenter.flush(finalPosition);
-  if (tail) await dispatchSegment(context, tail);
+  // Ticket 2.4: the ASR poll keeps draining after the end so the tail
+  // Segments' results land visibly; the budget bounds it (≈ 15 beats) and
+  // the terminal view stops it earlier.
+  if (context.capturePath === "asr") {
+    context.transcriptDrainBudget = 15;
+    if (context.serverSessionId) await pollTranscriptNow(context);
+  }
 
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, { type: "sessionEnd" });
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);

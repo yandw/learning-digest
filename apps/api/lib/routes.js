@@ -19,6 +19,7 @@ const {
 } = require("./resources");
 const { saveProgress } = require("./progress");
 const { createNote } = require("./notes");
+const { registerAudioJobRoutes } = require("./audio-jobs");
 
 /** Require body.email, normalized. Throws the contract 400 on failure. */
 function requireEmail(body) {
@@ -273,6 +274,11 @@ function registerRoutes(ctx) {
       },
     };
   });
+
+  // --- Round 2: audio ingestion + transcription tasks (ticket 2.3) ---
+  // Registered from lib/audio-jobs.js; shares the requireCredential guard
+  // above for the user-facing upload endpoint.
+  registerAudioJobRoutes({ router, store, now, config, requireCredential, bearerToken });
 }
 
 module.exports = { registerRoutes };

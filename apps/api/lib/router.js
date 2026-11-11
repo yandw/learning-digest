@@ -12,12 +12,18 @@ const { notFoundUnknownPath, methodNotAllowed } = require("./errors");
 function createRouter() {
   const routes = [];
 
-  function add(method, pattern, handler) {
+  /**
+   * `options.maxBodyBytes` lets an individual route widen the request-body
+   * cap (the round-2 audio route carries up to ~10MB of base64 audio);
+   * routes without the option use the app-wide cap.
+   */
+  function add(method, pattern, handler, options = {}) {
     routes.push({
       method: method.toUpperCase(),
       segments: pattern.split("/").filter((segment) => segment.length > 0),
       pattern,
       handler,
+      maxBodyBytes: options.maxBodyBytes,
     });
   }
 
@@ -46,7 +52,7 @@ function createRouter() {
         methodMismatch = true;
         continue;
       }
-      return { handler: route.handler, params };
+      return { handler: route.handler, params, maxBodyBytes: route.maxBodyBytes };
     }
     if (methodMismatch) {
       throw methodNotAllowed();

@@ -4,6 +4,8 @@
  * ephemeral port; `server.js` wires production defaults and listens.
  */
 const http = require("node:http");
+const os = require("node:os");
+const path = require("node:path");
 const { createRouter } = require("./router");
 const { respondJson, respondError, readJsonBody } = require("./http");
 const { isApiPath, applyCors } = require("./cors");
@@ -27,8 +29,17 @@ const DEFAULT_CONFIG = Object.freeze({
   codeResendCooldownMs: 60 * 1000,
   // Bearer credential token entropy.
   tokenBytes: 32,
-  // Request body cap.
+  // Request body cap. The round-2 audio-segment route widens this for
+  // itself (router route option) to carry ~10MB of base64 audio.
   maxBodyBytes: 64 * 1024,
+  // Worker service credential for the round-2 /v1/worker/tasks endpoints
+  // (contract-r2 §3.7): a statically configured bearer token. Empty string
+  // means no worker credential is valid (endpoints answer 401) — server.js
+  // fills it from LD_API_WORKER_TOKEN.
+  workerToken: "",
+  // Temporary audio directory for uploaded segments (D14: bytes are temp
+  // files outside the repo; the store keeps only paths).
+  audioDir: path.join(os.tmpdir(), "ld-api-audio"),
 });
 
 /**
@@ -71,8 +82,8 @@ async function dispatch(req, res, router, config) {
       return;
     }
     const url = new URL(req.url, "http://localhost");
-    const { handler, params } = router.match(req.method, url.pathname);
-    const body = await readJsonBody(req, config.maxBodyBytes);
+    const { handler, params, maxBodyBytes } = router.match(req.method, url.pathname);
+    const body = await readJsonBody(req, maxBodyBytes || config.maxBodyBytes);
     const result = await handler({ req, res, params, body, url });
     if (!res.writableEnded) {
       respondJson(res, (result && result.status) || 200, (result && result.body) || {});

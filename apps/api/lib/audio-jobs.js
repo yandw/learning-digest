@@ -14,28 +14,34 @@
  *   (pending -> transcribing -> done|failed, terminal states never roll
  *   back).
  *
- * Storage layout on the generic collection store:
- * - "sessions": contract-r2 §2.1 records (owned by ticket 2.1's session
- *   endpoints; this module only reads them and locks `origin`).
- * - "audioSegments", keyed "<sessionId>:<segmentIndex>" (the idempotency
- *   key): one row per uploaded segment incl. its task linkage and status.
- * - "transcriptionTasks", keyed taskId: the claimable task with the audio
- *   file reference and its state-machine state.
- * - "transcriptRecords": rows written by the done path. Ticket 2.2 (issue
- *   #65) will own the transcript read model; the minimal write below uses
- *   the contract-r2 §2.2 TranscriptRecord shape so the swap is mechanical.
- *
- * Audio bytes are temporary files outside the repo (config.audioDir): the
- * store keeps only the path. D14 cleanup: a done result deletes the file
- * immediately; a failed result keeps it. Session-end + grace-period
- * cleanup is an API deployment-side job (not this ticket) and would sweep
- * both this directory and stale rows; the deletion seam here
- * (deleteAudioFile) is where such a sweeper would hook in.
+ * Storage split (2.2 合入后统一): the transcript STATE (segment statuses,
+ * asr records, pending/failed projection) lives in lib/transcripts.js's
+ * "transcripts" collection and is only touched through its write
+ * interface — claimAudioOrigin, upsertAudioSegment, applySegment* — so the
+ * TranscriptView (§2.5) stays consistent. This module owns the task QUEUE
+ * and the audio bytes: "transcriptionTasks" (keyed taskId: the claimable
+ * task, its state-machine state and the audio file reference) plus temp
+ * files outside the repo (config.audioDir). D14 cleanup: a done result
+ * deletes the file immediately; a failed result keeps it. Session-end +
+ * grace-period cleanup is an API deployment-side job (not this ticket)
+ * and would sweep both this directory and stale task rows; the deletion
+ * seam here (deleteAudioFile) is where such a sweeper would hook in.
  */
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { ApiError, validationFailed } = require("./errors");
+const {
+  ApiError,
+  validationFailed,
+  notFoundSession,
+} = require("./errors");
+const {
+  claimAudioOrigin,
+  upsertAudioSegment,
+  applySegmentTranscribing,
+  applySegmentDone,
+  applySegmentFailed,
+} = require("./transcripts");
 const { generateId } = require("./ids");
 
 // Transport guard for the audio-segment route: the contract caps the
@@ -118,11 +124,6 @@ function requireSegmentBody(body) {
   };
 }
 
-/** Cross-account or unknown Session reads/writes (D2: always 404). */
-function notFoundSession() {
-  return new ApiError(404, "not_found", "学习记录不存在或无权访问");
-}
-
 /** Unknown task result target (fixture error-worker-result-unknown-task). */
 function notFoundTask() {
   return new ApiError(404, "not_found", "任务不存在");
@@ -140,8 +141,11 @@ function transcriptOriginConflictForAudio() {
 
 /** Lookup the caller's own Session (D2: other accounts read as unknown). */
 function requireSession({ store, accountId, sessionId }) {
-  const session = store.get("sessions", sessionId);
-  if (!session || session.accountId !== accountId) {
+  const session =
+    store
+      .list("sessions")
+      .find((s) => s.id === sessionId && s.accountId === accountId) || null;
+  if (!session) {
     throw notFoundSession();
   }
   return session;
@@ -251,6 +255,9 @@ function claimTasks({ store, now, limit }) {
   const tasks = pending.map((task) => {
     const audioBase64 = fs.readFileSync(task.audioFile).toString("base64");
     store.set("transcriptionTasks", task.taskId, { ...task, status: "transcribing", claimedAt: now() });
+    // The transcript state's segment mirrors the task state machine, so
+    // the TranscriptView's pending[] shows "transcribing" while it works.
+    applySegmentTranscribing({ store, sessionId: task.sessionId, segmentIndex: task.segmentIndex });
     return {
       taskId: task.taskId,
       sessionId: task.sessionId,
@@ -314,43 +321,14 @@ function requireResultBody(body) {
 }
 
 /**
- * Write the done path's transcript rows (contract-r2 §2.2 TranscriptRecord
- * shape, origin locked "asr" — the timestamps arrived already folded to the
- * source timeline). Ticket 2.2 (issue #65) owns the transcript read model;
- * until its write interface lands on the integration branch, this minimal
- * writer keeps the contract shape so the swap is mechanical.
- * 2.2 合入后统一.
- */
-function writeDoneRecords({ store, task, records }) {
-  records.forEach((record, index) => {
-    store.set("transcriptRecords", `${task.sessionId}:${task.taskId}:${index}`, {
-      sessionId: task.sessionId,
-      accountId: task.accountId,
-      sourceId: task.sourceId,
-      startMs: record.startMs,
-      endMs: record.endMs,
-      text: record.text,
-      origin: "asr",
-      taskId: task.taskId,
-    });
-  });
-}
-
-/** Mark the owning segment done|failed so the transcript view's pending/failed arrays stay in step. */
-function markSegment({ store, task, status, error }) {
-  const key = `${task.sessionId}:${task.segmentIndex}`;
-  const segment = store.get("audioSegments", key);
-  if (segment) {
-    store.set("audioSegments", key, { ...segment, status, error: error || null });
-  }
-}
-
-/**
  * Apply one worker result (contract-r2 §3.7). First result wins
  * (幂等总则): a resend replays the stored terminal status without
  * re-applying, and terminal states never roll back. A result against a
  * still-pending task is rejected (400): the state machine is
  * pending -> transcribing -> done|failed, and no step may be skipped.
+ * The transcript state itself moves through lib/transcripts.js's
+ * applySegmentDone/applySegmentFailed (no-ops once terminal, so a
+ * double-submitted result can never double-append records).
  */
 function applyTaskResult({ store, taskId, body }) {
   const task = store.get("transcriptionTasks", taskId);
@@ -368,7 +346,12 @@ function applyTaskResult({ store, taskId, body }) {
   }
 
   if (fields.status === "done") {
-    writeDoneRecords({ store, task, records: fields.records });
+    applySegmentDone({
+      store,
+      sessionId: task.sessionId,
+      segmentIndex: task.segmentIndex,
+      records: fields.records,
+    });
     // D14: a done task's audio has no second consumer — delete immediately.
     deleteAudioFile(task.audioFile);
     store.set("transcriptionTasks", task.taskId, {
@@ -376,51 +359,62 @@ function applyTaskResult({ store, taskId, body }) {
       status: "done",
       result: { records: fields.records },
     });
-    markSegment({ store, task, status: "done" });
   } else {
     // D14: failed audio is retained until session end + grace period
     // (deployment-side sweeper, not this ticket).
+    applySegmentFailed({
+      store,
+      sessionId: task.sessionId,
+      segmentIndex: task.segmentIndex,
+      error: fields.error,
+    });
     store.set("transcriptionTasks", task.taskId, {
       ...task,
       status: "failed",
       result: { error: fields.error },
     });
-    markSegment({ store, task, status: "failed", error: fields.error });
   }
   return { status: 200, body: { taskId: task.taskId, status: fields.status } };
 }
 
 /**
- * Store one audio segment (contract-r2 §3.4). First write for the
- * (sessionId, segmentIndex) key wins and locks the Session's origin to
- * "asr"; a repeat is a 200 replay of the stored segment (no overwrite, no
- * second task). Order is never enforced — segmentIndex is the placement.
+ * Store one audio segment (contract-r2 §3.4). Failure order matches the
+ * captions path (2.2): 400 validation, 404 (D2), 409 finished (已结束不再
+ * 接收 — also covers resends, so a late byte-level replay after finish is
+ * the same stop signal as a new segment), 409 origin conflict via
+ * claimAudioOrigin (D15). First write for the (sessionId, segmentIndex)
+ * key wins and enqueues exactly one task; a repeat is a 200 replay of the
+ * stored segment (no overwrite, no second task). Order is never enforced
+ * — segmentIndex is the placement.
  */
 function ingestAudioSegment({ store, now, config, accountId, sessionId, body }) {
   const fields = requireSegmentBody(body);
   const session = requireSession({ store, accountId, sessionId });
 
-  // Idempotency first (contract-r2 §1): a replay of an already-stored
-  // segment is a 200 replay even if the session finished in the meantime —
-  // the 409 stop signal is for NEW segments.
-  const key = `${sessionId}:${fields.segmentIndex}`;
-  const existing = store.get("audioSegments", key);
-  if (existing) {
-    return { status: 200, body: { segment: presentSegment(existing) } };
-  }
-
   if (session.status === "finished") {
     throw sessionAlreadyFinishedForAudio();
   }
-  if (session.origin === "captions") {
-    throw transcriptOriginConflictForAudio();
+  // D15: locks origin null -> "asr", 409 when captions already locked.
+  claimAudioOrigin({ store, session });
+
+  const { segment, created } = upsertAudioSegment({
+    store,
+    sessionId,
+    segment: {
+      segmentIndex: fields.segmentIndex,
+      startMs: fields.startMs,
+      endMs: fields.startMs + fields.durationMs,
+      audioMimeType: fields.audioMimeType,
+    },
+  });
+  if (!created) {
+    // 首存为准: replay the stored segment, never re-enqueue.
+    return { status: 200, body: { segment: presentSegment(segment) } };
   }
 
   const audioBytes = Buffer.from(fields.audioBase64, "base64");
   const taskId = generateId("tsk");
   const audioFile = storeAudioFile({ config, bytes: audioBytes, taskId });
-  const startMs = fields.startMs;
-  const endMs = startMs + fields.durationMs;
 
   const task = {
     taskId,
@@ -428,8 +422,8 @@ function ingestAudioSegment({ store, now, config, accountId, sessionId, body }) 
     accountId,
     sourceId: session.sourceId,
     segmentIndex: fields.segmentIndex,
-    startMs,
-    endMs,
+    startMs: fields.startMs,
+    endMs: fields.startMs + fields.durationMs,
     audioMimeType: fields.audioMimeType,
     audioFile,
     status: "pending",
@@ -438,27 +432,6 @@ function ingestAudioSegment({ store, now, config, accountId, sessionId, body }) 
     claimedAt: null,
   };
   store.set("transcriptionTasks", taskId, task);
-
-  const segment = {
-    sessionId,
-    accountId,
-    segmentIndex: fields.segmentIndex,
-    startMs,
-    endMs,
-    durationMs: fields.durationMs,
-    audioMimeType: fields.audioMimeType,
-    audioFile,
-    taskId,
-    status: "pending",
-    error: null,
-    createdAt: now(),
-  };
-  store.set("audioSegments", key, segment);
-
-  // D15: the first audio segment locks the Session onto the asr path.
-  if (session.origin !== "asr") {
-    store.set("sessions", sessionId, { ...session, origin: "asr" });
-  }
 
   return { status: 201, body: { segment: presentSegment(segment) } };
 }

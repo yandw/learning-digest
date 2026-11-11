@@ -8,7 +8,11 @@
  *   (audio-task-examples.json, error-examples.json);
  * - the worker service credential is a statically configured bearer token
  *   (config.workerToken) — implementation decision recorded in the ticket;
- *   empty config means every worker request is 401.
+ *   empty config means every worker request is 401;
+ * - outcome assertions read the public GET /v1/sessions/{id}/transcript
+ *   view (2.2) plus the task queue this module owns; the only store reads
+ *   are the audio file paths (D14 deletion is unobservable via the API by
+ *   design) and the task queue's own status.
  *
  * Upload-side behavior lives in audio-segments-upload.test.js; the
  * end-to-end chain with the worker unit lives in audio-chain.test.js.
@@ -19,7 +23,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { startApp } = require("./helpers/harness");
 const { seedFileWith } = require("./helpers/accounts");
-const { seedSession, makeAudioDir, openAccountWithId } = require("./helpers/sessions");
+const { makeAudioDir, authHeader, openAccountWithId, createSessionFor } = require("./helpers/sessions");
 
 const FIXTURES_DIR = path.join(__dirname, "..", "..", "..", "contracts", "fixtures");
 const audioExampleById = new Map(
@@ -42,8 +46,8 @@ const SEGMENT_BODIES = {
 
 /**
  * One app instance with a worker credential, an invited account, and an
- * active session. Returns { harness, token, accountId, sessionId, claim }.
- * claim(body) posts to the claim endpoint with the worker credential.
+ * active session (public flow). Returns { harness, store, token,
+ * accountId, sessionId, claim, upload, getTranscript }.
  */
 async function startWorkerApp() {
   const harness = await startApp({
@@ -51,26 +55,34 @@ async function startWorkerApp() {
     config: { audioDir: makeAudioDir(), workerToken: WORKER_TOKEN },
   });
   const { token, accountId } = await openAccountWithId(harness, EMAIL);
-  const sessionId = "ses_test_worker_01";
-  seedSession(harness.store, {
-    id: sessionId,
-    accountId,
-    sourceId: "src_test_worker",
-    resourceId: "res_test_worker",
-  });
+  const { session } = await createSessionFor(harness, token, "worker");
   function claim(body) {
     return harness.request("POST", "/v1/worker/tasks/claim", {
-      headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+      headers: authHeader(WORKER_TOKEN),
       body,
     });
   }
   function upload(segmentIndex) {
-    return harness.request("POST", `/v1/sessions/${sessionId}/audio-segments`, {
-      headers: { authorization: `Bearer ${token}` },
+    return harness.request("POST", `/v1/sessions/${session.id}/audio-segments`, {
+      headers: authHeader(token),
       body: SEGMENT_BODIES[segmentIndex],
     });
   }
-  return { harness, store: harness.store, token, accountId, sessionId, claim, upload };
+  function getTranscript() {
+    return harness.request("GET", `/v1/sessions/${session.id}/transcript`, {
+      headers: authHeader(token),
+    });
+  }
+  return {
+    harness,
+    store: harness.store,
+    token,
+    accountId,
+    sessionId: session.id,
+    claim,
+    upload,
+    getTranscript,
+  };
 }
 
 test("worker claim: missing, user, and wrong worker credentials all answer the fixture 401", async () => {
@@ -82,7 +94,7 @@ test("worker claim: missing, user, and wrong worker credentials all answer the f
 
     // A valid user credential is still not a worker credential.
     const user = await harness.request("POST", "/v1/worker/tasks/claim", {
-      headers: { authorization: `Bearer ${token}` },
+      headers: authHeader(token),
       body: { limit: 1 },
     });
     assert.equal(user.status, 401);
@@ -111,7 +123,7 @@ test("worker claim: no pending tasks answers the empty state", async () => {
 });
 
 test("worker claim: claims one pending task with inline base64 audio and moves it to transcribing", async () => {
-  const { harness, claim, upload, sessionId } = await startWorkerApp();
+  const { harness, claim, upload, getTranscript, sessionId } = await startWorkerApp();
   try {
     await upload(1);
 
@@ -130,12 +142,20 @@ test("worker claim: claims one pending task with inline base64 audio and moves i
     assert.equal(task.audioMimeType, "audio/webm;codecs=opus");
     assert.equal(task.audioBase64, SEGMENT_BODIES[1].audioBase64);
     assert.equal(task.sessionId, sessionId);
-    assert.equal(task.sourceId, "src_test_worker");
+    assert.ok(task.sourceId.length > 0);
     assert.ok(task.taskId.length > 0);
 
-    // Claim is a transition: the claimed task is no longer pending.
+    // Claim is a transition: the claimed task is no longer pending, and the
+    // transcript view projects it as "transcribing" in pending[] (§2.5).
     const again = await claim({ limit: 1 });
     assert.deepEqual(again.json, { tasks: [] });
+
+    const view = (await getTranscript()).json;
+    assert.deepEqual(view.pending, [
+      { segmentIndex: 1, startMs: 30000, endMs: 60000, status: "transcribing" },
+    ]);
+    assert.deepEqual(view.failed, []);
+    assert.deepEqual(view.records, []);
   } finally {
     await harness.close();
   }
@@ -186,7 +206,7 @@ test("worker claim: limit defaults to 1, must be a positive integer, and caps at
     // Server cap: 11 pending tasks, limit 99 -> at most 10.
     for (let index = 3; index <= 11; index += 1) {
       const response = await harness.request("POST", `/v1/sessions/${sessionId}/audio-segments`, {
-        headers: { authorization: `Bearer ${token}` },
+        headers: authHeader(token),
         body: {
           segmentIndex: index,
           startMs: (index - 1) * 30000,
@@ -219,13 +239,13 @@ async function claimOne(harness, claim, upload, index) {
 
 function submitResult(harness, taskId, body) {
   return harness.request("POST", `/v1/worker/tasks/${taskId}/result`, {
-    headers: { authorization: `Bearer ${WORKER_TOKEN}` },
+    headers: authHeader(WORKER_TOKEN),
     body,
   });
 }
 
-test("worker result: done stores asr transcript records and deletes the audio file (D14)", async () => {
-  const { harness, store, token, accountId, claim, upload, sessionId } = await startWorkerApp();
+test("worker result: done lands the asr records in the transcript view and deletes the audio file (D14)", async () => {
+  const { harness, store, claim, upload, getTranscript } = await startWorkerApp();
   try {
     const task = await claimOne(harness, claim, upload, 1);
 
@@ -249,34 +269,33 @@ test("worker result: done stores asr transcript records and deletes the audio fi
     // Same shape as the fixture; the taskId is server-generated (opaque).
     assert.deepEqual(response.json, { taskId: task.taskId, status: done.response.body.status });
 
-    // Transcript record rows (internal-state assertion: the read model is
-    // ticket 2.2's GET /v1/sessions/{id}/transcript; the chain test keeps
-    // this linked until that lands).
-    const records = store.list("transcriptRecords").filter((r) => r.sessionId === sessionId);
-    assert.equal(records.length, 1);
-    assert.deepEqual(records[0], {
-      sessionId,
-      accountId,
-      sourceId: "src_test_worker",
-      startMs: 30000,
-      endMs: 60000,
-      text: "注意力分数的计算，就是把查询向量和键向量做点积",
-      origin: "asr",
-      taskId: task.taskId,
-    });
+    // The public transcript view (2.2) now carries the record; nothing is
+    // pending or failed.
+    const view = (await getTranscript()).json;
+    assert.deepEqual(
+      view.records.map((r) => ({ startMs: r.startMs, endMs: r.endMs, text: r.text, origin: r.origin })),
+      [
+        {
+          startMs: 30000,
+          endMs: 60000,
+          text: "注意力分数的计算，就是把查询向量和键向量做点积",
+          origin: "asr",
+        },
+      ],
+    );
+    assert.deepEqual(view.pending, []);
+    assert.deepEqual(view.failed, []);
 
-    // D14: done deletes the audio immediately; the segment is terminal.
+    // D14: done deletes the audio immediately; the task is terminal.
     assert.equal(fs.existsSync(stored.audioFile), false);
     assert.equal(store.get("transcriptionTasks", task.taskId).status, "done");
-    const segment = store.get("audioSegments", `${sessionId}:1`);
-    assert.equal(segment.status, "done");
   } finally {
     await harness.close();
   }
 });
 
-test("worker result: silence (records: []) is still done, writes nothing, deletes audio", async () => {
-  const { harness, store, claim, upload, sessionId } = await startWorkerApp();
+test("worker result: silence (records: []) is still done, writes no records, deletes audio", async () => {
+  const { harness, store, claim, upload, getTranscript } = await startWorkerApp();
   try {
     const task = await claimOne(harness, claim, upload, 2);
     const stored = store.get("transcriptionTasks", task.taskId);
@@ -285,7 +304,10 @@ test("worker result: silence (records: []) is still done, writes nothing, delete
     assert.equal(response.status, 200);
     assert.deepEqual(response.json, { taskId: task.taskId, status: "done" });
 
-    assert.equal(store.list("transcriptRecords").filter((r) => r.sessionId === sessionId).length, 0);
+    const view = (await getTranscript()).json;
+    assert.deepEqual(view.records, []);
+    assert.deepEqual(view.pending, []);
+    assert.deepEqual(view.failed, []);
     assert.equal(fs.existsSync(stored.audioFile), false);
     assert.equal(store.get("transcriptionTasks", task.taskId).status, "done");
   } finally {
@@ -293,8 +315,8 @@ test("worker result: silence (records: []) is still done, writes nothing, delete
   }
 });
 
-test("worker result: failed keeps the audio file and records the error on the segment (D14)", async () => {
-  const { harness, store, claim, upload, sessionId } = await startWorkerApp();
+test("worker result: failed keeps the audio file and surfaces the error in the transcript view (D14)", async () => {
+  const { harness, store, claim, upload, getTranscript } = await startWorkerApp();
   try {
     const task = await claimOne(harness, claim, upload, 3);
     const stored = store.get("transcriptionTasks", task.taskId);
@@ -307,16 +329,24 @@ test("worker result: failed keeps the audio file and records the error on the se
     assert.equal(response.status, 200);
     assert.deepEqual(response.json, { taskId: task.taskId, status: failed.response.body.status });
 
+    // The public view's failed[] carries the error verbatim; no records.
+    const view = (await getTranscript()).json;
+    assert.deepEqual(view.failed, [
+      {
+        segmentIndex: 3,
+        startMs: 90000,
+        endMs: 120000,
+        error: {
+          code: "transcription_failed",
+          message: "Speech Provider 返回 429，重试后仍失败",
+        },
+      },
+    ]);
+    assert.deepEqual(view.records, []);
+
     // D14: failed audio is retained for session-end + grace cleanup.
     assert.ok(fs.existsSync(stored.audioFile));
     assert.equal(store.get("transcriptionTasks", task.taskId).status, "failed");
-    const segment = store.get("audioSegments", `${sessionId}:3`);
-    assert.equal(segment.status, "failed");
-    assert.deepEqual(segment.error, {
-      code: "transcription_failed",
-      message: "Speech Provider 返回 429，重试后仍失败",
-    });
-    assert.equal(store.list("transcriptRecords").length, 0);
   } finally {
     await harness.close();
   }
@@ -340,7 +370,7 @@ test("worker result: unknown task answers the fixture 404; result needs the work
     assert.deepEqual(missing.json, errorExampleById.get("error-worker-claim-unauthorized").response.body);
 
     const user = await harness.request("POST", "/v1/worker/tasks/tsk_x/result", {
-      headers: { authorization: `Bearer ${token}` },
+      headers: authHeader(token),
       body: { status: "done", records: [] },
     });
     assert.equal(user.status, 401);
@@ -351,7 +381,7 @@ test("worker result: unknown task answers the fixture 404; result needs the work
 });
 
 test("worker result: resends replay the first stored result and never re-apply (首存为准)", async () => {
-  const { harness, store, claim, upload } = await startWorkerApp();
+  const { harness, store, claim, upload, getTranscript } = await startWorkerApp();
   try {
     const task = await claimOne(harness, claim, upload, 1);
     const first = await submitResult(harness, task.taskId, {
@@ -361,22 +391,25 @@ test("worker result: resends replay the first stored result and never re-apply (
     assert.equal(first.status, 200);
 
     // Same taskId, different body: still a 200 replay of the first result,
-    // and no second record row.
+    // and the view keeps exactly one record.
     const resend = await submitResult(harness, task.taskId, {
       status: "done",
       records: [{ startMs: 0, endMs: 1, text: "重发不应入库" }],
     });
     assert.equal(resend.status, 200);
     assert.deepEqual(resend.json, { taskId: task.taskId, status: "done" });
-    assert.equal(store.list("transcriptRecords").length, 1);
-    assert.equal(store.list("transcriptRecords")[0].text, "首存文本");
+    const view = (await getTranscript()).json;
+    assert.deepEqual(
+      view.records.map((r) => r.text),
+      ["首存文本"],
+    );
   } finally {
     await harness.close();
   }
 });
 
 test("worker result: terminal states never roll back (done -> failed attempt replays done)", async () => {
-  const { harness, store, claim, upload } = await startWorkerApp();
+  const { harness, store, claim, upload, getTranscript } = await startWorkerApp();
   try {
     const task = await claimOne(harness, claim, upload, 1);
     await submitResult(harness, task.taskId, {
@@ -391,7 +424,12 @@ test("worker result: terminal states never roll back (done -> failed attempt rep
     assert.equal(lateFailed.status, 200);
     assert.deepEqual(lateFailed.json, { taskId: task.taskId, status: "done" });
     assert.equal(store.get("transcriptionTasks", task.taskId).status, "done");
-    assert.equal(store.list("transcriptRecords")[0].text, "终态文本");
+    let view = (await getTranscript()).json;
+    assert.deepEqual(
+      view.records.map((r) => r.text),
+      ["终态文本"],
+    );
+    assert.deepEqual(view.failed, []);
 
     // And a failed task cannot become done afterwards.
     const failedTask = await claimOne(harness, claim, upload, 2);
@@ -405,14 +443,19 @@ test("worker result: terminal states never roll back (done -> failed attempt rep
     });
     assert.deepEqual(lateDone.json, { taskId: failedTask.taskId, status: "failed" });
     assert.equal(store.get("transcriptionTasks", failedTask.taskId).status, "failed");
-    assert.equal(store.list("transcriptRecords").length, 1);
+    view = (await getTranscript()).json;
+    assert.deepEqual(
+      view.records.map((r) => r.text),
+      ["终态文本"],
+    );
+    assert.equal(view.failed.length, 1);
   } finally {
     await harness.close();
   }
 });
 
 test("worker result: a result against a not-yet-claimed (pending) task is rejected", async () => {
-  const { harness, store, upload, sessionId } = await startWorkerApp();
+  const { harness, store, upload, getTranscript } = await startWorkerApp();
   try {
     await upload(1);
     const task = store.list("transcriptionTasks")[0];
@@ -427,6 +470,9 @@ test("worker result: a result against a not-yet-claimed (pending) task is reject
     assert.equal(response.status, 400);
     assert.equal(response.json.error.code, "validation_failed");
     assert.equal(store.get("transcriptionTasks", task.taskId).status, "pending");
+    const view = (await getTranscript()).json;
+    assert.deepEqual(view.records, []);
+    assert.deepEqual(view.failed, []);
   } finally {
     await harness.close();
   }

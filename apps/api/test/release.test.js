@@ -9,15 +9,15 @@ const path = require("node:path");
 
 const apiRoot = path.resolve(__dirname, "..");
 
-test("apps/api release metadata is 0.1.2", () => {
+test("apps/api release metadata is 0.1.3", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(apiRoot, "package.json"), "utf8"),
   );
   assert.equal(packageJson.name, "@learning-digest/api");
-  // 0.1.2 (ticket 2.2, issue #65): Session lifecycle + captions direct
-  // archive + transcript polling + resource-detail sessions[] extension
-  // (contract-r2 §3.1–3.3, §3.5–3.6; decisions D9/D15).
-  assert.equal(packageJson.version, "0.1.2");
+  // 0.1.3 (ticket 2.3, issue #66): audio-segment upload + worker tasks
+  // (contract-r2 §3.4/§3.7; decisions D11/D13/D14/D15), wired onto 2.2's
+  // transcript write interface.
+  assert.equal(packageJson.version, "0.1.3");
   assert.equal(packageJson.private, true);
 });
 

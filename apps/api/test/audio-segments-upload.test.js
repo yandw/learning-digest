@@ -5,8 +5,9 @@
  * Seams (pre-agreed in the ticket):
  * - the /v1 HTTP endpoints asserted against contracts/fixtures as the
  *   shared samples (audio-task-examples.json, error-examples.json);
- * - the Session records those endpoints read (seeded per contract-r2 §2.1
- *   until ticket 2.1 lands — see test/helpers/sessions.js).
+ * - Sessions come from the public flow (favorite -> session, 2.1/2.2), and
+ *   the transcript STATE behind the endpoint is read back through the
+ *   TranscriptView shape via lib/transcripts.js primitives where needed.
  *
  * This file covers the upload endpoint's own behavior. The worker claim /
  * result endpoints live in worker-tasks.test.js; the end-to-end chain with
@@ -18,7 +19,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { startApp } = require("./helpers/harness");
 const { seedFileWith } = require("./helpers/accounts");
-const { seedSession, makeAudioDir, openAccountWithId } = require("./helpers/sessions");
+const { makeAudioDir, openAccountWithId, createSessionFor } = require("./helpers/sessions");
+const { loadState } = require("../lib/transcripts");
 
 const FIXTURES_DIR = path.join(__dirname, "..", "..", "..", "contracts", "fixtures");
 const audioExampleById = new Map(
@@ -34,8 +36,9 @@ const EMAIL = "audio-uploader@example.com";
 const OTHER_EMAIL = "other-uploader@example.com";
 
 /**
- * One app instance with two invited accounts and an active Session owned
- * by the first. Returns { harness, token, accountId, sessionId }.
+ * One app instance with two invited accounts, one active Session per
+ * account (public flow). Returns { harness, store, token, accountId,
+ * sessionId, otherToken }.
  */
 async function startSessionedApp() {
   const harness = await startApp({
@@ -43,43 +46,17 @@ async function startSessionedApp() {
     config: { audioDir: makeAudioDir() },
   });
   const { token, accountId } = await openAccountWithId(harness, EMAIL);
-  const sessionId = "ses_test_audio_01";
-  seedSession(harness.store, {
-    id: sessionId,
+  const { session } = await createSessionFor(harness, token, "upload");
+  const { token: otherToken } = await openAccountWithId(harness, OTHER_EMAIL);
+  return {
+    harness,
+    store: harness.store,
+    token,
     accountId,
-    sourceId: "src_test_audio",
-    resourceId: "res_test_audio",
-  });
-  return { harness, store: harness.store, token, accountId, sessionId };
+    sessionId: session.id,
+    otherToken,
+  };
 }
-
-/** Open the second (invited) account and return its Bearer token. */
-async function openOtherAccount(harness) {
-  await harness.request("POST", "/v1/auth/request-code", { body: { email: OTHER_EMAIL } });
-  const code = harness.mailer.sent[harness.mailer.sent.length - 1].code;
-  const verified = await harness.request("POST", "/v1/auth/verify", {
-    body: { email: OTHER_EMAIL, code },
-  });
-  return verified.json.credential.token;
-}
-
-test("audio-segment upload: first segment answers 201 with the pending segment per fixture", async () => {
-  const { harness, token, sessionId } = await startSessionedApp();
-  try {
-    const sample = audioExampleById.get("api-audio-segment-upload");
-    const response = await harness.request(
-      "POST",
-      `/v1/sessions/${sessionId}/audio-segments`,
-      { headers: { authorization: `Bearer ${token}` }, body: sample.request.body },
-    );
-    assert.equal(response.status, 201);
-    // The fixture segment is the whole body: exactly the five contract
-    // fields, no server-side extras.
-    assert.deepEqual(response.json.segment, sample.response.body.segment);
-  } finally {
-    await harness.close();
-  }
-});
 
 /** Post one segment with the fixture body, override selected fields. */
 async function postSegment(harness, token, sessionId, overrides = {}) {
@@ -89,6 +66,20 @@ async function postSegment(harness, token, sessionId, overrides = {}) {
     body: { ...base, ...overrides },
   });
 }
+
+test("audio-segment upload: first segment answers 201 with the pending segment per fixture", async () => {
+  const { harness, token, sessionId } = await startSessionedApp();
+  try {
+    const sample = audioExampleById.get("api-audio-segment-upload");
+    const response = await postSegment(harness, token, sessionId, {});
+    assert.equal(response.status, 201);
+    // The fixture segment is the whole body: exactly the five contract
+    // fields, no server-side extras.
+    assert.deepEqual(response.json.segment, sample.response.body.segment);
+  } finally {
+    await harness.close();
+  }
+});
 
 test("audio-segment upload: invalid segmentIndex answers the fixture 400 body", async () => {
   const { harness, token, sessionId } = await startSessionedApp();
@@ -135,15 +126,14 @@ test("audio-segment upload: out-of-range durationMs, startMs, mime type and base
 });
 
 test("audio-segment upload: unknown and cross-account sessions are the same 404 (D2)", async () => {
-  const { harness, token } = await startSessionedApp();
+  const { harness, token, otherToken, sessionId } = await startSessionedApp();
   try {
     const unknown = await postSegment(harness, token, "ses_unknown", {});
     assert.equal(unknown.status, 404);
     assert.deepEqual(unknown.json, errorExampleById.get("error-cross-account-session-transcript").response.body);
 
-    // A second account cannot upload into the first account's session.
-    const otherToken = await openOtherAccount(harness);
-    const crossAccount = await postSegment(harness, otherToken, "ses_test_audio_01", {});
+    // The second account cannot upload into the first account's session.
+    const crossAccount = await postSegment(harness, otherToken, sessionId, {});
     assert.equal(crossAccount.status, 404);
     assert.deepEqual(crossAccount.json, errorExampleById.get("error-cross-account-session-transcript").response.body);
   } finally {
@@ -152,17 +142,14 @@ test("audio-segment upload: unknown and cross-account sessions are the same 404 
 });
 
 test("audio-segment upload: new segment on a finished session is 409 session_already_finished", async () => {
-  const { harness, store, token, accountId } = await startSessionedApp();
+  const { harness, token, sessionId } = await startSessionedApp();
   try {
-    const sessionId = "ses_test_finished";
-    seedSession(store, {
-      id: sessionId,
-      accountId,
-      sourceId: "src_test_audio",
-      resourceId: "res_test_audio",
-      status: "finished",
-      finishedAt: "2026-01-01T01:00:00Z",
+    const finished = await harness.request("POST", `/v1/sessions/${sessionId}/finish`, {
+      headers: { authorization: `Bearer ${token}` },
+      body: {},
     });
+    assert.equal(finished.status, 200);
+
     const response = await postSegment(harness, token, sessionId, {});
     assert.equal(response.status, 409);
     assert.deepEqual(response.json, errorExampleById.get("error-audio-segment-after-finish").response.body);
@@ -172,16 +159,15 @@ test("audio-segment upload: new segment on a finished session is 409 session_alr
 });
 
 test("audio-segment upload: audio into a captions-locked session is 409 transcript_origin_conflict (D15)", async () => {
-  const { harness, store, token, accountId } = await startSessionedApp();
+  const { harness, token, sessionId } = await startSessionedApp();
   try {
-    const sessionId = "ses_test_captions";
-    seedSession(store, {
-      id: sessionId,
-      accountId,
-      sourceId: "src_test_audio",
-      resourceId: "res_test_audio",
-      origin: "captions",
+    // Lock the other direction first (captions direct archive, 2.2).
+    const captions = await harness.request("POST", `/v1/sessions/${sessionId}/captions`, {
+      headers: { authorization: `Bearer ${token}` },
+      body: { segments: [{ startMs: 0, endMs: 1000, text: "字幕文本" }] },
     });
+    assert.equal(captions.status, 201);
+
     const response = await postSegment(harness, token, sessionId, {});
     assert.equal(response.status, 409);
     assert.deepEqual(response.json, {
@@ -202,11 +188,7 @@ test("audio-segment upload: byte-level replay answers 200 with the stored segmen
     assert.equal(first.status, 201);
 
     const replay = audioExampleById.get("api-audio-segment-duplicate-idempotent");
-    const second = await harness.request(
-      "POST",
-      `/v1/sessions/${sessionId}/audio-segments`,
-      { headers: { authorization: `Bearer ${token}` }, body: replay.request.body },
-    );
+    const second = await postSegment(harness, token, sessionId, {});
     assert.equal(second.status, 200);
     assert.deepEqual(second.json.segment, replay.response.body.segment);
 
@@ -240,17 +222,9 @@ test("audio-segment upload: out-of-order segments are accepted and placed by seg
     // Segment 1 first (fixture upload), then 3 before 2, then 2.
     const first = await postSegment(harness, token, sessionId, {});
     const outOfOrder = audioExampleById.get("api-audio-segment-out-of-order");
-    const third = await harness.request(
-      "POST",
-      `/v1/sessions/${sessionId}/audio-segments`,
-      { headers: { authorization: `Bearer ${token}` }, body: outOfOrder.request.body },
-    );
+    const third = await postSegment(harness, token, sessionId, outOfOrder.request.body);
     const second = audioExampleById.get("api-audio-segment-upload-second");
-    const secondResponse = await harness.request(
-      "POST",
-      `/v1/sessions/${sessionId}/audio-segments`,
-      { headers: { authorization: `Bearer ${token}` }, body: second.request.body },
-    );
+    const secondResponse = await postSegment(harness, token, sessionId, second.request.body);
 
     assert.equal(first.status, 201);
     assert.equal(third.status, 201);
@@ -269,18 +243,17 @@ test("audio-segment upload: audio bytes land in the temp audio dir (path outside
     config: { audioDir },
   });
   try {
-    const { token, accountId } = await openAccountWithId(own, EMAIL);
-    const sessionId = "ses_test_audio_file";
-    seedSession(own.store, { id: sessionId, accountId, sourceId: "s", resourceId: "r" });
+    const { token } = await openAccountWithId(own, EMAIL);
+    const { session } = await createSessionFor(own, token, "audio-file");
 
-    const response = await postSegment(own, token, sessionId, {});
+    const response = await postSegment(own, token, session.id, {});
     assert.equal(response.status, 201);
 
-    const segment = own.store.list("audioSegments")[0];
-    assert.ok(!segment.audioFile.includes(process.cwd()), "audio path must not live in the repo");
-    assert.ok(segment.audioFile.startsWith(audioDir));
-    assert.ok(fs.existsSync(segment.audioFile));
-    const bytes = fs.readFileSync(segment.audioFile);
+    const task = own.store.list("transcriptionTasks")[0];
+    assert.ok(!task.audioFile.includes(process.cwd()), "audio path must not live in the repo");
+    assert.ok(task.audioFile.startsWith(audioDir));
+    assert.ok(fs.existsSync(task.audioFile));
+    const bytes = fs.readFileSync(task.audioFile);
     assert.equal(
       bytes.toString("base64"),
       audioExampleById.get("api-audio-segment-upload").request.body.audioBase64,
@@ -294,9 +267,18 @@ test("audio-segment upload: first audio segment locks the session origin to asr 
   const { harness, store, token, sessionId } = await startSessionedApp();
   try {
     await postSegment(harness, token, sessionId, {});
-    // Internal-state assertion: the transcript read model is ticket 2.2;
-    // its GET /v1/sessions/{id}/transcript will surface the origin.
+    // The transcript state's projection is 2.2's; read it through the
+    // shared serializer's source (lib/transcripts.loadState).
     assert.equal(store.get("sessions", sessionId).origin, "asr");
+    const state = loadState(store, sessionId);
+    assert.deepEqual(
+      Object.keys(state.segments),
+      ["1"],
+    );
+    assert.equal(state.segments["1"].status, "pending");
+    assert.equal(state.segments["1"].startMs, 30000);
+    assert.equal(state.segments["1"].endMs, 60000);
+    assert.equal(state.segments["1"].audioMimeType, "audio/webm;codecs=opus");
   } finally {
     await harness.close();
   }

@@ -1,14 +1,10 @@
 /**
- * Session seeding for the round-2 audio/task tests (ticket 2.3, issue #66).
- *
- * Ticket 2.1 (issue #64) owns POST /v1/sources/{id}/sessions; until it
- * lands on the integration branch there is no public way to create a
- * Session. These helpers seed Session records straight into the "sessions"
- * collection using the contract-r2.md §2.1 shape, so 2.3 tests can run in
- * the meantime. When 2.1 merges, replace the seeding with the public
- * endpoint flow (the storage shape it writes is contract-pinned, so the
- * assertions below should keep passing unchanged).
+ * Session helpers for the round-2 audio/task tests (ticket 2.3, #66).
+ * Since tickets 2.1/2.2 landed, sessions are created through the PUBLIC
+ * flow only (favorite a source -> POST /v1/sources/{id}/sessions) — no
+ * store poking, mirroring test/session-transcripts.test.js.
  */
+const assert = require("node:assert/strict");
 const { makeTempDir } = require("./harness");
 const { openAccount } = require("./accounts");
 
@@ -17,27 +13,34 @@ function makeAudioDir() {
   return makeTempDir("ld-api-audio");
 }
 
+function authHeader(token) {
+  return { authorization: `Bearer ${token}` };
+}
+
 /**
- * Seed one Session (contract-r2.md §2.1) owned by accountId.
- * Missing fields take the fresh-session defaults: active, no finish, no
- * origin lock yet.
+ * Favorite a small fixture source and start a Session on it. Returns
+ * { resource, source, session }.
  */
-function seedSession(
-  store,
-  {
-    id,
-    accountId,
-    sourceId,
-    resourceId,
-    status = "active",
-    startedAt = "2026-01-01T00:00:00Z",
-    finishedAt = null,
-    origin = null,
-  },
-) {
-  const session = { id, accountId, sourceId, resourceId, status, startedAt, finishedAt, origin };
-  store.set("sessions", id, session);
-  return session;
+async function createSessionFor(harness, token, label = "audio-chain") {
+  const created = await harness.request("POST", "/v1/resources", {
+    headers: authHeader(token),
+    body: {
+      url: "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+      title: `注意力机制详解 P2：自注意力（${label}）`,
+    },
+  });
+  assert.strictEqual(created.status, 201);
+  const session = await harness.request(
+    "POST",
+    `/v1/sources/${created.json.source.id}/sessions`,
+    { headers: authHeader(token), body: {} },
+  );
+  assert.strictEqual(session.status, 201);
+  return {
+    resource: created.json.resource,
+    source: created.json.source,
+    session: session.json.session,
+  };
 }
 
 /**
@@ -48,9 +51,9 @@ function seedSession(
 async function openAccountWithId(harness, email) {
   const token = await openAccount(harness, email);
   const me = await harness.request("GET", "/v1/me", {
-    headers: { authorization: `Bearer ${token}` },
+    headers: authHeader(token),
   });
   return { token, accountId: me.json.account.id };
 }
 
-module.exports = { seedSession, makeAudioDir, openAccountWithId };
+module.exports = { makeAudioDir, authHeader, createSessionFor, openAccountWithId };

@@ -53,6 +53,16 @@ def not_found_source() -> ApiError:
     return ApiError(404, "not_found", "来源不存在或无权访问")
 
 
+def not_found_session() -> ApiError:
+    """Cross-account or missing Session reads/writes (contract-r2 §3; D2)."""
+    return ApiError(404, "not_found", "学习记录不存在或无权访问")
+
+
+def session_already_finished() -> ApiError:
+    """Writes against a finished Session (contract-r2 §3.2: repeat finish)."""
+    return ApiError(409, "session_already_finished", "本次学习已结束，无需重复收尾")
+
+
 def method_not_allowed() -> ApiError:
     return ApiError(405, "method_not_allowed", "HTTP 方法不被允许")
 

@@ -30,6 +30,7 @@ from .platform_video_id import (
     extract_video_identity,
     normalize_url,
 )
+from .sessions import sessions_for_resource
 from .timeutil import iso_seconds_from_ms
 
 # The declared-identity format judgment comes from the shared platform
@@ -330,8 +331,12 @@ def get_resource_detail(*, store: Any, account_id: str, resource_id: str) -> dic
             "notes": notes_for_resource(
                 store=store, account_id=account_id, resource_id=resource["id"]
             ),
-            # contract-r2 §3.6 additive key; populated by ticket 4.3.
-            "sessions": [],
+            # contract-r2 §3.6 additive key (ticket 4.3): the account's
+            # sessions on this resource, newest first, each with its
+            # transcript summary counts.
+            "sessions": sessions_for_resource(
+                store=store, account_id=account_id, resource_id=resource["id"]
+            ),
         },
     }
 

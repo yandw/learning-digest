@@ -28,6 +28,7 @@ from .mailer import create_memory_mailer
 from .persistence import create_memory_store
 from .routes_auth import register_auth_routes
 from .routes_resources import register_resources_routes
+from .routes_sessions import register_sessions_routes
 
 
 def _default_now() -> int:
@@ -62,6 +63,7 @@ def create_app(
     _register_error_handlers(app)
     register_auth_routes(app, ctx)
     register_resources_routes(app, ctx)
+    register_sessions_routes(app, ctx)
     return app
 
 

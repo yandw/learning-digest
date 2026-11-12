@@ -26,7 +26,8 @@ from .errors import ApiError, internal_error, method_not_allowed, not_found_unkn
 from .invites import load_seed_invites
 from .mailer import create_memory_mailer
 from .persistence import create_memory_store
-from .routes_auth import register_routes
+from .routes_auth import register_auth_routes
+from .routes_resources import register_resources_routes
 
 
 def _default_now() -> int:
@@ -59,7 +60,8 @@ def create_app(
     # reaches the router.
     app.add_middleware(V1CorsMiddleware)
     _register_error_handlers(app)
-    register_routes(app, ctx)
+    register_auth_routes(app, ctx)
+    register_resources_routes(app, ctx)
     return app
 
 

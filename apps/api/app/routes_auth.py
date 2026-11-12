@@ -75,10 +75,6 @@ CtxDep = Annotated[AppContext, Depends(get_ctx)]
 CredentialDep = Annotated[dict, Depends(require_credential)]
 
 
-def register_routes(app, ctx: AppContext) -> None:
-    register_auth_routes(app, ctx)
-
-
 def register_auth_routes(app, ctx: AppContext) -> None:
     @app.post("/v1/auth/request-code")
     async def request_code(request: Request) -> JSONResponse:

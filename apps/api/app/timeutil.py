@@ -12,3 +12,13 @@ def iso_from_ms(at_ms: int) -> str:
 
 def iso_now() -> str:
     return iso_from_ms(int(datetime.now(tz=timezone.utc).timestamp() * 1000))
+
+
+def iso_seconds_from_ms(at_ms: int) -> str:
+    """Contract §1 timestamp format for createdAt-style fields: ISO 8601 UTC
+    at second precision, like the fixture samples ("2026-11-10T08:00:00Z").
+    Port of lib/notes.js isoSeconds (floor to the second, drop the ".mmm")
+    — the API's single createdAt formatter, shared by resources and notes
+    so every timestamp is shaped alike."""
+    moment = datetime.fromtimestamp((at_ms // 1000), tz=timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")

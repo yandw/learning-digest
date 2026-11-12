@@ -31,3 +31,10 @@ dist/
 *.pem
 *.key
 .worktrees/
+
+# Python (apps/api FastAPI rewrite): venvs, bytecode, test/tooling caches.
+# pyproject.toml, uv.lock, app/ and tests/ are versioned code, never ignored.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

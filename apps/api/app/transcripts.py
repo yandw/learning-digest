@@ -42,6 +42,7 @@ from .errors import (
     validation_failed,
 )
 from .jsnum import coerce_js_integer, is_js_integer
+from .fields import require_int_field
 
 # Error copy lives here (transcript-specific); the shared session/auth
 # errors stay in app/errors.py like lib/errors.js.
@@ -71,12 +72,13 @@ def save_state(store: Any, state: dict) -> None:
 
 def _require_non_negative_integer_field(obj: dict, field: str, where: str) -> int:
     """Non-negative integer field with a caller-supplied name for the message."""
-    value = obj.get(field)
-    if field not in obj or value is None:
-        raise validation_failed(f"缺少必填字段 {where}")
-    if not is_js_integer(value) or value < 0:
-        raise validation_failed(f"{where} 必须是非负整数")
-    return coerce_js_integer(value)
+    return require_int_field(
+        obj,
+        field,
+        missing_message=f"缺少必填字段 {where}",
+        invalid_message=f"{where} 必须是非负整数",
+        non_dict_is_missing=False,
+    )
 
 
 def parse_gaps(body: Any) -> list:

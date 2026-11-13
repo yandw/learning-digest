@@ -42,6 +42,9 @@ import re
 from typing import Any, Callable
 
 from .errors import ApiError, not_found_session, validation_failed
+from .fields import require_int_field
+from .jsnum import coerce_js_integer, is_js_integer
+from .http import bearer_token
 from .ids import generate_id
 from .sessions import find_account_session
 from .transcripts import (
@@ -71,25 +74,29 @@ def require_segment_body(body: Any) -> dict:
     """Validate one audio-segment body (contract-r2 §3.4). Returns the
     coerced fields; raises the contract 400s. Field order is fixed so a
     fault always maps to one predictable message."""
-    from .jsnum import coerce_js_integer, is_js_integer
-
-    if not isinstance(body, dict):
-        raise validation_failed("缺少必填字段 segmentIndex")
-
-    if body.get("segmentIndex") is None:
-        raise validation_failed("缺少必填字段 segmentIndex")
-    if not is_js_integer(body["segmentIndex"]) or body["segmentIndex"] < 0:
-        raise validation_failed("segmentIndex 必须是不小于 0 的整数")
-
-    if body.get("startMs") is None:
-        raise validation_failed("缺少必填字段 startMs")
-    if not is_js_integer(body["startMs"]) or body["startMs"] < 0:
-        raise validation_failed("startMs 必须是不小于 0 的整数")
-
-    if body.get("durationMs") is None:
-        raise validation_failed("缺少必填字段 durationMs")
-    if not is_js_integer(body["durationMs"]) or not 5000 <= body["durationMs"] <= 60000:
-        raise validation_failed("durationMs 必须在 5000 到 60000 毫秒之间")
+    segment_index = require_int_field(
+        body,
+        "segmentIndex",
+        missing_message="缺少必填字段 segmentIndex",
+        invalid_message="segmentIndex 必须是不小于 0 的整数",
+        non_dict_is_missing=False,
+    )
+    start_ms = require_int_field(
+        body,
+        "startMs",
+        missing_message="缺少必填字段 startMs",
+        invalid_message="startMs 必须是不小于 0 的整数",
+        non_dict_is_missing=False,
+    )
+    duration_ms = require_int_field(
+        body,
+        "durationMs",
+        missing_message="缺少必填字段 durationMs",
+        invalid_message="durationMs 必须在 5000 到 60000 毫秒之间",
+        min_value=5000,
+        max_value=60000,
+        non_dict_is_missing=False,
+    )
 
     if body.get("audioMimeType") is None or body["audioMimeType"] == "":
         raise validation_failed("缺少必填字段 audioMimeType")
@@ -104,9 +111,9 @@ def require_segment_body(body: Any) -> dict:
         raise validation_failed("音频超过 10MB 编码上限")
 
     return {
-        "segmentIndex": coerce_js_integer(body["segmentIndex"]),
-        "startMs": coerce_js_integer(body["startMs"]),
-        "durationMs": coerce_js_integer(body["durationMs"]),
+        "segmentIndex": coerce_js_integer(segment_index),
+        "startMs": coerce_js_integer(start_ms),
+        "durationMs": coerce_js_integer(duration_ms),
         "audioMimeType": body["audioMimeType"],
         "audioBase64": body["audioBase64"],
     }
@@ -183,8 +190,6 @@ def require_worker_credential(*, request: Any, config: Any) -> None:
     credential (an implementation decision of ticket 2.3; issuance/rotation
     is ops territory per D13). An empty configured token rejects
     everything, so a misconfigured deployment fails closed."""
-    from .routes_auth import bearer_token
-
     token = bearer_token(request)
     if (
         not config.worker_token
@@ -197,8 +202,6 @@ def require_worker_credential(*, request: Any, config: Any) -> None:
 def parse_claim_limit(body: Any) -> int:
     """Parse the claim body's limit (contract-r2 §3.7): positive integer,
     default 1, server cap 10 (larger values are clamped, not rejected)."""
-    from .jsnum import is_js_integer
-
     if body is not None and not isinstance(body, dict):
         raise validation_failed("limit 必须是正整数")
     requested = body.get("limit") if isinstance(body, dict) and body.get("limit") is not None else 1
@@ -254,8 +257,6 @@ def require_result_body(body: Any) -> dict:
     records array (TranscriptRecord timestamps; [] is a silence segment),
     or failed with the round-2's single task error code. Returns the
     validated shape."""
-    from .jsnum import coerce_js_integer, is_js_integer
-
     if not isinstance(body, dict):
         raise validation_failed("status 必须是 done 或 failed")
     if body.get("status") not in ("done", "failed"):

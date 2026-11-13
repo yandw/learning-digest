@@ -26,6 +26,7 @@ from typing import Any
 
 from .errors import ApiError, not_found_source, validation_failed
 from .jsnum import coerce_js_integer, is_js_integer
+from .fields import require_int_field
 
 
 def progress_conflict(current: dict) -> ApiError:
@@ -43,15 +44,12 @@ def require_non_negative_integer(body: Any, field: str) -> int:
     expectedRevision). Non-object bodies (null, arrays, scalars) answer
     the missing-field error for the first field checked, like the JS
     reference's requireNonNegativeInteger."""
-    if body is None or not isinstance(body, dict):
-        raise validation_failed(f"缺少必填字段 {field}")
-    value = body.get(field)
-    if value is None:
-        # JS undefined and null both take the missing-field branch.
-        raise validation_failed(f"缺少必填字段 {field}")
-    if not is_js_integer(value) or value < 0:
-        raise validation_failed(f"{field} 必须是非负整数")
-    return coerce_js_integer(value)
+    return require_int_field(
+        body,
+        field,
+        missing_message=f"缺少必填字段 {field}",
+        invalid_message=f"{field} 必须是非负整数",
+    )
 
 
 def save_progress(*, store: Any, account_id: str, source_id: str, body: Any) -> dict:

@@ -26,7 +26,7 @@ from .ids import generate_id
 from .notes import notes_for_resource
 from .platform_video_id import (
     PLATFORM_VIDEO_ID_FORMATS,
-    _safe_parse_url,
+    safe_parse_url,
     extract_video_identity,
     normalize_url,
 )
@@ -50,7 +50,7 @@ def _parse_url_for_request(url: str):
     the parsed URL or None (the caller answers invalid_url). WhatWG hard
     requirements the contract leans on (scheme/host/port) live in the
     platform module's parser."""
-    return _safe_parse_url(url)
+    return safe_parse_url(url)
 
 
 def parse_identity(value: Any) -> dict | None:

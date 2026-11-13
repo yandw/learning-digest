@@ -5,6 +5,7 @@ envelope live in FastAPI handlers (app_factory._register_error_handlers)."""
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi import Request
 
@@ -29,3 +30,17 @@ async def read_json_body(request: Request, max_bytes: int):
         return json.loads(raw)
     except json.JSONDecodeError:
         raise validation_failed("请求体不是合法 JSON") from None
+
+
+_BEARER_PATTERN = re.compile(r"^Bearer\s+(\S+)$", re.IGNORECASE)
+
+
+def bearer_token(request: Request) -> str | None:
+    """Extract the Bearer token from the Authorization header, or None when
+    the header is absent or not Bearer (RFC 7235: scheme is
+    case-insensitive). Shared by the auth guard and the worker guard."""
+    header = request.headers.get("authorization")
+    if not isinstance(header, str):
+        return None
+    match = _BEARER_PATTERN.match(header.strip())
+    return match.group(1).strip() if match else None

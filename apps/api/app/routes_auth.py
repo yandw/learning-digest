@@ -28,7 +28,6 @@ from .invites import is_invited
 from .link_codes import consume_link_code, create_link_code
 from .requests import LinkBody, RequestCodeBody, VerifyBody
 
-_BEARER_PATTERN = re.compile(r"^Bearer\s+(.+)$", re.IGNORECASE)
 
 
 def _body_dict(body) -> dict:
@@ -42,15 +41,7 @@ def get_ctx(request: Request) -> AppContext:
     return request.app.state.ctx
 
 
-def bearer_token(request: Request) -> str | None:
-    """Extract the Bearer token from the Authorization header, or None when
-    the header is absent or not Bearer (RFC 7235: scheme is
-    case-insensitive)."""
-    header = request.headers.get("authorization")
-    if not isinstance(header, str):
-        return None
-    match = _BEARER_PATTERN.match(header.strip())
-    return match.group(1).strip() if match else None
+from .http import bearer_token  # noqa: E402  (moved to http.py; audio_jobs uses it too)
 
 
 def require_credential(

@@ -73,7 +73,7 @@ IGNORE_PARAMS: dict[str, set[str]] = {
 }
 
 
-def _safe_parse_url(url: Any):
+def safe_parse_url(url: Any):
     """Node's safeParseUrl: parse as http(s) or return None; never throws.
     Mirrors the WHATWG constructor's hard requirements the contract leans
     on (valid scheme, non-empty host, in-range port)."""
@@ -122,7 +122,7 @@ def _url_host(parsed) -> str | None:
 def normalize_url(url: Any) -> str | None:
     """§0 normalized address for url-exact matching. Returns None for
     garbage or non-http(s) input; never throws."""
-    parsed = _safe_parse_url(url)
+    parsed = safe_parse_url(url)
     if parsed is None:
         return None
     host = _url_host(parsed)
@@ -263,7 +263,7 @@ def extract_video_identity(url: Any) -> dict | None:
     """The platform identity a URL carries, per platform-video-id-rules.md.
     Returns None when no identity is confirmable from the URL alone;
     never throws on any input."""
-    parsed = _safe_parse_url(url)
+    parsed = safe_parse_url(url)
     if parsed is None:
         return None
     platform_id = _platform_id_for_host(parsed.hostname or "")

@@ -111,7 +111,7 @@ def main(argv: list[str], env: dict | None = None) -> int:
 
     if command == "add":
         if not operands:
-            sys.stderr.write("usage: invite.js add <email> [...]\n")
+            sys.stderr.write("usage: python -m app.invites add <email> [...]\n")
             return 1
         for email in operands:
             if not normalize_email(email):
@@ -131,7 +131,7 @@ def main(argv: list[str], env: dict | None = None) -> int:
         sys.stdout.write(f"({store.count('invites')} invited email(s))\n")
         return 0
 
-    sys.stderr.write("usage: invite.js <add|list> [...]\n")
+    sys.stderr.write("usage: python -m app.invites <add|list> [...]\n")
     return 1
 
 

@@ -11,17 +11,17 @@
 
 ## 1. 自动化验收（本分支已绿）
 
-实测分支 tip `28ac699`（评审修复轮 review-fixes 之后），日期 2026-11-11，全部通过：
+实测分支 tip：第四轮 ticket 4.6（#82）服务层切换后（apps/api、apps/worker 仅保留 Python 实现，命令为 pytest/uv），日期 2026-11-13，全部通过：
 
-- [x] **契约样例** — `node --test contracts/` → **32 pass / 0 fail**
-  共享身份提取（四站 Video ID 规则表全量断言）+ 契约 fixture（source-matching / api-examples / error-examples）+ PATCH retitle 扩展；评审修复新增 platformVideoIdFormats 导出与大写 hex 钉子。
-- [x] **API 边界** — `cd apps/api && npm test` → **105 pass / 0 fail**
+- [x] **契约样例** — `node --test contracts/` → **52 pass / 0 fail**
+  v1 全量 + r2/r3 契约 fixture（Session/Transcript/音频任务/Summary/Usage、error-examples、四站 Video ID 规则表全量断言）。
+- [x] **API 边界** — `cd apps/api && uv run pytest tests/ -q` → **214 pass / 0 fail**（Python/FastAPI 实现）
   验证码登录（防爆破/冷却）、link-requests/link 关联、整组撤销 logout、resources 收藏与去重、resolve、progress（乐观并发 409+current、幂等重发）、notes（clientRequestId 幂等、指针校验）、retitle；错误封套与契约样例逐字一致。
-- [x] **Web 逻辑** — `cd apps/web && npm test` → **104 pass / 0 fail**
+- [x] **Web 逻辑** — `cd apps/web && npm test` → **156 pass / 0 fail**
   `/v1` 反向代理（错误逐字透传）、静态资源、登录流、凭据 401 回登录页、学习列表/详情、PATCH 转发、vendor 共享模块字节相等；评审修复新增 progressLabel 的 revision 判定钉子。
-- [x] **插件纯模块与接线** — `npm test`（根，`node --test tests/*.test.js`）→ **655 pass / 0 fail**
+- [x] **插件纯模块与接线** — `npm test`（根，`node --test tests/*.test.js`）→ **695 pass / 0 fail**
   auth-gate 四态、collect、notes（时间戳/草稿重试）、learning-start（目标锁定/进度写入客户端/409 采纳重试）、page-bridge（位置流/seek/换源检测）、三站 Source Platform 适配、联动退出、续学选项与四类收尾触发；PoC 会话行为全量回归；评审修复新增 api-client 套件与 positionMs=0 钉子。
-- [x] `npm run check` → Release checks passed（42 allowlist 文件）。
+- [x] `npm run check` → Release checks passed（45 allowlist 文件）。
 
 ## 2. 人工验收步骤
 
@@ -31,16 +31,16 @@
 2. [ ] **API 启动前**登记受邀邮箱（服务端把邀请名单读进内存，启动后用 CLI 登记不会被运行中的服务看到）：
 
    ```bash
-   node apps/api/scripts/invite.js add user1@example.com user2@example.com
-   node apps/api/scripts/invite.js list   # 确认两条
+   cd apps/api && uv run python -m app.invites add user1@example.com user2@example.com
+   cd apps/api && uv run python -m app.invites list   # 确认两条
    ```
 
    双账号隔离（§2.7）需要两个邮箱，各配一个 Chrome 用户配置（profile）——插件凭据组按浏览器配置生效。
 3. [ ] 启动后端与 Web（两个终端）：
 
    ```bash
-   cd apps/api && npm start        # 127.0.0.1:8787，默认即可
-   cd apps/web && npm start        # 127.0.0.1:8080，默认上游即 8787
+   cd apps/api && uv run python -m app.main   # 127.0.0.1:8787，默认即可
+   cd apps/web && npm start                   # 127.0.0.1:8080，默认上游即 8787
    ```
 
 4. [ ] 验证码读取方式（dev 邮件实现，尚无真实邮件账号）：API 进程 stdout 会打印 `[mailer] to=… code=…`，同时追加写入 `apps/api/data/outbox.jsonl`
@@ -149,15 +149,15 @@
 
 ### 3.2 自动化结果（随分支更新）
 
-> 第一轮时点数字；二轮 tip 的最新实测见 [round2-acceptance.md](round2-acceptance.md) §5.2。
+> 数字随分支更新（4.6 切换后 apps/api 为 pytest 套件）；最新实测见 [round2-acceptance.md](round2-acceptance.md) §5.2。
 
 | 套件 | 命令 | 结果 | 日期 |
 | --- | --- | --- | --- |
-| contracts | `node --test contracts/` | 32 pass / 0 fail | 2026-11-11（tip 28ac699） |
-| apps/api | `cd apps/api && npm test` | 105 pass / 0 fail | 同上 |
-| apps/web | `cd apps/web && npm test` | 104 pass / 0 fail | 同上 |
-| 插件（根） | `npm test` | 655 pass / 0 fail | 同上 |
-| 发布检查 | `npm run check` | passed（42 allowlist） | 同上 |
+| contracts | `node --test contracts/` | 52 pass / 0 fail | 2026-11-13（第四轮 4.6 服务层切换后） |
+| apps/api | `cd apps/api && uv run pytest tests/ -q` | 214 pass / 0 fail | 同上 |
+| apps/web | `cd apps/web && npm test` | 156 pass / 0 fail | 同上 |
+| 插件（根） | `npm test` | 695 pass / 0 fail | 同上 |
+| 发布检查 | `npm run check` | passed（45 allowlist） | 同上 |
 
 ### 3.3 四站样本课程登记表（等待项目方提供）
 

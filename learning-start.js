@@ -21,7 +21,7 @@
  * - §2.3 positionMs is the last ACTUALLY PLAYED position — drags backward
  *   (回拖) are saved as-is.
  *
- * Write policy (aligned with apps/api/lib/progress.js, ticket #54):
+ * Write policy (aligned with apps/api/app/progress.py, ticket #54):
  * - throttle: positions coalesce; at most one PUT per `throttleMs` window
  *   (default 10s), always carrying the NEWEST pending position. Key events
  *   bypass the throttle: the first position after start (the anchor), a
@@ -37,7 +37,7 @@
  * - network failure: bounded exponential backoff resends the SAME
  *   expectedRevision + positionMs on the throttle schedule. The API treats
  *   that exact resend as an idempotent re-ack (200 without bumping the
- *   revision, see apps/api/lib/progress.js); if the original write had
+ *   revision, see apps/api/app/progress.py); if the original write had
  *   landed, the resend turns into a 409 whose `current` is adopted. When
  *   the backoff budget is exhausted the latest position stays pending and
  *   is retried after the throttle window — the pending slot only ever holds

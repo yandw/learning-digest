@@ -1,4 +1,4 @@
-"""Production entrypoint for the Learning Digest worker 0.1.0. Port of
+"""Production entrypoint for the Learning Digest worker. Port of
 worker.js (ticket 4.5). One runtime dependency: httpx.
 
 Run: python -m worker.main

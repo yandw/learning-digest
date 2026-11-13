@@ -14,14 +14,14 @@
 
 ## 1. 自动化验收（本分支已绿）
 
-实测分支 tip `4c34de7`（二/三轮功能票全部落地），日期 2026-11-12，全部通过，合计 **1113 pass / 0 fail**：
+实测分支 tip：第四轮 ticket 4.6（#82）服务层切换后（apps/api、apps/worker 仅保留 Python 实现，命令为 pytest/uv），日期 2026-11-13，全部通过，合计 **1145 pass / 0 fail**：
 
 - [x] **契约** — `node --test contracts/` → **52 pass / 0 fail**
   v1 全量（32 项）+ contract-r2（Session/Transcript/音频任务 fixture、error-examples 二轮 10 例、D9–D15 形态断言）之上叠加 contract-r3：Summary/Citation/Usage fixture（`summary-examples.json` 两次生成故事：未学完时首次生成 → 补学 Session `ses_01JABC0034` 归档后再生成 → 列表/详情/另一门资料空列表独立计数 → usage 口径样例）、error-examples 三轮 7 例（409 `no_transcript_to_summarize`、502 `summary_generation_failed`、生成/列表/详情/用量 401/404）、D16–D18 形态全量断言。
-- [x] **API 边界** — `cd apps/api && npm test` → **185 pass / 0 fail**
-  一/二轮全量回归之外，三轮新增：AI Provider seam（stub 确定性、qwen 无 key 启动即抛 fail closed、未知 provider fail fast）、POST 同步生成（聚合全部 Sessions records/gaps + notes → 外移 prompt 组装 → 生成 → **引用清洗**：sessionId 归属/区间精确命中/quote 逐字摘句逐条对账，不合规丢弃，全无效 citations=[] 仍落正文）、GET 列表（倒序 + citationCount，seq tie-break 防同毫秒乱序）与详情、409 不发起 AI 调用、502 不落库不计数（失败不落脏数据）、用量口径（audioSeconds 段首次 done 累加且重放不重复、静音段计入、失败/转写中不计；summaryCount/summaryInputChars 落库时记；全新账号 `updatedAt=null`）、`server.timeout` 抬到 max(10s, aiTimeoutMs+5s)。
-- [x] **Worker** — `cd apps/worker && npm test` → **25 pass / 0 fail**
-  pull 主循环（串行 + 空轮询退避）、stub/qwen provider seam、静音段 = done 空 records、回写重放与终态、config fail fast（qwen 无 key 启动即失败）。三轮无行为变化，零回归。
+- [x] **API 边界** — `cd apps/api && uv run pytest tests/ -q` → **214 pass / 0 fail**（Python/FastAPI 实现，4.6 起为唯一服务层实现）
+  一/二轮全量回归之外，三轮新增：AI Provider seam（stub 确定性、qwen 无 key 启动即抛 fail closed、未知 provider fail fast）、POST 同步生成（聚合全部 Sessions records/gaps + notes → 外移 prompt 组装 → 生成 → **引用清洗**：sessionId 归属/区间精确命中/quote 逐字摘句逐条对账，不合规丢弃，全无效 citations=[] 仍落正文）、GET 列表（倒序 + citationCount，seq tie-break 防同毫秒乱序）与详情、409 不发起 AI 调用、502 不落库不计数（失败不落脏数据）、用量口径（audioSeconds 段首次 done 累加且重放不重复、静音段计入、失败/转写中不计；summaryCount/summaryInputChars 落库时记；全新账号 `updatedAt=null`）、uvicorn keep-alive 抬到 max(10s, aiTimeoutMs+5s)。
+- [x] **Worker** — `cd apps/worker && uv run pytest tests/ -q` → **28 pass / 0 fail**（Python 实现，4.6 起为唯一服务层实现）
+  pull 主循环（串行 + 空轮询退避）、stub/qwen provider seam、静音段 = done 空 records、回写重放与终态、config fail fast（qwen 无 key 启动即失败）；含 loopback 真链路用例（真 client + 真 API 子进程）。4.6 切换零行为变化，零回归。
 - [x] **Web 逻辑** — `cd apps/web && npm test` → **156 pass / 0 fail**
   二轮逐字稿区块全量回归之外，三轮新增：markdown.js 安全渲染（解析为纯文本 view model、`createElement`+`textContent` 建 DOM、**从不产出 HTML 字符串、零 innerHTML 路径**，注入测试钉住；支持面刻意最小——标题/列表/粗体/段落，其余字面降级）、生成总结（飞行期「生成中…」禁用 + 防抖、409/502 契约文案逐字透传、跨资源导航守卫）、历史 pills（倒序 + citationCount、按需拉取缓存）、引用块（quote 文本节点 + 区间 stamp + Session 归属，回跳复用 SEEK_PARAM_BUILDERS，不可回跳仅展示）、用量面板（`updatedAt=null` → 「从未产生用量」，无价格措辞）。
 - [x] **插件纯模块与接线** — `npm test`（根，`node --test tests/*.test.js`）→ **695 pass / 0 fail**
@@ -38,13 +38,13 @@
 2. [ ] **API 启动前**设置 worker 服务凭据（默认空 = fail closed，任何 worker 都领不到任务）并重启：
 
    ```bash
-   LD_API_WORKER_TOKEN=<随机串> npm start --prefix apps/api
+   cd apps/api && LD_API_WORKER_TOKEN=<随机串> uv run python -m app.main
    ```
 
 3. [ ] 启动 Worker（第三个终端，token 与 API 侧同值）：
 
    ```bash
-   cd apps/worker && LD_WORKER_TOKEN=<同 LD_API_WORKER_TOKEN> npm start
+   cd apps/worker && LD_WORKER_TOKEN=<同 LD_API_WORKER_TOKEN> uv run python -m worker.main
    # [worker] provider=stub api=http://127.0.0.1:8787 poll=5000ms
    ```
 
@@ -156,7 +156,7 @@
 
 ### 3.0 环境准备（一次）
 
-1. [ ] 版本核对：扩展卡片 **0.2.13**、Web **0.1.5**、API **0.1.6**（第三轮零插件/Worker 变化，零 bump；API 0.1.6 = 三轮 review 修正，版本矩阵见 §5.1）
+1. [ ] 版本核对：扩展卡片 **0.2.13**、Web **0.1.5**、API **0.2.0**、Worker **0.2.0**（4.6 切换：API/Worker 实现重写为 Python 唯一服务层实现，契约代际 `/v1` 不变；版本矩阵见 §5.1）
 2. [ ] API/Web/worker 照 §2.0 启动；AI Provider 不需额外配置——API 默认 `LD_AI_PROVIDER` 空 = 确定性 stub（`LD_AI_API_KEY` 只在走真实 qwen 时需要，见 §5.3 / §5.5）
 3. [ ] §2.0 第 6 条的两门课样本已登记：课程 A（可学习、有逐字稿）与课程 B（只收藏不学习）
 4. [ ] 双账号配置沿用第一轮（round1 §2.0 第 2 条：两个邮箱、两个 Chrome profile）
@@ -261,17 +261,17 @@
 | --- | --- | --- |
 | 浏览器插件 | 0.2.13 | 根 `manifest.json` / `package.json` / `tests/release.test.js` 三处同步；0.2.9 B 站字幕（2.5）→ 0.2.10 YouTube 字幕（2.6）→ 0.2.11 ASR 路径切换 + D10 退役（2.4）→ 0.2.12 强制转写（2.7）→ 0.2.13 二轮 review 修正（词汇统一 + transcript-shapes 共享模块）。**第三轮零行为变化（课程总结只在 Web/API，D16），零 bump** |
 | Web 学习库 | 0.1.5 | `apps/web/package.json`；0.1.3 = 逐字稿回查（2.8）→ 0.1.4 = finished 后 pending 段标注排队 → **0.1.5 = 课程总结生成/历史/引用回跳 + 安全 Markdown 渲染（markdown.js，零 innerHTML）+ 用量入口（§3）** |
-| 后端 API | 0.1.6 | `apps/api/package.json`；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）→ 0.1.4 = requireSession 去重 + 崩溃窗口自愈 → 0.1.5 = AI Provider seam（stub/qwen）+ 总结端点（同步生成 + 引用清洗）+ 用量端点（§3）→ **0.1.6 = 三轮 review 修正（qwen 超时信号按 generate 调用新建 + 系统提示补 [sourceId 位置] 标记说明）；对外代际 `/v1` 不变** |
-| 录播转写 Worker | 0.1.0 | `apps/worker/package.json`；首个可运行版本（2.3）：pull 循环 + stub/qwen provider seam。三轮无行为变化，零 bump |
+| 后端 API | 0.2.0 | `apps/api/pyproject.toml`（4.6 切换后即权威元数据）；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）→ 0.1.4 = requireSession 去重 + 崩溃窗口自愈 → 0.1.5 = AI Provider seam（stub/qwen）+ 总结端点（同步生成 + 引用清洗）+ 用量端点（§3）→ 0.1.6 = 三轮 review 修正（qwen 超时信号按 generate 调用新建 + 系统提示补 [sourceId 位置] 标记说明）→ **0.2.0 = 4.6 切换：Python/FastAPI 实现重写为唯一服务层实现（Node 版删除）；对外代际 `/v1` 不变** |
+| 录播转写 Worker | 0.2.0 | `apps/worker/pyproject.toml`（4.6 切换后即权威元数据）；0.1.0 = 首个可运行版本（2.3）：pull 循环 + stub/qwen provider seam → **0.2.0 = 4.6 切换：Python 实现重写为唯一服务层实现（Node 版删除）** |
 | 契约 | v1 + v2 + v3 | `contracts/contract-v1.md`（D1–D8）+ `contracts/contract-r2.md`（D9–D15）+ **`contracts/contract-r3.md`（D16–D18，三轮契约面：Summary/Citation/generation/Usage + 4 端点 + 409/502，已落地）**；prompt 外移 [prompts/course-summary.md](../prompts/course-summary.md)（D17） |
 
 ### 5.2 自动化结果（随分支更新）
 
 | 套件 | 命令 | 结果 | 日期 |
 | --- | --- | --- | --- |
-| contracts | `node --test contracts/` | 52 pass / 0 fail | 2026-11-12（tip 4c34de7，二/三轮功能票全部落地；合计 1113 pass / 0 fail） |
-| apps/api | `cd apps/api && npm test` | 185 pass / 0 fail | 同上 |
-| apps/worker | `cd apps/worker && npm test` | 25 pass / 0 fail | 同上 |
+| contracts | `node --test contracts/` | 52 pass / 0 fail | 2026-11-13（第四轮 4.6 服务层切换后；合计 1145 pass / 0 fail） |
+| apps/api | `cd apps/api && uv run pytest tests/ -q` | 214 pass / 0 fail | 同上 |
+| apps/worker | `cd apps/worker && uv run pytest tests/ -q` | 28 pass / 0 fail | 同上 |
 | apps/web | `cd apps/web && npm test` | 156 pass / 0 fail | 同上 |
 | 插件（根） | `npm test` | 695 pass / 0 fail | 同上 |
 | 发布检查 | `npm run check` | passed（45 allowlist） | 同上 |

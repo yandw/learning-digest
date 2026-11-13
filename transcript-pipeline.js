@@ -38,7 +38,7 @@ var YTD_TRANSCRIPT_PIPELINE = (() => {
       : require("./api-client.js");
 
   // Contract §3.4 bounds: durationMs ∈ [5000, 60000]; the encoded audio
-  // caps at 10MB. Mirrors apps/api/lib/audio-jobs.js so a refused Segment
+  // caps at 10MB. Mirrors apps/api/app/audio_jobs.py so a refused Segment
   // never leaves the client. The segmenter's tail flush keeps ≥ 5s, so a
   // shorter Segment can only be a bug — refused client-side.
   const MIN_DURATION_MS = 5000;

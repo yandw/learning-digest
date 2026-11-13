@@ -25,31 +25,33 @@ The productization line (0.2.x) adds the web library, backend API, transcription
 
 `contracts/` holds the shared `/v1` interface contract, platform video-ID extraction rules, and JSON fixtures consumed by all units' tests. Domain vocabulary: [GLOSSARY.md](GLOSSARY.md). Data flow: [PRIVACY.md](PRIVACY.md). Contract decisions: [contracts/decisions.md](contracts/decisions.md).
 
-All units are plain HTML, CSS, and JavaScript on Node builtins with no build step and no npm dependencies. Node 20 or newer is required (global `fetch`, `AbortSignal.timeout`).
+The extension and web library are plain HTML, CSS, and JavaScript with no build step. The service layer (backend API and transcription worker) is Python 3.12+ run with [uv](https://docs.astral.sh/uv/) (`uv sync` installs each unit's dependencies on first run). Node 20 or newer is needed only for the web library's dev server and the extension tooling (global `fetch`, `AbortSignal.timeout`).
 
 ## Run the four units (development)
 
-Four processes in four terminals. Nothing needs installing first.
+Four processes in four terminals. Install [uv](https://docs.astral.sh/uv/) first; `uv sync` below is idempotent.
 
 1. Register an invited email (before starting the API):
 
 ```bash
 cd apps/api
-node scripts/invite.js add you@example.com   # repeatable; `list` to inspect
+uv sync
+uv run python -m app.invites add you@example.com   # repeatable; `list` to inspect
 ```
 
 2. Start the API (port 8787):
 
 ```bash
 cd apps/api
-npm start          # state in data/state.json, dev mailer writes data/outbox.jsonl
+uv run python -m app.main   # uvicorn entry; state in data/state.json, dev mailer writes data/outbox.jsonl
 ```
 
 3. Start the transcription worker (pull model; deterministic stub provider by default):
 
 ```bash
 cd apps/worker
-LD_WORKER_TOKEN=dev-worker-token npm start
+uv sync
+LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
 ```
 
 The token must match `LD_API_WORKER_TOKEN` given to the API (unset there means the worker endpoints answer 401). Real ASR: `LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...` (see the environment tables below).
@@ -70,22 +72,22 @@ Real email delivery, real ASR, and real AI generation are stubbed until configur
 ## Testing
 
 ```bash
-npm test                    # extension (root tests/), 695 cases
-node --test contracts/      # shared contract fixtures, 52 cases
-cd apps/api    && npm test  # API, 187 cases
-cd apps/worker && npm test  # worker, 25 cases
-cd apps/web    && npm test  # web, 156 cases
+npm test                              # extension (root tests/), 695 cases
+node --test contracts/                # shared contract fixtures, 52 cases
+cd apps/api    && uv run pytest tests/ -q  # API, 214 cases
+cd apps/worker && uv run pytest tests/ -q  # worker, 28 cases
+cd apps/web    && npm test            # web, 156 cases
 npm run check               # release-shape check (manifest, allowlist, importScripts, content_scripts)
 npm run package             # zip the extension
 ```
 
-All suites pass (1115 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
+All suites pass (1145 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
 
 The complete test-case list, grouped by unit and feature area with the verifying file for every automated case, plus the manual acceptance cases and known-limitation observations, is in [docs/test-cases.md](docs/test-cases.md). Manual acceptance checklists (real platforms, real keys, tabCapture authorization) live in [docs/round1-acceptance.md](docs/round1-acceptance.md) and [docs/round2-acceptance.md](docs/round2-acceptance.md).
 
 ## Environment variables
 
-### apps/api (`server.js`)
+### apps/api (`app/main.py`)
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -101,7 +103,7 @@ The complete test-case list, grouped by unit and feature area with the verifying
 | `LD_AI_BASE_URL` | Bailian compatible-mode | endpoint override |
 | `LD_AI_TIMEOUT_MS` | `120000` | per-generation fetch timeout |
 
-### apps/worker (`worker.js`)
+### apps/worker (`worker/main.py`)
 
 | Variable | Default | Purpose |
 | --- | --- | --- |

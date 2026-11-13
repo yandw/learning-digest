@@ -10,8 +10,8 @@ const { loadBackgroundHelpers } = require("./helpers/load-background.js");
 // surfaced by a 401 (the credentialsInvalidated path P10's progress writes
 // will drive). Both stop any running capture and local Session advancement,
 // keep the storage breadcrumbs, and put the panel back on the guide. The
-// API-level group revocation itself is pinned in apps/api/test/auth-logout.
-//test.js.
+// API-level group revocation itself is pinned in
+// apps/api/tests/test_auth_logout.py.
 
 const REPLAY_URL = "https://app12345.xiaoe-tech.com/replay/l_abc123def456";
 const LIVE_URL = "https://app12345.xiaoe-tech.com/live/l_abc123def456";

@@ -25,31 +25,33 @@ Learning Digest 是一个个人学习库，加上一个用于在课程平台上�
 
 `contracts/` 存放三端共享的 `/v1` 接口契约、平台视频 ID 提取规则和 JSON 样例，各单元的测试直接消费。领域词汇见 [GLOSSARY.md](GLOSSARY.md)，数据流向见 [PRIVACY.md](PRIVACY.md)，契约决策见 [contracts/decisions.md](contracts/decisions.md)。
 
-所有单元都是 Node 内置能力之上的纯 HTML、CSS 和 JavaScript，无构建步骤、零 npm 依赖。需要 Node 20 或更高版本（全局 `fetch`、`AbortSignal.timeout`）。
+插件与 Web 学习库是无构建步骤的纯 HTML、CSS 和 JavaScript。服务层（后端 API 与转写 Worker）为 Python 3.12+，用 [uv](https://docs.astral.sh/uv/) 运行（`uv sync` 在首次运行时装好各单元依赖）。Node 20 或更高版本只需用于 Web 学习库的 dev server 与插件工具链（全局 `fetch`、`AbortSignal.timeout`）。
 
 ## 运行四个单元（开发）
 
-四个进程，四个终端，开始前无需安装任何东西。
+四个进程，四个终端。先安装 [uv](https://docs.astral.sh/uv/)；下文的 `uv sync` 幂等，可重复执行。
 
 1. 登记受邀邮箱（启动 API 之前）：
 
 ```bash
 cd apps/api
-node scripts/invite.js add you@example.com   # 可重复；`list` 查看
+uv sync
+uv run python -m app.invites add you@example.com   # 可重复；`list` 查看
 ```
 
 2. 启动 API（端口 8787）：
 
 ```bash
 cd apps/api
-npm start          # 状态存 data/state.json，dev mailer 写 data/outbox.jsonl
+uv run python -m app.main   # uvicorn 入口；状态存 data/state.json，dev mailer 写 data/outbox.jsonl
 ```
 
 3. 启动转写 Worker（pull 模型；默认为确定性 stub provider）：
 
 ```bash
 cd apps/worker
-LD_WORKER_TOKEN=dev-worker-token npm start
+uv sync
+LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
 ```
 
 该 token 必须与 API 侧的 `LD_API_WORKER_TOKEN` 一致（API 未设置则 worker 端点一律 401）。真实 ASR：`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`（见下方环境变量表）。
@@ -70,22 +72,22 @@ npm start          # LD_API_UPSTREAM 默认 http://127.0.0.1:8787
 ## 测试
 
 ```bash
-npm test                    # 浏览器插件（根 tests/）, 695 条用例
-node --test contracts/      # 共享契约样例, 52 条用例
-cd apps/api    && npm test  # API, 187 条用例
-cd apps/worker && npm test  # worker, 25 条用例
-cd apps/web    && npm test  # web, 156 条用例
+npm test                              # 浏览器插件（根 tests/）, 695 条用例
+node --test contracts/                # 共享契约样例, 52 条用例
+cd apps/api    && uv run pytest tests/ -q  # API, 214 条用例
+cd apps/worker && uv run pytest tests/ -q  # worker, 28 条用例
+cd apps/web    && npm test            # web, 156 条用例
 npm run check               # 发布形状检查（manifest、allowlist、importScripts、content_scripts）
 npm run package             # 打包扩展 zip
 ```
 
-全部套件通过（当前 tip 共 1115 条），且不访问外部网络：HTTP 测试绑定 loopback 临时端口，ASR/AI 测试使用确定性 stub provider 或注入 `fetch`，CI 不需要任何密钥。
+全部套件通过（当前 tip 共 1145 条），且不访问外部网络：HTTP 测试绑定 loopback 临时端口，ASR/AI 测试使用确定性 stub provider 或注入 `fetch`，CI 不需要任何密钥。
 
 完整的测试用例清单（按单元和功能域分组、每条自动化用例的验证文件，以及人工验收用例与已知限制观察项）见 [docs/test-cases.md](docs/test-cases.md)。人工验收清单（真实平台、真实密钥、tabCapture 授权）见 [docs/round1-acceptance.md](docs/round1-acceptance.md) 与 [docs/round2-acceptance.md](docs/round2-acceptance.md)。
 
 ## 环境变量
 
-### apps/api（`server.js`）
+### apps/api（`app/main.py`）
 
 | 变量 | 默认 | 用途 |
 | --- | --- | --- |
@@ -101,7 +103,7 @@ npm run package             # 打包扩展 zip
 | `LD_AI_BASE_URL` | 百炼 compatible-mode | 端点覆盖 |
 | `LD_AI_TIMEOUT_MS` | `120000` | 单次生成 fetch 超时 |
 
-### apps/worker（`worker.js`）
+### apps/worker（`worker/main.py`）
 
 | 变量 | 默认 | 用途 |
 | --- | --- | --- |

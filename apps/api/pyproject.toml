@@ -1,19 +1,19 @@
 # Learning Digest API — Python/FastAPI implementation (round 4, ticket 4.1).
 #
-# Coexists with the Node reference implementation in this directory (lib/,
-# server.js, test/): the Node side is the porting reference until the final
-# round-4 ticket retires it. Contracts (contracts/) and their fixtures are
-# the only authority for shapes and error copy; nothing here redefines them.
+# The sole service-layer implementation as of ticket 4.6 (#82): the Node
+# reference implementation (lib/, server.js, test/) that this package was
+# ported from has been retired. Contracts (contracts/) and their fixtures
+# remain the only authority for shapes and error copy; nothing here
+# redefines them.
 #
-# The release version of the API unit stays authoritative in package.json
-# (Node side) for now — the Python switchover happens in a later round-4
-# ticket (4.6), which owns the version move. uv requires a version field in
-# [project], so this file mirrors the API unit's current version and must
-# move in lockstep until 4.6.
+# Release versioning (AGENTS.md): the API unit owns its release version
+# here since the switchover. 0.2.0 marks the implementation rewrite — the
+# Node/FastAPI duality collapses onto Python alone — while the contract
+# generation (`/v1`) is unchanged.
 [project]
 name = "learning-digest-api"
-version = "0.1.6"
-description = "Learning Digest backend API: /v1 auth, resources, progress, notes domains (Python/FastAPI rewrite; coexists with the Node reference)."
+version = "0.2.0"
+description = "Learning Digest backend API: /v1 auth, resources, progress, notes, sessions, transcripts, summaries, usage domains (Python/FastAPI; the sole service-layer implementation, ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

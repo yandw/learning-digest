@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-DEFAULTS = {"model": "whisper-1", "language": "zh", "mimeType": "audio/mpeg"}
+DEFAULTS = {"model": "whisper-1", "language": "zh", "mimeType": "audio/mpeg", "responseFormat": "verbose_json"}
 
 
 def normalize_base_url(base_url: str | None) -> str:
@@ -35,6 +35,15 @@ def normalize_model(model: str | None) -> str:
 def normalize_language(language: str | None) -> str:
     trimmed = language.strip() if isinstance(language, str) else ""
     return trimmed or DEFAULTS["language"]
+
+
+def normalize_response_format(response_format: str | None) -> str:
+    """verbose_json makes self-hosted servers return the
+    {text, segments:[{start,end,text}]} shape this provider folds into
+    segment-level records; plain json yields text only (one record per
+    Segment). Configurable via LD_WORKER_LOCAL_RESPONSE_FORMAT."""
+    trimmed = response_format.strip() if isinstance(response_format, str) else ""
+    return trimmed or DEFAULTS["responseFormat"]
 
 
 def provider_http_error(response: httpx.Response) -> RuntimeError:
@@ -81,6 +90,7 @@ def create_local_provider(
     token: str | None = None,
     language: str | None = None,
     mime_type: str | None = None,
+    response_format: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> dict[str, Any]:
     """BASE_URL is required: a missing value raises here, at worker startup
@@ -113,6 +123,7 @@ def create_local_provider(
             data={
                 "model": normalize_model(model),
                 "language": normalize_language(language),
+                "response_format": normalize_response_format(response_format),
             },
         )
         if not (200 <= response.status_code < 300):

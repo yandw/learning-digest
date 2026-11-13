@@ -23,6 +23,7 @@ def test_defaults_to_the_loopback_api_stub_provider_and_5s_poll():
         "localToken": "",
         "localLanguage": "zh",
         "localMimeType": "",
+        "localResponseFormat": "verbose_json",
     }
 
 

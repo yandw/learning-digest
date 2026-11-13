@@ -18,6 +18,7 @@ DEFAULTS: dict[str, Any] = {
     "qwenModel": "qwen3-asr-flash",
     # LD_WORKER_LOCAL_BASE_URL has no default (required, fail fast without it).
     "localModel": "whisper-1",
+    "localResponseFormat": "verbose_json",
     "localLanguage": "zh",
 }
 
@@ -60,6 +61,7 @@ def load_worker_config(env: dict[str, str] | None = None) -> dict[str, Any]:
         "localToken": env_string(env, "LD_WORKER_LOCAL_TOKEN"),
         "localLanguage": env_string(env, "LD_WORKER_LOCAL_LANGUAGE", DEFAULTS["localLanguage"]),
         "localMimeType": env_string(env, "LD_WORKER_LOCAL_MIME_TYPE"),
+        "localResponseFormat": env_string(env, "LD_WORKER_LOCAL_RESPONSE_FORMAT", DEFAULTS["localResponseFormat"]),
     }
 
 
@@ -89,5 +91,6 @@ def create_provider_from_config(config: dict[str, Any]) -> dict[str, Any]:
             token=config["localToken"],
             language=config["localLanguage"],
             mime_type=config["localMimeType"],
+            response_format=config["localResponseFormat"],
         )
     raise ValueError(f"unknown LD_WORKER_PROVIDER: {provider} (expected stub | qwen | local)")

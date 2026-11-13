@@ -97,6 +97,9 @@ def test_one_segment_is_one_multipart_transcription_call():
     fields = multipart_fields(request)
     assert fields["model"]["value"] == b"whisper-large-v3"
     assert fields["language"]["value"] == b"zh"
+    # verbose_json is requested so self-hosted servers return the
+    # {text, segments} shape this provider folds into segment records.
+    assert fields["response_format"]["value"] == b"verbose_json"
     assert fields["file"]["content_type"] == "audio/webm;codecs=opus"
     # The audio rides as raw bytes (base64 decoded from the claim task).
     assert fields["file"]["value"] == b"Some_audio_bytes"
@@ -111,13 +114,14 @@ def test_one_segment_is_one_multipart_transcription_call():
 def test_defaults_model_language_and_mime_without_overrides():
     transport = StubTransport({"text": "文本"})
     provider = create_local_provider(base_url="http://127.0.0.1:8000/", transport=transport)
-    assert DEFAULTS == {"model": "whisper-1", "language": "zh", "mimeType": "audio/mpeg"}
+    assert DEFAULTS == {"model": "whisper-1", "language": "zh", "mimeType": "audio/mpeg", "responseFormat": "verbose_json"}
 
     provider["transcribe"](**SEGMENT_INPUT)
 
     fields = multipart_fields(transport.calls[0])
     assert fields["model"]["value"] == b"whisper-1"
     assert fields["language"]["value"] == b"zh"
+    assert fields["response_format"]["value"] == b"verbose_json"
     # The claim task's mime type wins when no LD_WORKER_LOCAL_MIME_TYPE override.
     assert fields["file"]["content_type"] == "audio/webm;codecs=opus"
     # Trailing slash on the base URL is normalized away.
@@ -218,3 +222,18 @@ def test_timeout_raises_through_to_the_cycle_level():
         pass
     else:
         raise AssertionError("a LAN service timeout must raise, not pass silently")
+
+
+def test_response_format_override_flows_through():
+    transport = StubTransport({"text": "文本"})
+    provider = create_local_provider(
+        base_url="http://127.0.0.1:8000",
+        response_format="json",
+        transport=transport,
+    )
+    provider["transcribe"](**SEGMENT_INPUT)
+
+    fields = multipart_fields(transport.calls[0])
+    assert fields["response_format"]["value"] == b"json"
+    # A plain json body (text only) still folds to the whole-span record.
+    assert len(transport.calls) == 1

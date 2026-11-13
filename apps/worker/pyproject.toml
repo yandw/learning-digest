@@ -1,0 +1,36 @@
+# Learning Digest Worker — Python implementation (round 4, ticket 4.5).
+#
+# Coexists with the Node reference implementation in this directory
+# (worker.js, lib/, test/): the Node side is the porting reference until
+# the final round-4 ticket retires it (4.6). Contracts (contracts/) and
+# their fixtures are the only authority for shapes and error copy; nothing
+# here redefines them.
+#
+# The release version of the worker unit stays authoritative in
+# package.json (Node side) for now — the Python switchover happens in
+# ticket 4.6, which owns the version move. uv requires a version field in
+# [project], so this file mirrors the worker unit's current version and
+# must move in lockstep until 4.6.
+[project]
+name = "learning-digest-worker"
+version = "0.1.0"
+description = "Learning Digest transcription worker: pulls pending tasks from the API (contract-r2 §3.7, D13 pull model), transcribes through a Speech Provider seam (stub or Qwen qwen3-asr-flash), and writes results back."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+# Application, not a distributable library: dependencies resolve from the
+# manifest; the `worker` package is imported from this directory (pytest
+# pythonpath below), so no build backend is needed.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

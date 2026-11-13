@@ -7,8 +7,11 @@ Environment (see worker/config.py for the full list):
   LD_WORKER_API_BASE          API base (default http://127.0.0.1:8787)
   LD_WORKER_TOKEN             worker service credential (required for the
                               real API; empty -> claim answers 401)
-  LD_WORKER_PROVIDER          stub | qwen (default stub)
+  LD_WORKER_PROVIDER          stub | qwen | local (default stub)
   QWEN_API_KEY                Bailian key for the qwen provider
+  LD_WORKER_LOCAL_*           self-hosted / LAN ASR service wiring for the
+                              local provider (BASE_URL required, fail fast
+                              without it; ticket 5.1, issue #83)
 
 Pull model (D13): the loop polls POST /v1/worker/tasks/claim, drains
 claimed tasks serially (concurrency 1), and idles pollIntervalMs between

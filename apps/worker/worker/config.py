@@ -1,8 +1,9 @@
 """Worker config (ticket 4.5; Node ticket 2.3, lib/config.js): env wiring
 only — the provider seam and the loop are the behavior. apiBase / token /
 provider / poll interval come from LD_WORKER_* env vars; the Qwen key from
-QWEN_API_KEY. A qwen selection without a key fails at startup (fail fast,
-not per task)."""
+QWEN_API_KEY; the local (self-hosted / LAN) ASR service from
+LD_WORKER_LOCAL_*. A qwen selection without a key, or a local selection
+without a base URL, fails at startup (fail fast, not per task)."""
 
 from __future__ import annotations
 
@@ -15,6 +16,9 @@ DEFAULTS: dict[str, Any] = {
     "pollIntervalMs": 5000,
     "qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "qwenModel": "qwen3-asr-flash",
+    # LD_WORKER_LOCAL_BASE_URL has no default (required, fail fast without it).
+    "localModel": "whisper-1",
+    "localLanguage": "zh",
 }
 
 
@@ -51,12 +55,18 @@ def load_worker_config(env: dict[str, str] | None = None) -> dict[str, Any]:
         "qwenApiKey": env_string(env, "QWEN_API_KEY"),
         "qwenBaseUrl": env_string(env, "LD_WORKER_QWEN_BASE_URL", DEFAULTS["qwenBaseUrl"]),
         "qwenModel": env_string(env, "LD_WORKER_QWEN_MODEL", DEFAULTS["qwenModel"]),
+        "localBaseUrl": env_string(env, "LD_WORKER_LOCAL_BASE_URL"),
+        "localModel": env_string(env, "LD_WORKER_LOCAL_MODEL", DEFAULTS["localModel"]),
+        "localToken": env_string(env, "LD_WORKER_LOCAL_TOKEN"),
+        "localLanguage": env_string(env, "LD_WORKER_LOCAL_LANGUAGE", DEFAULTS["localLanguage"]),
+        "localMimeType": env_string(env, "LD_WORKER_LOCAL_MIME_TYPE"),
     }
 
 
 def create_provider_from_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Builds the Speech Provider from config. Unknown selections and a
-    qwen selection without a key raise here, at startup — never per task."""
+    """Builds the Speech Provider from config. Unknown selections, a qwen
+    selection without a key, and a local selection without a base URL raise
+    here, at startup — never per task."""
     provider = config["provider"]
     if provider == "stub":
         from .providers.stub import create_stub_provider
@@ -70,4 +80,14 @@ def create_provider_from_config(config: dict[str, Any]) -> dict[str, Any]:
             base_url=config["qwenBaseUrl"],
             model=config["qwenModel"],
         )
-    raise ValueError(f"unknown LD_WORKER_PROVIDER: {provider} (expected stub | qwen)")
+    if provider == "local":
+        from .providers.local import create_local_provider
+
+        return create_local_provider(
+            base_url=config["localBaseUrl"],
+            model=config["localModel"],
+            token=config["localToken"],
+            language=config["localLanguage"],
+            mime_type=config["localMimeType"],
+        )
+    raise ValueError(f"unknown LD_WORKER_PROVIDER: {provider} (expected stub | qwen | local)")

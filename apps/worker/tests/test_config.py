@@ -18,6 +18,11 @@ def test_defaults_to_the_loopback_api_stub_provider_and_5s_poll():
         "qwenApiKey": "",
         "qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "qwenModel": "qwen3-asr-flash",
+        "localBaseUrl": "",
+        "localModel": "whisper-1",
+        "localToken": "",
+        "localLanguage": "zh",
+        "localMimeType": "",
     }
 
 
@@ -40,6 +45,25 @@ def test_env_overrides_flow_through():
     assert config["qwenApiKey"] == "sk-test"
     assert config["qwenBaseUrl"] == "https://mirror.example.com/v1/"
     assert config["qwenModel"] == "qwen3-asr-flash-test"
+
+
+def test_local_env_overrides_flow_through():
+    config = load_worker_config(
+        {
+            "LD_WORKER_PROVIDER": "local",
+            "LD_WORKER_LOCAL_BASE_URL": "http://nas.local:9000",
+            "LD_WORKER_LOCAL_MODEL": "whisper-large-v3",
+            "LD_WORKER_LOCAL_TOKEN": "lan-secret",
+            "LD_WORKER_LOCAL_LANGUAGE": "en",
+            "LD_WORKER_LOCAL_MIME_TYPE": "audio/wav",
+        }
+    )
+    assert config["provider"] == "local"
+    assert config["localBaseUrl"] == "http://nas.local:9000"
+    assert config["localModel"] == "whisper-large-v3"
+    assert config["localToken"] == "lan-secret"
+    assert config["localLanguage"] == "en"
+    assert config["localMimeType"] == "audio/wav"
 
 
 def test_unknown_provider_selection_fails_at_startup():
@@ -73,3 +97,30 @@ def test_qwen_without_an_api_key_fails_at_startup():
 def test_stub_provider_builds_without_any_key():
     provider = create_provider_from_config(load_worker_config({}))
     assert provider["id"] == "stub"
+
+
+def test_local_without_a_base_url_fails_at_startup():
+    # Fail fast, not per task: the factory throws before any request.
+    config = load_worker_config({})
+    config["provider"] = "local"
+    try:
+        create_provider_from_config(config)
+    except Exception as error:
+        assert "LD_WORKER_LOCAL_BASE_URL" in str(error)
+    else:
+        raise AssertionError("local without a base url must fail at startup")
+
+    # And with a base url it builds.
+    config["localBaseUrl"] = "http://nas.local:9000"
+    provider = create_provider_from_config(config)
+    assert provider["id"] == "local"
+
+
+def test_local_selection_uses_the_provider_defaults():
+    config = load_worker_config({})
+    config["provider"] = "local"
+    config["localBaseUrl"] = "http://nas.local:9000/"
+    provider = create_provider_from_config(config)
+    assert provider["id"] == "local"
+    # model/language/mime defaults land in the request shape, pinned at the
+    # HTTP seam in test_local_provider.py.

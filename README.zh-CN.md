@@ -54,7 +54,7 @@ uv sync
 LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
 ```
 
-该 token 必须与 API 侧的 `LD_API_WORKER_TOKEN` 一致（API 未设置则 worker 端点一律 401）。真实 ASR：`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`（见下方环境变量表）。
+该 token 必须与 API 侧的 `LD_API_WORKER_TOKEN` 一致（API 未设置则 worker 端点一律 401）。真实 ASR：百炼云端（`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`）或自建服务（`LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=...`，见下方「自建/局域网 ASR」）。
 
 4. 启动 Web 学习库（端口 8080，`/v1` 反代到 API）：
 
@@ -109,11 +109,14 @@ npm run package             # 打包扩展 zip
 | --- | --- | --- |
 | `LD_WORKER_API_BASE` | `http://127.0.0.1:8787` | API base |
 | `LD_WORKER_TOKEN` | 未设置 | worker 服务凭据（须与 API 的 `LD_API_WORKER_TOKEN` 一致） |
-| `LD_WORKER_PROVIDER` | `stub` | `qwen` = 百炼 qwen3-asr-flash |
+| `LD_WORKER_PROVIDER` | `stub` | `qwen` = 百炼 qwen3-asr-flash；`local` = 自建 OpenAI 兼容 transcription 服务 |
 | `QWEN_API_KEY` | 未设置 | 百炼转写密钥（provider 为 `qwen` 时必填，启动即校验） |
 | `LD_WORKER_POLL_INTERVAL_MS` | `5000` | 空闲轮询间隔 |
 | `LD_WORKER_ERROR_BACKOFF_MS` | 轮询间隔 | 失败周期后的退避 |
 | `LD_WORKER_QWEN_BASE_URL`、`LD_WORKER_QWEN_MODEL` | 百炼、`qwen3-asr-flash` | 端点/模型覆盖 |
+| `LD_WORKER_LOCAL_BASE_URL` | 未设置 | 自建 ASR 服务地址（provider 为 `local` 时必填，缺失启动即失败） |
+| `LD_WORKER_LOCAL_MODEL`、`LD_WORKER_LOCAL_LANGUAGE` | `whisper-1`、`zh` | local 转写模型与语言 |
+| `LD_WORKER_LOCAL_TOKEN`、`LD_WORKER_LOCAL_MIME_TYPE` | 未设置 | local 服务可选 Bearer 凭据与音频 MIME 覆盖 |
 
 ### apps/web（`server.js`）
 
@@ -195,6 +198,10 @@ Model: qwen3-asr-flash
 ```
 
 在 worker 上设置 `LD_WORKER_PROVIDER=qwen` 和 `QWEN_API_KEY`，并给 API 与 worker 配一对共享的 `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN`。课程总结使用 API 侧独立的 `LD_AI_PROVIDER=qwen` 加 `LD_AI_API_KEY`。配置之前，worker 与 API 运行确定性 stub provider，整条流程无需密钥即可跑通。
+
+### 自建/局域网 ASR
+
+转写也可以完全跑在自己的硬件上，不触碰任何云端 API：把 worker 指向一个自建的 OpenAI 兼容 transcription 服务（faster-whisper-server、LocalAI、whisper.cpp server 都是这个形状），设置 `LD_WORKER_PROVIDER=local` 和 `LD_WORKER_LOCAL_BASE_URL=http://<host>:<port>`。worker 以 multipart 把音频 POST 到 `{base}/v1/audio/transcriptions`，携带 model 与 language（默认 `whisper-1` 与 `zh`），配置了 `LD_WORKER_LOCAL_TOKEN` 时附带 Bearer 凭据。`LD_WORKER_LOCAL_MIME_TYPE` 可覆盖音频 MIME 类型（本机服务常要 wav/webm）。`local` 选择缺 BASE_URL 时启动即失败，与 `qwen` 缺 key 的 fail-fast 规则一致。
 
 ## 使用 Learning Digest
 

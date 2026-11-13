@@ -110,6 +110,37 @@ def test_transcribes_the_claimed_segment_and_submits_folded_records():
     ]
 
 
+def test_every_record_of_a_multi_record_transcript_is_folded_onto_the_timeline():
+    """Providers that segment internally (local ASR with
+    {text, segments: [{start, end, text}]} in seconds -> ms records) return
+    several records per task; each one shifts by the task's segment start
+    (contract-r2 §1: stored timestamps are all on the source timeline)."""
+    client = FakeClient([[task("tsk_multi", segment_index=1, start_ms=30000)]])
+
+    def provider(**kwargs):
+        # Segment-relative: two utterances inside the 30s task segment.
+        return [
+            {"startMs": 0, "endMs": 2500, "text": "第一句。"},
+            {"startMs": 2500, "endMs": 12000, "text": "第二句。"},
+        ]
+
+    summary = run_once(client=client, provider={"id": "local", "transcribe": provider})
+
+    assert summary == {"claimed": 1, "done": 1, "failed": 0}
+    assert client.submissions == [
+        {
+            "taskId": "tsk_multi",
+            "body": {
+                "status": "done",
+                "records": [
+                    {"startMs": 30000, "endMs": 32500, "text": "第一句。"},
+                    {"startMs": 32500, "endMs": 42000, "text": "第二句。"},
+                ],
+            },
+        }
+    ]
+
+
 def test_silence_is_submitted_as_done_with_an_empty_records_array():
     client = FakeClient(
         [

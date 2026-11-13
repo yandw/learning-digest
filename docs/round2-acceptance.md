@@ -292,12 +292,17 @@
 | `LD_AI_TIMEOUT_MS` | API | 120000 | 单次生成 fetch 超时；API `server.timeout` 随之抬到 max(10s, aiTimeoutMs+5s)（同步生成期间 socket 空闲等待 AI，固定 10s 会让真实调用必然断连） |
 | `LD_WORKER_API_BASE` | Worker | `http://127.0.0.1:8787` | API base |
 | `LD_WORKER_TOKEN` | Worker | 必填 | worker 服务凭据（空则 claim 恒 401） |
-| `LD_WORKER_PROVIDER` | Worker | `stub` | `stub` \| `qwen`；未知值启动即失败 |
+| `LD_WORKER_PROVIDER` | Worker | `stub` | `stub` \| `qwen` \| `local`；未知值启动即失败 |
 | `LD_WORKER_POLL_INTERVAL_MS` | Worker | 5000 | 空轮询间隔（也是错误退避默认值） |
 | `LD_WORKER_ERROR_BACKOFF_MS` | Worker | 同 poll interval | cycle 失败退避 |
 | `LD_WORKER_QWEN_BASE_URL` | Worker | dashscope compatible-mode | qwen provider 端点 |
 | `LD_WORKER_QWEN_MODEL` | Worker | `qwen3-asr-flash` | qwen 转写模型 |
 | `QWEN_API_KEY` | Worker | 未配置 | **真实 ASR 必需，待用户配置**；`LD_WORKER_PROVIDER=qwen` 且无 key → 启动即失败（fail fast） |
+| `LD_WORKER_LOCAL_BASE_URL` | Worker | 必填（选 local 时） | 自建/局域网 ASR 服务地址（OpenAI 兼容 transcription，5.1）；`LD_WORKER_PROVIDER=local` 且缺失 → 启动即失败（fail closed） |
+| `LD_WORKER_LOCAL_MODEL` | Worker | `whisper-1` | local 转写模型 |
+| `LD_WORKER_LOCAL_TOKEN` | Worker | 未配置 | local 服务可选 Bearer 凭据 |
+| `LD_WORKER_LOCAL_LANGUAGE` | Worker | `zh` | local 转写语言 |
+| `LD_WORKER_LOCAL_MIME_TYPE` | Worker | 未配置（用上传段的 MIME，兜底 `audio/mpeg`） | local 服务 MIME 覆盖（本机服务常要 wav/webm） |
 
 插件侧：AI Provider key 在 options 页本地配置（沿用 PoC，仅影响结束学习时的 AI 纪要 pass，**不影响课程总结**——总结的 AI Provider 在 API 侧，D16）；Speech Provider 配置已随 D10 退役。
 
@@ -307,6 +312,17 @@
 
 - [ ] Speech Provider 与 key 来源：______（服务端 env，不再经插件分发——D10）
 - [ ] 授权课程：______（可复用 round1 §3.3 样本）
+- [ ] 联调日期与结果：______
+- [ ] 段级延迟 / 失败率观察：______
+
+#### 5.4.1 真实局域网 ASR 联调（发布前要求，占位；5.1 local provider）
+
+云侧 qwen（§5.4）之外的零云替代：`LD_WORKER_PROVIDER=local` 对接本机/局域网内自建 ASR 服务（OpenAI 兼容 transcription 端点，覆盖 faster-whisper-server / LocalAI / whisper.cpp server 等形态），转写完全不依赖云端 API。自动化侧已由 loopback 集成测试覆盖（`apps/worker/tests/test_loopback_local.py`：真端口 stub transcription 服务 + API 子进程 + worker 走通 上传→claim→local 转写→回写→GET transcript）；真实局域网服务联调待用户提供本地服务地址后执行：
+
+- [ ] 本地服务地址与形态：______（如 `http://<nas>:9000`；对应 `LD_WORKER_LOCAL_BASE_URL`）
+- [ ] 服务模型与语言：______（对应 `LD_WORKER_LOCAL_MODEL` / `LD_WORKER_LOCAL_LANGUAGE`；服务如需鉴权登记 `LD_WORKER_LOCAL_TOKEN`）
+- [ ] 音频容器核对：如服务挑格式，登记 `LD_WORKER_LOCAL_MIME_TYPE` 覆盖（常见 wav/webm）
+- [ ] 步骤：worker 以 `LD_WORKER_PROVIDER=local` 起动 → §2.3 无字幕课程采集 → GET transcript 核对逐字稿段与时间戳
 - [ ] 联调日期与结果：______
 - [ ] 段级延迟 / 失败率观察：______
 
@@ -339,10 +355,12 @@
 | §3.5 | 双课隔离 + 双账号隔离 | ☐ 通过 ☐ 不通过 | |
 | §3.6 | 用量面板口径对账（含全新账号 null 形态） | ☐ 通过 ☐ 不通过 | |
 | §5.5 | 真实 qwen 总结链路联调 | ☐ 占位（key 配置后） | |
+| §5.4.1 | 真实局域网 ASR 联调（local provider） | ☐ 占位（本地服务地址配置后） | |
 
 ### 5.7 遗留项
 
 - **真实 ASR 链路联调**（§5.4）：发布前要求，key 待用户配置。
+- **真实局域网 ASR 链路联调**（§5.4.1）：发布前要求，待用户提供自建服务地址后执行（5.1 local provider；自动化 loopback 链已覆盖）。
 - **真实 AI 总结链路联调**（§5.5）：发布前要求，`LD_AI_API_KEY` 待用户配置；当前默认 stub（确定性样例文本），功能与口径已按契约验收。
 - **failed 段音频宽限清理未实现**（D14 影响）：`LD_API_AUDIO_DIR` 里 failed 段音频在 Session 结束 + 宽限后不会被自动清扫；清理 sweeper 属 API 部署侧后续工作。
 - **lease 机制未做**（§4）：claimed-but-unfinished 任务不重排；「转写中」段在 worker 停启后可能永久滞留，直至租约/重排票落地。第三轮不改此现状。

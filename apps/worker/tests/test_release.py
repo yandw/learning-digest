@@ -15,11 +15,12 @@ def test_pyproject_is_the_worker_unit_release_metadata():
     pyproject = tomllib.loads((WORKER_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "learning-digest-worker"
-    # 0.2.0: the implementation rewrite switchover (Python becomes the sole
-    # service-layer implementation, ticket 4.6, issue #82; first runnable
-    # worker 0.1.0 = Node ticket 2.3, issue #66; Python port 4.5, #81).
-    # The contract generation (/v1) is unchanged.
-    assert pyproject["project"]["version"] == "0.2.0"
+    # 0.2.1: the local Speech Provider (self-hosted / LAN ASR, ticket 5.1,
+    # issue #83). 0.2.0 was the implementation rewrite switchover (Python
+    # becomes the sole service-layer implementation, ticket 4.6, issue #82;
+    # first runnable worker 0.1.0 = Node ticket 2.3, issue #66; Python port
+    # 4.5, #81). The contract generation (/v1) is unchanged.
+    assert pyproject["project"]["version"] == "0.2.1"
     assert pyproject["project"]["requires-python"] == ">=3.12"
 
 

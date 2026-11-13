@@ -54,7 +54,7 @@ uv sync
 LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
 ```
 
-The token must match `LD_API_WORKER_TOKEN` given to the API (unset there means the worker endpoints answer 401). Real ASR: `LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...` (see the environment tables below).
+The token must match `LD_API_WORKER_TOKEN` given to the API (unset there means the worker endpoints answer 401). Real ASR: Bailian cloud (`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`) or a self-hosted service (`LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=...`, see Self-hosted / LAN ASR below).
 
 4. Start the web library (port 8080, proxies `/v1` to the API):
 
@@ -109,11 +109,14 @@ The complete test-case list, grouped by unit and feature area with the verifying
 | --- | --- | --- |
 | `LD_WORKER_API_BASE` | `http://127.0.0.1:8787` | API base |
 | `LD_WORKER_TOKEN` | unset | worker service credential (must match the API's `LD_API_WORKER_TOKEN`) |
-| `LD_WORKER_PROVIDER` | `stub` | `qwen` = Bailian qwen3-asr-flash |
+| `LD_WORKER_PROVIDER` | `stub` | `qwen` = Bailian qwen3-asr-flash; `local` = self-hosted OpenAI-compatible transcription |
 | `QWEN_API_KEY` | unset | Bailian speech key (required when the provider is `qwen`; checked at startup) |
 | `LD_WORKER_POLL_INTERVAL_MS` | `5000` | idle poll interval |
 | `LD_WORKER_ERROR_BACKOFF_MS` | poll interval | sleep after a failed cycle |
 | `LD_WORKER_QWEN_BASE_URL`, `LD_WORKER_QWEN_MODEL` | Bailian, `qwen3-asr-flash` | endpoint/model overrides |
+| `LD_WORKER_LOCAL_BASE_URL` | unset | self-hosted ASR service base URL (required when the provider is `local`; missing fails at startup) |
+| `LD_WORKER_LOCAL_MODEL`, `LD_WORKER_LOCAL_LANGUAGE` | `whisper-1`, `zh` | local transcription model and language |
+| `LD_WORKER_LOCAL_TOKEN`, `LD_WORKER_LOCAL_MIME_TYPE` | unset | optional Bearer token and audio MIME override for the local service |
 
 ### apps/web (`server.js`)
 
@@ -195,6 +198,10 @@ Model: qwen3-asr-flash
 ```
 
 Set `LD_WORKER_PROVIDER=qwen` and `QWEN_API_KEY` on the worker, and give the API and the worker a shared `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN` pair. Course summaries use their own `LD_AI_PROVIDER=qwen` plus `LD_AI_API_KEY` on the API. Until these are set, the worker and the API run deterministic stub providers so the whole flow can be exercised without keys.
+
+### Self-hosted / LAN ASR
+
+Transcription can also run entirely on your own hardware, touching no cloud API: point the worker at a self-hosted, OpenAI-compatible transcription service (faster-whisper-server, LocalAI, and whisper.cpp server all speak this shape) with `LD_WORKER_PROVIDER=local` and `LD_WORKER_LOCAL_BASE_URL=http://<host>:<port>`. The worker posts multipart audio to `{base}/v1/audio/transcriptions` with the model and language (defaults `whisper-1` and `zh`) and, when `LD_WORKER_LOCAL_TOKEN` is set, a Bearer token. `LD_WORKER_LOCAL_MIME_TYPE` overrides the audio MIME type for services that are picky about containers (wav/webm are common). A `local` selection without a base URL fails at startup, the same fail-fast rule as a `qwen` selection without a key.
 
 ## Use Learning Digest
 

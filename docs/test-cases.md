@@ -22,7 +22,7 @@ npm run package          # 打包扩展 zip
 - **U3 端到端**:多进程真实链路(本地 stub upstream / 子进程启动),无外部网络。
 - **M 人工**:真实浏览器 + 真实平台/服务,步骤在验收文档(§ 引用)。
 
-统计(tip fee2329 + 第四轮 4.6 切换后):contracts 52 · api 214(pytest) · worker 28(pytest) · web 156 · 插件(根)695,合计 **1145 pass / 0 fail**。
+统计(tip fee2329 + 第四轮 4.6 切换后 + 5.1 local provider):contracts 52 · api 214(pytest) · worker 42(pytest) · web 156 · 插件(根)695,合计 **1159 pass / 0 fail**。
 
 ---
 
@@ -105,17 +105,18 @@ npm run package          # 打包扩展 zip
 | TC-A-38 | server 入口:LD_AI_* env、server.timeout=max(10s, aiTimeoutMs+5s) | U3 | `test_server_entry.py` |
 | TC-A-39 | 发布元数据 0.2.0 独立 pin(pyproject.toml;4.6 切换后即权威元数据);受邀 seed 文件为 JSON 数组 | U2 | `test_release.py` |
 
-## 3. 转写 Worker apps/worker/(28,pytest)
+## 3. 转写 Worker apps/worker/(42,pytest)
 
 | ID | 用例 | 层级 | 验证位置 |
 |---|---|---|---|
-| TC-W-01 | loadWorkerConfig env 默认与覆盖;unknown provider/qwen 无 key 启动即抛(fail fast) | U1 | `test_config.py` |
+| TC-W-01 | loadWorkerConfig env 默认与覆盖;unknown provider/qwen 无 key/local 无 BASE_URL 启动即抛(fail fast) | U1 | `test_config.py` |
 | TC-W-02 | stub provider:确定性记录;零字节音频=静音段([]) | U1 | `test_stub_provider.py` |
 | TC-W-03 | qwen provider:base64 Data URI 请求形状、HTTP 失败抛 providerHttpError、缺 key 构造期失败(注入 fetch,不真连) | U1 | `test_qwen_provider.py` |
 | TC-W-04 | runOnce:claim→转写→回写;静音段 done;provider 失败提交 transcription_failed(契约形态);claim 失败传播到 cycle 级 | U2 | `test_run_once.py` |
 | TC-W-05 | runLoop:串行多任务按 claim 序;provider 级失败计任务级;空 claim 空转 | U2 | `test_loop.py` |
 | TC-W-06 | client:claim/result 请求形态与服务凭据头 | U2 | `test_client.py` |
-| TC-W-07 | 发布元数据 0.2.0 独立 pin(pyproject.toml;4.6 切换后即权威元数据);运行时仅 httpx | U2 | `test_release.py` |
+| TC-W-07 | 发布元数据 0.2.1 独立 pin(pyproject.toml;4.6 切换后即权威元数据);运行时仅 httpx | U2 | `test_release.py` |
+| TC-W-08 | local provider(5.1):multipart 请求形状(file/model/language/可选 Bearer)、有 segments 逐段毫秒/无 segments 整段/空文本=静音、HTTP 失败 providerHttpError 等价、超时异常透传、缺 LD_WORKER_LOCAL_BASE_URL 构造期抛;LD_WORKER_LOCAL_* env 与 fail fast;runOnce 多记录折叠到来源时间轴;loopback 链(真端口 stub transcription 服务+API 子进程+worker):上传→claim→local 转写→回写→GET transcript | U1/U2/U3 | `test_local_provider.py` `test_config.py` `test_run_once.py` `test_loopback_local.py` |
 
 ## 4. Web 学习库 apps/web/(156)
 

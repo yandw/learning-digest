@@ -7,13 +7,14 @@
 # redefines them.
 #
 # Release versioning (AGENTS.md): the worker unit owns its release version
-# here since the switchover. 0.2.0 marks the implementation rewrite — the
+# here since the switchover. 0.2.0 marked the implementation rewrite — the
 # Node/Python duality collapses onto Python alone — while the contract
-# generation (`/v1`) is unchanged.
+# generation (`/v1`) is unchanged. 0.2.1 adds the local Speech Provider
+# (self-hosted / LAN ASR, ticket 5.1, issue #83).
 [project]
 name = "learning-digest-worker"
-version = "0.2.0"
-description = "Learning Digest transcription worker: pulls pending tasks from the API (contract-r2 §3.7, D13 pull model), transcribes through a Speech Provider seam (stub or Qwen qwen3-asr-flash), and writes results back. The sole service-layer implementation (ticket 4.6)."
+version = "0.2.1"
+description = "Learning Digest transcription worker: pulls pending tasks from the API (contract-r2 §3.7, D13 pull model), transcribes through a Speech Provider seam (stub, Qwen qwen3-asr-flash, or a self-hosted OpenAI-compatible local service), and writes results back. The sole service-layer implementation (ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",

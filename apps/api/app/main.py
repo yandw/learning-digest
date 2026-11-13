@@ -41,6 +41,15 @@ def _parse_int(value: str | None, fallback: int) -> int:
         return fallback
 
 
+def keep_alive_seconds(ai_timeout_ms: int) -> float:
+    """Socket idle window for uvicorn's timeout_keep_alive — the port of
+    lib/app.js's server.timeout raise: max(10s, aiTimeoutMs + 5s). The AI
+    call happens inside the POST (synchronous generation, D16); the idle
+    window must be wider than the provider timeout so a slow-but-successful
+    generation is still deliverable."""
+    return max(10.0, ai_timeout_ms / 1000 + 5.0)
+
+
 def build_app(env: dict):
     from .app_factory import create_app
     from .mailer import create_dev_mailer
@@ -86,7 +95,17 @@ def main(env: dict | None = None) -> None:
     sys.stdout.flush()
 
     server = uvicorn.Server(
-        uvicorn.Config(app, log_config=None, access_log=False, lifespan="on")
+        uvicorn.Config(
+            app,
+            log_config=None,
+            access_log=False,
+            lifespan="on",
+            # Synchronous summary generation (D16) awaits the AI Provider
+            # inside the POST; keep the socket's idle window wider than the
+            # provider timeout so a slow-but-successful generation is still
+            # deliverable (lib/app.js server.timeout, mirrored).
+            timeout_keep_alive=keep_alive_seconds(app.state.ctx.config.ai_timeout_ms),
+        )
     )
     server.run(sockets=[sock])
 

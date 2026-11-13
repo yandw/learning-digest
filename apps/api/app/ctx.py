@@ -16,3 +16,5 @@ class AppContext:
     now: Callable[[], int]
     config: Config
     seed_file: str | None = None
+    # AI Provider seam for course summaries (D16), resolved once at startup.
+    ai_provider: Any = None

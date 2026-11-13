@@ -62,6 +62,19 @@ def wait_for_listening(proc, timeout_s=15):
     raise AssertionError(f"timeout waiting for listening line: {buffer['text']}")
 
 
+def test_keep_alive_window_covers_the_synchronous_summary_generation():
+    # lib/app.js: server.timeout = max(10_000, aiTimeoutMs + 5_000) — the
+    # socket idle window must be wider than the provider timeout so a
+    # slow-but-successful synchronous generation (D16, tens of seconds
+    # inside the POST) is still deliverable. The uvicorn counterpart is
+    # timeout_keep_alive (seconds), fed by the same formula.
+    from app.main import keep_alive_seconds
+
+    assert keep_alive_seconds(120_000) == 125.0
+    assert keep_alive_seconds(0) == 10.0
+    assert keep_alive_seconds(3_000) == 10.0
+
+
 def test_server_wires_file_store_dev_mailer_and_invite_seed_end_to_end(tmp_path):
     ws = make_workspace(tmp_path)
     with open(ws["seed_file"], "w", encoding="utf-8") as fh:

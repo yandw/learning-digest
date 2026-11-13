@@ -1,18 +1,20 @@
-"""Account usage accounting — the transcription slice (contract-r3.md
-§2.4/§3.4; decision D18). Port of the audio part of lib/usage.js.
+"""Account usage accounting (contract-r3.md §2.4/§3.4; decision D18).
+Port of lib/usage.js.
 
 One "usage" row per account, keyed by accountId:
 
   { accountId, audioMs, summaryCount, summaryInputChars, updatedAt, updatedAtMs }
 
-D18 口径 (record-only, no billing): the recording timepoint is "the moment
-a product lands" — audioMs accrues when an audio segment task FIRST
-reaches done (the write-back's 首存为准 replay path never re-records;
-the caller in app/audio_jobs.py sits behind that gate). Read as
-audioSeconds = floor(audioMs / 1000), so fractional seconds only round
-once at the account level. Transcribing and failed segments never reach
-this module; a silent segment (done with records: []) does. The summary
-counters stay 0 until the summary domain lands (ticket 4.4).
+D18 口径 (record-only, no billing): the two recording timepoints are both
+"the moment a product lands" —
+- audioMs accrues when an audio segment task FIRST reaches done (the
+  write-back's 首存为准 replay path never re-records; the caller in
+  app/audio_jobs.py sits behind that gate). Read as
+  audioSeconds = floor(audioMs / 1000), so fractional seconds only round
+  once at the account level. Transcribing and failed segments never reach
+  this module; a silent segment (done with records: []) does.
+- summaryCount/summaryInputChars accrue when a summary generation lands
+  (201, app/summaries.py); a failed generation records nothing.
 
 Monotonic by contract (no delete endpoints); updatedAt advances only on a
 recording write — before the first write the projection reports
@@ -49,6 +51,22 @@ def record_audio_seconds(
     gate lives with the caller)."""
     row = load_usage(store, account_id) or empty_usage(account_id)
     row["audioMs"] += duration_ms
+    at_ms = now()
+    row["updatedAt"] = iso_seconds_from_ms(at_ms)
+    row["updatedAtMs"] = at_ms
+    store.set("usage", account_id, row)
+    return row
+
+
+def record_summary_generation(
+    *, store: Any, account_id: str, input_chars: int, now: Callable[[], int]
+) -> dict:
+    """Record one successful summary generation (D18: count +1, inputChars
+    summed). The caller (app/summaries.py generate_summary) invokes this in
+    the same stroke as the summary landing — the 201's same moment."""
+    row = load_usage(store, account_id) or empty_usage(account_id)
+    row["summaryCount"] += 1
+    row["summaryInputChars"] += input_chars
     at_ms = now()
     row["updatedAt"] = iso_seconds_from_ms(at_ms)
     row["updatedAtMs"] = at_ms

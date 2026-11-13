@@ -49,6 +49,7 @@ class TestApp:
     mailer: Any
     app: Any
     client: TestClient
+    ai_provider: Any = None
 
     def request(
         self,
@@ -87,6 +88,7 @@ def start_app():
         mailer: Any = None,
         now: Any = None,
         config: dict | None = None,
+        ai_provider: Any = None,
     ) -> TestApp:
         from app.app_factory import create_app
         from app.mailer import create_memory_mailer
@@ -96,9 +98,16 @@ def start_app():
             seed_file = write_seed_file(seed_emails)
         store = store or create_file_store({"file": os.path.join(make_temp_dir(), "state.json")})
         mailer = mailer or create_memory_mailer()
-        app = create_app(store=store, mailer=mailer, now=now, config=config, seed_file=seed_file)
+        app = create_app(
+            store=store,
+            mailer=mailer,
+            now=now,
+            config=config,
+            seed_file=seed_file,
+            ai_provider=ai_provider,
+        )
         client = TestClient(app)
-        instance = TestApp(store=store, mailer=mailer, app=app, client=client)
+        instance = TestApp(store=store, mailer=mailer, app=app, client=client, ai_provider=ai_provider)
         created.append(instance)
         return instance
 

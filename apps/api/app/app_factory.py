@@ -19,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .ai_providers import select_ai_provider
 from .config import Config, resolve_config
 from .cors import V1CorsMiddleware
 from .ctx import AppContext
@@ -29,6 +30,7 @@ from .persistence import create_memory_store
 from .routes_auth import register_auth_routes
 from .routes_resources import register_resources_routes
 from .routes_sessions import register_sessions_routes
+from .routes_summaries import register_summaries_routes
 
 
 def _default_now() -> int:
@@ -42,6 +44,7 @@ def create_app(
     now: Callable[[], int] | None = None,
     config: dict | None = None,
     seed_file: str | None = None,
+    ai_provider: Any | None = None,
 ) -> FastAPI:
     store = store if store is not None else create_memory_store()
     mailer = mailer or create_memory_mailer()
@@ -52,7 +55,19 @@ def create_app(
     # every startup, idempotently (the invite CLI adds more at runtime).
     load_seed_invites(store, seed_file, now)
 
-    ctx = AppContext(store=store, mailer=mailer, now=now, config=cfg, seed_file=seed_file)
+    # D16: the AI Provider is resolved ONCE at startup — an unknown name or
+    # a keyless qwen selection fails closed here, never per-request. Tests
+    # inject a provider instance directly.
+    resolved_ai_provider = ai_provider if ai_provider is not None else select_ai_provider(cfg)
+
+    ctx = AppContext(
+        store=store,
+        mailer=mailer,
+        now=now,
+        config=cfg,
+        seed_file=seed_file,
+        ai_provider=resolved_ai_provider,
+    )
 
     app = FastAPI()
     app.state.ctx = ctx
@@ -64,6 +79,7 @@ def create_app(
     register_auth_routes(app, ctx)
     register_resources_routes(app, ctx)
     register_sessions_routes(app, ctx)
+    register_summaries_routes(app, ctx)
     return app
 
 

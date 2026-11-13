@@ -134,7 +134,7 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
     async def get_usage(credential: CredentialDep, ctx: CtxDep) -> JSONResponse:
         # Account usage totals: the bare Usage, account-scoped by the
         # presented credential. Read-only record of what landed (done audio
-        # seconds via the write-back; the summary counters stay 0 until the
-        # summary domain lands, ticket 4.4).
+        # seconds via the write-back; summary counters via the summary
+        # domain's landing writes, ticket 4.4).
         body = usage_view(store=ctx.store, account_id=credential["accountId"])
         return JSONResponse(status_code=200, content=body)

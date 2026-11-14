@@ -18,7 +18,7 @@ Learning Digest 是一个个人学习库，加上一个用于在课程平台上�
 
 | 单元 | 位置 | 职责 |
 | --- | --- | --- |
-| 浏览器插件 | 仓库根（`manifest.json`） | 账号关联、收藏、课程标签页选择、播放位置、笔记、字幕/音频采集（Chrome MV3 侧边栏） |
+| 浏览器插件 | `apps/extension/`（`manifest.json`） | 账号关联、收藏、课程标签页选择、播放位置、笔记、字幕/音频采集（Chrome MV3 侧边栏） |
 | Web 学习库 | `apps/web/` | 邀请登录、收藏、学习列表与详情、逐字稿、课程总结、用量 |
 | 后端 API | `apps/api/` | 身份、资料与来源、Session、进度、笔记、逐字稿、总结生成、用量 |
 | 转写 Worker | `apps/worker/` | 从 API 领取转写任务，运行 Speech Provider，回写带时间戳的记录 |
@@ -65,7 +65,7 @@ cd apps/web
 npm start          # LD_API_UPSTREAM 默认 http://127.0.0.1:8787
 ```
 
-5. 加载插件：打开 `chrome://extensions`，开启开发者模式，点击「加载已解压的扩展程序」，选择仓库根目录（含 `manifest.json` 的文件夹）。插件设置页的「学习服务」是账号关联用的 base URL，默认值已指向本地开发服务器。
+5. 加载插件：打开 `chrome://extensions`，开启开发者模式，点击「加载已解压的扩展程序」，选择 `apps/extension` 文件夹（含 `manifest.json`）。插件设置页的「学习服务」是账号关联用的 base URL，默认值已指向本地开发服务器。
 
 6. 走一遍流程：打开 `http://127.0.0.1:8080`，用受邀邮箱登录，从 dev outbox（`apps/api/` 旁的 `data/outbox.jsonl`，API 的 stdout 也会打印）取验证码，然后打开插件侧边栏按授权引导操作。关联完成后，打开课程页，从面板收藏，开始 Session，观看播放位置、逐字稿和总结落到 Web 学习库。
 
@@ -74,16 +74,16 @@ npm start          # LD_API_UPSTREAM 默认 http://127.0.0.1:8787
 ## 测试
 
 ```bash
-npm test                              # 浏览器插件（根 tests/）, 695 条用例
+npm test                              # 浏览器插件（apps/extension/tests/）, 695 条用例
 node --test contracts/                # 共享契约样例, 52 条用例
 cd apps/api    && uv run pytest tests/ -q  # API, 214 条用例
-cd apps/worker && uv run pytest tests/ -q  # worker, 28 条用例
+cd apps/worker && uv run pytest tests/ -q  # worker, 43 条用例
 cd apps/web    && npm test            # web, 156 条用例
 npm run check               # 发布形状检查（manifest、allowlist、importScripts、content_scripts）
 npm run package             # 打包扩展 zip
 ```
 
-全部套件通过（当前 tip 共 1145 条），且不访问外部网络：HTTP 测试绑定 loopback 临时端口，ASR/AI 测试使用确定性 stub provider 或注入 `fetch`，CI 不需要任何密钥。
+全部套件通过（当前 tip 共 1160 条），且不访问外部网络：HTTP 测试绑定 loopback 临时端口，ASR/AI 测试使用确定性 stub provider 或注入 `fetch`，CI 不需要任何密钥。
 
 完整的测试用例清单（按单元和功能域分组、每条自动化用例的验证文件，以及人工验收用例与已知限制观察项）见 [docs/test-cases.md](docs/test-cases.md)。人工验收清单（真实平台、真实密钥、tabCapture 授权）见 [docs/round1-acceptance.md](docs/round1-acceptance.md) 与 [docs/round2-acceptance.md](docs/round2-acceptance.md)。
 
@@ -161,7 +161,7 @@ npm run package             # 打包扩展 zip
 4. 在 Chrome 中打开 `chrome://extensions`。
 5. 打开 **开发者模式**。
 6. 点击 **加载已解压的扩展程序**。
-7. 选择你刚才确定的那个准确项目文件夹，其中必须包含 `manifest.json`。
+7. 选择你刚才确定的那个准确项目文件夹，其中必须包含 `manifest.json`（本仓库中是 `apps/extension` 文件夹）。
 8. 如果需要快速访问，可以在 Chrome 的扩展菜单中固定 Learning Digest。
 
 因为这是已解压的扩展，它不会自动更新。下载更新或修改本地文件后，请在 `chrome://extensions` 的 Learning Digest 卡片上点击 **重新加载**，然后刷新打开的课程标签页。如果移动或删除源代码文件夹，Chrome 中加载的扩展会失效，需要从新的位置重新加载。

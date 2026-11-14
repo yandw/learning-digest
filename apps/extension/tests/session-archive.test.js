@@ -18,7 +18,9 @@ const path = require("node:path");
 
 const YTD_SESSION_ARCHIVE = require("../session-archive.js");
 
-const FIXTURES_DIR = path.join(__dirname, "..", "contracts", "fixtures");
+// Shared API fixtures stay in the repo-root contracts/ unit; the tests here
+// read across the unit boundary (three levels up from apps/extension/tests).
+const FIXTURES_DIR = path.join(__dirname, "..", "..", "..", "contracts", "fixtures");
 const sessionSample = (id) =>
   JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, "session-examples.json"), "utf8")).samples.find(
     (s) => s.id === id,

@@ -32,7 +32,9 @@ const { loadBackgroundHelpers } = require("./helpers/load-background.js");
 
 const XIAOE_LESSON = "https://app12345.xiaoe-tech.com/v_5f0abc123";
 
-const FIXTURES_DIR = path.join(__dirname, "..", "contracts", "fixtures");
+// Shared API fixtures stay in the repo-root contracts/ unit; the tests here
+// read across the unit boundary (three levels up from apps/extension/tests).
+const FIXTURES_DIR = path.join(__dirname, "..", "..", "..", "contracts", "fixtures");
 const fixture = (file, id) =>
   JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, file), "utf8")).samples.find(
     (s) => s.id === id,

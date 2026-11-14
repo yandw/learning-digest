@@ -6,7 +6,7 @@
 ## 0. 如何运行与分层定义
 
 ```bash
-npm test                 # 浏览器插件(根 tests/)+ 发布检查引用的套件入口
+npm test                 # 浏览器插件(apps/extension/tests/)+ 发布检查引用的套件入口
 node --test contracts/   # 三端共享契约样例校验
 cd apps/api   && uv run pytest tests/ -q   # 或 uv run python -m app.main 启动服务(默认 127.0.0.1:8787)
 cd apps/worker && uv run pytest tests/ -q  # uv run python -m worker.main 启动转写 Worker
@@ -137,7 +137,7 @@ npm run package          # 打包扩展 zip
 | TC-B-13 | 用量面板:口径格式化、updatedAt=null→「从未产生用量」 | U1 | `library-flow.test.js` |
 | TC-B-14 | 服务入口真实子进程;发布元数据 0.1.5 pin | U3/U2 | `server-entry.test.js`、`release.test.js` |
 
-## 5. 浏览器插件(根 tests/,695)
+## 5. 浏览器插件(apps/extension/tests/,695)
 
 ### 5.1 账号门槛与关联(P6)
 

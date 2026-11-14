@@ -18,7 +18,7 @@ The productization line (0.2.x) adds the web library, backend API, transcription
 
 | Unit | Location | Role |
 | --- | --- | --- |
-| Browser extension | repo root (`manifest.json`) | account linking, collection, course-tab selection, playback position, notes, captions/audio capture (Chrome MV3 side panel) |
+| Browser extension | `apps/extension/` (`manifest.json`) | account linking, collection, course-tab selection, playback position, notes, captions/audio capture (Chrome MV3 side panel) |
 | Web library | `apps/web/` | invite login, collection, library list and detail, transcripts, course summaries, usage |
 | Backend API | `apps/api/` | identity, resources and sources, sessions, progress, notes, transcripts, summary generation, usage |
 | Transcription worker | `apps/worker/` | pulls transcription tasks from the API, runs the Speech Provider, writes timestamped records back |
@@ -65,7 +65,7 @@ cd apps/web
 npm start          # LD_API_UPSTREAM defaults to http://127.0.0.1:8787
 ```
 
-5. Load the extension: open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and select the exact repo root folder (the one containing `manifest.json`). The extension Settings page exposes the 学习服务 base URLs; the defaults already point at the local development servers.
+5. Load the extension: open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and select the exact `apps/extension` folder (the one containing `manifest.json`). The extension Settings page exposes the 学习服务 base URLs; the defaults already point at the local development servers.
 
 6. Walk the flow: open `http://127.0.0.1:8080`, log in with the invited email, take the verification code from the dev outbox (`data/outbox.jsonl` next to `apps/api/`, also printed to the API's stdout), then open the extension side panel and follow the authorization guide. After linking, open a lesson page, save it from the panel, start a Session, and watch playback positions, transcripts, and summaries land in the web library.
 
@@ -74,16 +74,16 @@ Real email delivery, real ASR, and real AI generation are stubbed until configur
 ## Testing
 
 ```bash
-npm test                              # extension (root tests/), 695 cases
+npm test                              # extension (apps/extension/tests/), 695 cases
 node --test contracts/                # shared contract fixtures, 52 cases
 cd apps/api    && uv run pytest tests/ -q  # API, 214 cases
-cd apps/worker && uv run pytest tests/ -q  # worker, 28 cases
+cd apps/worker && uv run pytest tests/ -q  # worker, 43 cases
 cd apps/web    && npm test            # web, 156 cases
 npm run check               # release-shape check (manifest, allowlist, importScripts, content_scripts)
 npm run package             # zip the extension
 ```
 
-All suites pass (1145 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
+All suites pass (1160 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
 
 The complete test-case list, grouped by unit and feature area with the verifying file for every automated case, plus the manual acceptance cases and known-limitation observations, is in [docs/test-cases.md](docs/test-cases.md). Manual acceptance checklists (real platforms, real keys, tabCapture authorization) live in [docs/round1-acceptance.md](docs/round1-acceptance.md) and [docs/round2-acceptance.md](docs/round2-acceptance.md).
 
@@ -161,7 +161,7 @@ If you prefer to do it yourself:
 4. In Chrome, open `chrome://extensions`.
 5. Turn on **Developer mode**.
 6. Click **Load unpacked**.
-7. Select the exact project folder you chose, which must contain `manifest.json`.
+7. Select the exact project folder you chose, which must contain `manifest.json` (for this repository: the `apps/extension` folder).
 8. Pin Learning Digest from Chrome's Extensions menu if you want quick access.
 
 Because this is an unpacked extension, it does not update automatically. After downloading an update or changing local files, click **Reload** on the Learning Digest card at `chrome://extensions`, then refresh open course tabs. Moving or deleting the source folder breaks the unpacked extension until you load it again from the new location.

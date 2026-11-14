@@ -259,7 +259,7 @@
 
 | 发布单元 | 版本 | 备注 |
 | --- | --- | --- |
-| 浏览器插件 | 0.2.13 | 根 `manifest.json` / `package.json` / `tests/release.test.js` 三处同步；0.2.9 B 站字幕（2.5）→ 0.2.10 YouTube 字幕（2.6）→ 0.2.11 ASR 路径切换 + D10 退役（2.4）→ 0.2.12 强制转写（2.7）→ 0.2.13 二轮 review 修正（词汇统一 + transcript-shapes 共享模块）。**第三轮零行为变化（课程总结只在 Web/API，D16），零 bump** |
+| 浏览器插件 | 0.2.13 | `apps/extension/manifest.json` / `apps/extension/package.json` / `apps/extension/tests/release.test.js` 三处同步（版本权威在 `apps/extension`，根 `package.json` 只是套件入口）；0.2.9 B 站字幕（2.5）→ 0.2.10 YouTube 字幕（2.6）→ 0.2.11 ASR 路径切换 + D10 退役（2.4）→ 0.2.12 强制转写（2.7）→ 0.2.13 二轮 review 修正（词汇统一 + transcript-shapes 共享模块）。**第三轮零行为变化（课程总结只在 Web/API，D16），零 bump** |
 | Web 学习库 | 0.1.5 | `apps/web/package.json`；0.1.3 = 逐字稿回查（2.8）→ 0.1.4 = finished 后 pending 段标注排队 → **0.1.5 = 课程总结生成/历史/引用回跳 + 安全 Markdown 渲染（markdown.js，零 innerHTML）+ 用量入口（§3）** |
 | 后端 API | 0.2.0 | `apps/api/pyproject.toml`（4.6 切换后即权威元数据）；0.1.2 = Session/字幕端点（2.2）→ 0.1.3 = 音频接收 + worker 端点（2.3）→ 0.1.4 = requireSession 去重 + 崩溃窗口自愈 → 0.1.5 = AI Provider seam（stub/qwen）+ 总结端点（同步生成 + 引用清洗）+ 用量端点（§3）→ 0.1.6 = 三轮 review 修正（qwen 超时信号按 generate 调用新建 + 系统提示补 [sourceId 位置] 标记说明）→ **0.2.0 = 4.6 切换：Python/FastAPI 实现重写为唯一服务层实现（Node 版删除）；对外代际 `/v1` 不变** |
 | 录播转写 Worker | 0.2.0 | `apps/worker/pyproject.toml`（4.6 切换后即权威元数据）；0.1.0 = 首个可运行版本（2.3）：pull 循环 + stub/qwen provider seam → **0.2.0 = 4.6 切换：Python 实现重写为唯一服务层实现（Node 版删除）** |

@@ -1,0 +1,10 @@
+{
+  "name": "learning-digest",
+  "version": "0.2.13",
+  "private": true,
+  "description": "Turn live course audio into a learning resource with segment-by-segment transcription, rolling summaries, and a full-session digest.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}

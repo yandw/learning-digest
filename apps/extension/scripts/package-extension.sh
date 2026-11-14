@@ -3,9 +3,12 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+# Extension unit root: the ZIP's root namespace (manifest.json lives here).
+extension_root="$(cd "$script_dir/.." && pwd)"
+# Repository root: shared docs shipped in the ZIP (README/PRIVACY/...) live here.
+repo_root="$(cd "$extension_root/../.." && pwd)"
 check_script="$script_dir/check-release.sh"
-dist_dir="$repo_root/dist"
+dist_dir="$extension_root/dist"
 
 command -v zip >/dev/null 2>&1 || {
   printf 'Packaging failed: zip is required\n' >&2
@@ -22,9 +25,34 @@ if ((${#release_files[@]} == 0)); then
   exit 1
 fi
 
-version="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.version)' "$repo_root/manifest.json")"
+# Entries sourced from the repository root instead of the extension unit root.
+repo_files=()
+while IFS= read -r file; do
+  [[ -n "$file" ]] && repo_files+=("$file")
+done < <("$check_script" --print-repo-files)
+
+extension_files=()
+for file in "${release_files[@]}"; do
+  is_repo_file=false
+  for repo_file in "${repo_files[@]}"; do
+    if [[ "$file" == "$repo_file" ]]; then
+      is_repo_file=true
+      break
+    fi
+  done
+  if [[ "$is_repo_file" == false ]]; then
+    extension_files+=("$file")
+  fi
+done
+
+if ((${#extension_files[@]} == 0)); then
+  printf 'Packaging failed: extension allowlist is empty\n' >&2
+  exit 1
+fi
+
+version="$(node -e 'const m=require(process.argv[1]); process.stdout.write(m.version)' "$extension_root/manifest.json")"
 if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-  printf 'Packaging failed: unsafe manifest version: %s\n' "$version" >&2
+  printf 'Packaging failed: unsafe manifest version: %s\n' "$version"
   exit 1
 fi
 
@@ -43,11 +71,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Two zip passes keep every entry name relative to the ZIP root (the
+# extension unit namespace) while the sources live in two roots.
 (
-  cd "$repo_root"
+  cd "$extension_root"
   # Exclude platform-specific extra attributes so identical source files
   # produce the same archive checksum across repeated local builds.
-  zip -X -q "$temporary_zip" "${release_files[@]}"
+  zip -X -q "$temporary_zip" "${extension_files[@]}"
+)
+(
+  cd "$repo_root"
+  zip -X -q "$temporary_zip" "${repo_files[@]}"
 )
 
 if unzip -Z1 "$temporary_zip" | grep -En '(^|/)(config\.js|\.DS_Store|\.git)(/|$)' >&2; then

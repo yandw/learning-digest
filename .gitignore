@@ -1,7 +1,10 @@
 # Secrets — your real keys live here, never commit them.
-# Root-anchored: the extension's local key config. Nested units (apps/*/lib)
-# version their config modules as code (see apps/worker/worker/config.py).
+# Root-anchored: the extension's local key config now lives at
+# apps/extension/config.js (legacy PoC-era copies sat at the repo root).
+# Nested units (apps/*/lib) version their config modules as code
+# (see apps/worker/worker/config.py).
 /config.js
+/apps/extension/config.js
 
 # OS / editor cruft
 .DS_Store

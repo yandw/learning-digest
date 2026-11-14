@@ -5,6 +5,10 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
+// Shared docs live at the repository root; the extension unit carries no
+// copies of them, so release pins read them two levels up.
+const repoRoot = path.resolve(root, "..", "..");
+const readRepo = (file) => fs.readFileSync(path.join(repoRoot, file), "utf8");
 
 test("manifest uses minimized install-time permissions", () => {
   const manifest = JSON.parse(read("manifest.json"));
@@ -122,8 +126,8 @@ test("no legacy YouTube caption-collection code remains", () => {
 });
 
 test("release copy documents current scope without em dashes", () => {
-  const readme = read("README.md");
-  const chineseReadme = read("README.zh-CN.md");
+  const readme = readRepo("README.md");
+  const chineseReadme = readRepo("README.zh-CN.md");
   const manifest = JSON.parse(read("manifest.json"));
   const packageJson = JSON.parse(read("package.json"));
 
@@ -139,11 +143,11 @@ test("release copy documents current scope without em dashes", () => {
     /learning-digest-v\$version\.zip/,
   );
   assert.doesNotMatch(
-    [readme, chineseReadme, read("PRIVACY.md"), read("SECURITY.md")].join("\n"),
+    [readme, chineseReadme, readRepo("PRIVACY.md"), readRepo("SECURITY.md")].join("\n"),
     /\bYT Digest\b/,
   );
   assert.doesNotMatch(
-    [readme, chineseReadme, read("PRIVACY.md"), read("SECURITY.md")].join("\n"),
+    [readme, chineseReadme, readRepo("PRIVACY.md"), readRepo("SECURITY.md")].join("\n"),
     /youtube/i,
   );
   assert.match(readme, /^# Learning Digest$/m);
@@ -286,8 +290,8 @@ test("release copy documents current scope without em dashes", () => {
   const publishedDocs = [
     readme,
     chineseReadme,
-    read("PRIVACY.md"),
-    read("SECURITY.md"),
+    readRepo("PRIVACY.md"),
+    readRepo("SECURITY.md"),
   ].join("\n");
   assert.doesNotMatch(publishedDocs, /custom OpenAI-compatible/i);
   assert.doesNotMatch(publishedDocs, /optional custom-origin/i);

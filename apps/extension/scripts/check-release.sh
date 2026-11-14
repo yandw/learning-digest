@@ -3,12 +3,15 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-cd "$repo_root"
+# The extension unit root (allowlisted plugin files resolve from here).
+extension_root="$(cd "$script_dir/.." && pwd)"
+# The repository root (shared docs shipped in the ZIP resolve from here).
+repo_root="$(cd "$extension_root/../.." && pwd)"
+cd "$extension_root"
 
 mode="${1:-}"
-if [[ -n "$mode" && "$mode" != "--print-files" ]]; then
-  printf 'Usage: %s [--print-files]\n' "$0" >&2
+if [[ -n "$mode" && "$mode" != "--print-files" && "$mode" != "--print-repo-files" ]]; then
+  printf 'Usage: %s [--print-files|--print-repo-files]\n' "$0" >&2
   exit 2
 fi
 
@@ -65,6 +68,11 @@ public_allowlist=(
   "prompts/explain.md"
   "prompts/topic-tick.md"
   "prompts/session-report.md"
+)
+
+# Repo-root files that ride along in the public ZIP (project docs + license).
+# They resolve from the repository root, not from the extension unit root.
+repo_public_files=(
   "README.md"
   "README.zh-CN.md"
   "PRIVACY.md"
@@ -106,15 +114,25 @@ required_public_files=(
   "icons/icon16.png"
   "icons/icon48.png"
   "icons/icon128.png"
-  "README.md"
-  "README.zh-CN.md"
-  "PRIVACY.md"
-  "SECURITY.md"
-  "LICENSE"
 )
+
+# The extension's copy of the shared four-station identity extractor: the
+# service worker can only importScripts() from inside the extension root, so
+# this unit carries a verbatim copy of contracts/platform-video-id.js. Guard
+# against drift whenever the shared original changes.
+shared_platform_video_id="$repo_root/contracts/platform-video-id.js"
+extension_platform_video_id="$extension_root/contracts/platform-video-id.js"
+if [[ -f "$shared_platform_video_id" ]]; then
+  cmp -s "$shared_platform_video_id" "$extension_platform_video_id" || fail \
+    "apps/extension/contracts/platform-video-id.js has drifted from contracts/platform-video-id.js; re-sync the extension copy"
+fi
 
 for file in "${required_public_files[@]}"; do
   [[ -f "$file" ]] || fail "required public file is missing: $file"
+done
+
+for file in "${repo_public_files[@]}"; do
+  [[ -f "$repo_root/$file" ]] || fail "required public file is missing: $file"
 done
 
 release_files=()
@@ -127,7 +145,7 @@ for file in "${public_allowlist[@]}"; do
 done
 
 for forbidden in "config.js" ".DS_Store" ".git"; do
-  for file in "${release_files[@]}"; do
+  for file in "${release_files[@]}" "${repo_public_files[@]}"; do
     if [[ "$file" == "$forbidden" || "$file" == "$forbidden/"* || "$file" == */"$forbidden" ]]; then
       fail "private path entered the release list: $file"
     fi
@@ -136,20 +154,35 @@ done
 
 command -v node >/dev/null 2>&1 || fail "Node.js is required"
 
-credential_scan_files=("${release_files[@]}")
+# Repo-root ZIP entries are scanned from their real location; every other
+# release file resolves from the extension unit root (the cwd).
+credential_scan_files=()
+for file in "${release_files[@]}"; do
+  credential_scan_files+=("$file")
+done
+for file in "${repo_public_files[@]}"; do
+  credential_scan_files+=("$repo_root/$file")
+done
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   while IFS= read -r -d '' file; do
-    [[ -f "$file" && ! -L "$file" ]] || continue
-    credential_scan_files+=("$file")
-  done < <(git ls-files -z --cached --others --exclude-standard)
+    [[ -f "$repo_root/$file" && ! -L "$repo_root/$file" ]] || continue
+    credential_scan_files+=("$repo_root/$file")
+  done < <(git ls-files -z --cached --others --exclude-standard --full-name)
 fi
 
-node - "${release_files[@]}" <<'NODE'
+REPO_PUBLIC_ROOT="$repo_root" node - "${release_files[@]}" -- "${repo_public_files[@]}" <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
-const releaseFiles = process.argv.slice(2);
-const allowlisted = new Set(releaseFiles);
+const separator = process.argv.indexOf("--");
+const releaseFiles = process.argv.slice(2, separator === -1 ? undefined : separator);
+// Repo-root entries ship in the ZIP under their own names but live at the
+// repository root on disk (the shared README/PRIVACY/SECURITY docs, LICENSE).
+const repoPublicFiles = process.argv.slice(separator + 1);
+const repoRoot = process.env.REPO_PUBLIC_ROOT || "";
+const allowlisted = new Set([...releaseFiles, ...repoPublicFiles]);
+const resolvePublicFile = (file) =>
+  repoPublicFiles.includes(file) ? path.join(repoRoot, file) : file;
 let manifest;
 
 try {
@@ -250,7 +283,8 @@ for (const file of referenced) {
     console.error(`manifest references an unsafe path: ${file}`);
     process.exit(1);
   }
-  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+  const resolved = resolvePublicFile(file);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
     console.error(`manifest references a missing file: ${file}`);
     process.exit(1);
   }
@@ -273,7 +307,13 @@ for file in "${javascript_files[@]}"; do
 done
 
 if compgen -G "tests/*.test.js" >/dev/null; then
-  node --test tests/*.test.js
+  # In print modes the caller consumes this script's stdout as the release
+  # file list, so the test reporter's stream is parked on stderr there.
+  if [[ -n "$mode" ]]; then
+    node --test tests/*.test.js >&2
+  else
+    node --test tests/*.test.js
+  fi
 fi
 
 if ((${#javascript_files[@]} > 0)); then
@@ -320,8 +360,12 @@ for (const file of process.argv.slice(2)) {
 if (found) process.exit(1);
 NODE
 
-log "Release checks passed (${#release_files[@]} allowlisted files)."
+log "Release checks passed ((${#release_files[@]} + ${#repo_public_files[@]}) allowlisted files)."
 
 if [[ "$mode" == "--print-files" ]]; then
-  printf '%s\n' "${release_files[@]}"
+  printf '%s\n' "${release_files[@]}" "${repo_public_files[@]}"
+fi
+
+if [[ "$mode" == "--print-repo-files" ]]; then
+  printf '%s\n' "${repo_public_files[@]}"
 fi

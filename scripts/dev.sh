@@ -81,6 +81,26 @@ kill_orphans() { # marker, web_guard: clear stale instances of our own services
   done
 }
 
+kill_port_holders() { # port, marker, web_guard: free the port if held by OUR process
+  local port="$1" marker="$2" web_guard="$3" pid child grandchild freed=false
+  for pid in $(lsof -ti ":$port" 2>/dev/null); do
+    ps -p "$pid" -o command= 2>/dev/null | grep -q "$marker" || continue
+    if $web_guard; then
+      lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -q "apps/web" || continue
+    fi
+    echo "[port $port] 发现本程序旧实例 (pid $pid),停止它并重启"
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+      for grandchild in $(pgrep -P "$child" 2>/dev/null); do
+        kill "$grandchild" 2>/dev/null || true
+      done
+      kill "$child" 2>/dev/null || true
+    done
+    kill "$pid" 2>/dev/null || true
+    freed=true
+  done
+  $freed && sleep 0.8
+}
+
 start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), listener_marker, url, command...
   local name="$1" pidfile="$2" logfile="$3" cwd="$4" port="$5" listener_marker="$6" url="$7"
   shift 7
@@ -125,14 +145,18 @@ start() {
   kill_orphans "python -m app.main" false
   kill_orphans "python -m worker.main" false
   kill_orphans "node server.js" true
-  if port_busy "$API_PORT"; then
-    echo "[api] port $API_PORT already in use, assume it is the API: http://127.0.0.1:$API_PORT"
-  else
-    start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" "app.main" \
-      "http://127.0.0.1:$API_PORT (GET /v1/me 返回 401 = 正常)" \
-      env PORT="$API_PORT" LD_API_WORKER_TOKEN="$WORKER_TOKEN" \
-      uv run python -m app.main
+  if port_busy "$API_PORT" && ! pid_alive "$RUN_DIR/api.pid"; then
+    kill_port_holders "$API_PORT" "app.main" false
   fi
+  if port_busy "$API_PORT"; then
+    echo "[api] FAILED: 端口 $API_PORT 被其他应用占用(非本项目进程)"
+    echo "[api] 换端口重试: API_PORT=8788 scripts/dev.sh start"
+    return 1
+  fi
+  start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" "app.main" \
+    "http://127.0.0.1:$API_PORT (GET /v1/me 返回 401 = 正常)" \
+    env PORT="$API_PORT" LD_API_WORKER_TOKEN="$WORKER_TOKEN" \
+    uv run python -m app.main
   if ! port_busy "$API_PORT"; then
     echo "[worker] api port $API_PORT is free, skip starting worker (start api first)"
   else
@@ -142,14 +166,18 @@ start() {
       LD_WORKER_TOKEN="$WORKER_TOKEN" \
       uv run python -m worker.main
   fi
-  if port_busy "$WEB_PORT"; then
-    echo "[web] port $WEB_PORT already in use, assume it is the Web 学习库: http://127.0.0.1:$WEB_PORT"
-  else
-    start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" "$WEB_PORT" "node server.js" \
-      "http://127.0.0.1:$WEB_PORT (登录/学习库入口)" \
-      env PORT="$WEB_PORT" LD_API_UPSTREAM="http://127.0.0.1:$API_PORT" \
-      npm start
+  if port_busy "$WEB_PORT" && ! pid_alive "$RUN_DIR/web.pid"; then
+    kill_port_holders "$WEB_PORT" "node server.js" true
   fi
+  if port_busy "$WEB_PORT"; then
+    echo "[web] FAILED: 端口 $WEB_PORT 被其他应用占用(非本项目进程)"
+    echo "[web] 换端口重试: WEB_PORT=8090 scripts/dev.sh start"
+    return 1
+  fi
+  start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" "$WEB_PORT" "node server.js" \
+    "http://127.0.0.1:$WEB_PORT (登录/学习库入口)" \
+    env PORT="$WEB_PORT" LD_API_UPSTREAM="http://127.0.0.1:$API_PORT" \
+    npm start
 }
 
 stop_one() { # pidfile: kill the tracked pid AND two levels of children

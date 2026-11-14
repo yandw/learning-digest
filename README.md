@@ -29,6 +29,8 @@ The extension and web library are plain HTML, CSS, and JavaScript with no build 
 
 ## Run the four units (development)
 
+One command manages the three server processes for local acceptance: `scripts/dev.sh start|status|logs|stop|restart` (ports default to 8787/8080, override with `API_PORT`/`WEB_PORT`; logs live in `/tmp/learning-digest-dev/logs/`). The manual steps below show what it does.
+
 Four processes in four terminals. Install [uv](https://docs.astral.sh/uv/) first; `uv sync` below is idempotent.
 
 1. Register an invited email (before starting the API):

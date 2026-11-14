@@ -29,6 +29,8 @@ Learning Digest 是一个个人学习库，加上一个用于在课程平台上�
 
 ## 运行四个单元（开发）
 
+一条命令管理本地验收的三个服务进程:`scripts/dev.sh start|status|logs|stop|restart`(端口默认 8787/8080,可用 `API_PORT`/`WEB_PORT` 覆盖;日志在 `/tmp/learning-digest-dev/logs/`)。下面的手动步骤展示它做了什么。
+
 四个进程，四个终端。先安装 [uv](https://docs.astral.sh/uv/)；下文的 `uv sync` 幂等，可重复执行。
 
 1. 登记受邀邮箱（启动 API 之前）：

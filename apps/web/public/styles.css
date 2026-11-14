@@ -1,5 +1,13 @@
 /* Learning Digest 学习库（apps/web 0.1.0）：登录 + 学习库壳。 */
 
+/* The hidden attribute must always win over any class display rule:
+   render toggles set `hidden` (login shell, usage panel, summary body,
+   list/detail sections). Without this, .auth-shell's display:flex keeps
+   the login card visible after authentication. */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --ink: #1f2933;
   --ink-soft: #52606d;

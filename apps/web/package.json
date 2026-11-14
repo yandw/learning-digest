@@ -1,6 +1,6 @@
 {
   "name": "@learning-digest/web",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Learning Digest web learning library, round 1: invited-email code login and the library shell. Zero npm dependencies and zero build step (ESM end to end).",
   "license": "MIT",

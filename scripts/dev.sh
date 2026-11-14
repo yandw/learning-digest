@@ -160,13 +160,42 @@ stop() {
   done
 }
 
+listen_port_for() { # pattern: find the listening port of a service process
+  local pid line
+  for pid in $(pgrep -f "$1" 2>/dev/null); do
+    line="$(lsof -a -p "$pid" -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1{print $9; exit}')"
+    if [ -n "$line" ]; then
+      echo "${line##*:}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 status() {
-  resolved_ports
-  echo "api    :$API_PORT  $(port_busy "$API_PORT" && echo "RUNNING(运行中) http://127.0.0.1:$API_PORT" || echo "DOWN(未运行)")"
-  echo "web    :$WEB_PORT  $(port_busy "$WEB_PORT" && echo "RUNNING(运行中) http://127.0.0.1:$WEB_PORT (学习库入口)" || echo "DOWN(未运行)")"
-  echo "worker : $(pid_alive "$RUN_DIR/worker.pid" && echo "RUNNING(运行中) pulls from http://127.0.0.1:$API_PORT" || echo "DOWN(未运行)")"
+  local api_port web_port worker_running=false
+  api_port="$(listen_port_for "python -m app.main" 2>/dev/null)" || api_port=""
+  web_port="$(listen_port_for "node server.js" 2>/dev/null)" || web_port=""
+  pgrep -f "python -m worker.main" >/dev/null 2>&1 && worker_running=true
+
+  if [ -n "$api_port" ]; then
+    echo "api    :$api_port  RUNNING(运行中) http://127.0.0.1:$api_port"
+  else
+    echo "api    : DOWN(未运行)  (start 后默认 http://127.0.0.1:$API_PORT)"
+  fi
+  if [ -n "$web_port" ]; then
+    echo "web    :$web_port  RUNNING(运行中) http://127.0.0.1:$web_port (学习库入口)"
+  else
+    echo "web    : DOWN(未运行)  (start 后默认 http://127.0.0.1:$WEB_PORT)"
+  fi
+  if $worker_running; then
+    echo "worker : RUNNING(运行中) pulls from http://127.0.0.1:${api_port:-$API_PORT}"
+  else
+    echo "worker : DOWN(未运行)  (无监听端口,pull 模式)"
+  fi
   echo "logs   : $LOG_DIR/"
   echo "outbox : $ROOT/apps/api/data/outbox.jsonl (验证码,取最后一行)"
+  echo "       按进程探测,与启动方式/端口无关;停止用 scripts/dev.sh stop 或 pkill -f 'python -m app.main'"
 }
 
 case "${1:-}" in

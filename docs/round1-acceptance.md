@@ -27,23 +27,29 @@
 
 ### 2.0 环境准备（一次）
 
-1. [ ] 集成分支 tip 合入本文档版本；Chrome 打开 `chrome://extensions` → 开发者模式 → 加载已解压的扩展程序，选仓库根目录；卡片显示版本 **0.2.8**
-2. [ ] **API 启动前**登记受邀邮箱（服务端把邀请名单读进内存，启动后用 CLI 登记不会被运行中的服务看到）：
+1. [ ] **安装插件**：插件不是单独的包——它就是**本仓库根目录**（含 `manifest.json` 的那个文件夹）。Chrome 打开 `chrome://extensions` → 右上角开启「开发者模式」→ 左上角「加载已解压的扩展程序」→ 选择仓库根目录 → 卡片应显示 **Learning Digest 0.2.13**。若在卡片上看到错误按钮，说明选错了目录。装完建议在扩展菜单里固定图标；侧边栏从工具栏图标打开。
+2. [ ] **登记受邀邮箱**（必须在 API 启动**前**；已登记的邮箱保存在 `apps/api/data/state.json`，重启服务不会丢）：
 
    ```bash
    cd apps/api && uv run python -m app.invites add user1@example.com user2@example.com
-   cd apps/api && uv run python -m app.invites list   # 确认两条
+   cd apps/api && uv run python -m app.invites list   # 确认
    ```
 
    双账号隔离（§2.7）需要两个邮箱，各配一个 Chrome 用户配置（profile）——插件凭据组按浏览器配置生效。
-3. [ ] 启动后端与 Web（两个终端）：
+3. [ ] **启动全部服务**（一条命令，后台运行）：
 
    ```bash
-   cd apps/api && uv run python -m app.main   # 127.0.0.1:8787，默认即可
-   cd apps/web && npm start                   # 127.0.0.1:8080，默认上游即 8787
+   scripts/dev.sh start     # api :8787 + worker + web :8080；status/logs/stop/restart 同前缀
    ```
 
-4. [ ] 验证码读取方式（dev 邮件实现，尚无真实邮件账号）：API 进程 stdout 会打印 `[mailer] to=… code=…`，同时追加写入 `apps/api/data/outbox.jsonl`
+   验证服务：`scripts/dev.sh status` 三行 RUNNING；浏览器打开 `http://127.0.0.1:8080` 出现登录页。
+4. [ ] **验证码读取**（dev 邮件实现，尚无真实邮件账号）：
+
+   ```bash
+   tail -1 apps/api/data/outbox.jsonl   # 取最后一行 JSON 的 "code" 字段
+   ```
+
+   每次请求追加一行，**新码生效后旧码作废**；60 秒内重复获取不发新码；API stdout 与 `scripts/dev.sh logs` 同步打印 `[mailer] to=… code=…`。提示「验证码错误或已过期」= 取了旧行，重新获取后取最后一行重试，期间不要刷新页面。
 5. [ ] 四站样本各一条**可播放、可拖拽定位**的网页视频（样本登记表见 §3，等待项目方提供）；另备：一个普通网页、一篇小红书图文
 
 ### 2.1 邀请与登录（决策 3）

@@ -48,6 +48,14 @@ pid_alive() {
   [ -n "$stat" ] && [ "${stat:0:1}" != "Z" ]
 }
 
+our_listener() { # port, marker: is this port held by OUR process?
+  local pid
+  for pid in $(lsof -ti :"$1" 2>/dev/null); do
+    ps -p "$pid" -o command= 2>/dev/null | grep -q "$2" && return 0
+  done
+  return 1
+}
+
 wait_for_port() { # port: wait up to ~4s for a listener (api/web health)
   local port="$1" i
   for i in 1 2 3 4 5 6 7 8; do
@@ -57,9 +65,25 @@ wait_for_port() { # port: wait up to ~4s for a listener (api/web health)
   return 1
 }
 
-start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), url, command...
-  local name="$1" pidfile="$2" logfile="$3" cwd="$4" port="$5" url="$6"
-  shift 6
+kill_orphans() { # marker, web_guard: clear stale instances of our own services
+  local marker="$1" web_guard="$2" pid child grandchild
+  for pid in $(pgrep -f "$marker" 2>/dev/null); do
+    if $web_guard; then
+      lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -q "apps/web" || continue
+    fi
+    for child in $(pgrep -P "$pid" 2>/dev/null); do
+      for grandchild in $(pgrep -P "$child" 2>/dev/null); do
+        kill "$grandchild" 2>/dev/null || true
+      done
+      kill "$child" 2>/dev/null || true
+    done
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
+start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), listener_marker, url, command...
+  local name="$1" pidfile="$2" logfile="$3" cwd="$4" port="$5" listener_marker="$6" url="$7"
+  shift 7
   if pid_alive "$pidfile" && { [ -z "$port" ] || port_busy "$port"; }; then
     echo "[$name] already running (pid $(cat "$pidfile"))"
     echo "[$name] $url"
@@ -68,10 +92,17 @@ start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), url, comm
   rm -f "$pidfile"
   ( cd "$cwd" && "$@" > "$logfile" 2>&1 & echo $! > "$pidfile" )
   if [ -n "$port" ]; then
-    if wait_for_port "$port" && pid_alive "$pidfile"; then
+    if wait_for_port "$port" && pid_alive "$pidfile" && our_listener "$port" "$listener_marker"; then
       echo "[$name] started (pid $(cat "$pidfile"))"
       echo "[$name] $url"
       return 0
+    fi
+    if wait_for_port "$port" && ! our_listener "$port" "$listener_marker"; then
+      echo "[$name] FAILED: 端口 $port 被其他应用占用(非本项目进程)"
+      echo "[$name] 换端口重试: $name=$port-别名 例如 WEB_PORT=8090 scripts/dev.sh start"
+      stop_one "$pidfile"
+      rm -f "$pidfile"
+      return 1
     fi
     echo "[$name] FAILED to listen on :$port within 4s, see $logfile"
     stop_one "$pidfile"
@@ -91,10 +122,13 @@ start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), url, comm
 
 start() {
   remember_ports
+  kill_orphans "python -m app.main" false
+  kill_orphans "python -m worker.main" false
+  kill_orphans "node server.js" true
   if port_busy "$API_PORT"; then
     echo "[api] port $API_PORT already in use, assume it is the API: http://127.0.0.1:$API_PORT"
   else
-    start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" \
+    start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" "app.main" \
       "http://127.0.0.1:$API_PORT (GET /v1/me 返回 401 = 正常)" \
       env PORT="$API_PORT" LD_API_WORKER_TOKEN="$WORKER_TOKEN" \
       uv run python -m app.main
@@ -102,7 +136,7 @@ start() {
   if ! port_busy "$API_PORT"; then
     echo "[worker] api port $API_PORT is free, skip starting worker (start api first)"
   else
-    start_one worker "$RUN_DIR/worker.pid" "$LOG_DIR/worker.log" "$ROOT/apps/worker" "" \
+    start_one worker "$RUN_DIR/worker.pid" "$LOG_DIR/worker.log" "$ROOT/apps/worker" "" "" \
       "pull 模式,无监听端口: 从 http://127.0.0.1:$API_PORT 领任务(provider: ${LD_WORKER_PROVIDER:-stub})" \
       env LD_WORKER_API_BASE="http://127.0.0.1:$API_PORT" \
       LD_WORKER_TOKEN="$WORKER_TOKEN" \
@@ -111,7 +145,7 @@ start() {
   if port_busy "$WEB_PORT"; then
     echo "[web] port $WEB_PORT already in use, assume it is the Web 学习库: http://127.0.0.1:$WEB_PORT"
   else
-    start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" "$WEB_PORT" \
+    start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" "$WEB_PORT" "node server.js" \
       "http://127.0.0.1:$WEB_PORT (登录/学习库入口)" \
       env PORT="$WEB_PORT" LD_API_UPSTREAM="http://127.0.0.1:$API_PORT" \
       npm start
@@ -152,10 +186,13 @@ stop() {
     fi
     rm -f "$pidfile"
   done
+  kill_orphans "python -m app.main" false
+  kill_orphans "python -m worker.main" false
+  kill_orphans "node server.js" true
   for port in "$WEB_PORT" "$API_PORT"; do
     if port_busy "$port"; then
-      echo "[warn] port $port still in use by a process this script did not start"
-      echo "       stop it with:  lsof -ti :$port | xargs kill"
+      echo "[warn] port $port 仍被非本项目的进程占用"
+      echo "       查看并手动停止:  lsof -i :$port ;  lsof -ti :$port | xargs kill"
     fi
   done
 }

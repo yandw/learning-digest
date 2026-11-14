@@ -95,7 +95,7 @@ start() {
     echo "[api] port $API_PORT already in use, assume it is the API: http://127.0.0.1:$API_PORT"
   else
     start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" \
-      "http://127.0.0.1:$API_PORT(GET /v1/me 返回 401 = 正常)" \
+      "http://127.0.0.1:$API_PORT (GET /v1/me 返回 401 = 正常)" \
       env PORT="$API_PORT" LD_API_WORKER_TOKEN="$WORKER_TOKEN" \
       uv run python -m app.main
   fi
@@ -112,7 +112,7 @@ start() {
     echo "[web] port $WEB_PORT already in use, assume it is the Web 学习库: http://127.0.0.1:$WEB_PORT"
   else
     start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" "$WEB_PORT" \
-      "http://127.0.0.1:$WEB_PORT(登录/学习库入口)" \
+      "http://127.0.0.1:$WEB_PORT (登录/学习库入口)" \
       env PORT="$WEB_PORT" LD_API_UPSTREAM="http://127.0.0.1:$API_PORT" \
       npm start
   fi

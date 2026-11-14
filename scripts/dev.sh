@@ -39,48 +39,80 @@ port_busy() { lsof -ti ":$1" >/dev/null 2>&1; }
 pid_alive() {
   local file="$1"
   [ -f "$file" ] || return 1
-  local pid
+  local pid stat
   pid="$(cat "$file" 2>/dev/null)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A zombie (defunct) passes kill -0 but is dead for our purposes.
+  stat="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
+  [ -n "$stat" ] && [ "${stat:0:1}" != "Z" ]
 }
 
-start_one() { # name, pidfile, logfile, cwd, command...
-  local name="$1" pidfile="$2" logfile="$3" cwd="$4"
-  shift 4
-  if pid_alive "$pidfile"; then
+wait_for_port() { # port: wait up to ~4s for a listener (api/web health)
+  local port="$1" i
+  for i in 1 2 3 4 5 6 7 8; do
+    port_busy "$port" && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), url, command...
+  local name="$1" pidfile="$2" logfile="$3" cwd="$4" port="$5" url="$6"
+  shift 6
+  if pid_alive "$pidfile" && { [ -z "$port" ] || port_busy "$port"; }; then
     echo "[$name] already running (pid $(cat "$pidfile"))"
+    echo "[$name] $url"
     return 0
   fi
+  rm -f "$pidfile"
   ( cd "$cwd" && "$@" > "$logfile" 2>&1 & echo $! > "$pidfile" )
+  if [ -n "$port" ]; then
+    if wait_for_port "$port" && pid_alive "$pidfile"; then
+      echo "[$name] started (pid $(cat "$pidfile"))"
+      echo "[$name] $url"
+      return 0
+    fi
+    echo "[$name] FAILED to listen on :$port within 4s, see $logfile"
+    stop_one "$pidfile"
+    rm -f "$pidfile"
+    return 1
+  fi
+  # No listening port to probe (worker): a live, non-zombie pid is success.
   sleep 0.5
   if pid_alive "$pidfile"; then
-    echo "[$name] started on pid $(cat "$pidfile"), log $logfile"
+    echo "[$name] started (pid $(cat "$pidfile"))"
+    echo "[$name] $url"
   else
     echo "[$name] FAILED to start, see $logfile"
+    rm -f "$pidfile"
   fi
 }
 
 start() {
   remember_ports
   if port_busy "$API_PORT"; then
-    echo "[api] port $API_PORT already in use (skip; stop it first or set API_PORT)"
+    echo "[api] port $API_PORT already in use, assume it is the API: http://127.0.0.1:$API_PORT"
   else
-    start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" \
+    start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" \
+      "http://127.0.0.1:$API_PORT(GET /v1/me 返回 401 = 正常)" \
       env PORT="$API_PORT" LD_API_WORKER_TOKEN="$WORKER_TOKEN" \
       uv run python -m app.main
   fi
   if ! port_busy "$API_PORT"; then
     echo "[worker] api port $API_PORT is free, skip starting worker (start api first)"
   else
-    start_one worker "$RUN_DIR/worker.pid" "$LOG_DIR/worker.log" "$ROOT/apps/worker" \
+    start_one worker "$RUN_DIR/worker.pid" "$LOG_DIR/worker.log" "$ROOT/apps/worker" "" \
+      "pull 模式,无监听端口: 从 http://127.0.0.1:$API_PORT 领任务(provider: ${LD_WORKER_PROVIDER:-stub})" \
       env LD_WORKER_API_BASE="http://127.0.0.1:$API_PORT" \
       LD_WORKER_TOKEN="$WORKER_TOKEN" \
       uv run python -m worker.main
   fi
   if port_busy "$WEB_PORT"; then
-    echo "[web] port $WEB_PORT already in use (skip; stop it first or set WEB_PORT)"
+    echo "[web] port $WEB_PORT already in use, assume it is the Web 学习库: http://127.0.0.1:$WEB_PORT"
   else
-    start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" \
+    start_one web "$RUN_DIR/web.pid" "$LOG_DIR/web.log" "$ROOT/apps/web" "$WEB_PORT" \
+      "http://127.0.0.1:$WEB_PORT(登录/学习库入口)" \
       env PORT="$WEB_PORT" LD_API_UPSTREAM="http://127.0.0.1:$API_PORT" \
       npm start
   fi
@@ -130,11 +162,11 @@ stop() {
 
 status() {
   resolved_ports
-  echo "api    :$API_PORT  $(port_busy "$API_PORT" && echo RUNNING || echo down)"
-  echo "web    :$WEB_PORT  $(port_busy "$WEB_PORT" && echo RUNNING || echo down)"
-  echo "worker : $(pid_alive "$RUN_DIR/worker.pid" && echo "RUNNING (pid $(cat "$RUN_DIR/worker.pid"))" || echo down)"
+  echo "api    :$API_PORT  $(port_busy "$API_PORT" && echo "RUNNING(运行中) http://127.0.0.1:$API_PORT" || echo "DOWN(未运行)")"
+  echo "web    :$WEB_PORT  $(port_busy "$WEB_PORT" && echo "RUNNING(运行中) http://127.0.0.1:$WEB_PORT (学习库入口)" || echo "DOWN(未运行)")"
+  echo "worker : $(pid_alive "$RUN_DIR/worker.pid" && echo "RUNNING(运行中) pulls from http://127.0.0.1:$API_PORT" || echo "DOWN(未运行)")"
   echo "logs   : $LOG_DIR/"
-  echo "outbox : $ROOT/apps/api/data/outbox.jsonl (verification codes, last line wins)"
+  echo "outbox : $ROOT/apps/api/data/outbox.jsonl (验证码,取最后一行)"
 }
 
 case "${1:-}" in

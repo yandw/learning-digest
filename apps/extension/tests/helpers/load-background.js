@@ -15,32 +15,6 @@ const root = path.resolve(__dirname, "..", "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
 /**
- * Serves prompts/*.md to the loadPromptSection fetch seam (in the service
- * worker it is chrome.runtime.getURL + fetch). Real files are read from
- * disk so the flows exercise the shipped templates; `promptFiles` overrides
- * a file by name, where null simulates a missing file (404) for the failure
- * tests. Every other URL goes to the injected fetchImpl (AI Provider,
- * speech providers).
- */
-function promptAwareFetch(fetchImpl, promptFiles = {}) {
-  return async (url, options) => {
-    const match = String(url).match(/\/prompts\/([^/?#]+)$/);
-    if (match) {
-      const fileName = match[1];
-      if (Object.hasOwn(promptFiles, fileName)) {
-        const content = promptFiles[fileName];
-        if (content === null) return { ok: false, status: 404 };
-        return { ok: true, text: async () => content };
-      }
-      const filePath = path.join(root, "prompts", fileName);
-      if (!fs.existsSync(filePath)) return { ok: false, status: 404 };
-      return { ok: true, text: async () => fs.readFileSync(filePath, "utf8") };
-    }
-    return fetchImpl(url, options);
-  };
-}
-
-/**
  * P6 auth verdict seam: the real gate module, with checkAuthorization
  * pinned to the requested verdict so tests never need a live /v1 for the
  * gate. `auth: { real: true }` keeps the real module (the sandbox fetch
@@ -60,14 +34,10 @@ function withAuthVerdict(gate, auth) {
 }
 
 function loadBackgroundHelpers({
-  settings = {
-    provider: "deepseek",
-    aiApiKey: "test-key",
-    aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    aiModel: "qwen3.8-flash",
-  },
+  // Settings ride the real v5 normalize: any blob shape is accepted and the
+  // retired AI fields are dropped on read (ticket 6.6).
+  settings = {},
   fetchImpl = fetch,
-  promptFiles = {},
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
   setIntervalImpl = () => 0,
@@ -121,7 +91,7 @@ function loadBackgroundHelpers({
     Blob,
     File,
     FormData,
-    fetch: promptAwareFetch(fetchImpl, promptFiles),
+    fetch: fetchImpl,
     AbortController,
     Date: SandboxDate,
     setTimeout: setTimeoutImpl,
@@ -206,7 +176,9 @@ function loadBackgroundHelpers({
     YTD_SITE_CAPABILITIES: require("../../site-capabilities.js"),
     YTD_SESSION_PIPELINE: require("../../session-pipeline.js"),
     YTD_SESSION_TIMELINE: require("../../session-timeline.js"),
-    YTD_SESSION_SUMMARY: require("../../session-summary.js"),
+    // Ticket 6.6 (#91): the panel AI's server-side client (contract-r4 §6/§7)
+    // replaces the retired local session-summary module.
+    YTD_PANEL_AI: require("../../panel-ai.js"),
     YTD_SESSION_PERSISTENCE: require("../../session-persistence.js"),
     YTD_SEGMENTER: require("../../session-segmenter.js"),
     YTD_SOURCE_PLATFORMS: require("../../source-platforms.js"),

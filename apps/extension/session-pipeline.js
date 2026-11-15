@@ -2,10 +2,10 @@
  * Session pipeline: a pure, event-driven state machine over Session state.
  *
  * Events (segmentCaptured, transcribeOk, transcribeFailed, gapSkipped,
- * gapFilled, utteranceCaptured, topicsAppended, titleCaptured, sessionEnd)
+ * gapFilled, utteranceCaptured, titleCaptured, sessionEnd)
  * drive
  * transitions over state
- * { sessionId, segments, transcriptRecords, topics, title?, status }.
+ * { sessionId, segments, transcriptRecords, title?, status }.
  * Segments carry their own lifecycle (pending → done / failed).
  *
  * Pure logic with no browser dependencies, so it can be tested in Node and
@@ -44,7 +44,7 @@ var YTD_SESSION_PIPELINE = (() => {
    *   transcriptOrigin is set when the Session already committed to a
    *   transcript path at start (Ticket 2.5: the captions path locks origin
    *   "captions" at creation); it stays null for the capture paths.
-   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], topics: object[], transcriptOrigin: string|null}}
+   * @returns {{sessionId: string, status: "active", segments: Segment[], transcriptRecords: object[], transcriptOrigin: string|null}}
    */
   function createSession({ sessionId, transcriptOrigin } = {}) {
     return {
@@ -52,34 +52,12 @@ var YTD_SESSION_PIPELINE = (() => {
       status: "active",
       segments: [],
       transcriptRecords: [],
-      topics: [],
+      // (Ticket 6.6) The Topic timeline lives on the server (the
+      // SessionOverview); the local state carries no Topic computation.
       transcriptOrigin: transcriptOrigin === "captions" || transcriptOrigin === "asr"
         ? transcriptOrigin
         : null,
     };
-  }
-
-  /**
-   * Validates one raw Topic entry for the append-only timeline: numeric
-   * time range with end at or after start, non-empty title and text. The
-   * tolerant parser (session-summary.js) produces this shape; the state
-   * machine re-checks so a malformed append can never corrupt the timeline.
-   *
-   * @param {*} topic
-   * @returns {boolean}
-   */
-  function isValidTopic(topic) {
-    if (!topic || typeof topic !== "object" || Array.isArray(topic)) return false;
-    const start = Number(topic.start);
-    const end = Number(topic.end);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
-    if (Math.max(0, Math.floor(end)) < Math.max(0, Math.floor(start))) return false;
-    return (
-      typeof topic.title === "string" &&
-      topic.title.trim().length > 0 &&
-      typeof topic.text === "string" &&
-      topic.text.trim().length > 0
-    );
   }
 
   /**
@@ -101,8 +79,7 @@ var YTD_SESSION_PIPELINE = (() => {
  * - {type: "utteranceCaptured", text, start, duration, failed?} - one
  *   finalized realtime utterance (#47); appends a plain Transcript record
  *   (failed: true lands the segment path's failure-marker shape)
-   * - {type: "topicsAppended", topics: [{start, end, title, text, continuation?}]}
-   * - {type: "titleCaptured", title: string} - the page title (#32)
+     * - {type: "titleCaptured", title: string} - the page title (#32)
    * - {type: "sessionEnd"}
    *
    * @param {object} state
@@ -126,8 +103,6 @@ var YTD_SESSION_PIPELINE = (() => {
         return onGapFilled(state, event);
       case "utteranceCaptured":
         return onUtteranceCaptured(state, event);
-      case "topicsAppended":
-        return onTopicsAppended(state, event);
       case "titleCaptured":
         return onTitleCaptured(state, event);
       case "transcriptViewUpdated":
@@ -434,18 +409,6 @@ var YTD_SESSION_PIPELINE = (() => {
     };
   }
 
-  function onTopicsAppended(state, event) {
-    const topics = Array.isArray(event.topics) ? event.topics : null;
-    if (!topics || topics.some((topic) => !isValidTopic(topic))) {
-      throw new Error(
-        "topicsAppended requires Topic entries with {start, end, title, text}",
-      );
-    }
-    // Append-only (ADR 0002): new Topics never rewrite earlier ones, and an
-    // empty append (e.g. the parser found nothing to summarize) is a no-op.
-    if (topics.length === 0) return state;
-    return { ...state, topics: [...state.topics, ...topics] };
-  }
 
   /**
    * Stores the page title the bridge reported (#32), the stable first line
@@ -688,7 +651,6 @@ var YTD_SESSION_PIPELINE = (() => {
       transcriptRecords: Array.isArray(snapshot.transcriptRecords)
         ? snapshot.transcriptRecords
         : [],
-      topics: Array.isArray(snapshot.topics) ? snapshot.topics : [],
       transcriptOrigin:
         snapshot.transcriptOrigin === "captions" || snapshot.transcriptOrigin === "asr"
           ? snapshot.transcriptOrigin
@@ -716,6 +678,13 @@ var YTD_SESSION_PIPELINE = (() => {
     // this keeps the record honest for every state reader).
     if (snapshot.capturePath === "captions" || snapshot.capturePath === "asr") {
       restored.capturePath = snapshot.capturePath;
+    }
+    // The server Session id (ticket 6.6) rides the snapshot: the ended
+    // Session's digest retry reads it to POST /digest again after a worker
+    // restart. Older snapshots simply resume without it and the retry
+    // refuses honestly.
+    if (typeof snapshot.serverSessionId === "string" && snapshot.serverSessionId) {
+      restored.serverSessionId = snapshot.serverSessionId;
     }
     // The partial-coverage decision state (ticket 2.7) is durable: a resumed
     // pending Session must still offer 强制转写 / 按原样归档字幕, and the

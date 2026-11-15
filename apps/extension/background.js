@@ -3,25 +3,23 @@
  *
  * This is the "brain" of the extension. It runs in the background and handles:
  * 1. Opening the side panel when the user clicks the extension icon
- * 2. Calling the AI Provider to analyze transcripts, explain selections,
- *    translate content, clean up saved notes, and run the Topic timeline
- *    ticks / Session Digest of an active learning Session
+ * 2. Archiving Session transcripts to the learning service and driving the
+ *    panel's server-side AI (ticket 6.6): the rolling-summary ticks, the
+ *    overview read and the end-of-Session digest (contract-r4 §6/§7), plus
+ *    the stateless explain-selection call
  * 3. Note storage
  * 4. Sending results back to the side panel
- *
- * Source Platform capture (xiaoe-tech.com) and the Session pipeline land in a
- * later ticket; the Session state machine and Speech Provider registry are
- * already loaded here and ready to be driven by that capture layer.
  *
  * Think of it like a backend server — it does the heavy lifting
  * so the UI (side panel) can stay fast and responsive.
  */
 
-// Import safe defaults and validation helpers. Secret keys live in
-// chrome.storage.local and are never part of the extension source.
+// Import safe defaults and validation helpers. The AI credential lives on
+// the learning service (the Worker/API configure their own AI Provider);
+// the plugin presents only its linked account credential.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("api-client.js", "site-capabilities.js", "transcript-shapes.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "youtube-captions.js", "contracts/platform-video-id.js");
+importScripts("api-client.js", "site-capabilities.js", "transcript-shapes.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "panel-ai.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "youtube-captions.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -31,9 +29,6 @@ console.log(
   "[Learning Digest] background started, version:",
   chrome.runtime.getManifest().version,
 );
-const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
-const AI_PROVIDER_HARD_TIMEOUT_MS = 120_000;
-const AI_PROVIDER_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const debugLog = (...args) => {
   if (DEBUG) console.log(...args);
 };
@@ -62,8 +57,6 @@ async function getSettings() {
   }
   return normalized;
 }
-
-const promptFileCache = new Map();
 
 // ============================================================
 // AUTHORIZATION GATE (P6, decision 3 of #49)
@@ -1562,8 +1555,11 @@ async function startCaptionsSession(message, recognition, captions) {
   const state = YTD_SESSION_PIPELINE.createSession({
     sessionId: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
   });
+  // Ticket 6.6: the server Session id rides the local state (the ended
+  // snapshot's digest retry reads it from there).
+  const stampedState = { ...state, serverSessionId: created.session.id };
   const context = createCaptureContext({
-    sessionId: state.sessionId,
+    sessionId: stampedState.sessionId,
     tabId: message.tabId,
     platformId: recognition.platformId,
     kind: recognition.kind,
@@ -1571,7 +1567,7 @@ async function startCaptionsSession(message, recognition, captions) {
     startedAtMs: Date.now(),
     sourceUrl: message.url,
     segmentLengthSeconds: settings.segmentLengthSeconds,
-    state,
+    state: stampedState,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: settings.segmentLengthSeconds,
     }),
@@ -1579,7 +1575,7 @@ async function startCaptionsSession(message, recognition, captions) {
     serverSessionId: created.session.id,
   });
   captureContext = context;
-  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, state);
+  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, stampedState);
   await persistContextPointer(context);
 
   // P10 (decision 4): the lock and the progress writer are the capture
@@ -1948,228 +1944,253 @@ async function rebuildProgressTracking(context) {
 // records the verdict (storage breadcrumbs are the main debug channel).
 void checkAuthNow();
 
-async function loadPromptSection(fileName, heading, variables = {}) {
-  let markdown = promptFileCache.get(fileName);
-  if (!markdown) {
-    const response = await fetch(chrome.runtime.getURL(`prompts/${fileName}`));
-    if (!response.ok) {
-      throw new Error(`Could not load prompt file: ${fileName}`);
+// ============================================================
+// PANEL AI, SERVER-SIDE (ticket 6.6, issue #91; contract-r4 §6/§7)
+// ============================================================
+//
+// The panel's three AI features ride the learning service now — the Bearer
+// is the linked account credential, and every failure verdict carries the
+// server's envelope message verbatim (如实呈现):
+//
+// - POST /v1/sessions/{id}/rolling-summary (§6.2): the content-driven tick
+//   (≥ the configured coverage interval AND ≥ 10 new records — the PoC's
+//   debounce kept in panel-ai.js) POSTs an empty body; the server assembles
+//   the input from its archived transcript. The response overview is
+//   adopted as the Session's live Topic timeline and the debounce cursor
+//   advances to the server's lastCoveredMs. Append-only (ADR 0002/D21).
+// - GET /v1/sessions/{id}/overview (§6.2): one read per worker restart so
+//   the resumed Session re-adopts the server timeline; 404
+//   overview_not_generated is the fresh-Session reality and stays quiet.
+// - POST /v1/sessions/{id}/digest (§7.2, D22): after the §3.2 finish, one
+//   full pass over the finished Session; the five-key digest maps into the
+//   persisted report_<sessionId> artifact the panel and report page render.
+// - POST /v1/ai/explain (§7.2): stateless; no transcript passes through the
+//   plugin and no AI credentials live in it anymore.
+
+/**
+ * One POST/GET attempt against a panel-AI route → verdict. Never throws on
+ * HTTP failures: the classifier turns every status into a verdict carrying
+ * the server's envelope message. The parsed body rides back as `data` for
+ * the ok verdict's payload parsers.
+ */
+async function callPanelAiRoute({ settings, credential, url, method, body }) {
+  if (!url || !credential) {
+    return { kind: "error", message: "学习服务地址未配置或账号未关联。" };
+  }
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_error) {
+      data = null;
     }
-    markdown = await response.text();
-    promptFileCache.set(fileName, markdown);
+    return {
+      ...YTD_PANEL_AI.classifyPanelAiOutcome({ status: response.status, data }),
+      data,
+    };
+  } catch (_error) {
+    return YTD_PANEL_AI.classifyPanelAiOutcome({
+      network: true,
+      networkMessage: "无法连接学习服务，请稍后重试。",
+    });
   }
-
-  const marker = `## ${heading}`;
-  const markerIndex = markdown.indexOf(marker);
-  if (markerIndex === -1) {
-    throw new Error(`Prompt section not found: ${fileName}#${heading}`);
-  }
-  const sectionStart = markerIndex + marker.length;
-  const nextSection = markdown.indexOf("\n## ", sectionStart);
-  const section = markdown.slice(
-    sectionStart,
-    nextSection === -1 ? markdown.length : nextSection,
-  );
-  const fenceMatch = section.match(/```(?:[A-Za-z0-9_-]+)?\n([\s\S]*?)\n```/);
-  if (!fenceMatch) {
-    throw new Error(`Prompt section not found: ${fileName}#${heading}`);
-  }
-
-  let prompt = fenceMatch[1];
-  // One substitution convention for all prompt files, shared with the pure
-  // prompt builders in session-summary.js.
-  return YTD_SESSION_SUMMARY.fillPromptTemplate(prompt, variables);
 }
 
 /**
- * Loads the section bundle of one session prompt template (Topic tick or
- * global pass, #33). These templates carry no load-time variables: the pure
- * builders in session-summary.js fill their placeholders from Session state.
- * A missing or unreadable file is a permanent misconfiguration that would
- * fail every tick or end-of-session pass, so it is logged loudly here (a
- * failed tick would otherwise only hit the quiet retry log) and rethrown
- * with a clear Chinese message for the panel payloads.
- *
- * @param {string} fileName - prompts/ file, e.g. "topic-tick.md"
- * @param {Record<string, string>} headings - template key -> "## " heading
- * @returns {Promise<Record<string, string>>} the loaded sections
+ * Adopts a parsed server overview onto the capture context: the live Topic
+ * timeline (mapped to panel seconds) and the debounce cursor (the server's
+ * lastCoveredMs), persisted with the pointer so a restart keeps the pace.
  */
-async function loadPromptTemplate(fileName, headings) {
-  try {
-    const template = {};
-    for (const [key, heading] of Object.entries(headings)) {
-      template[key] = await loadPromptSection(fileName, heading);
-    }
-    return template;
-  } catch (error) {
-    console.error(
-      `[Learning Digest] 提示词文件加载失败（prompts/${fileName}）：`,
-      error?.message || error,
-    );
-    throw new Error(`提示词文件缺失或不可读：prompts/${fileName}`);
-  }
+async function adoptSessionOverview(context, overview) {
+  context.overview = YTD_PANEL_AI.overviewLiveTopics(overview);
+  context.summaryCursorSeconds = YTD_PANEL_AI.overviewCursorSeconds(overview);
+  await persistContextPointer(context);
+  broadcastSession(context.state, { overview: context.overview });
 }
 
-async function requestAiCompletion({
-  messages,
-  maxTokens,
-  temperature,
-  responseFormat,
-}) {
+/**
+ * GET /v1/sessions/{id}/overview (§6.2): re-adopts the server's Topic
+ * timeline. Used on the worker-restart resume path (the rebuilt context
+ * knows nothing about ticks the previous worker made); a fresh Session's
+ * 404 overview_not_generated is a quiet no-op. Returns true when an
+ * overview was adopted.
+ */
+async function fetchSessionOverview(context) {
+  if (!context || context.ended || !context.serverSessionId) return false;
   const settings = await getSettings();
-  if (!settings.aiApiKey) {
-    const error = new Error(
-      "AI provider API key not configured. Open Learning Digest Settings.",
-    );
-    error.code = "NO_AI_KEY";
-    throw error;
-  }
-  const body = {
-    model: settings.aiModel,
-    max_tokens: maxTokens,
-    messages,
-  };
-  if (typeof temperature === "number") body.temperature = temperature;
-  if (responseFormat) {
-    body.response_format = responseFormat;
-  }
-  // Product features need bounded, predictable latency rather than reasoning
-  // traces. `thinking` is a DeepSeek-specific body field — only send it to
-  // DeepSeek endpoints so other OpenAI-compatible providers (e.g. Bailian
-  // Qwen) never receive an unknown parameter.
-  if (/deepseek\.com/i.test(settings.aiBaseUrl)) {
-    body.thinking = { type: "disabled" };
-  }
-
-  const controller = new AbortController();
-  let timeoutKind = "";
-  let idleTimeoutId;
-  let hardTimeoutId;
-  const abortForTimeout = (kind) => {
-    if (controller.signal.aborted) return;
-    timeoutKind = kind;
-    controller.abort();
-  };
-  const resetIdleTimeout = () => {
-    clearTimeout(idleTimeoutId);
-    idleTimeoutId = setTimeout(
-      () => abortForTimeout("idle"),
-      AI_PROVIDER_IDLE_TIMEOUT_MS,
-    );
-  };
-
-  hardTimeoutId = setTimeout(
-    () => abortForTimeout("hard"),
-    AI_PROVIDER_HARD_TIMEOUT_MS,
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_PANEL_AI.overviewPath(context.serverSessionId),
   );
-  resetIdleTimeout();
+  const outcome = await callPanelAiRoute({ settings, credential, url: apiUrl, method: "GET" });
+  if (outcome.kind === "ok") {
+    const overview = YTD_PANEL_AI.parseOverview(outcome.data);
+    if (overview) {
+      await adoptSessionOverview(context, overview);
+      return true;
+    }
+    return false;
+  }
+  if (outcome.kind === "unauthorized") {
+    await handleCredentialsInvalidated("unauthorized");
+    return false;
+  }
+  // notGenerated: the fresh-Session reality. Any other verdict: quiet — the
+  // tick responses carry the overview anyway.
+  debugLog("[Learning Digest BG] overview read:", outcome.message || outcome.kind);
+  return false;
+}
+
+/**
+ * One rolling-summary tick (§6.2): the fixed 60-second check cadence runs
+ * the content-driven decision (isRollingSummaryDue); a due tick POSTs the
+ * empty body and adopts the response overview. The server owns the
+ * append-only timeline — a failed or quiet tick touches nothing locally,
+ * and the next check retries. D21 semantics live server-side.
+ */
+async function maybeRunTopicTick(context) {
+  if (context.ended || context.summaryInFlight) return;
+  const settings = await getSettings();
+  const due = YTD_PANEL_AI.isRollingSummaryDue({
+    state: context.state,
+    cursorSeconds: context.summaryCursorSeconds ?? 0,
+    intervalMinutes: settings.summaryIntervalMinutes,
+  });
+  if (!due) return;
+
+  context.summaryInFlight = true;
   try {
-    const response = await fetch(
-      YTD_SETTINGS.chatCompletionsUrl(settings.aiBaseUrl),
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${settings.aiApiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      },
+    const credential = await readStoredAuthCredential();
+    const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+      settings.apiBaseUrl,
+      YTD_PANEL_AI.rollingSummaryPath(context.serverSessionId),
     );
-    // Receiving headers proves the provider is still making progress. It may
-    // then send blank-line body chunks while a non-streaming request queues.
-    resetIdleTimeout();
-
-    const data = await readBoundedAiResponse(response, resetIdleTimeout);
-    if (!response.ok) {
-      const errorData = data && typeof data === "object" ? data : {};
-      const error = new Error(
-        errorData.error?.message ||
-          errorData.message ||
-          `AI provider error: ${response.status}`,
-      );
-      error.status = response.status;
-      throw error;
+    const outcome = await callPanelAiRoute({
+      settings,
+      credential,
+      url: apiUrl,
+      method: "POST",
+      body: {},
+    });
+    if (outcome.kind === "ok") {
+      const overview = YTD_PANEL_AI.parseOverview(outcome.data);
+      if (overview) await adoptSessionOverview(context, overview);
+      return;
     }
-
-    const choice = data.choices?.[0];
-    const text = choice?.message?.content;
-    if (typeof text !== "string" || !text.trim()) {
-      const error = new Error("The AI provider returned an empty response.");
-      error.code = "EMPTY_AI_RESPONSE";
-      throw error;
+    if (outcome.kind === "unauthorized") {
+      // P7: the credential died mid-Session — capture stops, panel re-gates.
+      await handleCredentialsInvalidated("unauthorized");
+      return;
     }
-
-    // OpenAI-compatible finish reason ("stop", "length", ...). Callers that
-    // need to distinguish a truncated completion (the report pass) read it
-    // from here; existing callers ignore the extra field.
-    return { text, finishReason: choice?.finish_reason ?? null, settings };
-  } catch (error) {
-    if (timeoutKind === "idle") {
-      const timeoutError = new Error(
-        "The AI request was inactive for 50 seconds. Please Retry.",
-      );
-      timeoutError.code = "AI_IDLE_TIMEOUT";
-      throw timeoutError;
-    }
-    if (timeoutKind === "hard") {
-      const timeoutError = new Error(
-        "The AI request exceeded the 120-second limit. Please Retry.",
-      );
-      timeoutError.code = "AI_HARD_TIMEOUT";
-      throw timeoutError;
-    }
-    throw error;
+    // 502 rolling_summary_failed / 409 no_session_transcript_to_summarize:
+    // the server landed nothing (D16/D18) — the cursor stays, the next
+    // check retries. Quiet on purpose (the same PoC failure policy).
+    debugLog("[Learning Digest BG] rolling summary tick:", outcome.message || outcome.kind);
   } finally {
-    clearTimeout(idleTimeoutId);
-    clearTimeout(hardTimeoutId);
+    context.summaryInFlight = false;
   }
 }
 
-async function readBoundedAiResponse(response, onActivity) {
-  const reader = response.body?.getReader?.();
-  if (reader) {
-    const decoder = new TextDecoder();
-    let responseText = "";
-    let responseBytes = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      // Every received chunk is activity, including the provider's blank lines.
-      onActivity();
-      const byteLength = value?.byteLength ?? 0;
-      responseBytes += byteLength;
-      if (responseBytes > AI_PROVIDER_MAX_RESPONSE_BYTES) {
-        await reader.cancel?.().catch(() => {});
-        const error = new Error("The AI provider response exceeded the 2 MiB limit.");
-        error.code = "AI_RESPONSE_TOO_LARGE";
-        throw error;
-      }
-      responseText += decoder.decode(value, { stream: true });
-    }
-    responseText += decoder.decode();
-    return JSON.parse(responseText.trimStart());
-  }
+/** The fixed cadence at which the content-driven tick decision is re-run. */
+const SUMMARY_CHECK_INTERVAL_MS = 60_000;
 
-  // Some fetch implementations do not expose a readable stream. Preserve a
-  // bounded body read for that case.
-  if (typeof response.text === "function") {
-    const responseText = await response.text();
-    onActivity();
-    const byteLength = new TextEncoder().encode(responseText).byteLength;
-    if (byteLength > AI_PROVIDER_MAX_RESPONSE_BYTES) {
-      const error = new Error("The AI provider response exceeded the 2 MiB limit.");
-      error.code = "AI_RESPONSE_TOO_LARGE";
-      throw error;
-    }
-    return JSON.parse(responseText.trimStart());
-  }
+function startSummaryTimer(context) {
+  // The callback returns the tick promise: setInterval ignores it, and the
+  // tick body catches its own errors, so nothing can turn unhandled — but
+  // tests can await one check through the captured callback.
+  context.summaryTimer = setInterval(() => {
+    return maybeRunTopicTick(context);
+  }, SUMMARY_CHECK_INTERVAL_MS);
+}
 
-  // Legacy/test fetch shims may expose only json(). The hard and idle timers
-  // still bound this fallback even though chunk-level activity is unavailable.
-  const data = await response.json();
-  onActivity();
-  return data;
+/**
+ * The Session Digest for a finished Session (§7.2, D22): one POST after the
+ * §3.2 finish, the five-key response mapped into the persisted
+ * report_<sessionId> artifact (panel-ai.js owns the mapping; the renderers
+ * and the D7 startup scan keep their shape). Never throws — every failure
+ * becomes a renderable payload with the server's message verbatim:
+ *
+ * - 502 digest_failed / 400 / network → { report: { error } } (the panel's
+ *   retry entry stays live: regenerateReport POSTs again);
+ * - 409 no_session_transcript_to_summarize → { report: { skipped } } — the
+ *   same honest "nothing to summarize" surface the local pass used;
+ * - 401 → the P7 credentials-invalidated path plus the error payload.
+ *
+ * @param {{serverSessionId: string|null, localSessionId: string, state: object, meta: object|null}} input
+ * @returns {Promise<{report: object, persisted: boolean}>}
+ */
+async function produceSessionDigest({ serverSessionId, localSessionId, state, meta }) {
+  if (!serverSessionId) {
+    return {
+      report: { error: "该会话没有服务端会话标识，无法生成纪要。" },
+      persisted: false,
+    };
+  }
+  // The honest no-material skip, decided locally exactly like the retired
+  // local pass: no archived records (and nothing but failure markers) means
+  // the server would 409 — the panel shows the 未捕获到逐字稿 hint instead.
+  const records = state?.transcriptRecords || [];
+  if (records.length === 0 || YTD_SESSION_PIPELINE.allSegmentsFailed(state)) {
+    return { report: { skipped: "noTranscript" }, persisted: false };
+  }
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_PANEL_AI.digestPath(serverSessionId),
+  );
+  const outcome = await callPanelAiRoute({
+    settings,
+    credential,
+    url: apiUrl,
+    method: "POST",
+    body: {},
+  });
+  if (outcome.kind === "unauthorized") {
+    await handleCredentialsInvalidated("unauthorized");
+    return { report: { error: outcome.message }, persisted: false };
+  }
+  if (outcome.kind === "noTranscript") {
+    return { report: { skipped: "noTranscript" }, persisted: false };
+  }
+  if (outcome.kind !== "ok") {
+    return { report: { error: outcome.message }, persisted: false };
+  }
+  const digest = YTD_PANEL_AI.parseDigest(outcome.data);
+  if (!digest) {
+    return {
+      report: { error: "服务端返回的纪要无法识别，请重试。" },
+      persisted: false,
+    };
+  }
+  try {
+    const artifact = YTD_PANEL_AI.digestToReportArtifact({
+      digest,
+      sessionId: localSessionId,
+    });
+    // Meta rides along when known (#30): the report header needs it, and
+    // the generated-at stamp (0.1.38) joins it so the header shows when the
+    // digest was built. A failed pass persists nothing, so a retry
+    // reconstructs instead.
+    if (meta) artifact.meta = { ...meta, generatedAtMs: artifact.generatedAtMs };
+    const storageKey = `${YTD_REPORT_RENDER.REPORT_STORAGE_KEY_PREFIX}${localSessionId}`;
+    await chrome.storage.local.set({ [storageKey]: artifact });
+    return { report: artifact.report, persisted: true };
+  } catch (error) {
+    // Persistence must never break the end flow: the panel still gets a
+    // renderable payload.
+    console.error("[Learning Digest] landing the digest failed:", error?.message || error);
+    return { report: { error: error?.message || String(error) }, persisted: false };
+  }
 }
 
 // ============================================================
@@ -2365,12 +2386,8 @@ chrome.runtime.onInstalled.addListener(({ reason }) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "explainSelection") {
-    // Explain selected text using the AI Provider.
-    handleExplainSelection(
-      message.selectedText,
-      message.transcriptContext,
-      message.videoTitle,
-    )
+    // Explain selected text through the learning service (ticket 6.6).
+    handleExplainSelection(message.selectedText, message.transcriptContext)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }));
     return true;
@@ -2403,17 +2420,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleDeleteNote(message.noteId)
       .then(sendResponse)
       .catch((err) => sendResponse({ success: false, error: err.message }));
-    return true;
-  }
-
-  if (message.action === "checkConfig") {
-    getSettings()
-      .then((settings) =>
-        sendResponse({
-          hasAiKey: !!settings.aiApiKey,
-        }),
-      )
-      .catch((error) => sendResponse({ error: error.message }));
     return true;
   }
 
@@ -2647,65 +2653,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================
 
 /**
- * Explains selected text using the AI Provider.
- * Provides context, definitions, and clarification for complex terms.
+ * Explains selected text through the learning service's stateless explain
+ * endpoint (contract-r4 §7.2; ticket 6.6). The request carries {text,
+ * context?} — the server assembles its own prompt (the migrated
+ * prompts/explain.md, no video title) and answers {explanation}. A 401
+ * routes the P7 credentials-invalidated path; every failure verdict's
+ * message is the server's envelope text verbatim (如实呈现).
  *
  * @param {string} selectedText - The text the user selected
  * @param {string} transcriptContext - Surrounding transcript for context
- * @param {string} videoTitle - Session title for additional context
  * @returns {Object} - { success, explanation } or { success: false, error }
  */
-async function handleExplainSelection(
-  selectedText,
-  transcriptContext,
-  videoTitle,
-) {
-  try {
-    const settings = await getSettings();
-    if (!settings.aiApiKey) {
-      return {
-        success: false,
-        error: "NO_AI_KEY",
-        message: "AI provider API key not configured.",
-      };
+async function handleExplainSelection(selectedText, transcriptContext) {
+  const body = YTD_PANEL_AI.buildExplainBody({
+    text: selectedText,
+    context: transcriptContext,
+  });
+  if (!body) {
+    return { success: false, error: "请先选中要解释的文字。" };
+  }
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_PANEL_AI.explainPath());
+  const outcome = await callPanelAiRoute({ settings, credential, url: apiUrl, method: "POST", body });
+  if (outcome.kind === "ok") {
+    const explanation = YTD_PANEL_AI.parseExplanation(outcome.data);
+    if (explanation) {
+      return { success: true, explanation };
     }
-
-    const variables = {
-      videoTitle: videoTitle || "Unknown",
-      selectedText,
-      transcriptContext: transcriptContext || "None",
-    };
-    const systemPrompt = await loadPromptSection(
-      "explain.md",
-      "System prompt",
-      variables,
-    );
-    const userPrompt = await loadPromptSection(
-      "explain.md",
-      "User prompt",
-      variables,
-    );
-
-    debugLog("[Learning Digest] Requesting selection explanation");
-    const { text: explanation } = await requestAiCompletion({
-      maxTokens: 1024,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-    });
-
-    return {
-      success: true,
-      explanation: explanation.trim(),
-    };
-  } catch (error) {
-    console.error("Explain selection error:", error);
     return {
       success: false,
-      error: error.message || "Failed to explain selection",
+      error: "服务端没有返回可用的解释，请重试。",
     };
   }
+  if (outcome.kind === "unauthorized") {
+    await handleCredentialsInvalidated("unauthorized");
+  }
+  return { success: false, error: outcome.message };
 }
 
 // ============================================================
@@ -2818,10 +2802,14 @@ async function handleDeleteNote(noteId) {
 
 // Pure validators are exposed for the repository's Node tests only.
 globalThis.__YTD_TRANSLATION_TESTING__ = {
-  requestAiCompletion,
   handleSaveNote,
-  generateSessionReport,
-  produceSessionReport,
+  // Ticket 6.6: the panel AI wiring — the explain call, the rolling-summary
+  // tick and the digest pass. See tests/panel-ai.test.js (the pure client)
+  // and tests/background-capture.test.js (the capture wiring).
+  handleExplainSelection,
+  maybeRunTopicTick,
+  fetchSessionOverview,
+  produceSessionDigest,
   handleRegenerateReport,
   // Session capture orchestration (provider-aware start gate, resume
   // settlement of interrupted Segments) — see tests/background-capture.test.js.
@@ -2975,6 +2963,8 @@ async function persistContextPointer(context) {
   // segmenter cursor across a restart for the two cases where it runs ahead
   // of the persisted Segments: the mid-video anchor and the seek-forward
   // jump (the skipped range produces no Segment records).
+  // summaryCursorSeconds (ticket 6.6) keeps the rolling-summary debounce
+  // pace across a restart; the overview itself re-reads from the server.
   await chrome.storage.local.set({
     [ACTIVE_CAPTURE_KEY]: {
       sessionId: context.sessionId,
@@ -2989,6 +2979,7 @@ async function persistContextPointer(context) {
       pageTitle: context.pageTitle,
       sourceUrl: context.sourceUrl ?? null,
       cursorSeconds: context.segmenter ? context.segmenter.emittedUpTo : 0,
+      summaryCursorSeconds: Math.max(0, Math.floor(Number(context.summaryCursorSeconds) || 0)),
     },
   });
 }
@@ -3135,6 +3126,13 @@ function createCaptureContext({
     // One Topic tick at a time; a fresh or resumed Session simply waits for
     // the first timer fire, where the content-driven trigger decides.
     summaryInFlight: false,
+    // Ticket 6.6: the server-side rolling summary. `summaryCursorSeconds`
+    // is the client copy of the server's coverage position (overview.
+    // lastCoveredMs in panel seconds) — it paces the tick POSTs only; the
+    // server's Topics are the real timeline. `overview` holds the adopted
+    // live Topic timeline (mapped to panel seconds) the panel renders.
+    summaryCursorSeconds: 0,
+    overview: null,
     ended: false,
   };
 }
@@ -3194,6 +3192,9 @@ async function ensureCaptureResumed() {
   const settings = await getSettings();
   const context = createCaptureContext({
     ...pointer,
+    // The rolling-summary debounce cursor survives the restart in the
+    // pointer (ticket 6.6); the adopted overview re-reads from the server.
+    summaryCursorSeconds: pointer.summaryCursorSeconds ?? 0,
     state: resumedState,
     segmenter: YTD_SEGMENTER.createSegmenter({
       segmentLengthSeconds: pointer.segmentLengthSeconds,
@@ -3264,6 +3265,15 @@ async function ensureCaptureResumed() {
     startTranscriptPoll(context);
     startSummaryTimer(context);
   }
+  // Ticket 6.6: re-adopt the server's Topic timeline for the resumed
+  // Session (quiet when none exists yet) so the reopened panel converges
+  // on the ticks the previous worker already made. Awaited: the first
+  // state poll must already carry the adopted overview.
+  try {
+    await fetchSessionOverview(context);
+  } catch (error) {
+    debugLog("[Learning Digest BG] overview resume read failed:", error);
+  }
   console.log(`[Learning Digest] 采集已恢复: session=${context.sessionId} kind=${context.kind}`);
   return context;
 }
@@ -3330,199 +3340,6 @@ function startLiveTimer(context) {
     feedPosition(context, (Date.now() - context.startedAtMs) / 1000);
   }, LIVE_TICK_MS);
 }
-
-// ============================================================
-// TOPIC TICK + SESSION DIGEST (#18 / #28, ADR 0002)
-// ============================================================
-//
-// While a Session is active, a summary CHECK fires on a fixed 60-second
-// cadence; whether a tick is actually due is a content-driven decision
-// (isTopicTickDue): the Transcript coverage since the last Topic must have
-// reached the configured interval — the CONTENT threshold, not the timer
-// period — AND at least 10 new records must exist. All assembly/trigger/
-// parsing decisions are pure functions in session-summary.js; this layer
-// only owns the check timer, the AI call, and feeding the parsed Topics
-// back as a topicsAppended event.
-//
-// The coverage cursor derives from the persisted Topics (not timer state),
-// so a resumed Session continues appending from exactly where the snapshot
-// left off. A failed tick leaves the Topics untouched, so the next check
-// retries; summaryInFlight keeps one tick at a time.
-
-/** The fixed cadence at which the content-driven tick decision is re-run. */
-const SUMMARY_CHECK_INTERVAL_MS = 60_000;
-
-function startSummaryTimer(context) {
-  // The callback returns the tick promise: setInterval ignores it, and the
-  // tick body catches its own errors, so nothing can turn unhandled — but
-  // tests can await one check through the captured callback.
-  context.summaryTimer = setInterval(() => {
-    return maybeRunTopicTick(context);
-  }, SUMMARY_CHECK_INTERVAL_MS);
-}
-
-async function maybeRunTopicTick(context) {
-  if (context.ended || context.summaryInFlight) return;
-  const settings = await getSettings();
-  const due = YTD_SESSION_SUMMARY.isTopicTickDue({
-    state: context.state,
-    intervalMinutes: settings.summaryIntervalMinutes,
-  });
-  if (!due) return;
-
-  context.summaryInFlight = true;
-  try {
-    const input = YTD_SESSION_SUMMARY.assembleTopicTickInput(context.state);
-    // The prompt copy lives in prompts/topic-tick.md (#33); a load failure
-    // throws before any AI call and lands in the quiet retry path below.
-    const template = await loadPromptTemplate("topic-tick.md", {
-      systemPrompt: "System prompt",
-      userPrompt: "User prompt",
-      firstBatchUserPrompt: "First batch user prompt",
-    });
-    const { text } = await requestAiCompletion({
-      maxTokens: 4096,
-      messages: YTD_SESSION_SUMMARY.buildTopicTickMessages(template, {
-        existingTopicTitles: input.existingTopicTitles,
-        contextTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
-          input.overlapTail,
-        ),
-        newTranscriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
-          input.newTranscript,
-        ),
-      }),
-    });
-    // Tolerant parse: malformed output yields an empty list, which the state
-    // machine ignores — the state and its cursor stay untouched.
-    const topics = YTD_SESSION_SUMMARY.parseTopicTick(text);
-    if (topics.length > 0) {
-      context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, {
-        type: "topicsAppended",
-        topics,
-      });
-      await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(
-        chrome.storage.local,
-        context.state,
-      );
-      broadcastSession(context.state);
-    }
-  } catch (error) {
-    // A failed tick leaves the timeline untouched; the next check retries.
-    debugLog("[Learning Digest BG] Topic tick failed:", error);
-  } finally {
-    context.summaryInFlight = false;
-  }
-}
-
-/**
- * Runs the end-of-session global pass (ADR 0002, #29): one AI request over
- * the full Transcript producing the report JSON (Topics with summaries,
- * quotes, todos). Input assembly and parsing live in session-summary.js;
- * this function only adds the AI call and normalizes the outcome:
- *
- * - { report }                 parsed report artifact
- * - { report: null, truncated: true }  finish reason "length" or null parse
- * - { report: null, skipped: "noTranscript" }
- * - { report: null, error }    AI provider failure
- *
- * Failures never throw: the caller decides persistence and the payload the
- * panel renders.
- *
- * @returns {Promise<{report: object|null, truncated?: boolean, skipped?: string, error?: string}>}
- */
-async function generateSessionReport(state) {
-  const records = state?.transcriptRecords || [];
-  if (records.length === 0 || YTD_SESSION_PIPELINE.allSegmentsFailed(state)) {
-    return { report: null, skipped: "noTranscript" };
-  }
-  try {
-    const { transcriptRecords, liveTopics } =
-      YTD_SESSION_SUMMARY.assembleGlobalPassInput(state);
-    // The prompt copy lives in prompts/session-report.md (#33); a load
-    // failure becomes { report: null, error } below, never a broken prompt.
-    const template = await loadPromptTemplate("session-report.md", {
-      systemPrompt: "System prompt",
-      userPrompt: "User prompt",
-      userPromptWithoutTopics: "User prompt without topics",
-    });
-    const { text, finishReason } = await requestAiCompletion({
-      maxTokens: 8192,
-      messages: YTD_SESSION_SUMMARY.buildGlobalPassMessages(template, {
-        transcriptText: YTD_SESSION_SUMMARY.formatTranscriptForPrompt(
-          transcriptRecords,
-        ),
-        liveTopics,
-      }),
-    });
-    const report = YTD_SESSION_SUMMARY.parseGlobalPass(text);
-    if (!report || finishReason === "length") {
-      // A truncated or unparseable output must never land as the artifact:
-      // the caller persists nothing and offers the retry action instead.
-      return { report: null, truncated: true };
-    }
-    return { report };
-  } catch (error) {
-    debugLog("[Learning Digest BG] global pass failed:", error);
-    return { report: null, error: error?.message || String(error) };
-  }
-}
-
-/**
- * Panel copy for the one failure mode the learner can fix by re-running:
- * the model hit the output limit (or produced nothing parseable) and the
- * artifact was therefore not persisted.
- */
-const REPORT_LENGTH_LIMIT_MESSAGE = "报告长度受限，生成未完成，请重试。";
-
-/**
- * Runs the global pass for an ended Session and lands the result. A
- * successful pass persists `report_<sessionId>` (with the artifact meta when
- * the caller captured it, #30) and returns the artifact; a truncated/failed
- * pass persists nothing and returns the error payload the panel renders
- * (with the retry action). Never throws — every failure mode becomes a
- * renderable payload.
- *
- * @param {object} state - ended Session state
- * @param {object|null} [meta] - { startedAtMs, endedAtMs, kind, platformId? }
- * @returns {Promise<{report: object, persisted: boolean}>}
- */
-async function produceSessionReport(state, meta = null) {
-  try {
-    const outcome = await generateSessionReport(state);
-    if (outcome.report) {
-      const artifact = {
-        sessionId: state.sessionId,
-        report: outcome.report,
-        generatedAtMs: Date.now(),
-      };
-      // Meta rides along when known (#30): the report header needs it, and
-      // the generated-at stamp (0.1.38) joins it so the header shows when
-      // the pass ran. A failed pass persists nothing, so a retry
-      // reconstructs instead.
-      if (meta) artifact.meta = { ...meta, generatedAtMs: artifact.generatedAtMs };
-      const storageKey = `${YTD_REPORT_RENDER.REPORT_STORAGE_KEY_PREFIX}${state.sessionId}`;
-      await chrome.storage.local.set({ [storageKey]: artifact });
-      return { report: outcome.report, persisted: true };
-    }
-    if (outcome.skipped === "noTranscript") {
-      return { report: { skipped: "noTranscript" }, persisted: false };
-    }
-    return {
-      report: {
-        error: outcome.truncated
-          ? REPORT_LENGTH_LIMIT_MESSAGE
-          : outcome.error || REPORT_LENGTH_LIMIT_MESSAGE,
-      },
-      persisted: false,
-    };
-  } catch (error) {
-    // Persistence or an unexpected failure must never break the end flow:
-    // the panel still gets a renderable payload.
-    console.error("[Learning Digest] landing the report failed:", error?.message || error);
-    return { report: { error: error?.message || String(error) }, persisted: false };
-  }
-}
-
 
 /**
  * Feeds the scheduler one position reading (video position for replay and
@@ -3852,14 +3669,17 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
   const state = YTD_SESSION_PIPELINE.createSession({
     sessionId: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
   });
+  // Ticket 6.6: the server Session id rides the local state (the ended
+  // snapshot's digest retry reads it from there).
+  const withServerSession = { ...state, serverSessionId: created.session.id };
   // Ticket 2.5: the 无字幕 probe result is durable Session state (the
   // panel's honest empty-state across resume), not a forgotten side effect.
   const seededState = captionsProbe
-    ? YTD_SESSION_PIPELINE.applyEvent(state, {
+    ? YTD_SESSION_PIPELINE.applyEvent(withServerSession, {
         type: "captionsUnavailable",
         reason: captionsProbe.reason,
       })
-    : state;
+    : withServerSession;
   const context = createCaptureContext({
     sessionId: seededState.sessionId,
     tabId: message.tabId,
@@ -4601,25 +4421,30 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   }
 
   context.state = YTD_SESSION_PIPELINE.applyEvent(context.state, { type: "sessionEnd" });
+  // The server Session id rides the ended snapshot (ticket 6.6): the digest
+  // retry (regenerateReport) needs it to POST again after a worker restart.
+  if (context.serverSessionId && context.state.serverSessionId !== context.serverSessionId) {
+    context.state = { ...context.state, serverSessionId: context.serverSessionId };
+  }
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
   await clearContextPointer();
   // The retry action targets "the most recent ended Session"; remember it
   // for the live-worker fast path (storage scan is the durable fallback).
   lastEndedSessionId = context.state.sessionId;
 
-  // Both end paths (explicit action and media-end auto-stop) run the global
-  // pass from the ended state. A failed or truncated pass never blocks
-  // ending: the panel gets the retry error instead of the artifact.
+  // Both end paths (explicit action and media-end auto-stop) run the digest
+  // pass from the finished server Session (D22). A failed digest never
+  // blocks ending: the panel gets the retry error instead of the artifact.
   // Artifact meta (#30): the ending capture context is the only place kind,
   // platform and the wall-clock range are all known at once. The title
   // (#32) prefers the capture context's pageTitle and falls back to the
   // snapshot's, so a resumed Session still names the lesson; absent means
   // the renderers fall back to their default header title.
   //
-  // report: false (the 0.1.57 course-switch auto-end) skips the AI pass: the
+  // report: false (the 0.1.57 course-switch auto-end) skips the digest: the
   // stale lesson's digest is not worth the tokens or the wait, the snapshot
-  // is ended and durable, and the panel's 开始总结 retry can still run the
-  // pass later (resolveReportTargetSessionId scans ended snapshots).
+  // is ended and durable, and the panel's 开始总结 retry can still POST the
+  // digest later (resolveReportTargetSessionId scans ended snapshots).
   let reportPayload = null;
   if (report) {
     const reportMeta = {
@@ -4631,7 +4456,12 @@ async function endActiveSession(context, { reason, report = true } = {}) {
     const reportTitle = context.pageTitle || context.state.title;
     if (reportTitle) reportMeta.title = reportTitle;
     reportPayload = (
-      await produceSessionReport(context.state, reportMeta)
+      await produceSessionDigest({
+        serverSessionId: context.serverSessionId,
+        localSessionId: context.state.sessionId,
+        state: context.state,
+        meta: reportMeta,
+      })
     ).report;
     broadcastSession(context.state, { report: reportPayload });
   } else {
@@ -4766,6 +4596,8 @@ async function switchCaptionsContextToAsr(context) {
     sessionId: context.sessionId,
     capturePath: "asr",
     state: context.state,
+    // Ticket 6.6: the adopted server overview rides every re-render reply.
+    overview: context.overview ?? null,
   };
 }
 
@@ -4801,7 +4633,12 @@ async function handleArchiveCaptionsNow() {
     return { success: false, error: "本次学习已切换为语音转写，字幕不再归档。" };
   }
   if (context.state.transcriptOrigin) {
-    return { success: true, alreadyArchived: true, state: context.state };
+    return {
+      success: true,
+      alreadyArchived: true,
+      state: context.state,
+      overview: context.overview ?? null,
+    };
   }
   const segments = context.state.captionsCoverage?.segments;
   if (!Array.isArray(segments) || segments.length === 0) {
@@ -4809,7 +4646,11 @@ async function handleArchiveCaptionsNow() {
   }
   await archiveCaptionsForContext(context, { segments });
   await pollTranscriptNow(context);
-  return { success: true, state: context.state };
+  return {
+    success: true,
+    state: context.state,
+    overview: context.overview ?? null,
+  };
 }
 
 /**
@@ -4904,10 +4745,12 @@ function reconstructReportMeta(sessionId, state) {
 }
 
 /**
- * The regenerateReport message action: re-runs the end-of-session global
- * pass for the most recent ended Session (or the one the panel names),
- * persists a successful artifact and broadcasts it again. Used when the
- * original pass was truncated or failed.
+ * The regenerateReport message action: re-POSTs the digest for the most
+ * recent ended Session (or the one the panel names), persists a successful
+ * artifact and broadcasts it again. Used when the original digest failed —
+ * the retry entry stays live on the 纪要 tab. The ended snapshot carries the
+ * server Session id (endActiveSession stamps it), so the retry survives a
+ * worker restart.
  *
  * @param {{sessionId?: string}} [message]
  * @returns {Promise<{success: boolean, sessionId?: string, report?: object, error?: string}>}
@@ -4925,6 +4768,14 @@ async function handleRegenerateReport(message) {
     return { success: false, error: "找不到该会话的逐字稿，无法重新生成。" };
   }
   const state = YTD_SESSION_PIPELINE.resumeFromSnapshot(snapshot);
+  if (typeof state.serverSessionId !== "string" || !state.serverSessionId) {
+    // Pre-6.6 ended snapshots have no server Session id — the digest POST
+    // has no target; refuse honestly instead of guessing.
+    return {
+      success: false,
+      error: "该会话缺少服务端会话标识，无法重新生成纪要。",
+    };
+  }
   // Meta (#30): a prior artifact's meta is the true one; a retry after a
   // failed pass (nothing persisted) reconstructs the best available.
   const storageKey = `${YTD_REPORT_RENDER.REPORT_STORAGE_KEY_PREFIX}${sessionId}`;
@@ -4932,7 +4783,12 @@ async function handleRegenerateReport(message) {
   const meta =
     stored?.[storageKey]?.meta ||
     reconstructReportMeta(sessionId, state);
-  const { report } = await produceSessionReport(state, meta);
+  const { report } = await produceSessionDigest({
+    serverSessionId: state.serverSessionId,
+    localSessionId: sessionId,
+    state,
+    meta,
+  });
   broadcastSession(state, { report });
   return { success: true, sessionId, report };
 }
@@ -4951,6 +4807,9 @@ async function handleGetSessionState() {
     capturePath: context.capturePath,
     startedAtMs: context.startedAtMs,
     state: context.state,
+    // Ticket 6.6: the adopted server overview (the mapped live Topic
+    // timeline) — the panel's 5s state poll renders it on the 概览 tab.
+    overview: context.overview ?? null,
   };
 }
 

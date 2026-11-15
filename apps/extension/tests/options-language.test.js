@@ -123,8 +123,9 @@ test("customization prompt is prefilled in Chinese", () => {
   const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
 
   assert.doesNotMatch(html, /supadata/i);
-  assert.match(html, /placeholder="Paste your Bailian key"/);
-  assert.match(html, /https:\/\/bailian\.console\.aliyun\.com\//);
+  // (Ticket 6.6) The AI provider card is gone: no Bailian key setup copy.
+  assert.doesNotMatch(html, /Bailian key/i);
+  assert.doesNotMatch(html, /bailian\.console\.aliyun\.com/);
   assert.ok(html.includes(`>${chinesePrompt}</textarea>`));
   assert.match(chinesePrompt, /^请把当前本地 Learning Digest 工作区改为使用/);
   assert.match(

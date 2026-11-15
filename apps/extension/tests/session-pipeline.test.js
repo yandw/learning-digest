@@ -11,7 +11,6 @@ test("createSession starts an active Session with empty state", () => {
     status: "active",
     segments: [],
     transcriptRecords: [],
-    topics: [],
     transcriptOrigin: null,
   });
 });
@@ -91,66 +90,6 @@ test("transcribeFailed marks the Segment failed and annotates the Transcript wit
   // Neighbouring Segments are untouched: still done, records intact.
   assert.equal(state.segments[0].status, "done");
   assert.equal(state.segments[2].status, "done");
-});
-
-// --- topicsAppended: the append-only Topic timeline (ADR 0002)
-
-test("topicsAppended appends Topics to the timeline without rewriting earlier ones", () => {
-  let state = sessionPipeline.createSession({ sessionId: "s1" });
-  state = sessionPipeline.applyEvent(state, {
-    type: "topicsAppended",
-    topics: [{ start: 0, end: 600, title: "导论", text: "课程开场。" }],
-  });
-  state = sessionPipeline.applyEvent(state, {
-    type: "topicsAppended",
-    topics: [
-      { start: 600, end: 1200, title: "二次函数", text: "讲解了二次函数。" },
-      { start: 1200, end: 1500, title: "习题课", text: "做了三道例题。", continuation: true },
-    ],
-  });
-
-  assert.deepEqual(state.topics, [
-    { start: 0, end: 600, title: "导论", text: "课程开场。" },
-    { start: 600, end: 1200, title: "二次函数", text: "讲解了二次函数。" },
-    { start: 1200, end: 1500, title: "习题课", text: "做了三道例题。", continuation: true },
-  ]);
-  assert.equal(state.status, "active");
-});
-
-test("an empty topicsAppended leaves the state untouched", () => {
-  const before = sessionPipeline.createSession({ sessionId: "s1" });
-  const after = sessionPipeline.applyEvent(before, {
-    type: "topicsAppended",
-    topics: [],
-  });
-
-  assert.equal(after, before);
-  assert.deepEqual(after.topics, []);
-});
-
-test("topicsAppended rejects malformed payloads instead of corrupting the timeline", () => {
-  const state = sessionPipeline.createSession({ sessionId: "s1" });
-  assert.throws(
-    () => sessionPipeline.applyEvent(state, { type: "topicsAppended", topics: "导论" }),
-    /topicsAppended requires/,
-  );
-  assert.throws(
-    () => sessionPipeline.applyEvent(state, { type: "topicsAppended", topics: [{ start: 0, end: 10 }] }),
-    /topicsAppended requires/,
-  );
-  assert.throws(
-    () =>
-      sessionPipeline.applyEvent(state, {
-        type: "topicsAppended",
-        topics: [{ start: 100, end: 50, title: "倒置", text: "end 在 start 之前。" }],
-      }),
-    /topicsAppended requires/,
-  );
-  assert.throws(
-    () => sessionPipeline.applyEvent(state, { type: "topicsAppended" }),
-    /topicsAppended requires/,
-  );
-  assert.deepEqual(state.topics, []);
 });
 
 // --- titleCaptured: the page title for the report header (#32)
@@ -714,11 +653,6 @@ test("snapshot round-trips through JSON and resume continues from it", () => {
     segmentId: "seg-1",
     records: [{ text: "第一段", start: 0, duration: 5 }],
   });
-  state = sessionPipeline.applyEvent(state, {
-    type: "topicsAppended",
-    topics: [{ start: 0, end: 120, title: "导论", text: "第一段的总结。" }],
-  });
-
   // Serialize as chrome.storage.local would (JSON-plain), then resume.
   const snapshot = JSON.parse(JSON.stringify(state));
   let resumed = sessionPipeline.resumeFromSnapshot(snapshot);
@@ -731,34 +665,24 @@ test("snapshot round-trips through JSON and resume continues from it", () => {
     segmentId: "seg-2",
     records: [{ text: "第二段", start: 120, duration: 5 }],
   });
-  resumed = sessionPipeline.applyEvent(resumed, {
-    type: "topicsAppended",
-    topics: [
-      { start: 120, end: 240, title: "第二章", text: "第二段的总结。", continuation: true },
-    ],
-  });
 
   assert.equal(resumed.segments[0].status, "done");
-  // Appending continues from the persisted timeline: nothing rewritten.
-  assert.deepEqual(resumed.topics, [
-    { start: 0, end: 120, title: "导论", text: "第一段的总结。" },
-    { start: 120, end: 240, title: "第二章", text: "第二段的总结。", continuation: true },
-  ]);
   assert.deepEqual(resumed.transcriptRecords, [
     { text: "第一段", start: 0, duration: 5 },
     { text: "第二段", start: 120, duration: 5 },
   ]);
 });
 
-test("an old snapshot without Topics resumes with an empty timeline", () => {
-  // Snapshots persisted before the Topic timeline carry rollingSummary
-  // instead of topics; resume must ignore the retired field and start the
-  // timeline empty.
+test("snapshots from the local-Topic era resume with the retired fields ignored", () => {
+  // Ticket 6.6: the Topic timeline is the server's SessionOverview, so the
+  // retired local topics/rollingSummary fields are simply ignored — the
+  // transcript itself resumes untouched.
   const oldSnapshot = {
     sessionId: "s_old",
     status: "active",
     segments: [{ id: "seg-1", start: 0, duration: 120, status: "done" }],
     transcriptRecords: [{ text: "第一段", start: 0, duration: 5 }],
+    topics: [{ start: 0, end: 120, title: "旧话题", text: "旧摘要。" }],
     rollingSummary: { text: "旧的滚动摘要。", coveredUntil: 120 },
   };
 
@@ -766,15 +690,10 @@ test("an old snapshot without Topics resumes with an empty timeline", () => {
     JSON.parse(JSON.stringify(oldSnapshot)),
   );
 
-  assert.deepEqual(resumed.topics, []);
+  assert.equal("topics" in resumed, false);
   assert.equal(resumed.rollingSummary, undefined);
-  // And the resumed state accepts new Topics right away.
-  const appended = sessionPipeline.applyEvent(resumed, {
-    type: "topicsAppended",
-    topics: [{ start: 0, end: 120, title: "导论", text: "新时间轴的第一段。" }],
-  });
-  assert.deepEqual(appended.topics, [
-    { start: 0, end: 120, title: "导论", text: "新时间轴的第一段。" },
+  assert.deepEqual(resumed.transcriptRecords, [
+    { text: "第一段", start: 0, duration: 5 },
   ]);
 });
 
@@ -786,7 +705,6 @@ test("a Session run straight through equals one interrupted and resumed from a s
     { type: "transcribeFailed", segmentId: "seg-2" },
     { type: "segmentCaptured", segment: { id: "seg-3", start: 240, duration: 120 } },
     { type: "transcribeOk", segmentId: "seg-3", records: [{ text: "第三段", start: 240, duration: 5 }] },
-    { type: "topicsAppended", topics: [{ start: 0, end: 360, title: "导论与第一章", text: "总结了前三段。" }] },
     { type: "sessionEnd" },
   ];
 
@@ -1027,7 +945,6 @@ test("pendingSegments survive a resume until the next poll corrects them", () =>
     status: "active",
     segments: [],
     transcriptRecords: [],
-    topics: [],
   });
   assert.equal(legacy.pendingSegments, undefined);
 });
@@ -1195,7 +1112,6 @@ test("the coverage decision state and the switched path survive a resume", () =>
     status: "active",
     segments: [],
     transcriptRecords: [],
-    topics: [],
   });
   assert.equal(legacy.captionsCoverage, undefined);
   assert.equal(legacy.capturePath, undefined);

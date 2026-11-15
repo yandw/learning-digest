@@ -49,7 +49,7 @@ public_allowlist=(
   "session-persistence.js"
   "source-platforms.js"
   "session-segmenter.js"
-  "session-summary.js"
+  "panel-ai.js"
   "page-bridge.js"
   "offscreen.html"
   "offscreen.js"
@@ -66,9 +66,6 @@ public_allowlist=(
   "icons/icon16.png"
   "icons/icon48.png"
   "icons/icon128.png"
-  "prompts/explain.md"
-  "prompts/topic-tick.md"
-  "prompts/session-report.md"
 )
 
 # Repo-root files that ride along in the public ZIP (project docs + license).
@@ -103,7 +100,7 @@ required_public_files=(
   "session-persistence.js"
   "source-platforms.js"
   "session-segmenter.js"
-  "session-summary.js"
+  "panel-ai.js"
   "page-bridge.js"
   "offscreen.html"
   "offscreen.js"
@@ -249,11 +246,6 @@ for (const file of releaseFiles) {
       if (!/^[a-z]+:/i.test(match[1])) {
         referenced.add(path.posix.join(path.posix.dirname(file), match[1]));
       }
-    }
-    for (const match of source.matchAll(
-      /\bloadPromptSection\s*\(\s*["']([^"']+)["']/g,
-    )) {
-      referenced.add(path.posix.join("prompts", match[1]));
     }
   }
 

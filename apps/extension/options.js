@@ -7,29 +7,13 @@ const YTD_OPTIONS = (() => {
     "zh-CN": {
       pageTitle: "Learning Digest 设置",
       languageGroupLabel: "界面语言",
-      heading: "使用你自己的 API 密钥",
+      heading: "Learning Digest 设置",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给你配置的 AI 服务。本开源扩展没有开发者服务器，也不使用分析服务。",
-      aiProvider: "AI 服务",
-      providerSummaryLabel: "支持的 AI 服务",
-      providerBadge: "当前版本支持",
-      deepseekApiKeyLabel: "AI API 密钥",
-      deepseekHelp:
-        "Learning Digest 通过 OpenAI 兼容接口调用大模型（默认阿里云百炼 qwen3.8-flash），生成话题时间轴、学习纪要、翻译和润色笔记。",
-      deepseekLink: "创建百炼 API 密钥",
-      deepseekHelpSuffix: "。",
-      aiBaseUrlLabel: "API 基础 URL",
-      aiModelLabel: "模型",
-      customEndpointHelp:
-        "两个字段都留空则保持默认值（阿里云百炼）。自定义端点必须兼容 OpenAI chat-completions API。如果其域名不是 dashscope.aliyuncs.com，需要把该域名加入 manifest.json 的 host_permissions 并重新加载扩展。",
-      invalidBaseUrl:
-        "API 基础 URL 不是合法的 https 地址（仅 localhost 允许使用 http）。",
-      privacyNote:
-        "使用 AI 功能时，你配置的 AI 服务会收到逐字稿及相关会话上下文（默认为阿里云百炼）。保存前请查看该服务的服务条款和价格。",
+        "逐字稿、滚动摘要与学习纪要由学习服务在服务端生成（其 AI 服务在服务端配置）；这里只管理采集节奏和学习服务地址。",
       sessionSettings: "会话",
       summaryIntervalLabel: "话题段触发的最小新内容时长（分钟）",
       summaryIntervalHelp:
-        "会话进行中，每当新产生的 Transcript 达到该时长（且至少 10 条记录），AI 服务就会总结出新的话题段并追加到时间轴（每分钟检查一次）。内容阈值越短费用越高；一般课程 15 分钟即可。",
+        "会话进行中，每当新产生的 Transcript 达到该时长（且至少 10 条记录），学习服务就会总结出新的话题段并追加到时间轴（每分钟检查一次）。内容阈值越短费用越高；一般课程 15 分钟即可。",
       segmentLengthLabel: "分段长度（秒）",
       segmentLengthHelp:
         "分段转写模式下每段采集的音频时长，改小可更快看到逐字稿（默认 30 秒）；可填范围 5～60 秒；拖拽落点会对齐到该时长的整数倍边界，时长越短，拖拽可能放弃的音频也越少。",
@@ -71,19 +55,8 @@ const YTD_OPTIONS = (() => {
       resetData: "重置扩展数据",
       footer:
         '完整数据流说明请参阅仓库中的 <a href="PRIVACY.md" target="_blank">PRIVACY.md</a>。',
-      migrationWarning:
-        "已安全移除自定义服务设置。AI 密钥已清除。请输入 AI API 密钥以继续使用。",
       saving: "正在保存…",
-      verifying: "已保存。正在校验 API 连接…",
-      savedVerified:
-        "已保存，AI 连接校验通过。请重新打开 Learning Digest 以使用这些设置。",
-      verifyFailed: ({ detail }) => `已保存，但连接校验未通过：${detail}`,
-      aiKeyRejected: "AI API 密钥被拒绝",
-      aiNotFound: "找不到 AI 端点或模型（请检查基础 URL 和模型名称）",
-      aiHttpError: ({ status }) => `AI 端点返回 HTTP ${status}`,
-      aiUnreachable:
-        "无法连接 AI 端点（请检查基础 URL 和 manifest 的 host_permissions）",
-      addDeepseekKey: "请添加 AI API 密钥。",
+      saved: "已保存。请重新打开 Learning Digest 以使用这些设置。",
       saveFailed: "无法保存设置，请重试。",
       copying: "正在复制…",
       promptCopied: "已复制编辑后的提示词。",
@@ -285,42 +258,6 @@ const YTD_OPTIONS = (() => {
     await clipboard.writeText(value);
   }
 
-  const VERIFY_TIMEOUT_MS = 15000;
-
-  /**
-   * Minimal chat completion that proves base URL, key, and model all work.
-   * Returns { ok: true } or { ok: false, reason, status? }.
-   */
-  async function checkAiConnection(fetchImpl, { baseUrl, apiKey, model }) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), VERIFY_TIMEOUT_MS);
-    try {
-      const response = await fetchImpl(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 1,
-          messages: [{ role: "user", content: "ping" }],
-        }),
-        signal: controller.signal,
-      });
-      if (response.ok) return { ok: true };
-      if (response.status === 401 || response.status === 403) {
-        return { ok: false, reason: "aiKeyRejected" };
-      }
-      if (response.status === 404) return { ok: false, reason: "aiNotFound" };
-      return { ok: false, reason: "aiHttpError", status: response.status };
-    } catch (_error) {
-      return { ok: false, reason: "aiUnreachable" };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
   function getSafeLocalStorage(root) {
     try {
       return root.localStorage;
@@ -339,9 +276,6 @@ const YTD_OPTIONS = (() => {
       getSafeLocalStorage(root),
     );
     const form = doc.getElementById("settingsForm");
-    const aiApiKeyInput = doc.getElementById("aiApiKey");
-    const aiBaseUrlInput = doc.getElementById("aiBaseUrl");
-    const aiModelInput = doc.getElementById("aiModel");
     const summaryIntervalInput = doc.getElementById("summaryIntervalMinutes");
     const segmentLengthInput = doc.getElementById("segmentLengthSeconds");
     // Learning service origins (P6): the API the linked credential talks to
@@ -413,14 +347,13 @@ const YTD_OPTIONS = (() => {
     async function loadSettings() {
       try {
         const stored = await storage.get(settingsApi.STORAGE_KEY);
-        const migration = settingsApi.migrateLegacyCustom(
-          stored[settingsApi.STORAGE_KEY],
-        );
-        const settings = migration.settings;
+        // (Ticket 6.6) The v5 migration is normalize() itself: stored AI
+        // key/endpoint/model fields are dropped on this first read, and the
+        // caller persists the stamped blob (the background's getSettings
+        // does the same for the worker).
+        const settings = settingsApi.normalize(stored[settingsApi.STORAGE_KEY] || {});
+        await storage.set({ [settingsApi.STORAGE_KEY]: settings });
 
-        aiApiKeyInput.value = settings.aiApiKey;
-        aiBaseUrlInput.value = settings.aiBaseUrl;
-        aiModelInput.value = settings.aiModel;
         if (summaryIntervalInput) {
           summaryIntervalInput.value = settings.summaryIntervalMinutes;
         }
@@ -432,11 +365,6 @@ const YTD_OPTIONS = (() => {
         }
         if (webAppBaseUrlInput) {
           webAppBaseUrlInput.value = settings.webAppBaseUrl;
-        }
-
-        if (migration.migrated) {
-          await storage.set({ [settingsApi.STORAGE_KEY]: settings });
-          setStatus(saveStatus, "migrationWarning");
         }
       } catch (error) {
         setStatus(saveStatus, "settingsLoadFailed");
@@ -457,12 +385,6 @@ const YTD_OPTIONS = (() => {
       saveStatus.classList.remove("error");
       setStatus(saveStatus, "saving");
 
-      const baseUrlValue = aiBaseUrlInput.value.trim();
-      if (baseUrlValue && !settingsApi.isValidAiBaseUrl(baseUrlValue)) {
-        setStatus(saveStatus, "invalidBaseUrl");
-        return;
-      }
-
       // Learning service origins (P6): same https/loopback-http rule as the
       // other base URLs; a typo must fail the save, not silently fall back.
       for (const [input, errorKey] of [
@@ -475,10 +397,10 @@ const YTD_OPTIONS = (() => {
         }
       }
 
+      // (Ticket 6.6) No AI fields: the panel's AI runs server-side, so the
+      // form persists the capture rhythm and the learning service origins
+      // and the save is final (no connection check to run).
       const settings = settingsApi.normalize({
-        aiApiKey: aiApiKeyInput.value,
-        aiBaseUrl: baseUrlValue,
-        aiModel: aiModelInput.value,
         summaryIntervalMinutes: summaryIntervalInput?.value,
         segmentLengthSeconds: segmentLengthInput?.value,
         // Left empty means "keep the default" (normalizeBaseUrl's fallback).
@@ -486,37 +408,13 @@ const YTD_OPTIONS = (() => {
         webAppBaseUrl: webAppBaseUrlInput ? webAppBaseUrlInput.value.trim() : undefined,
       });
 
-      if (!settings.aiApiKey) {
-        setStatus(saveStatus, "addDeepseekKey");
-        return;
-      }
-
       try {
         await storage.set({ [settingsApi.STORAGE_KEY]: settings });
       } catch (_error) {
         setStatus(saveStatus, "saveFailed");
         return;
       }
-
-      // Settings are already persisted; now verify the AI API works.
-      saveStatus.classList.remove("error");
-      setStatus(saveStatus, "verifying");
-      const aiResult = await checkAiConnection(root.fetch.bind(root), {
-        baseUrl: settings.aiBaseUrl,
-        apiKey: settings.aiApiKey,
-        model: settings.aiModel,
-      });
-
-      if (!aiResult.ok) {
-        saveStatus.classList.add("error");
-        setStatus(saveStatus, "verifyFailed", {
-          detail: translate(currentLanguage, aiResult.reason, {
-            status: aiResult.status,
-          }),
-        });
-      } else {
-        setStatus(saveStatus, "savedVerified");
-      }
+      setStatus(saveStatus, "saved");
     }
 
     async function copyCustomizationPrompt() {
@@ -577,7 +475,6 @@ const YTD_OPTIONS = (() => {
   return {
     COPY,
     LANGUAGE_STORAGE_KEY,
-    checkAiConnection,
     copyPromptValue,
     createPromptDrafts,
     createStorageAdapter,

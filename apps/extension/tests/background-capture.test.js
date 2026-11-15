@@ -35,9 +35,10 @@ test("the legacy analyzeTranscript action is fully removed", () => {
     sidepanel,
     /analyzeTranscript|isAnalysisLoading|triggerAnalysis|renderAnalysisResults/,
   );
-  // The prompt file itself is retired; explain.md is a different feature.
+  // The prompt files are all retired (ticket 6.6): the AI prompts moved
+  // server-side (contracts/prompts/), so the plugin ships none.
   assert.equal(fs.existsSync(path.join(root, "prompts", "analysis.md")), false);
-  assert.equal(fs.existsSync(path.join(root, "prompts", "explain.md")), true);
+  assert.equal(fs.existsSync(path.join(root, "prompts", "explain.md")), false);
 });
 
 function baseSettings(overrides = {}) {
@@ -517,11 +518,51 @@ test("clearSessionRecord without a sessionId is a refused no-op", async () => {
   assert.match(result.error, /sessionId/);
 });
 
-// --- Topic tick flow: timer fires -> prompt -> topicsAppended -> persist + broadcast
+// --- Rolling summary wiring: timer fires -> due check -> POST rolling-summary
+// (ticket 6.6: the tick's AI moved server-side, contract-r4 §6.2)
 
-const TOPIC_JSON = JSON.stringify([
-  { start: 0, end: 900, title: "导论", text: "老师介绍了课程目标。" },
-]);
+// The contract fixture's first-tick overview (api-rolling-summary-generate,
+// rescaled to the ten coverage records below: 0–900s on the source timeline).
+const OVERVIEW_BODY = {
+  overview: {
+    sessionId: "ses_01JABC0033",
+    topics: [
+      {
+        index: 1,
+        startMs: 0,
+        endMs: 900000,
+        title: "导论",
+        text: "老师介绍了课程目标。",
+      },
+    ],
+    lastCoveredMs: 900000,
+    generation: { provider: "qwen", model: "qwen-plus", inputChars: 1312 },
+    generatedAt: "2026-11-10T09:40:00Z",
+  },
+};
+
+// The contract fixture's SessionDigest body (api-session-digest-generate,
+// rescaled to the same ten coverage records).
+const DIGEST_BODY = {
+  digest: {
+    sessionId: "ses_01JABC0033",
+    overview: ["这节课围绕三个核心概念展开。", "课后练习比听课更重要。"],
+    topics: [
+      {
+        startMs: 0,
+        endMs: 900000,
+        title: "导论",
+        bullets: ["课程目标与学习方法。", "三个核心概念的关系。"],
+        summary: "老师介绍了课程目标。",
+      },
+    ],
+    categories: [{ title: "学习方法", points: ["先练习再核对。", "错题要复盘。"] }],
+    quotes: [{ startMs: 30000, text: "学习是一场旅程。" }],
+    todos: ["完成课后练习"],
+    generation: { provider: "qwen", model: "qwen-plus", inputChars: 1520 },
+    generatedAt: "2026-11-10T11:20:00Z",
+  },
+};
 
 // Ten 90-second records: exactly 15 minutes of coverage, at the trigger
 // boundary for the default interval.
@@ -558,16 +599,8 @@ function capturePointer(sessionId) {
     timestampKind: "video",
     startedAtMs: Date.now() - 300_000,
     segmentLengthSeconds: 120,
-  };
-}
-
-function topicAiFetch(capturedRequests) {
-  return async (_url, options) => {
-    capturedRequests.push(JSON.parse(options.body));
-    return {
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: TOPIC_JSON } }] }),
-    };
+    // The server Session (contract-r2 §3.1) the panel-AI routes target.
+    serverSessionId: "ses_01JABC0033",
   };
 }
 
@@ -656,21 +689,23 @@ test("从头开始 surfaces the bridge's own failure message", async () => {
   assert.match(result.error, /没有找到可控制的视频/);
 });
 
-test("a summary tick sends the block prompt, appends Topics, persists and broadcasts", async () => {
-  const requests = [];
+test("a due tick POSTs rolling-summary, adopts the server overview and broadcasts it", async () => {
   const sentMessages = [];
   let fireSummaryTick = null;
   const sessionId = "s_tick";
+  const pointer = capturePointer(sessionId);
+  const api = apiFetch({ rollingSummaries: [{ status: 201, body: OVERVIEW_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings({ summaryIntervalMinutes: 15 }),
-    fetchImpl: topicAiFetch(requests),
+    fetchImpl: api.fetchImpl,
     setIntervalImpl: (cb) => {
       fireSummaryTick = cb;
       return 0;
     },
     sentMessages,
     stored: {
-      ytd_active_capture: capturePointer(sessionId),
+      ...CREDENTIAL_STORE,
+      ytd_active_capture: pointer,
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
   });
@@ -680,36 +715,42 @@ test("a summary tick sends the block prompt, appends Topics, persists and broadc
   assert.ok(fireSummaryTick, "resuming a Session arms the summary timer");
   await fireSummaryTick();
 
-  // The block prompt went to the AI Provider: system contract + the new
-  // Transcript records stamped as [m:ss] lines.
-  assert.equal(requests.length, 1);
-  assert.match(requests[0].messages[0].content, /JSON/);
-  assert.match(requests[0].messages[1].content, /\[0:00\] 第 1 段/);
-  assert.match(requests[0].messages[1].content, /\[13:30\] 第 10 段/);
+  // The tick went to the learning service: an empty-body POST to the
+  // contract route with the linked credential.
+  const rolling = api.v1Calls
+    .filter((call) => call.path.endsWith("/rolling-summary"));
+  assert.equal(rolling.length, 1, "exactly one rolling-summary POST");
+  assert.deepEqual(rolling[0].body, {});
 
-  // The parsed Topics were appended, persisted and broadcast.
-  const persisted = helpers.readStored(`ytd_session_${sessionId}`);
-  assert.equal(persisted.topics.length, 1);
-  assert.equal(persisted.topics[0].title, "导论");
+  // The server overview was adopted: the pointer carries the debounce cursor
+  // (the server's lastCoveredMs, in panel seconds).
+  const storedPointer = helpers.readStored("ytd_active_capture");
+  assert.equal(storedPointer.summaryCursorSeconds, 900);
+
+  // The panel receives a sessionUpdate carrying the mapped Topic timeline
+  // (the server's millisecond timeline, converted to panel seconds).
   const update = sentMessages.find(
-    (message) => message.action === "sessionUpdate" && message.state?.topics?.length,
+    (message) => message.action === "sessionUpdate" && message.overview?.length,
   );
-  assert.ok(update, "the panel receives a sessionUpdate carrying the new Topic");
-  assert.equal(update.state.topics[0].start, 0);
+  assert.ok(update, "the panel receives a sessionUpdate carrying the overview");
+  assert.deepEqual(update.overview, [
+    { start: 0, end: 900, title: "导论", text: "老师介绍了课程目标。" },
+  ]);
 });
 
-test("a tick below the trigger threshold never calls the AI Provider", async () => {
-  const requests = [];
+test("a tick below the trigger threshold never calls the service", async () => {
   let fireSummaryTick = null;
   const sessionId = "s_quiet";
+  const api = apiFetch();
   const helpers = loadBackgroundHelpers({
     settings: baseSettings({ summaryIntervalMinutes: 15 }),
-    fetchImpl: topicAiFetch(requests),
+    fetchImpl: api.fetchImpl,
     setIntervalImpl: (cb) => {
       fireSummaryTick = cb;
       return 0;
     },
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       // Only two records: far below both the coverage and debounce bars.
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, [
@@ -722,35 +763,38 @@ test("a tick below the trigger threshold never calls the AI Provider", async () 
   await helpers.handleGetSessionState();
   await fireSummaryTick();
 
-  assert.equal(requests.length, 0, "quiet stretches produce no AI calls");
-  assert.deepEqual(helpers.readStored(`ytd_session_${sessionId}`).topics, []);
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/rolling-summary")).length,
+    0,
+    "quiet stretches produce no rolling-summary calls",
+  );
 });
 
-test("a failed tick leaves the state intact and retries on the next interval", async () => {
-  const requests = [];
+test("a failed tick stays quiet and retries on the next interval", async () => {
   const sentMessages = [];
   let fireSummaryTick = null;
-  let attempts = 0;
+  let rollingCalls = 0;
   const sessionId = "s_retry";
+  const base = apiFetch({
+    rollingSummaries: [
+      { status: 502, body: { error: { code: "rolling_summary_failed", message: "滚动摘要生成失败，请稍后重试；本次尝试不改变概览" } } },
+      { status: 200, body: OVERVIEW_BODY },
+    ],
+  });
+  const wrapped = async (url, options) => {
+    if (/\/rolling-summary$/.test(String(url))) rollingCalls += 1;
+    return base.fetchImpl(url, options);
+  };
   const helpers = loadBackgroundHelpers({
     settings: baseSettings({ summaryIntervalMinutes: 15 }),
-    fetchImpl: async (_url, options) => {
-      attempts += 1;
-      if (attempts === 1) {
-        return {
-          ok: false,
-          status: 500,
-          json: async () => ({ error: { message: "provider boom" } }),
-        };
-      }
-      return topicAiFetch(requests)(_url, options);
-    },
+    fetchImpl: wrapped,
     setIntervalImpl: (cb) => {
       fireSummaryTick = cb;
       return 0;
     },
     sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -758,47 +802,43 @@ test("a failed tick leaves the state intact and retries on the next interval", a
 
   await helpers.handleGetSessionState();
 
-  // First interval: the AI Provider fails; nothing may change.
+  // First interval: the server reports the AI failure (502); the tick stays
+  // quiet — nothing is broadcast, the cursor is untouched.
   await fireSummaryTick();
-  assert.deepEqual(
-    helpers.readStored(`ytd_session_${sessionId}`).topics,
-    [],
-    "a failed tick appends nothing",
-  );
+  assert.equal(rollingCalls, 1);
   assert.equal(
-    sentMessages.filter((message) => message.action === "sessionUpdate").length,
+    sentMessages.filter((message) => message.action === "sessionUpdate" && message.overview).length,
     0,
     "a failed tick broadcasts nothing",
+  );
+  assert.equal(
+    helpers.readStored("ytd_active_capture").summaryCursorSeconds,
+    undefined,
+    "a failed tick does not advance the debounce cursor",
   );
 
   // Next interval: the same tick retries and succeeds.
   await fireSummaryTick();
-  assert.equal(requests.length, 1);
-  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).topics.length, 1);
+  assert.equal(rollingCalls, 2);
+  const update = sentMessages.find(
+    (message) => message.action === "sessionUpdate" && message.overview?.length,
+  );
+  assert.ok(update, "the retried tick adopts and broadcasts the overview");
 });
 
-test("malformed model output appends nothing and leaves the snapshot untouched", async () => {
-  const requests = [];
-  const sentMessages = [];
+test("an adopted overview advances the debounce cursor so covered material does not retrigger", async () => {
   let fireSummaryTick = null;
-  const sessionId = "s_garbage";
+  const sessionId = "s_cursor";
+  const api = apiFetch({ rollingSummaries: [{ status: 201, body: OVERVIEW_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings({ summaryIntervalMinutes: 15 }),
-    fetchImpl: async (_url, options) => {
-      requests.push(JSON.parse(options.body));
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: "这段没有可总结的话题。" } }],
-        }),
-      };
-    },
+    fetchImpl: api.fetchImpl,
     setIntervalImpl: (cb) => {
       fireSummaryTick = cb;
       return 0;
     },
-    sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -807,30 +847,62 @@ test("malformed model output appends nothing and leaves the snapshot untouched",
   await helpers.handleGetSessionState();
   await fireSummaryTick();
 
-  assert.equal(requests.length, 1, "the tick did ask the AI Provider");
-  assert.deepEqual(
-    helpers.readStored(`ytd_session_${sessionId}`).topics,
-    [],
-    "malformed output appends nothing",
+  // The first tick covered everything (lastCoveredMs 900000). The next check
+  // finds no NEW records past the cursor 900s and fires nothing.
+  await fireSummaryTick();
+  const rolling = api.v1Calls
+    .filter((call) => call.path.endsWith("/rolling-summary"));
+  assert.equal(rolling.length, 1, "the second check stays quiet");
+});
+
+test("a 401 tick routes the P7 credentials-invalidated path", async () => {
+  const sentMessages = [];
+  let fireSummaryTick = null;
+  const sessionId = "s_tick_unauthorized";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: apiFetch({
+      rollingSummaries: [
+        { status: 401, body: { error: { code: "unauthorized", message: "未登录或凭据缺失" } } },
+      ],
+    }).fetchImpl,
+    setIntervalImpl: (cb) => {
+      fireSummaryTick = cb;
+      return 0;
+    },
+    sentMessages,
+    stored: {
+      ...CREDENTIAL_STORE,
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  await helpers.handleGetSessionState();
+  await fireSummaryTick();
+
+  // P7: the capture stops (the Session ends without the AI pass) and the
+  // panel is pushed back to the authorization guide.
+  assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined);
+  const authState = sentMessages.find(
+    (message) => message.action === "authState" && message.authorized === false,
   );
-  assert.equal(
-    sentMessages.filter((message) => message.action === "sessionUpdate").length,
-    0,
-  );
+  assert.ok(authState, "the panel re-gates");
 });
 
 // The tick CHECK runs on a fixed 60-second cadence; the configured interval
-// is the CONTENT threshold (isTopicTickDue), so a threshold crossed
+// is the CONTENT threshold (isRollingSummaryDue), so a threshold crossed
 // mid-interval ticks at the next check instead of waiting for the boundary.
 test("the summary check cadence is fixed and ticks once content crosses the threshold", async () => {
-  const requests = [];
   const sentMessages = [];
   const checkDelays = [];
   let fireSummaryCheck = null;
   const sessionId = "s_midinterval";
+  const api = apiFetch({ rollingSummaries: [{ status: 201, body: OVERVIEW_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings({ summaryIntervalMinutes: 15 }),
-    fetchImpl: topicAiFetch(requests),
+    fetchImpl: api.fetchImpl,
     setIntervalImpl: (cb, delayMs) => {
       fireSummaryCheck = cb;
       checkDelays.push(delayMs);
@@ -838,6 +910,7 @@ test("the summary check cadence is fixed and ticks once content crosses the thre
     },
     sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       // Six records cover 9 minutes: below both the 15-minute content
       // threshold and the 10-record debounce.
@@ -855,7 +928,11 @@ test("the summary check cadence is fixed and ticks once content crosses the thre
 
   // Heartbeat 1: the content threshold is not met yet, so nothing happens.
   await fireSummaryCheck();
-  assert.equal(requests.length, 0, "quiet stretches produce no AI calls");
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/rolling-summary")).length,
+    0,
+    "quiet stretches produce no calls",
+  );
 
   // The threshold is crossed MID-INTERVAL: the Session's transcript grows
   // past 15 minutes with 10 records. The state reference here is the one the
@@ -867,108 +944,68 @@ test("the summary check cadence is fixed and ticks once content crosses the thre
   // Heartbeat 2 (the next 60-second check, not an interval boundary): the
   // content-driven decision now fires the tick.
   await fireSummaryCheck();
-  assert.equal(requests.length, 1, "the next check ticks once content is due");
   assert.equal(
-    helpers.readStored(`ytd_session_${sessionId}`).topics.length,
+    api.v1Calls.filter((call) => call.path.endsWith("/rolling-summary")).length,
     1,
-    "the tick appends the Topic",
+    "the next check ticks once content is due",
   );
 });
 
-// --- Prompt templates load from prompts/*.md through the fetch seam (#33)
-
-// Swallows the loud console output a broken template must produce, so the
-// test output stays clean and the loudness itself becomes assertable.
-function captureConsoleErrors(run) {
-  const errors = [];
-  const original = console.error;
-  console.error = (...args) => errors.push(args.map(String).join(" "));
-  return Promise.resolve()
-    .then(run)
-    .finally(() => {
-      console.error = original;
-    })
-    .then((value) => ({ value, errors }));
-}
-
-test("a tick with a missing prompt file fails loudly and calls no AI Provider", async () => {
-  const requests = [];
-  let fireSummaryTick = null;
-  const sessionId = "s_no_prompt";
-  let topicsAfterTick;
-
-  const { errors } = await captureConsoleErrors(async () => {
-    const helpers = loadBackgroundHelpers({
-      settings: baseSettings({ summaryIntervalMinutes: 15 }),
-      fetchImpl: topicAiFetch(requests),
-      // null simulates the file being missing (fetch gets a 404).
-      promptFiles: { "topic-tick.md": null },
-      setIntervalImpl: (cb) => {
-        fireSummaryTick = cb;
-        return 0;
-      },
-      stored: {
-        ytd_active_capture: capturePointer(sessionId),
-        [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
-      },
-    });
-    await helpers.handleGetSessionState();
-    await fireSummaryTick();
-    topicsAfterTick = helpers.readStored(`ytd_session_${sessionId}`).topics;
-  });
-
-  assert.ok(
-    errors.some(
-      (line) => /提示词文件加载失败/.test(line) && /topic-tick\.md/.test(line),
-    ),
-    "the load failure is logged loudly, naming the missing file",
-  );
-  assert.equal(requests.length, 0, "no AI call happens without the template");
-  assert.deepEqual(topicsAfterTick, [], "a failed tick appends nothing");
-});
-
-test("ending a Session with a missing report prompt broadcasts a clear error and persists nothing", async () => {
-  const requests = [];
+test("a worker restart re-adopts the server overview for the resumed Session", async () => {
   const sentMessages = [];
-  const sessionId = "s_no_report_prompt";
-
-  const { errors, value: result } = await captureConsoleErrors(async () => {
-    const helpers = loadBackgroundHelpers({
-      settings: baseSettings(),
-      fetchImpl: reportAiFetch(requests, REPORT_BODY),
-      promptFiles: { "session-report.md": null },
-      sentMessages,
-      stored: {
-        ytd_active_capture: capturePointer(sessionId),
-        [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
-      },
-    });
-    const outcome = await resumeAndEnd(helpers);
-    return { outcome, helpers };
+  const sessionId = "s_resume_overview";
+  const api = apiFetch({ overviews: [{ status: 200, body: OVERVIEW_BODY }] });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: api.fetchImpl,
+    sentMessages,
+    stored: {
+      ...CREDENTIAL_STORE,
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
   });
 
-  assert.ok(
-    errors.some(
-      (line) => /提示词文件加载失败/.test(line) && /session-report\.md/.test(line),
-    ),
-    "the load failure is logged loudly, naming the missing file",
-  );
-  assert.equal(requests.length, 0, "no AI call happens without the template");
-  assert.match(
-    result.outcome.report.error,
-    /提示词文件/,
-    "the panel payload names the broken prompt file",
+  // The rebuild path GETs the overview once and adopts the server timeline:
+  // the panel converges on it through the next state poll.
+  const state = await helpers.handleGetSessionState();
+  const overviewGet = api.v1Calls
+    .filter((call) => call.path.endsWith("/overview"));
+  assert.equal(overviewGet.length, 1, "one overview GET on resume");
+  assert.deepEqual(
+    state.overview,
+    [{ start: 0, end: 900, title: "导论", text: "老师介绍了课程目标。" }],
+    "handleGetSessionState carries the adopted overview",
   );
   assert.equal(
-    result.helpers.readStored(`report_${sessionId}`),
-    undefined,
-    "a failed pass persists nothing",
+    helpers.readStored("ytd_active_capture").summaryCursorSeconds,
+    900,
+    "the debounce cursor follows the server's lastCoveredMs",
   );
-  const update = sentMessages.find(
-    (message) => message.action === "sessionUpdate" && message.report,
+});
+
+test("a fresh Session without a server overview stays quiet (overview_not_generated)", async () => {
+  const sentMessages = [];
+  const sessionId = "s_no_overview";
+  const api = apiFetch();
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ summaryIntervalMinutes: 15 }),
+    fetchImpl: api.fetchImpl,
+    sentMessages,
+    stored: {
+      ...CREDENTIAL_STORE,
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  const state = await helpers.handleGetSessionState();
+  assert.deepEqual(state.overview, null);
+  assert.equal(
+    sentMessages.filter((message) => message.action === "sessionUpdate" && message.overview).length,
+    0,
+    "no overview adoption broadcast without a server overview",
   );
-  assert.ok(update, "the failure still broadcasts a renderable payload");
-  assert.match(update.report.error, /提示词文件/);
 });
 
 // --- Capture death: the offscreen recorder's captureEnded notice --------------
@@ -981,19 +1018,20 @@ test("ending a Session with a missing report prompt broadcasts a clear error and
 // auto-ends the Session honestly from whatever Transcript exists.
 
 test("a captureEnded notice auto-ends the active Session and broadcasts the reason", async () => {
-  const requests = [];
   const sentMessages = [];
   let fireSummaryCheck = null;
   const sessionId = "s_capture_dead";
+  const api = apiFetch({ digests: [{ status: 201, body: DIGEST_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     setIntervalImpl: (cb) => {
       fireSummaryCheck = cb;
       return 0;
     },
     sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1009,7 +1047,7 @@ test("a captureEnded notice auto-ends the active Session and broadcasts the reas
   assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
   assert.equal(helpers.readStored("ytd_active_capture"), undefined);
   // The panel learns the reason immediately, then sees the ended state with
-  // the digest built from the Transcript that exists.
+  // the digest built from the archived Transcript.
   const notice = sentMessages.find((message) => message.captureNotice);
   assert.ok(notice, "the notice broadcast reaches the panel");
   assert.equal(
@@ -1021,12 +1059,20 @@ test("a captureEnded notice auto-ends the active Session and broadcasts the reas
       message.action === "sessionUpdate" && message.state?.status === "ended",
   );
   assert.ok(ended, "the end broadcast reaches the panel");
-  assert.deepEqual(ended.report, REPORT_BODY);
-  assert.equal(requests.length, 1, "exactly one global pass over what exists");
+  assert.deepEqual(ended.report, MAPPED_DIGEST_REPORT);
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/digest")).length,
+    1,
+    "exactly one digest POST over what exists",
+  );
 
   // Death is final: no further ticks, and a repeated notice is a no-op.
   await fireSummaryCheck();
-  assert.equal(requests.length, 1, "an ended Session never ticks again");
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/rolling-summary")).length,
+    0,
+    "an ended Session never ticks again",
+  );
   const updatesBefore = sentMessages.filter(
     (message) => message.action === "sessionUpdate",
   ).length;
@@ -1042,12 +1088,12 @@ test("a captureEnded notice auto-ends the active Session and broadcasts the reas
 });
 
 test("captureEnded on a Session with no Transcript skips the digest without crashing", async () => {
-  const requests = [];
   const sentMessages = [];
   const sessionId = "s_death_no_transcript";
+  const api = apiFetch();
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     sentMessages,
     stored: {
       ytd_active_capture: capturePointer(sessionId),
@@ -1066,7 +1112,11 @@ test("captureEnded on a Session with no Transcript skips the digest without cras
   );
 
   assert.equal(helpers.readStored(`ytd_session_${sessionId}`).status, "ended");
-  assert.equal(requests.length, 0, "no AI call without a Transcript");
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/digest")).length,
+    0,
+    "no digest POST without an archived Transcript (the server would 409)",
+  );
   assert.equal(
     helpers.readStored(`report_${sessionId}`),
     undefined,
@@ -1088,11 +1138,12 @@ test("captureEnded on a Session with no Transcript skips the digest without cras
 // notice broadcast, auto-end — so the learner keeps the transcript collected
 // so far and an honest end instead of a zombie Session with a dead stream.
 
-// --- End-of-session global pass (#29): end -> one AI call -> report_<sessionId>
+// --- Session Digest wiring (ticket 6.6, D22): finish -> POST digest ->
+// report_<sessionId> ----------------------------------------------------------
 
-// Schema v2 (0.1.38): the mocked model output carries the new fields too —
-// overview conclusions, per-Topic bullets and thematic categories.
-const REPORT_BODY = {
+// The digest→report mapping the panel and report page consume: the five
+// fixed keys, the server's millisecond timeline converted to panel seconds.
+const MAPPED_DIGEST_REPORT = {
   overview: ["这节课围绕三个核心概念展开。", "课后练习比听课更重要。"],
   topics: [
     {
@@ -1103,35 +1154,10 @@ const REPORT_BODY = {
       summary: "老师介绍了课程目标。",
     },
   ],
-  categories: [
-    { title: "学习方法", points: ["先练习再核对。", "错题要复盘。"] },
-  ],
+  categories: [{ title: "学习方法", points: ["先练习再核对。", "错题要复盘。"] }],
   quotes: [{ start: 30, text: "学习是一场旅程。" }],
   todos: ["完成课后练习"],
 };
-
-// A v1-shaped model output: no overview, no bullets, no categories. The
-// parser must land it in storage exactly as-is so old renderers (and new
-// ones) keep treating it the same.
-const V1_REPORT_BODY = {
-  topics: [{ start: 0, end: 900, title: "导论", summary: "老师介绍了课程目标。" }],
-  quotes: [{ start: 30, text: "学习是一场旅程。" }],
-  todos: ["完成课后练习"],
-};
-
-function reportAiFetch(capturedRequests, body, finishReason = "stop") {
-  return async (_url, options) => {
-    capturedRequests.push(JSON.parse(options.body));
-    return {
-      ok: true,
-      json: async () => ({
-        choices: [
-          { message: { content: JSON.stringify(body) }, finish_reason: finishReason },
-        ],
-      }),
-    };
-  };
-}
 
 // Ends the seeded capture through the real resume path, like a learner
 // pressing 结束学习.
@@ -1140,16 +1166,17 @@ async function resumeAndEnd(helpers) {
   return helpers.handleEndLearning();
 }
 
-test("ending a Session runs exactly one global pass, persists report_<sessionId> and broadcasts it", async () => {
-  const requests = [];
+test("ending a Session POSTs digest once, persists the mapped artifact and broadcasts it", async () => {
   const sentMessages = [];
   const sessionId = "s_report";
   const pointer = capturePointer(sessionId);
+  const api = apiFetch({ digests: [{ status: 201, body: DIGEST_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: pointer,
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1158,31 +1185,36 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
   const result = await resumeAndEnd(helpers);
 
   assert.equal(result.success, true);
-  assert.equal(requests.length, 1, "exactly one global-pass AI call");
-  assert.equal(requests[0].max_tokens, 8192);
-  // The full Transcript went out, stamped for citation.
-  assert.match(requests[0].messages[1].content, /\[0:00\] 第 1 段/);
-  assert.match(requests[0].messages[1].content, /\[13:30\] 第 10 段/);
+  // D22: the digest POST happens after the §3.2 finish, against the server
+  // Session, with an empty body and the linked credential.
+  const digestCalls = api.v1Calls.filter((call) => call.path.endsWith("/digest"));
+  assert.equal(digestCalls.length, 1, "exactly one digest POST");
+  assert.deepEqual(digestCalls[0].body, {});
+  const finishes = api.v1Calls.filter((call) => call.path.endsWith("/finish"));
+  assert.equal(finishes.length, 1);
+  assert.equal(
+    digestCalls[0].path,
+    "/v1/sessions/ses_01JABC0033/digest",
+    "the digest POST targets the server Session",
+  );
 
   const stored = helpers.readStored(`report_${sessionId}`);
   assert.ok(stored, "the report artifact is persisted under report_<sessionId>");
   assert.equal(stored.sessionId, sessionId);
-  assert.deepEqual(stored.report, REPORT_BODY);
-  // Schema v2 (0.1.38): the new fields ride through persistence untouched.
-  assert.deepEqual(stored.report.overview, REPORT_BODY.overview);
-  assert.deepEqual(stored.report.topics[0].bullets, REPORT_BODY.topics[0].bullets);
-  assert.deepEqual(stored.report.categories, REPORT_BODY.categories);
-  assert.equal(typeof stored.generatedAtMs, "number");
-  // Artifact meta (#30): captured from the ending capture context. The
-  // pointer carries the same startedAtMs the resumed context was built
-  // from; endedAtMs is the wall-clock end.
+  assert.deepEqual(stored.report, MAPPED_DIGEST_REPORT);
+  assert.equal(stored.generatedAtMs, Date.parse("2026-11-10T11:20:00Z"));
+  // Artifact meta (#30): captured from the ending capture context.
   assert.equal(stored.meta.startedAtMs, pointer.startedAtMs);
   assert.equal(typeof stored.meta.endedAtMs, "number");
   assert.equal(stored.meta.kind, "replay");
   assert.equal(stored.meta.platformId, "xiaoe-tech");
-  // The generated-at stamp joins the meta so the report header can show
-  // when the pass ran (0.1.38).
   assert.equal(stored.meta.generatedAtMs, stored.generatedAtMs);
+  // The server Session id rides the ended snapshot so a retry can target the
+  // digest again after a worker restart.
+  assert.equal(
+    helpers.readStored(`ytd_session_${sessionId}`).serverSessionId,
+    "ses_01JABC0033",
+  );
   assert.equal(
     helpers.readStored(`digest_${sessionId}`),
     undefined,
@@ -1193,19 +1225,32 @@ test("ending a Session runs exactly one global pass, persists report_<sessionId>
     (message) => message.action === "sessionUpdate" && message.report,
   );
   assert.ok(update, "the end broadcast carries the report");
-  assert.deepEqual(update.report, REPORT_BODY);
+  assert.deepEqual(update.report, MAPPED_DIGEST_REPORT);
   assert.equal(update.state.status, "ended");
 });
 
-test("a v1 report body without the new fields persists unchanged", async () => {
-  const requests = [];
+test("a digest failure presents the server envelope verbatim, persists nothing and keeps the retry", async () => {
   const sentMessages = [];
-  const sessionId = "s_v1_report";
+  const sessionId = "s_digest_failed";
+  const api = apiFetch({
+    digests: [
+      {
+        status: 502,
+        body: {
+          error: {
+            code: "digest_failed",
+            message: "纪要生成失败，请稍后重试；本次尝试不改变已有纪要",
+          },
+        },
+      },
+    ],
+  });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, V1_REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1213,76 +1258,71 @@ test("a v1 report body without the new fields persists unchanged", async () => {
 
   const result = await resumeAndEnd(helpers);
 
-  assert.equal(result.success, true);
-  const stored = helpers.readStored(`report_${sessionId}`);
-  assert.ok(stored, "the v1 artifact is persisted under report_<sessionId>");
-  assert.deepEqual(stored.report, V1_REPORT_BODY);
-  // Byte-identical shape: the parser grew no new keys for a v1 payload.
-  assert.deepEqual(Object.keys(stored.report).sort(), ["quotes", "todos", "topics"]);
-  assert.equal(stored.report.topics[0].bullets, undefined);
-  assert.equal(stored.report.overview, undefined);
-  assert.equal(stored.report.categories, undefined);
-});
-
-test("a truncated global pass persists nothing and broadcasts the retry error", async () => {
-  const requests = [];
-  const sentMessages = [];
-  const sessionId = "s_truncated";
-  const helpers = loadBackgroundHelpers({
-    settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY, "length"),
-    sentMessages,
-    stored: {
-      ytd_active_capture: capturePointer(sessionId),
-      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
-    },
-  });
-
-  const result = await resumeAndEnd(helpers);
-
-  assert.equal(requests.length, 1);
+  assert.equal(result.success, true, "the end itself still succeeds");
+  assert.equal(api.v1Calls.filter((call) => call.path.endsWith("/digest")).length, 1);
   assert.equal(
     helpers.readStored(`report_${sessionId}`),
     undefined,
-    "a truncated artifact is never persisted",
+    "a failed digest persists nothing",
   );
-  assert.equal(result.report.error, "报告长度受限，生成未完成，请重试。");
+  assert.equal(result.report.error, "纪要生成失败，请稍后重试；本次尝试不改变已有纪要");
   const update = sentMessages.find(
     (message) => message.action === "sessionUpdate" && message.report,
   );
-  assert.equal(update.report.error, "报告长度受限，生成未完成，请重试。");
+  assert.equal(update.report.error, "纪要生成失败，请稍后重试；本次尝试不改变已有纪要");
 });
 
-test("regenerateReport re-runs the pass for the ended Session, persists and broadcasts again", async () => {
+test("a 401 digest routes the P7 credentials-invalidated path and reports the envelope", async () => {
   const sentMessages = [];
-  const sessionId = "s_retry";
-  let attempts = 0;
+  const sessionId = "s_digest_unauthorized";
+  const api = apiFetch({
+    digests: [
+      { status: 401, body: { error: { code: "unauthorized", message: "未登录或凭据缺失" } } },
+    ],
+  });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: async (_url, options) => {
-      attempts += 1;
-      if (attempts === 1) {
-        // First end: the provider truncates mid-JSON.
-        return {
-          ok: true,
-          json: async () => ({
-            choices: [
-              { message: { content: '{"topics": [' }, finish_reason: "length" },
-            ],
-          }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [
-            { message: { content: JSON.stringify(REPORT_BODY) }, finish_reason: "stop" },
-          ],
-        }),
-      };
-    },
+    fetchImpl: api.fetchImpl,
     sentMessages,
     stored: {
+      ...CREDENTIAL_STORE,
+      ytd_active_capture: capturePointer(sessionId),
+      [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
+    },
+  });
+
+  const result = await resumeAndEnd(helpers);
+
+  assert.equal(result.report.error, "未登录或凭据缺失");
+  const authState = sentMessages.find(
+    (message) => message.action === "authState" && message.authorized === false,
+  );
+  assert.ok(authState, "the panel re-gates");
+});
+
+test("regenerateReport re-POSTs the digest for the ended Session, persists and broadcasts again", async () => {
+  const sentMessages = [];
+  const sessionId = "s_retry";
+  const api = apiFetch({
+    digests: [
+      {
+        status: 502,
+        body: {
+          error: {
+            code: "digest_failed",
+            message: "纪要生成失败，请稍后重试；本次尝试不改变已有纪要",
+          },
+        },
+      },
+      { status: 201, body: DIGEST_BODY },
+    ],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: api.fetchImpl,
+    sentMessages,
+    stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1295,49 +1335,45 @@ test("regenerateReport re-runs the pass for the ended Session, persists and broa
 
   assert.equal(retried.success, true);
   assert.equal(retried.sessionId, sessionId);
-  assert.deepEqual(retried.report, REPORT_BODY);
+  assert.deepEqual(retried.report, MAPPED_DIGEST_REPORT);
   const stored = helpers.readStored(`report_${sessionId}`);
-  assert.ok(stored, "the retried pass persists the artifact");
-  assert.deepEqual(stored.report, REPORT_BODY);
+  assert.ok(stored, "the retried digest persists the artifact");
+  assert.deepEqual(stored.report, MAPPED_DIGEST_REPORT);
   const updates = sentMessages.filter(
     (message) => message.action === "sessionUpdate" && message.report,
   );
   assert.equal(updates.length, 2, "the retried report is broadcast again");
-  assert.deepEqual(updates[1].report, REPORT_BODY);
+  assert.deepEqual(updates[1].report, MAPPED_DIGEST_REPORT);
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/digest")).length,
+    2,
+    "the retry is a second digest POST",
+  );
 });
 
-test("a retried pass reconstructs artifact meta from the Session id and Transcript", async () => {
-  const requests = [];
+test("a retried digest reconstructs artifact meta from the Session id and Transcript", async () => {
   // A real-format Session id: s_<base36 start ms>_<random>.
   const startMs = new Date(2026, 9, 1, 9, 0).getTime();
   const sessionId = `s_${startMs.toString(36)}_retrymeta`;
-  let attempts = 0;
+  const api = apiFetch({
+    digests: [
+      {
+        status: 502,
+        body: {
+          error: {
+            code: "digest_failed",
+            message: "纪要生成失败，请稍后重试；本次尝试不改变已有纪要",
+          },
+        },
+      },
+      { status: 201, body: DIGEST_BODY },
+    ],
+  });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: async (_url, options) => {
-      requests.push(JSON.parse(options.body));
-      attempts += 1;
-      if (attempts === 1) {
-        // First end: the provider truncates mid-JSON, nothing is persisted.
-        return {
-          ok: true,
-          json: async () => ({
-            choices: [
-              { message: { content: '{"topics": [' }, finish_reason: "length" },
-            ],
-          }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [
-            { message: { content: JSON.stringify(REPORT_BODY) }, finish_reason: "stop" },
-          ],
-        }),
-      };
-    },
+    fetchImpl: api.fetchImpl,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1349,7 +1385,7 @@ test("a retried pass reconstructs artifact meta from the Session id and Transcri
   const retried = await helpers.handleRegenerateReport({});
   assert.equal(retried.success, true);
   const stored = helpers.readStored(`report_${sessionId}`);
-  assert.ok(stored, "the retried pass persists the artifact");
+  assert.ok(stored, "the retried digest persists the artifact");
   // The Session id decodes back to the wall-clock start.
   assert.equal(stored.meta.startedAtMs, startMs);
   // The Transcript covers 15 minutes; the end is estimated from its last record.
@@ -1360,9 +1396,9 @@ test("a retried pass reconstructs artifact meta from the Session id and Transcri
 });
 
 test("regenerateReport finds the most recent ended Session in storage after a worker restart", async () => {
-  const requests = [];
   const sessionId = "s_restarted";
   let endedState = sessionPipeline.createSession({ sessionId });
+  endedState = { ...endedState, serverSessionId: "ses_01JABC0033" };
   endedState = sessionPipeline.applyEvent(endedState, {
     type: "segmentCaptured",
     segment: { id: "seg-0", start: 0, duration: 120 },
@@ -1374,11 +1410,13 @@ test("regenerateReport finds the most recent ended Session in storage after a wo
   });
   endedState = sessionPipeline.applyEvent(endedState, { type: "sessionEnd" });
 
+  const api = apiFetch({ digests: [{ status: 201, body: DIGEST_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     // No pointer, no in-memory context: the worker restarted after the end.
     stored: {
+      ...CREDENTIAL_STORE,
       [`ytd_session_${sessionId}`]: JSON.parse(JSON.stringify(endedState)),
     },
   });
@@ -1387,22 +1425,53 @@ test("regenerateReport finds the most recent ended Session in storage after a wo
 
   assert.equal(retried.success, true);
   assert.equal(retried.sessionId, sessionId);
-  assert.deepEqual(helpers.readStored(`report_${sessionId}`).report, REPORT_BODY);
+  assert.deepEqual(helpers.readStored(`report_${sessionId}`).report, MAPPED_DIGEST_REPORT);
 });
 
 test("regenerateReport with no ended Session anywhere reports the dead end", async () => {
-  const requests = [];
+  const api = apiFetch();
   const helpers = loadBackgroundHelpers({
     stored: CREDENTIAL_STORE,
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
   });
 
   const retried = await helpers.handleRegenerateReport({});
 
   assert.equal(retried.success, false);
   assert.ok(retried.error);
-  assert.equal(requests.length, 0, "no AI call without a Session to re-run");
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/digest")).length,
+    0,
+    "no digest POST without a Session to re-run",
+  );
+});
+
+test("regenerateReport on a pre-6.6 snapshot without the server Session id refuses honestly", async () => {
+  const sessionId = "s_legacy_ended";
+  let endedState = sessionPipeline.createSession({ sessionId });
+  endedState = sessionPipeline.applyEvent(endedState, {
+    type: "segmentCaptured",
+    segment: { id: "seg-0", start: 0, duration: 120 },
+  });
+  endedState = sessionPipeline.applyEvent(endedState, { type: "sessionEnd" });
+
+  const api = apiFetch();
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    fetchImpl: api.fetchImpl,
+    stored: {
+      [`ytd_session_${sessionId}`]: JSON.parse(JSON.stringify(endedState)),
+    },
+  });
+
+  const retried = await helpers.handleRegenerateReport({});
+  assert.equal(retried.success, false);
+  assert.match(retried.error, /服务端会话/);
+  assert.equal(
+    api.v1Calls.filter((call) => call.path.endsWith("/digest")).length,
+    0,
+  );
 });
 
 // --- Page title capture (#32): the bridge's pageTitle message ----------------
@@ -1470,12 +1539,13 @@ test("a pageTitle message from another tab is ignored", async () => {
 });
 
 test("ending a Session persists the report meta with the captured title", async () => {
-  const requests = [];
   const sessionId = "s_titled";
+  const api = apiFetch({ digests: [{ status: 201, body: DIGEST_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1495,37 +1565,28 @@ test("ending a Session persists the report meta with the captured title", async 
   assert.equal(artifact.meta.title, "第十四讲：机器学习入门");
 });
 
-test("a retried pass reconstructs the title from the ended snapshot", async () => {
-  const requests = [];
+test("a retried digest reconstructs the title from the ended snapshot", async () => {
   const startMs = new Date(2026, 9, 1, 9, 0).getTime();
   const sessionId = `s_${startMs.toString(36)}_retrytitle`;
-  let attempts = 0;
+  const api = apiFetch({
+    digests: [
+      {
+        status: 502,
+        body: {
+          error: {
+            code: "digest_failed",
+            message: "纪要生成失败，请稍后重试；本次尝试不改变已有纪要",
+          },
+        },
+      },
+      { status: 201, body: DIGEST_BODY },
+    ],
+  });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: async (_url, options) => {
-      requests.push(JSON.parse(options.body));
-      attempts += 1;
-      if (attempts === 1) {
-        // First end: the provider truncates mid-JSON, nothing is persisted.
-        return {
-          ok: true,
-          json: async () => ({
-            choices: [
-              { message: { content: '{"topics": [' }, finish_reason: "length" },
-            ],
-          }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [
-            { message: { content: JSON.stringify(REPORT_BODY) }, finish_reason: "stop" },
-          ],
-        }),
-      };
-    },
+    fetchImpl: api.fetchImpl,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: capturePointer(sessionId),
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1550,15 +1611,16 @@ test("a retried pass reconstructs the title from the ended snapshot", async () =
 });
 
 test("a worker restart mid-session rebuilds the title from the capture pointer", async () => {
-  const requests = [];
   const sessionId = "s_pointer_title";
   // The worker died between persisting the pointer (title included) and
   // saving the titleCaptured snapshot: the pointer is the only copy.
   const pointer = { ...capturePointer(sessionId), pageTitle: "第十四讲：机器学习入门" };
+  const api = apiFetch({ digests: [{ status: 201, body: DIGEST_BODY }] });
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
-    fetchImpl: reportAiFetch(requests, REPORT_BODY),
+    fetchImpl: api.fetchImpl,
     stored: {
+      ...CREDENTIAL_STORE,
       ytd_active_capture: pointer,
       [`ytd_session_${sessionId}`]: seededCapture(sessionId, tenCoverageRecords()),
     },
@@ -1589,8 +1651,9 @@ test("the settings blob is stamped with the version on the first read", async ()
   assert.equal(started.success, true);
 
   const blob = readStored("ytd_settings");
-  assert.equal(blob.settingsVersion, 4);
+  assert.equal(blob.settingsVersion, 5);
   assert.equal(blob.segmentLengthSeconds, 30);
+  assert.equal("aiApiKey" in blob, false);
 });
 
 // --- Timeline anchoring + seek-awareness (#48) ------------------------------
@@ -1663,6 +1726,10 @@ function apiFetch({
   segments = [],
   finishes = [],
   transcripts = null,
+  rollingSummaries = [],
+  overviews = [],
+  digests = [],
+  explains = [],
 } = {}) {
   const v1Calls = [];
   let resolveIndex = 0;
@@ -1670,6 +1737,10 @@ function apiFetch({
   let segmentsIndex = 0;
   let transcriptsIndex = 0;
   let finishesIndex = 0;
+  let rollingSummariesIndex = 0;
+  let overviewsIndex = 0;
+  let digestsIndex = 0;
+  let explainsIndex = 0;
   const uploads = new Map();
   const answer = (scripted, fallbackBody) => {
     if (scripted === null || scripted === undefined) {
@@ -1762,13 +1833,51 @@ if (/^\/v1\/sessions\/[^/]+\/transcript$/.test(pathName)) {
       v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
       return { status: 200, ok: true, json: async () => ({ positionMs: 0, revision: 1 }) };
     }
-    // The AI Provider passes (Topic ticks, the end-of-Session report).
+    // Panel AI (ticket 6.6, contract-r4 §6/§7): the rolling-summary tick,
+    // the overview read, the end-of-Session digest and the explain call.
+    if (/^\/v1\/sessions\/[^/]+\/rolling-summary$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return answer(
+        rollingSummaries[rollingSummariesIndex++] ?? rollingSummaries[rollingSummaries.length - 1],
+        OVERVIEW_BODY,
+      );
+    }
+    if (/^\/v1\/sessions\/[^/]+\/overview$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method });
+      // Unscripted reads answer 404 overview_not_generated — the fresh
+      // Session's reality; adoption tests script the 200 explicitly.
+      if (overviews.length === 0) {
+        return {
+          status: 404,
+          ok: false,
+          json: async () => ({
+            error: {
+              code: "overview_not_generated",
+              message: "这次学习还没有生成过概览，先发起一次滚动摘要",
+            },
+          }),
+        };
+      }
+      return answer(overviews[overviewsIndex++] ?? overviews[overviews.length - 1], OVERVIEW_BODY);
+    }
+    if (/^\/v1\/sessions\/[^/]+\/digest$/.test(pathName)) {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return answer(digests[digestsIndex++] ?? digests[digests.length - 1], DIGEST_BODY);
+    }
+    if (pathName === "/v1/ai/explain") {
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return answer(explains[explainsIndex++] ?? explains[explains.length - 1], {
+        explanation: "点积衡量查询向量与键向量的对齐程度。",
+      });
+    }
+    // The local AI Provider is retired (ticket 6.6): any remaining call to a
+    // chat-completions endpoint is a wiring bug, answered loudly as a
+    // failure so the suite catches it.
     return {
-      ok: true,
+      ok: false,
+      status: 500,
       json: async () => ({
-        choices: [
-          { message: { content: JSON.stringify({ topics: [], quotes: [], todos: [] }) }, finish_reason: "stop" },
-        ],
+        error: { code: "local_ai_retired", message: "本地 AI Provider 已退役 (ticket 6.6)" },
       }),
     };
   };

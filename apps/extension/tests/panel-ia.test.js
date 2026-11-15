@@ -320,8 +320,8 @@ function activeSessionState(overrides = {}) {
   };
 }
 
-function showSession(panel, state) {
-  panel.report.showSessionMode({ active: true, kind: "replay", state });
+function showSession(panel, state, overview = null) {
+  panel.report.showSessionMode({ active: true, kind: "replay", state, overview });
 }
 
 // --- 逐字稿 purity -----------------------------------------------------------
@@ -406,18 +406,20 @@ test("the first-topic hint names the configured interval until the first tick", 
   assert.equal(panel.elements.overviewQuotesSection.style.display, "none");
 });
 
-test("live Topic ticks render into the 概览 timeline with jumpable timestamps", () => {
+test("the server overview's Topics render into the 概览 timeline with jumpable timestamps", () => {
   const panel = loadPanel();
   showSession(panel, activeSessionState());
 
+  // Ticket 6.6: the live timeline arrives as the adopted server overview
+  // (the background maps the server's millisecond timeline to seconds) —
+  // the session state itself carries no local Topic computation anymore.
   showSession(
     panel,
-    activeSessionState({
-      topics: [
-        { start: 0, end: 60, title: "导入", text: "老师介绍了课程目标。" },
-        { start: 75, end: 120, title: "深入", text: "续写内容。", continuation: true },
-      ],
-    }),
+    activeSessionState(),
+    [
+      { start: 0, end: 60, title: "导入", text: "老师介绍了课程目标。" },
+      { start: 75, end: 120, title: "深入", text: "续写内容。", continuation: true },
+    ],
   );
 
   const rows = panel.elements.overviewTopics.children;
@@ -454,9 +456,8 @@ test("quotes appear only when the report arrives and its Topics replace the live
   const panel = loadPanel();
   showSession(
     panel,
-    activeSessionState({
-      topics: [{ start: 0, end: 60, title: "直播中的话题", text: "实时摘要。" }],
-    }),
+    activeSessionState(),
+    [{ start: 0, end: 60, title: "直播中的话题", text: "实时摘要。" }],
   );
   assert.equal(
     findDescendants(panel.elements.overviewTopics, "overview-topic-name")[0].textContent,
@@ -478,15 +479,94 @@ test("quotes appear only when the report arrives and its Topics replace the live
   // the report) must not clobber the adopted report's Overview.
   showSession(
     panel,
-    activeSessionState({
-      topics: [{ start: 0, end: 60, title: "迟到的实时话题", text: "不应出现。" }],
-    }),
+    activeSessionState(),
+    [{ start: 0, end: 60, title: "迟到的实时话题", text: "不应出现。" }],
   );
   assert.equal(
     findDescendants(panel.elements.overviewTopics, "overview-topic-name")[0].textContent,
     "课程导论",
   );
   assert.equal(panel.elements.overviewQuotesSection.style.display, "block");
+});
+
+test("the startup sequence never probes a local AI key (ticket 6.6)", async () => {
+  const panel = loadPanel();
+  panel.setNextResponse((message) => {
+    if (message.action === "checkAuth") return { authorized: true };
+    if (message.action === "getSessionState") {
+      return { active: false, state: null };
+    }
+    return { success: true };
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  assert.equal(
+    panel.sentMessages.some((message) => message.action === "checkConfig"),
+    false,
+    "the checkConfig AI-key gate is retired with the local AI config",
+  );
+  assert.equal(panel.elementById("welcomeState").style.display, "flex");
+});
+
+test("a sessionUpdate broadcast carrying the server overview renders the live timeline", () => {
+  const panel = loadPanel();
+  const responded = [];
+  panel.session.handleSessionUpdateMessage(
+    {
+      action: "sessionUpdate",
+      sessionId: "s_1",
+      state: activeSessionState(),
+      overview: [
+        { start: 0, end: 60, title: "服务端话题", text: "毫秒时间轴映射为秒。" },
+      ],
+    },
+    (response) => responded.push(response),
+  );
+
+  const names = findDescendants(panel.elements.overviewTopics, "overview-topic-name");
+  assert.equal(names[0].textContent, "服务端话题");
+  assert.ok(responded.length > 0);
+});
+
+test("the explain toolbar posts the selection without a video title", async () => {
+  const panel = loadPanel();
+  showSession(panel, activeSessionState());
+  panel.session.setupExplainFeature();
+
+  const row = panel.elements.sessionTranscript.children.find(
+    (item) => item.dataset.seconds === "75",
+  );
+  panel.setSelection({
+    toString: () => "其中某句话",
+    rangeCount: 1,
+    getRangeAt: () => ({
+      startContainer: row,
+      endContainer: row,
+      getBoundingClientRect: () => ({ bottom: 10, left: 5, width: 4 }),
+    }),
+  });
+  panel.docListeners.mouseup();
+
+  const tooltip = panel.createdElements.find((el) => el.id === "explainTooltip");
+  const explainBtn = tooltip.children.find((el) => el.classList.contains("explain-btn"));
+  panel.setNextResponse((message) => {
+    if (message.action === "explainSelection") {
+      return { success: true, explanation: "解释文本。" };
+    }
+    return { success: true };
+  });
+  await explainBtn.listeners.click({
+    preventDefault() {},
+    stopPropagation() {},
+  });
+  await panel.flush();
+
+  const sent = panel.sentMessages.find((message) => message.action === "explainSelection");
+  assert.ok(sent, "the explain request went to the background");
+  assert.equal(sent.selectedText, "其中某句话");
+  assert.ok("transcriptContext" in sent);
+  assert.equal("videoTitle" in sent, false, "the server explain prompt needs no title");
 });
 
 // --- 笔记 in session mode ------------------------------------------------------
@@ -681,7 +761,6 @@ test("panel startup waits for a stored 15-second setting before the first wait r
   });
   const state = activeSessionState({ segments: [], transcriptRecords: [] });
   panel.setNextResponse((message) => {
-    if (message.action === "checkConfig") return { hasAiKey: true };
     // P6: the startup gate probe — the linked learner continues into the
     // session UI this test asserts on.
     if (message.action === "checkAuth") return { authorized: true };
@@ -1128,7 +1207,6 @@ function makeAuthPanel(responses) {
   const panel = loadPanel({ stored: {} });
   panel.setNextResponse((message) => {
     if (responses[message.action]) return responses[message.action];
-    if (message.action === "checkConfig") return { hasAiKey: true };
     return { success: true };
   });
   return panel;
@@ -1231,7 +1309,6 @@ test("authAuthorized re-runs the gate and unlocks the panel", async () => {
 
   // The link flow finished: from now on the background reports authorized.
   panel.setNextResponse((message) => {
-    if (message.action === "checkConfig") return { hasAiKey: true };
     if (message.action === "checkAuth") return { authorized: true, reason: null };
     return { success: true };
   });

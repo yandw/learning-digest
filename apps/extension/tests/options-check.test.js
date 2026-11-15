@@ -9,54 +9,6 @@ const options = require("../options.js");
 const root = path.resolve(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-const AI_CONFIG = {
-  baseUrl: "https://api.example.com/v1",
-  apiKey: "sk-test",
-  model: "example-model",
-};
-
-function fakeFetch(status) {
-  const calls = [];
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, init });
-    return { ok: status >= 200 && status < 300, status };
-  };
-  return { fetchImpl, calls };
-}
-
-test("checkAiConnection posts a minimal completion to baseUrl + /chat/completions", async () => {
-  const { fetchImpl, calls } = fakeFetch(200);
-  const result = await options.checkAiConnection(fetchImpl, AI_CONFIG);
-
-  assert.deepEqual(result, { ok: true });
-  assert.equal(calls[0].url, "https://api.example.com/v1/chat/completions");
-  assert.equal(calls[0].init.headers.Authorization, "Bearer sk-test");
-  assert.equal(JSON.parse(calls[0].init.body).model, "example-model");
-});
-
-test("checkAiConnection classifies failure statuses", async () => {
-  for (const [status, reason] of [
-    [401, "aiKeyRejected"],
-    [403, "aiKeyRejected"],
-    [404, "aiNotFound"],
-    [500, "aiHttpError"],
-  ]) {
-    const { fetchImpl } = fakeFetch(status);
-    const result = await options.checkAiConnection(fetchImpl, AI_CONFIG);
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, reason);
-    if (reason === "aiHttpError") assert.equal(result.status, 500);
-  }
-
-  const networkError = await options.checkAiConnection(
-    async () => {
-      throw new TypeError("fetch failed");
-    },
-    AI_CONFIG,
-  );
-  assert.deepEqual(networkError, { ok: false, reason: "aiUnreachable" });
-});
-
 // --- Speech Provider fields render + save (mock-document, panel-ia style) ----
 
 function makeElement(id = "") {
@@ -209,6 +161,53 @@ test("the options page carries no Speech Provider section (ticket 2.4, D10)", ()
   assert.doesNotMatch(js, /sttApiKey/);
 });
 
+test("the options page carries no AI provider card (ticket 6.6, issue #91)", () => {
+  // The panel's AI runs server-side through the learning service
+  // (contract-r4 §6/§7): no AI key/endpoint/model fields remain, and no
+  // save-time AI connection check.
+  const html = read("options.html");
+  assert.doesNotMatch(html, /id="aiApiKey"/);
+  assert.doesNotMatch(html, /id="aiBaseUrl"/);
+  assert.doesNotMatch(html, /id="aiModel"/);
+  assert.doesNotMatch(html, /bailian\.console\.aliyun\.com/);
+  assert.doesNotMatch(html, /dashscope\.aliyuncs\.com/);
+
+  const js = read("options.js");
+  assert.doesNotMatch(js, /aiApiKey/);
+  assert.doesNotMatch(js, /aiBaseUrl/);
+  assert.doesNotMatch(js, /aiModel/);
+  assert.doesNotMatch(js, /checkAiConnection/);
+  assert.doesNotMatch(js, /chat\/completions/);
+  // The save succeeds without any key gate: settings persist immediately.
+  const settingsSource = read("settings.js");
+  assert.doesNotMatch(settingsSource, /aiApiKey/);
+  assert.doesNotMatch(settingsSource, /chatCompletionsUrl/);
+});
+
+test("saving a v4 blob drops its AI fields and stamps v5 (ticket 6.6)", async () => {
+  const stored = {
+    ytd_settings: {
+      aiApiKey: "sk-gone",
+      aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      aiModel: "qwen3.8-flash",
+      settingsVersion: 4,
+      segmentLengthSeconds: 45,
+    },
+  };
+  const page = loadOptionsPage({ stored: JSON.parse(JSON.stringify(stored)) });
+  await page.flush();
+
+  assert.equal(page.elements.segmentLengthSeconds.value, 45);
+  await page.submit();
+
+  const saved = page.stored.ytd_settings;
+  assert.equal(saved.settingsVersion, 5);
+  assert.equal("aiApiKey" in saved, false);
+  assert.equal("aiBaseUrl" in saved, false);
+  assert.equal("aiModel" in saved, false);
+  assert.equal(saved.segmentLengthSeconds, 45);
+});
+
 // --- Segment length field (#22): render, save, and migration survival -------
 
 test("the Segment length field renders the stored value", async () => {
@@ -272,7 +271,7 @@ test("a stamped blob's tuned Segment length survives an options save", async () 
   assert.equal(page.elements.segmentLengthSeconds.value, 45);
   await page.submit();
   assert.equal(page.stored.ytd_settings.segmentLengthSeconds, 45);
-  assert.equal(page.stored.ytd_settings.settingsVersion, 4);
+  assert.equal(page.stored.ytd_settings.settingsVersion, 5);
 });
 
 test("the Segment length field markup matches the segmenter clamp and copy guidance", () => {
@@ -315,7 +314,7 @@ test("saving drops stored ASR key fields and stamps v4 (ticket 2.4, D10)", async
 
   const saved = page.stored.ytd_settings;
   assert.equal(saved.segmentLengthSeconds, 45);
-  assert.equal(saved.settingsVersion, 4);
+  assert.equal(saved.settingsVersion, 5);
   assert.equal("speechProvider" in saved, false);
   assert.equal("speechProviders" in saved, false);
   assert.equal("sttApiKey" in saved, false);

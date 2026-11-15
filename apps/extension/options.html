@@ -16,86 +16,14 @@
         <div class="settings-heading-row">
           <div class="eyebrow">Learning Digest</div>
         </div>
-        <h1 data-i18n="heading">Bring your own API keys</h1>
+        <h1 data-i18n="heading">Learning Digest 设置</h1>
         <p class="lede" data-i18n="lede">
-          Keys stay in this Chrome profile and are sent only to your
-          configured AI provider. This open-source extension has no developer
-          server or analytics.
+          逐字稿、滚动摘要与学习纪要由学习服务在服务端生成（其 AI 服务在
+          服务端配置）；这里只管理采集节奏和学习服务地址。
         </p>
       </header>
 
       <form id="settingsForm">
-        <section class="card">
-          <h2 data-i18n="aiProvider">AI provider</h2>
-          <div
-            class="provider-summary"
-            aria-label="Supported AI provider"
-            data-i18n-aria-label="providerSummaryLabel"
-          >
-            <span class="provider-name">阿里云百炼 · qwen3.8-flash</span>
-            <span class="provider-badge" data-i18n="providerBadge"
-              >Supported in this version</span
-            >
-          </div>
-
-          <label for="aiApiKey" data-i18n="deepseekApiKeyLabel"
-            >AI API key</label
-          >
-          <input
-            id="aiApiKey"
-            name="aiApiKey"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Paste your Bailian key"
-          />
-          <p class="help">
-            <span data-i18n="deepseekHelp"
-              >Learning Digest calls a large model through an OpenAI-compatible
-              endpoint (by default Alibaba Cloud Bailian qwen3.8-flash) for
-              rolling summaries, the session digest, translation, and note
-              polishing.</span
-            >
-            <a
-              href="https://bailian.console.aliyun.com/"
-              target="_blank"
-              rel="noreferrer"
-              data-i18n="deepseekLink"
-              >Create a Bailian API key</a
-            ><span data-i18n="deepseekHelpSuffix">.</span>
-          </p>
-
-          <label for="aiBaseUrl" data-i18n="aiBaseUrlLabel">API base URL</label>
-          <input
-            id="aiBaseUrl"
-            name="aiBaseUrl"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-          />
-          <label for="aiModel" data-i18n="aiModelLabel">Model</label>
-          <input
-            id="aiModel"
-            name="aiModel"
-            type="text"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="qwen3.8-flash"
-          />
-          <p class="help" data-i18n="customEndpointHelp">
-            Leave both fields empty to keep the Bailian defaults. A custom
-            endpoint must speak the OpenAI chat-completions API. If its host is
-            not dashscope.aliyuncs.com, add that host to host_permissions in
-            manifest.json and reload the extension.
-          </p>
-          <div class="privacy-note" data-i18n="privacyNote">
-            When you use AI features, your configured AI provider (Alibaba
-            Cloud Bailian by default) receives the transcript and relevant
-            session context. Review its terms and pricing before saving.
-          </div>
-        </section>
-
         <section class="card">
           <h2 data-i18n="sessionSettings">Session</h2>
           <label for="summaryIntervalMinutes" data-i18n="summaryIntervalLabel"

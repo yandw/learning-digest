@@ -3,102 +3,62 @@ const assert = require("node:assert/strict");
 
 const settings = require("../settings.js");
 
-test("custom AI base URL and model are preserved", () => {
-  const normalized = settings.normalize({
-    provider: "unexpected",
-    aiApiKey: "  example-key  ",
-    aiBaseUrl: "https://api.example.com/v1/",
-    aiModel: "  example-model  ",
-  });
+// --- v5 retirement (ticket 6.6, issue #91): the local AI config is gone ------
+//
+// The panel's AI (rolling summary, digest, explain) runs server-side through
+// the learning service (contract-r4 §6/§7), so the plugin's config face
+// carries no AI provider fields anymore. Like the v4 ASR-key retirement, the
+// fields are simply not emitted: a stored blob's keys are dropped on the
+// next read+persist, and the version bump marks the retirement.
 
-  assert.equal(normalized.provider, "deepseek");
-  assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
-  assert.equal(normalized.aiModel, "example-model");
-  assert.equal(normalized.aiApiKey, "example-key");
-  assert.equal(
-    settings.chatCompletionsUrl(normalized.aiBaseUrl),
-    "https://api.example.com/v1/chat/completions",
-  );
-});
-
-test("empty or invalid AI endpoint config falls back to the Bailian Qwen defaults", () => {
-  const empty = settings.normalize({});
-  assert.equal(empty.aiBaseUrl, "https://dashscope.aliyuncs.com/compatible-mode/v1");
-  assert.equal(empty.aiModel, "qwen3.8-flash");
-  assert.equal(empty.settingsVersion, 4);
-  assert.equal(
-    settings.chatCompletionsUrl(),
-    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-  );
-
-  const invalid = settings.normalize({
-    aiBaseUrl: "not a url",
-    aiModel: "   ",
-  });
-  assert.equal(invalid.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
-  assert.equal(invalid.aiModel, settings.DEFAULTS.aiModel);
-
-  assert.equal(settings.isValidAiBaseUrl("https://api.openai.com/v1"), true);
-  assert.equal(settings.isValidAiBaseUrl("http://localhost:11434/v1"), true);
-  assert.equal(settings.isValidAiBaseUrl("http://example.com"), false);
-  assert.equal(settings.isValidAiBaseUrl("ftp://api.deepseek.com"), false);
-  assert.equal(settings.isValidAiBaseUrl(""), false);
-});
-
-test("the v4 retirement drops the local ASR key config (ticket 2.4, D10)", () => {
-  // The audio path archives through the learning service now (the Worker
-  // holds the ASR credentials), so the plugin's config face carries no ASR
-  // keys: the Speech Provider slots AND the legacy STT fields are gone,
-  // and a stored blob's keys are dropped on the next read+persist.
+test("the v5 retirement drops the whole local AI config (ticket 6.6)", () => {
   const stored = settings.normalize({
-    settingsVersion: 3,
-    speechProvider: "groq",
-    speechProviders: { groq: { apiKey: "gsk-gone" } },
-    sttApiKey: "stt-gone",
-    sttBaseUrl: "https://api.groq.com/openai/v1",
-    sttModel: "whisper-large-v3-turbo",
+    settingsVersion: 4,
+    provider: "deepseek",
+    aiApiKey: "sk-gone",
+    aiBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    aiModel: "qwen3.8-flash",
+    segmentLengthSeconds: 45,
+    summaryIntervalMinutes: 30,
+    apiBaseUrl: "https://api.example.com",
+    webAppBaseUrl: "https://learn.example.com",
   });
 
-  assert.equal(stored.settingsVersion, 4);
-  assert.equal("speechProvider" in stored, false);
-  assert.equal("speechProviders" in stored, false);
-  assert.equal("sttApiKey" in stored, false);
-  assert.equal("sttBaseUrl" in stored, false);
-  assert.equal("sttModel" in stored, false);
+  assert.equal(stored.settingsVersion, 5);
+  assert.equal("provider" in stored, false);
+  assert.equal("aiApiKey" in stored, false);
+  assert.equal("aiBaseUrl" in stored, false);
+  assert.equal("aiModel" in stored, false);
+  // The non-AI settings survive the migration untouched.
+  assert.equal(stored.segmentLengthSeconds, 45);
+  assert.equal(stored.summaryIntervalMinutes, 30);
+  assert.equal(stored.apiBaseUrl, "https://api.example.com");
+  assert.equal(stored.webAppBaseUrl, "https://learn.example.com");
 
-  // The same for a fresh default blob: the keys never come back.
+  // The same for an unstamped blob: the keys never come back, and a fresh
+  // default blob never carries them at all.
+  const unstamped = settings.normalize({
+    aiApiKey: "sk-legacy",
+    aiBaseUrl: "https://openrouter.ai/api/v1",
+    aiModel: "deepseek/deepseek-v4.1-flash-1017",
+  });
+  assert.equal(unstamped.settingsVersion, 5);
+  assert.equal("aiApiKey" in unstamped, false);
+  assert.equal("aiBaseUrl" in unstamped, false);
+  assert.equal("aiModel" in unstamped, false);
+
   const fresh = settings.normalize({});
-  assert.equal("speechProvider" in fresh, false);
-  assert.equal("speechProviders" in fresh, false);
-  assert.equal("sttApiKey" in fresh, false);
-  assert.equal(settings.sttTranscriptionsUrl, undefined);
+  assert.equal("provider" in fresh, false);
+  assert.equal("aiApiKey" in fresh, false);
+  assert.equal("aiBaseUrl" in fresh, false);
+  assert.equal("aiModel" in fresh, false);
+  // The retired helpers are gone with the config face.
+  assert.equal(settings.chatCompletionsUrl, undefined);
+  assert.equal(settings.isValidAiBaseUrl, undefined);
+  assert.equal(settings.migrateLegacyCustom, undefined);
 });
 
-test("legacy custom migration clears only the AI key and is idempotent", () => {
-  const legacy = {
-    provider: "custom",
-    aiApiKey: "custom-secret",
-    aiBaseUrl: "https://api.example.com/v1",
-    aiModel: "example-model",
-  };
-  const first = settings.migrateLegacyCustom(legacy);
-
-  assert.equal(first.migrated, true);
-  assert.equal(first.settings.provider, "deepseek");
-  assert.equal(first.settings.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
-  assert.equal(first.settings.aiModel, settings.DEFAULTS.aiModel);
-  assert.equal(first.settings.aiApiKey, "");
-
-  const second = settings.migrateLegacyCustom(first.settings);
-  assert.equal(second.migrated, false);
-  assert.deepEqual(second.settings, first.settings);
-
-  const configuredDeepSeek = settings.normalize({
-    ...first.settings,
-    aiApiKey: "new-deepseek-key",
-  });
-  assert.equal(configuredDeepSeek.aiApiKey, "new-deepseek-key");
-});
+// --- Segment length ------------------------------------------------------------
 
 test("Segment length defaults to 30 seconds", () => {
   const normalized = settings.normalize({});
@@ -125,6 +85,8 @@ test("malformed Segment length falls back to the default", () => {
     );
   }
 });
+
+// --- Topic timeline cadence ----------------------------------------------------
 
 test("Topic timeline interval defaults to 15 minutes", () => {
   const normalized = settings.normalize({});
@@ -156,7 +118,7 @@ test("a legacy blob with the old default Segment length migrates to 30", () => {
   const normalized = settings.normalize({ segmentLengthSeconds: 120 });
 
   assert.equal(normalized.segmentLengthSeconds, 30);
-  assert.equal(normalized.settingsVersion, 4);
+  assert.equal(normalized.settingsVersion, 5);
 });
 
 test("a stamped blob keeps a hand-tuned Segment length", () => {
@@ -169,95 +131,13 @@ test("a stamped blob keeps a hand-tuned Segment length", () => {
   });
 
   assert.equal(normalized.segmentLengthSeconds, 45);
-  assert.equal(normalized.settingsVersion, 4);
+  assert.equal(normalized.settingsVersion, 5);
 });
 
 test("an unstamped blob with a hand-tuned Segment length keeps it", () => {
   const normalized = settings.normalize({ segmentLengthSeconds: 45 });
 
   assert.equal(normalized.segmentLengthSeconds, 45);
-});
-
-test("a v2 blob at the old AI defaults migrates to the Bailian Qwen defaults", () => {
-  // 0.1.51: OpenRouter + DeepSeek V4.1 Flash were the shipped defaults, so a
-  // blob still pointing at both was never customized — the same "old default
-  // is never a user choice" precedent as the Segment length migration.
-  const normalized = settings.normalize({
-    settingsVersion: 2,
-    aiApiKey: "sk-kept",
-    aiBaseUrl: "https://openrouter.ai/api/v1",
-    aiModel: "deepseek/deepseek-v4.1-flash-1017",
-  });
-
-  assert.equal(normalized.settingsVersion, 4);
-  assert.equal(
-    normalized.aiBaseUrl,
-    "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  );
-  assert.equal(normalized.aiModel, "qwen3.8-flash");
-  assert.equal(normalized.aiApiKey, "sk-kept");
-});
-
-test("an unstamped blob at the old AI defaults migrates too", () => {
-  // Pre-0.1.41 blobs may lack the version stamp entirely.
-  const normalized = settings.normalize({
-    aiBaseUrl: "https://openrouter.ai/api/v1",
-    aiModel: "deepseek/deepseek-v4.1-flash-1017",
-  });
-
-  assert.equal(normalized.aiBaseUrl, settings.DEFAULTS.aiBaseUrl);
-  assert.equal(normalized.aiModel, settings.DEFAULTS.aiModel);
-  assert.equal(normalized.settingsVersion, 4);
-});
-
-test("a v2 blob with a customized AI endpoint passes through untouched", () => {
-  const normalized = settings.normalize({
-    settingsVersion: 2,
-    aiBaseUrl: "https://api.example.com/v1",
-    aiModel: "my-model",
-  });
-
-  assert.equal(normalized.aiBaseUrl, "https://api.example.com/v1");
-  assert.equal(normalized.aiModel, "my-model");
-  assert.equal(normalized.settingsVersion, 4);
-});
-
-test("a v2 blob with only one AI field customized keeps both stored values", () => {
-  // Migration fires only when BOTH fields sit at (or lack) the old defaults:
-  // one customized field proves the pair was hand-configured.
-  const customModel = settings.normalize({
-    settingsVersion: 2,
-    aiBaseUrl: "https://openrouter.ai/api/v1",
-    aiModel: "my-model",
-  });
-  assert.equal(customModel.aiBaseUrl, "https://openrouter.ai/api/v1");
-  assert.equal(customModel.aiModel, "my-model");
-
-  const customBaseUrl = settings.normalize({
-    settingsVersion: 2,
-    aiBaseUrl: "https://openrouter.ai/api/v1/",
-    aiModel: "deepseek/deepseek-v4.1-flash-1017",
-  });
-  assert.equal(customBaseUrl.aiBaseUrl, "https://openrouter.ai/api/v1");
-  assert.equal(
-    customBaseUrl.aiModel,
-    "deepseek/deepseek-v4.1-flash-1017",
-  );
-});
-
-test("a blob stamped at the current version is never AI-migrated", () => {
-  // A user who deliberately re-picks the old provider on a current install
-  // keeps it: only pre-v4 stamps (or unstamped blobs) are migrated. (The
-  // v4 bump re-runs the AI default migration once for v3 blobs — the same
-  // one-time semantics every version stamp carries.)
-  const normalized = settings.normalize({
-    settingsVersion: 4,
-    aiBaseUrl: "https://openrouter.ai/api/v1",
-    aiModel: "deepseek/deepseek-v4.1-flash-1017",
-  });
-
-  assert.equal(normalized.aiBaseUrl, "https://openrouter.ai/api/v1");
-  assert.equal(normalized.aiModel, "deepseek/deepseek-v4.1-flash-1017");
 });
 
 // --- Learning service origins (P6): API + Web authorization page ------------

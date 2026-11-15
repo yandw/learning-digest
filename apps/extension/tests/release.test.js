@@ -95,7 +95,10 @@ test("manifest uses minimized install-time permissions", () => {
   // default-table fallback, the enabled=false start gating (站点未开放
   // 学习) and the data-driven captions/ASR path decision (server switch
   // AND the adapter's captionsReader declaration).
-  assert.equal(manifest.version, "0.2.15");
+  // 0.2.16 (ticket 6.6, issue #91): the panel AI is wired server-side
+  // (rolling-summary/overview/digest/explain) and the local AI provider
+  // config is retired (settings v5).
+  assert.equal(manifest.version, "0.2.16");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -234,11 +237,14 @@ test("release copy documents current scope without em dashes", () => {
   const optionsPage = read("options.html");
   const optionsStyles = read("options.css");
   const optionsScript = read("options.js");
-  assert.match(optionsPage, /bailian\.console\.aliyun\.com/i);
   assert.doesNotMatch(optionsPage, /<select\b[^>]*\bid="provider"/);
   assert.doesNotMatch(optionsPage, /id="provider"/);
-  assert.match(optionsPage, /id="aiBaseUrl"/);
-  assert.match(optionsPage, /id="aiModel"/);
+  // (Ticket 6.6) The AI provider card is gone: the panel AI runs on the
+  // learning service, so no key/endpoint/model fields remain.
+  assert.doesNotMatch(optionsPage, /id="aiApiKey"/);
+  assert.doesNotMatch(optionsPage, /id="aiBaseUrl"/);
+  assert.doesNotMatch(optionsPage, /id="aiModel"/);
+  assert.doesNotMatch(optionsPage, /bailian\.console\.aliyun\.com/i);
   const detailsTag = optionsPage.match(
     /<details\b[^>]*class="card customization-card"[^>]*>/,
   );
@@ -271,7 +277,9 @@ test("release copy documents current scope without em dashes", () => {
   assert.match(optionsStyles, /\.data-card\s*\{[^}]*margin-top:\s*36px;/);
   assert.match(optionsScript, /clipboard\.writeText/);
   assert.match(optionsScript, /已复制编辑后的提示词。/);
-  assert.match(optionsScript, /migration\.migrated[\s\S]*storage\.set/);
+  // (Ticket 6.6) The v5 migration is normalize() on load: the stamped blob
+  // is persisted on first read, dropping the retired AI fields.
+  assert.match(optionsScript, /settingsApi\.normalize[\s\S]*storage\.set/);
 
   assert.ok(optionsPage.includes(">请把当前本地 Learning Digest 工作区改为使用 [PROVIDER] 提供的 [MODEL]。只在当前工作区中操作。编辑前，先确认其中包含 manifest.json，且 manifest 中的 name 是 Learning Digest。如果验证失败，请停止，并让我在编程 Agent 中打开 Learning Digest 解压后的项目文件夹。不要搜索其他文件夹，不要编辑猜测的副本，不要假设安装路径，也不要声称 Chrome 可以显示操作系统中的绝对源码路径。更新该服务的 API endpoint、请求格式和最少的 Chrome host permissions。保留用户自带密钥模式和 Chrome 本地存储。不要把 API 密钥写入源代码、提交记录、日志、截图、这段提示词或聊天；代码准备好后，请告诉我应该在哪里自行填写密钥。现有服务专用的请求参数和重试逻辑继续只用于现有服务。新服务的专属规则请单独处理，避免相互影响。更新 README.md、README.zh-CN.md、PRIVACY.md、SECURITY.md 和测试。运行 npm test、npm run check 和 npm run package。最后，说明如何重新加载已解压的扩展，以及如何在 Learning Digest 侧边栏中验证修改。</textarea>"));
   assert.doesNotMatch(optionsPage, /Documents|USERPROFILE/);
@@ -387,6 +395,7 @@ test("runtime has no source-file credential dependency or retired model", () => 
     "sidepanel.js",
     "options.js",
     "settings.js",
+    "panel-ai.js",
   ]
     .map(read)
     .join("\n");
@@ -394,10 +403,10 @@ test("runtime has no source-file credential dependency or retired model", () => 
   assert.doesNotMatch(runtime, /\bCONFIG\./);
   assert.doesNotMatch(runtime, /importScripts\(["']config\.js/);
   assert.doesNotMatch(runtime, /\bdeepseek-chat\b/);
-  // The shipped default model (0.1.51): one aiModel field drives every AI
-  // call. The old OpenRouter model string survives only in settings.js as
-  // the v3 migration's legacy marker, never as a runtime choice.
-  assert.match(runtime, /qwen3\.8-flash/);
+  // (Ticket 6.6) The local AI Provider config is retired — no model string
+  // remains in the runtime, and no chat-completions call either.
+  assert.doesNotMatch(runtime, /qwen3\.8-flash/);
+  assert.doesNotMatch(runtime, /chat\/completions/);
 });
 
 test("retired files are absent", () => {
@@ -410,51 +419,14 @@ test("retired files are absent", () => {
     "content.js",
     "prompts/note-cleanup.md",
     "prompts/analysis.md",
+    // Ticket 6.6 (issue #91): the local AI computation and its prompts are
+    // retired — the panel AI runs on the learning service.
+    "session-summary.js",
+    "prompts/topic-tick.md",
+    "prompts/session-report.md",
+    "prompts/explain.md",
   ]) {
     assert.equal(fs.existsSync(path.join(root, file)), false, file);
-  }
-});
-
-test("published prompt files contain runtime sections", () => {
-  const expectedSections = {
-    "prompts/explain.md": ["System prompt", "User prompt"],
-    // The Topic tick and Session Digest templates (#33): the system contract
-    // plus the user-prompt variants the builders pick between (with prior
-    // Topics / first batch, with live Topics / without).
-    "prompts/topic-tick.md": [
-      "System prompt",
-      "User prompt",
-      "First batch user prompt",
-    ],
-    "prompts/session-report.md": [
-      "System prompt",
-      "User prompt",
-      "User prompt without topics",
-    ],
-  };
-  // The placeholders the pure builders fill (session-summary.js); each must
-  // occur in the file so a renamed variable breaks this test, not a Session.
-  const expectedPlaceholders = {
-    "prompts/topic-tick.md": [
-      "existingTopicTitlesLines",
-      "lastTopicTitle",
-      "contextTranscriptText",
-      "newTranscriptText",
-    ],
-    "prompts/session-report.md": ["liveTopicsLines", "transcriptText"],
-  };
-
-  for (const [file, sections] of Object.entries(expectedSections)) {
-    const markdown = read(file);
-    for (const section of sections) {
-      assert.match(markdown, new RegExp(`^## ${section}$`, "m"));
-    }
-    for (const placeholder of expectedPlaceholders[file] || []) {
-      assert.ok(
-        markdown.includes(`{${placeholder}}`),
-        `${file} must carry {${placeholder}}`,
-      );
-    }
   }
 });
 
@@ -465,9 +437,11 @@ test("core Learning Digest modules ship in the release and load in the service w
     "session-pipeline.js",
     "session-timeline.js",
     "session-persistence.js",
+    // Ticket 6.6 (#91): the panel AI's server-side client (contract-r4
+    // §6/§7) behind the rolling-summary tick, the digest pass and explain.
+    "panel-ai.js",
     "source-platforms.js",
     "session-segmenter.js",
-    "session-summary.js",
     "page-bridge.js",
     // P6 authorization gate: the pure module behind the auth check and the
     // link code exchange.
@@ -515,17 +489,8 @@ test("core Learning Digest modules ship in the release and load in the service w
   ]) {
     assert.match(checkRelease, new RegExp(`"${module}"`), module);
   }
-  // The prompt files ship with the release too: the loader wraps them behind
-  // a variable, so check-release.sh's literal scan cannot pin them itself.
-  for (const promptFile of [
-    "prompts/explain.md",
-    "prompts/topic-tick.md",
-    "prompts/session-report.md",
-  ]) {
-    assert.match(checkRelease, new RegExp(`"${promptFile}"`), promptFile);
-  }
   assert.match(
     read("background.js"),
-    /importScripts\("api-client\.js", "site-capabilities\.js", "transcript-shapes\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "site-capabilities\.js", "transcript-shapes\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "panel-ai\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

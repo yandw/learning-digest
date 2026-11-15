@@ -796,17 +796,10 @@ test("the report UI copy names the deliverable 学习纪要 everywhere", () => {
     assert.doesNotMatch(read(file), /会话总结|会话纪要/, `${file} still says 会话总结/会话纪要`);
     assert.doesNotMatch(read(file), /会议/, `${file} contains meeting vocabulary`);
   }
-  for (const file of ["prompts/session-report.md", "prompts/topic-tick.md"]) {
-    // The guard line itself lists the banned words; exclude it, then require
-    // the body to be free of meeting vocabulary.
-    const body = read(file)
-      .split("\n")
-      .filter((line) => !line.includes("「会议」") && !line.includes("不是会议纪要"))
-      .join("\n");
-    assert.doesNotMatch(body, /与会|议程|决议|会议/, `${file} contains meeting vocabulary outside its guard line`);
-    assert.match(read(file), /不是会议纪要/, `${file} does not frame the deliverable against meeting minutes`);
-  }
-  assert.match(read("prompts/session-report.md"), /学习纪要/);
+  // (Ticket 6.6) The report prompts moved server-side (contracts/prompts/
+  // governs them now); the plugin ships none, so the copy guard covers the
+  // runtime files only.
+  assert.equal(fs.existsSync(path.join(root, "prompts")), false);
 });
 
 test("the 纪要 tab is wired in sidepanel.html and sidepanel.js", () => {

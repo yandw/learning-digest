@@ -233,19 +233,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 /**
- * The post-gate startup: the config check the panel has always run, then
- * the welcome-state sequence.
+ * The post-gate startup: the welcome-state sequence the panel has always
+ * run. (Ticket 6.6: the old AI-key config gate is gone with the local AI
+ * config — the P6 authorization gate above is the only precondition.)
  */
 async function startAuthorizedSession() {
-  const configStatus = await chrome.runtime.sendMessage({
-    action: "checkConfig",
-  });
-
-  if (!configStatus.hasAiKey) {
-    showConfigError(configStatus);
-    return;
-  }
-
   unlockAfterAuth();
 }
 
@@ -898,18 +890,6 @@ function showError(title, message) {
   document.getElementById("errorTitle").textContent = title;
   document.getElementById("errorMessage").textContent = message;
   document.getElementById("errorBtn").textContent = "重试";
-}
-
-function showConfigError(configStatus) {
-  const missingKeys = [];
-  if (!configStatus.hasAiKey) missingKeys.push("AI API 密钥");
-
-  showState("error");
-  document.getElementById("errorTitle").textContent = "缺少 API 密钥";
-  document.getElementById("errorMessage").textContent =
-    `请在 Learning Digest 设置中填写你的 ${missingKeys.join(" 和 ")}。`;
-  document.getElementById("errorBtn").textContent = "打开设置";
-  errorAction = () => chrome.runtime.sendMessage({ action: "openOptions" });
 }
 
 // ============================================================
@@ -1881,13 +1861,14 @@ async function showExplanation(selectedText) {
   // Get some context around the selection from the transcript
   const transcriptContext = getTranscriptContext(selectedText);
 
-  // Fetch explanation
+  // Fetch the explanation from the learning service (ticket 6.6): the
+  // stateless POST /v1/ai/explain carries {text, context} — the server
+  // assembles its own prompt, so no video title and no AI key ride along.
   try {
     const result = await chrome.runtime.sendMessage({
       action: "explainSelection",
       selectedText: selectedText,
       transcriptContext: transcriptContext,
-      videoTitle: currentVideoTitle,
     });
 
     const contentDiv = document.getElementById("explanationContent");
@@ -2841,7 +2822,7 @@ async function runCaptionsAction(message) {
       observeTranscriptState(result.state);
       renderSessionStatus();
       renderSessionTranscript(result.state);
-      renderLiveTopics(result.state);
+      renderLiveTopics(result.overview ?? null);
     }
     return result;
   } catch (error) {
@@ -3367,11 +3348,13 @@ function renderOverviewLive(topics, { live }) {
 }
 
 /**
- * Renders one Session tick's Rolling Summary Topics into the timeline.
- * Appended Topics are never rewritten, so re-renders just redraw the list.
+ * Renders the server Rolling Summary's Topics into the timeline (ticket 6.6:
+ * the topics arrive mapped from the server overview — append-only, ADR
+ * 0002 — so re-renders just redraw the list). A null overview renders the
+ * live empty state (the first-topic hint).
  */
-function renderLiveTopics(state) {
-  renderOverviewLive(state?.topics, { live: true });
+function renderLiveTopics(topics) {
+  renderOverviewLive(topics, { live: true });
 }
 
 /**
@@ -3551,7 +3534,18 @@ function showRecordingToast() {
   );
 }
 
-function showSessionMode({ active, kind, state, capturePath, timestampKind, startedAtMs }) {
+function showSessionMode({
+  active,
+  kind,
+  state,
+  capturePath,
+  timestampKind,
+  startedAtMs,
+  // Ticket 6.6: the adopted server overview (the mapped live Topic timeline
+  // the background fetched/adopted from the learning service) — the 概览 tab
+  // renders from it instead of any local Topic computation.
+  overview = null,
+}) {
   const bar = document.getElementById("sessionBar");
   const view = document.getElementById("sessionView");
   const welcome = document.getElementById("welcomeState");
@@ -3601,7 +3595,7 @@ function showSessionMode({ active, kind, state, capturePath, timestampKind, star
       showRecordingToast();
     }
     renderSessionStatus();
-    renderLiveTopics(state);
+    renderLiveTopics(overview);
     renderSessionTranscript(state);
     // P10: a recording Session locks the course tab list — the box yields
     // to the session view and the bar's 学习目标 line speaks instead.
@@ -3671,6 +3665,7 @@ async function refreshSessionUI() {
         capturePath: session.capturePath,
         timestampKind: session.timestampKind,
         startedAtMs: session.startedAtMs,
+        overview: session.overview ?? null,
       });
     } else {
       showSessionMode({ active: false, kind: recognition.kind, state: null });
@@ -3719,7 +3714,7 @@ async function endLearning() {
       if (result.state.status === "ended") sessionUi.active = false;
       renderSessionTranscript(result.state);
       observeSessionTitle(result.state);
-      renderLiveTopics(result.state);
+      renderLiveTopics(result.overview ?? null);
       const status = document.getElementById("sessionStatus");
       if (status) {
         status.textContent = sessionUi.reportGenerating
@@ -3972,7 +3967,7 @@ function handleSessionUpdateMessage(message, sendResponse) {
     observeTranscriptState(message.state);
     renderSessionStatus();
     renderSessionTranscript(message.state);
-    renderLiveTopics(message.state);
+    renderLiveTopics(message.overview ?? null);
     if (message.report) adoptSessionReport(message.report, message.sessionId);
     if (message.state.status === "ended") {
       sessionUi.active = false;

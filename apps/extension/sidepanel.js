@@ -2658,6 +2658,19 @@ function renderSessionTranscript(state) {
  * entry while it runs — the contract has no un-archive, so that entry
  * finishes this Session and opens a new one on the asr path.
  */
+/**
+ * The 无字幕 empty-state copy per probe reason (Ticket 5.3, issue #85):
+ * only_auto_generated_captions names what the page actually offers — an
+ * auto-generated-only track list the PO-token gate keeps unreadable — plus
+ * the ASR takeover; every other reason keeps the generic honest text.
+ */
+function captionsUnavailableNoticeText(reason) {
+  if (reason === "only_auto_generated_captions") {
+    return "本页仅有自动生成字幕，本次学习已改用语音转写取得整个学习区间的逐字稿。";
+  }
+  return "本页未读取到可用字幕，本次学习已改用语音转写取得整个学习区间的逐字稿。";
+}
+
 function renderCaptionsStateNotice(container, state) {
   container.querySelectorAll(".session-captions-empty").forEach((row) => row.remove());
   const records = state.transcriptRecords || [];
@@ -2683,7 +2696,7 @@ function renderCaptionsStateNotice(container, state) {
       state.captionsProbe.available === false &&
       !(state.segments || []).some((segment) => segment.status === "pending")
     ) {
-      appendNotice("本页未读取到可用字幕，本次学习已改用语音转写取得整个学习区间的逐字稿。");
+      appendNotice(captionsUnavailableNoticeText(state.captionsProbe.reason));
     }
     return;
   }

@@ -172,7 +172,7 @@ npm run package          # 打包扩展 zip
 | TC-P-12 | transcript-pipeline:POST sessions→30s 分段 base64 上传(幂等键字节级重放 2s/8s/30s)→轮询(4s 拍,退避封顶 30s)→逐段渲染;终态 stand-down(transcriptPollDone);409 origin 停传;401→P7;start 失败关孤儿 Session | U1 | `transcript-pipeline.test.js` |
 | TC-P-13 | 管线接线:开始学习→上传→「转写中」→逐段出现→四类收尾 flush+finish;双 finish 缺陷回归钉(tail flush 先于 finish) | U2 | `plugin-transcript-pipeline-flow.test.js` |
 | TC-P-14 | bilibili-captions:双探针(`__INITIAL_STATE__`→player.getVideoDetail)、CC 优先、aisubtitle JSON 映射毫秒、available:false+reason 不误报、fetch 失败换轨、**无 fetch 短路不真连** | U1 | `bilibili-captions.test.js` |
-| TC-P-15 | youtube-captions:上游移植(selection/fallthrough verbatim)、隔离世界 ytInitialPlayerResponse 提取、帧所有权 videoId 匹配、SPA 陈旧静默 | U1 | `youtube-captions.test.js`、`youtube-captions-upstream.test.js` |
+| TC-P-15 | youtube-captions:上游移植(selection 5.3 重写/fallthrough 保留)、隔离世界 ytInitialPlayerResponse 提取、帧所有权 videoId 匹配、SPA 陈旧静默;5.3 选轨策略:简体CC→繁体CC→英文CC→简体自动→繁体自动→英文自动(其余语言垫底,CC 优先于自动生成),仅自动生成轨短路 available:false+reason=only_auto_generated_captions(零 timedtext 请求,面板文案「仅自动生成字幕」) | U1 | `youtube-captions.test.js`、`youtube-captions-upstream.test.js`、`plugin-yt-captions-flow.test.js` |
 | TC-P-16 | 字幕归档流:capturePath:"captions" 零 provider gate、session-archive 客户端、三态渲染、origin 从服务端视图取(409 后不显示已锁) | U2 | `plugin-bili-captions-flow.test.js`、`plugin-yt-captions-flow.test.js` |
 | TC-P-17 | session-archive 客户端:isValidSegment/computeCaptionCoverage(经 transcript-shapes 共享,含防御 re-check)、轮询首拍+15s 慢拍 | U1 | `session-archive.test.js` |
 | TC-P-18 | 强制转写:覆盖不全→推迟归档决策态(跨重启恢复);未归档→同 Session 切 ASR 不提交字幕(409 双保险 verbatim);已归档→新 Session;endActiveSession 未决策默认原样归档 | U1/U2 | `plugin-force-transcribe-flow.test.js`、`session-pipeline.test.js` |

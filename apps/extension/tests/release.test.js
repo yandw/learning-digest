@@ -90,10 +90,11 @@ test("manifest uses minimized install-time permissions", () => {
     "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.13 (round-2 review fix): the GLOSSARY-vocabulary rename of the
-  // failure-marker helpers and the shared transcript-shapes module behind
-  // the caption readers and the archive client.
-  assert.equal(manifest.version, "0.2.13");
+  // 0.2.14 (ticket 5.3, issue #85): the YouTube caption-track selection
+  // policy — creator CC over auto-generated with the 简体→繁体→en preference,
+  // and the only-auto-generated short-circuit (only_auto_generated_captions)
+  // that skips the PO-token-gated timedtext fetch for a straight ASR fallback.
+  assert.equal(manifest.version, "0.2.14");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

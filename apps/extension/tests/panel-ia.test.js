@@ -1487,6 +1487,37 @@ test("the 无字幕 probe renders the explicit empty state naming the ASR takeov
   assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
 });
 
+test("the only-auto-generated probe names the reason and the ASR takeover (issue #85)", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: activeSessionState({
+      transcriptOrigin: null,
+      captionsProbe: { available: false, reason: "only_auto_generated_captions" },
+      transcriptRecords: [],
+    }),
+    timestampKind: "video",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  const notice = texts.join(" ");
+  assert.match(
+    notice,
+    /仅有自动生成字幕/,
+    "the 5.3 reason gets its own copy, not the generic 无字幕 text",
+  );
+  assert.match(
+    notice,
+    /已改用语音转写/,
+    "the ASR takeover is stated as a fact, not an offer",
+  );
+  assert.doesNotMatch(notice, /未读取到可用字幕/, "the generic copy is replaced");
+  assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
+});
+
 test("the 无字幕 empty state disappears once transcript records arrive", () => {
   const panel = loadPanel({ stored: {} });
 

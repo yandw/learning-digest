@@ -3,16 +3,23 @@
  * selection, json3 parsing, fetch fallthrough and player-authorization
  * cases from the youtube-digest repo (~/Workspace/youtube-digest, frozen
  * per ADR 0001). Source files, and what changed in the migration:
- * - tests/caption-selection.test.js — verbatim behavior; the reader module
- *   here is YTD_YOUTUBE_CAPTIONS (repo factory form) instead of YTD_CAPTIONS.
+ * - tests/caption-selection.test.js — migrated, then REWRITTEN by Ticket
+ *   5.3 (issue #85): the selection policy is now 简体CC → 繁体CC → 英文CC →
+ *   简体自动 → 繁体自动 → 英文自动 (creator CC beats auto-generated, 其余
+ *   语言垫底), translation (tlang) candidates are retired, and a track list
+ *   holding only auto-generated (asr) tracks yields no candidates at all —
+ *   the fetch stage short-circuits to only_auto_generated_captions because
+ *   the PO-token gate empties those timedtext bodies (2026-11-15 real-page
+ *   measurement in the ticket).
  * - tests/caption-parsing.test.js — the transcript entries are the contract
  *   shape {startMs, endMs, text} on the source timeline (json3's native
  *   milliseconds) instead of the upstream {text, start, duration, language}
  *   display shape; the transcriptTextPlain/Timestamped display joins are
  *   not part of this repo's contract and are not produced.
- * - tests/caption-fetch.test.js — same fallthrough discipline; the result's
- *   ok flag reads available, and the NO_SUITABLE_CAPTION verdict reads as
- *   the honest available:false (无字幕).
+ * - tests/caption-fetch.test.js — same fallthrough discipline (rewritten
+ *   for the 5.3 direct-track-only candidates); the result's ok flag reads
+ *   available, and the NO_SUITABLE_CAPTION verdict reads as the honest
+ *   available:false (无字幕).
  * - the withPlayerCaptionAuthorization cases migrate unchanged (the pure
  *   PO-token merge stays as a seam; its MAIN-world capture caller is not
  *   ported — see youtube-captions.js header).
@@ -25,7 +32,14 @@ const assert = require("node:assert/strict");
 
 const captions = require("../youtube-captions.js");
 
-// --- selection (from caption-selection.test.js) --------------------------------
+// --- selection (Ticket 5.3, issue #85 policy) ----------------------------------
+//
+// The user-specified total order: 简体CC → 繁体CC → 英文CC → 简体自动 →
+// 繁体自动 → 英文自动. Creator-uploaded CC (kind 非 asr) beats the
+// auto-generated (kind=asr) track of the same language; every other
+// language pads the bottom (CC before asr within it). Only direct tracks
+// are candidates — translation (tlang) candidates are retired with the
+// policy rewrite.
 
 const native = (languageCode, extra = {}) => ({
   languageCode,
@@ -35,99 +49,94 @@ const native = (languageCode, extra = {}) => ({
 });
 const auto = (languageCode, extra = {}) =>
   native(languageCode, { kind: "asr", ...extra });
-const translations = (...languageCodes) =>
-  languageCodes.map((languageCode) => ({
-    languageCode,
-    languageName: { simpleText: languageCode },
-  }));
 
-test("direct candidates follow Simplified Chinese, Traditional Chinese, then English", () => {
-  const picked = captions.selectCaptionCandidates(
-    [native("en-US"), native("ja"), native("zh-Hant"), native("zh-Hans"), native("fr")],
-    [],
-  );
+test("candidates follow 简体CC → 繁体CC → 英文CC → 简体自动 → 繁体自动 → 英文自动", () => {
+  const picked = captions.selectCaptionCandidates([
+    auto("en"),
+    auto("zh-Hant"),
+    auto("zh-Hans"),
+    native("en"),
+    native("zh-Hant"),
+    native("zh-Hans"),
+  ]);
 
   assert.deepEqual(
-    picked.map((track) => track.languageCode),
-    ["zh-Hans", "zh-Hant", "en-US"],
+    picked.map((track) => `${track.kind || "cc"}:${track.languageCode}`),
+    ["cc:zh-Hans", "cc:zh-Hant", "cc:en", "asr:zh-Hans", "asr:zh-Hant", "asr:en"],
   );
 });
 
-test("zh-CN is a direct Simplified Chinese candidate rather than a translation source", () => {
-  const picked = captions.selectCaptionCandidates(
-    [native("zh-CN")],
-    translations("zh-Hans"),
-  );
+test("other languages pad the bottom: creator CC still beats auto-generated within them", () => {
+  const japaneseCC = native("ja");
+  const japaneseAsr = auto("ja");
+  const picked = captions.selectCaptionCandidates([
+    japaneseAsr,
+    auto("en"),
+    japaneseCC,
+    native("zh-Hans"),
+  ]);
 
-  assert.equal(picked.length, 1);
-  assert.equal(picked[0].languageCode, "zh-CN");
+  assert.deepEqual(
+    picked.map((track) => `${track.kind || "cc"}:${track.languageCode}`),
+    ["cc:zh-Hans", "asr:en", "cc:ja", "asr:ja"],
+  );
+});
+
+test("zh-CN and zh-TW rank as 简体/繁体 candidates directly", () => {
+  const picked = captions.selectCaptionCandidates([auto("zh-TW"), native("zh-CN")]);
+
+  assert.deepEqual(
+    picked.map((track) => `${track.kind || "cc"}:${track.languageCode}`),
+    ["cc:zh-CN", "asr:zh-TW"],
+  );
   assert.equal(picked[0].isAutoTranslated, undefined);
   assert.equal(picked[0].baseUrl.includes("tlang"), false);
 });
 
-test("a native track precedes an auto-generated track in the same language", () => {
-  const picked = captions.selectCaptionCandidates(
-    [auto("zh-Hans"), native("zh-Hans")],
+test("a creator CC track precedes the auto-generated track of the same language", () => {
+  const picked = captions.selectCaptionCandidates([auto("zh-Hans"), native("zh-Hans")]);
+
+  assert.deepEqual(
+    picked.map((track) => track.kind || "cc"),
+    ["cc", "asr"],
+  );
+});
+
+test("same-rank tracks keep the player's own order", () => {
+  const first = native("en");
+  const second = native("en-US");
+  const picked = captions.selectCaptionCandidates([first, second]);
+
+  assert.deepEqual(picked, [first, second]);
+});
+
+test("only auto-generated tracks yield no candidates at all (the 5.3 short-circuit)", () => {
+  assert.deepEqual(captions.selectCaptionCandidates([auto("en")]), []);
+  assert.deepEqual(
+    captions.selectCaptionCandidates([auto("zh-Hans"), auto("en-US")]),
     [],
   );
-
-  assert.deepEqual(
-    picked.map((track) => track.kind || "native"),
-    ["native", "asr"],
-  );
 });
 
-test("automatic Chinese and English translations occupy their priority groups", () => {
-  const picked = captions.selectCaptionCandidates(
-    [native("ja"), native("en"), native("zh-Hant"), native("zh-Hans")],
-    translations("en", "zh-Hant", "zh-Hans"),
-  );
-
-  assert.deepEqual(
-    picked.map(
-      (track) =>
-        `${track.isAutoTranslated ? "translated" : "direct"}:${track.languageCode}`,
-    ),
-    [
-      "direct:zh-Hans",
-      "direct:zh-Hant",
-      "translated:zh-Hans",
-      "translated:zh-Hans",
-      "translated:zh-Hans",
-      "translated:zh-Hant",
-      "translated:zh-Hant",
-      "translated:zh-Hant",
-      "direct:en",
-      "translated:en",
-      "translated:en",
-      "translated:en",
-    ],
-  );
+test("a creator CC track without a baseUrl cannot serve, so only the asr track remains", () => {
+  const unusableCC = native("en", { baseUrl: undefined });
+  assert.deepEqual(captions.selectCaptionCandidates([unusableCC, auto("en")]), []);
 });
 
-test("an automatic translation adds tlang and retains its source language", () => {
-  const picked = captions.selectCaptionCandidates([native("ja")], translations("zh-Hans"));
-
-  assert.equal(picked.length, 1);
-  assert.equal(
-    picked[0].baseUrl,
-    "https://www.youtube.com/api/timedtext?lang=ja&tlang=zh-Hans",
-  );
-  assert.equal(picked[0].languageCode, "zh-Hans");
-  assert.equal(picked[0].sourceLanguageCode, "ja");
-  assert.equal(picked[0].isAutoTranslated, true);
+test("selection never throws and never invents candidates", () => {
+  assert.deepEqual(captions.selectCaptionCandidates(undefined), []);
+  assert.deepEqual(captions.selectCaptionCandidates(null), []);
+  assert.deepEqual(captions.selectCaptionCandidates([null, 42, "x"]), []);
+  assert.deepEqual(captions.selectCaptionCandidates([{ languageCode: "zh-Hans" }]), []);
 });
 
-test("unsupported languages and unavailable translations produce no candidates", () => {
-  assert.deepEqual(captions.selectCaptionCandidates([native("ja")], []), []);
-  assert.deepEqual(
-    captions.selectCaptionCandidates(
-      [native("ja", { isTranslatable: false })],
-      translations("zh-Hans", "en"),
-    ),
-    [],
-  );
-  assert.deepEqual(captions.selectCaptionCandidates(undefined, undefined), []);
+test("hasOnlyAutoGeneratedTracks is the shared short-circuit predicate", () => {
+  assert.equal(captions.hasOnlyAutoGeneratedTracks([auto("en")]), true);
+  assert.equal(captions.hasOnlyAutoGeneratedTracks([auto("zh-Hans"), auto("en")]), true);
+  assert.equal(captions.hasOnlyAutoGeneratedTracks([native("en"), auto("en")]), false);
+  assert.equal(captions.hasOnlyAutoGeneratedTracks([native("ja")]), false);
+  assert.equal(captions.hasOnlyAutoGeneratedTracks([]), false);
+  assert.equal(captions.hasOnlyAutoGeneratedTracks(undefined), false);
 });
 
 // --- fetch fallthrough (from caption-fetch.test.js) -----------------------------
@@ -135,6 +144,8 @@ test("unsupported languages and unavailable translations produce no candidates",
 // The migrated verdicts speak the repo's contract vocabulary: available /
 // reason instead of the upstream success / error, and the honest
 // available:false stands in for NO_SUITABLE_CAPTION (无字幕 — 不猜、不误报).
+// Ticket 5.3 rewrote the candidates to direct tracks only and added the
+// only-auto-generated short-circuit.
 
 const track = (languageCode, extra = {}) => ({
   languageCode,
@@ -163,7 +174,6 @@ test("an empty higher-priority caption falls through to the next language", asyn
   };
   const result = await captions.fetchCaptionTranscript(
     [track("zh-Hans"), track("zh-Hant")],
-    [],
     async (url) => {
       requested.push(url);
       return routes[url];
@@ -181,16 +191,15 @@ test("an empty higher-priority caption falls through to the next language", asyn
   ]);
 });
 
-test("empty, malformed, and failed captions fall through to automatic Chinese", async () => {
+test("empty, malformed, and failed captions fall through to the next candidate", async () => {
   const requested = [];
-  const autoChineseUrl =
-    "https://www.youtube.com/api/timedtext?v=test&lang=zh-Hant&tlang=zh-Hans&fmt=json3";
   const result = await captions.fetchCaptionTranscript(
     [track("zh-Hans"), track("zh-Hant"), track("ja")],
-    translations("zh-Hans"),
     async (url) => {
       requested.push(url);
-      if (url === autoChineseUrl) return okJson(json3WithText("自动翻译中文"));
+      if (url === "https://www.youtube.com/api/timedtext?v=test&lang=ja&fmt=json3") {
+        return okJson(json3WithText("日语字幕"));
+      }
       if (url.includes("lang=zh-Hant&")) return { ok: false };
       return {
         ok: true,
@@ -202,23 +211,90 @@ test("empty, malformed, and failed captions fall through to automatic Chinese", 
   );
 
   assert.equal(result.available, true);
-  assert.equal(result.track.language, "zh-Hans");
-  assert.equal(result.track.autoTranslated, true);
+  assert.equal(result.track.language, "ja");
+  assert.equal(result.track.asr, false);
+  assert.equal(result.track.autoTranslated, false);
   assert.deepEqual(result.segments, [
-    { startMs: 0, endMs: 1000, text: "自动翻译中文" },
+    { startMs: 0, endMs: 1000, text: "日语字幕" },
   ]);
   assert.deepEqual(requested, [
     "https://www.youtube.com/api/timedtext?v=test&lang=zh-Hans&fmt=json3",
     "https://www.youtube.com/api/timedtext?v=test&lang=zh-Hant&fmt=json3",
-    autoChineseUrl,
+    "https://www.youtube.com/api/timedtext?v=test&lang=ja&fmt=json3",
+  ]);
+});
+
+test("only auto-generated tracks short-circuit to ASR without a single timedtext request", async () => {
+  let fetchCount = 0;
+  const result = await captions.fetchCaptionTranscript(
+    [auto("en")],
+    async () => {
+      fetchCount += 1;
+      return okJson(json3WithText("unexpected"));
+    },
+  );
+
+  assert.deepEqual(result, {
+    available: false,
+    reason: "only_auto_generated_captions",
+  });
+  assert.equal(fetchCount, 0, "the PO-token-gated fetch is never attempted");
+});
+
+test("the only-auto-generated verdict precedes the missing-fetch-seam verdict", async () => {
+  const result = await captions.fetchCaptionTranscript([auto("zh-Hans")], undefined);
+  assert.deepEqual(result, {
+    available: false,
+    reason: "only_auto_generated_captions",
+  });
+});
+
+test("an empty creator CC falls through to the auto-generated track's doomed fetch", async () => {
+  const requested = [];
+  const result = await captions.fetchCaptionTranscript(
+    [auto("zh-Hans"), track("zh-Hans")],
+    async (url) => {
+      requested.push(url);
+      // Both bodies empty: the asr body is the PO-token gate's signature.
+      return okJson({ events: [] });
+    },
+  );
+
+  assert.deepEqual(result, { available: false, reason: "timedtext_failed" });
+  // The creator CC (rank 0) is fetched first; the asr track (rank 3) takes
+  // the doomed second request before the honest failure.
+  assert.deepEqual(requested, [
+    "https://www.youtube.com/api/timedtext?v=test&lang=zh-Hans&fmt=json3",
+    "https://www.youtube.com/api/timedtext?lang=zh-Hans&fmt=json3",
+  ]);
+});
+
+test("an auto-generated track still archives when its body is usable", async () => {
+  const requested = [];
+  const result = await captions.fetchCaptionTranscript(
+    [auto("zh-Hans"), track("zh-Hans")],
+    async (url) => {
+      requested.push(url);
+      if (requested.length === 1) return okJson({ events: [] });
+      return okJson(json3WithText("自动字幕正文"));
+    },
+  );
+
+  assert.equal(result.available, true);
+  assert.deepEqual(result.track, {
+    language: "zh-Hans",
+    asr: true,
+    autoTranslated: false,
+  });
+  assert.deepEqual(result.segments, [
+    { startMs: 0, endMs: 1000, text: "自动字幕正文" },
   ]);
 });
 
 test("no suitable candidates returns 无字幕 without fetching", async () => {
   let fetchCount = 0;
   const result = await captions.fetchCaptionTranscript(
-    [track("ja", { isTranslatable: false })],
-    [],
+    [track("ja", { baseUrl: undefined })],
     async () => {
       fetchCount += 1;
       return okJson(json3WithText("unexpected"));
@@ -232,7 +308,6 @@ test("no suitable candidates returns 无字幕 without fetching", async () => {
 test("all empty or failed candidates answer honestly 无字幕", async () => {
   const result = await captions.fetchCaptionTranscript(
     [track("zh-Hans"), track("en")],
-    [],
     async () => okJson({ events: [] }),
   );
 
@@ -243,7 +318,6 @@ test("a caption URL without a query string uses a question mark for json3", asyn
   let requestedUrl;
   const result = await captions.fetchCaptionTranscript(
     [track("en", { baseUrl: "https://www.youtube.com/api/timedtext" })],
-    [],
     async (url) => {
       requestedUrl = url;
       return okJson(json3WithText("English"));
@@ -282,7 +356,6 @@ test("caption fetching can apply player authorization to its request URL", async
     "https://www.youtube.com/api/timedtext?v=test&lang=en&pot=token&potc=1&c=WEB";
   const result = await captions.fetchCaptionTranscript(
     [track("en")],
-    [],
     async (url) => {
       requestedUrl = url;
       return okJson(json3WithText("Authorized English"));

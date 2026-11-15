@@ -229,6 +229,92 @@ test("read answers timedtext_failed when every candidate fetch is unusable", asy
   assert.deepEqual(result, { available: false, reason: "timedtext_failed" });
 });
 
+test("a page whose only track is auto-generated answers without any timedtext request (issue #85)", async () => {
+  // The 2026-11-15 real-page measurement (watch?v=CzCoOkFtHFw): exactly one
+  // track, `en, kind: asr`, whose timedtext body is PO-token-gated empty.
+  // The 5.3 policy short-circuits before the doomed fetch and hands the
+  // start straight to the ASR pipeline with the explicit reason.
+  const fetched = [];
+  const reader = createYouTubeCaptionReader(
+    stubEnvironment({
+      href: "https://www.youtube.com/watch?v=CzCoOkFtHFw",
+      windowResponse: {
+        videoDetails: { videoId: "CzCoOkFtHFw" },
+        captions: {
+          playerCaptionsTracklistRenderer: {
+            captionTracks: [
+              {
+                languageCode: "en",
+                kind: "asr",
+                baseUrl:
+                  "https://www.youtube.com/api/timedtext?v=CzCoOkFtHFw&lang=en",
+              },
+            ],
+            translationLanguages: [],
+          },
+        },
+      },
+      fetchImpl: async (url) => {
+        fetched.push(url);
+        return { ok: true, json: async () => TIMEDTEXT_BODY };
+      },
+    }),
+  );
+
+  const result = await reader.read();
+
+  assert.deepEqual(result, {
+    available: false,
+    reason: "only_auto_generated_captions",
+  });
+  assert.deepEqual(fetched, [], "the PO-token-gated fetch is never attempted");
+});
+
+test("a mixed list still tries the CC track before an auto-generated one", async () => {
+  const fetched = [];
+  const reader = createYouTubeCaptionReader(
+    stubEnvironment({
+      windowResponse: {
+        videoDetails: { videoId: "AbCdEfGh123" },
+        captions: {
+          playerCaptionsTracklistRenderer: {
+            captionTracks: [
+              {
+                languageCode: "en",
+                kind: "asr",
+                baseUrl:
+                  "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&kind=asr",
+              },
+              {
+                languageCode: "zh-Hans",
+                baseUrl:
+                  "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans",
+              },
+            ],
+            translationLanguages: [],
+          },
+        },
+      },
+      fetchImpl: async (url) => {
+        fetched.push(url);
+        return { ok: true, json: async () => TIMEDTEXT_BODY };
+      },
+    }),
+  );
+
+  const result = await reader.read();
+
+  assert.equal(result.available, true);
+  assert.deepEqual(fetched, [
+    "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans&fmt=json3",
+  ], "the asr track is never reached while the CC track serves");
+  assert.deepEqual(result.track, {
+    language: "zh-Hans",
+    asr: false,
+    autoTranslated: false,
+  });
+});
+
 test("a track naming another video is skipped even inside an owned response", async () => {
   const fetched = [];
   const staleTrack = {
@@ -332,6 +418,15 @@ test("a malformed bridge answer reads as unavailable, never as captions", () => 
   assert.deepEqual(
     parseBridgeCaptionResponse({ success: true, available: false, reason: "timedtext_failed" }),
     { available: false, reason: "timedtext_failed" },
+  );
+  assert.deepEqual(
+    parseBridgeCaptionResponse({
+      success: true,
+      available: false,
+      reason: "only_auto_generated_captions",
+    }),
+    { available: false, reason: "only_auto_generated_captions" },
+    "the 5.3 reason survives normalization into the probe state",
   );
   assert.deepEqual(parseBridgeCaptionResponse({ success: true, available: true, segments: [] }), {
     available: false,

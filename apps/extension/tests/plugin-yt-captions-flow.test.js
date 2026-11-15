@@ -19,6 +19,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { loadBackgroundHelpers } = require("./helpers/load-background.js");
+const YTD_YOUTUBE_CAPTIONS = require("../youtube-captions.js");
 
 const YT_WATCH = "https://www.youtube.com/watch?v=AbCdEfGh123";
 const XIAOE_LESSON = "https://app12345.xiaoe-tech.com/v_5f0abc123";
@@ -327,6 +328,103 @@ test("without captions the capture flow takes over as the ASR archive path", asy
   const snapshot = helpers.readStored(`ytd_session_${pointer.sessionId}`);
   assert.deepEqual(snapshot.captionsProbe, { available: false, reason: "no_subtitle_track" });
   assert.equal(snapshot.transcriptOrigin, null);
+
+  await helpers.handleEndLearning();
+});
+
+test("a watch page holding only auto-generated captions starts the ASR path without a timedtext request (issue #85)", async () => {
+  // The full 5.3 chain over the shipped reader: the stubbed watch page's
+  // player response lists exactly one en/asr track (the ticket's real-page
+  // shape), the bridge runs the REAL reader, and the page-world fetch
+  // recorder must stay empty — the PO-token-gated timedtext fetch is never
+  // attempted. The session falls straight to the ASR path with the honest
+  // probe reason in the durable state.
+  const timedtextRequests = [];
+  const onlyAsrPage = {
+    window: {
+      location: { href: YT_WATCH },
+      ytInitialPlayerResponse: {
+        videoDetails: { videoId: "AbCdEfGh123" },
+        captions: {
+          playerCaptionsTracklistRenderer: {
+            captionTracks: [
+              {
+                languageCode: "en",
+                kind: "asr",
+                baseUrl:
+                  "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en",
+              },
+            ],
+            translationLanguages: [],
+          },
+        },
+      },
+    },
+    document: { querySelectorAll: () => [] },
+    fetch: async (url) => {
+      timedtextRequests.push(url);
+      return { ok: true, json: async () => ({ events: [] }) };
+    },
+  };
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    transcripts: [
+      {
+        status: 200,
+        body: {
+          sessionId: SESSION_CREATE.response.body.session.id,
+          sessionStatus: "active",
+          origin: null,
+          records: [],
+          gaps: [],
+          pending: [],
+          failed: [],
+        },
+      },
+    ],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    // The page-bridge contract (page-bridge.js handleCaptionsRequest): the
+    // owning frame probes, reads, and answers { success: true, ...result }.
+    tabMessageImpl: (message) => {
+      if (message.action === "getYouTubeCaptions") {
+        const reader =
+          YTD_YOUTUBE_CAPTIONS.createYouTubeCaptionReader(onlyAsrPage);
+        return reader.read().then((result) => ({ success: true, ...result }));
+      }
+      return { success: true };
+    },
+    sendMessageImpl: (message) =>
+      message.action === "captureCut"
+        ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
+        : { success: true },
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "asr", "the session goes straight to ASR");
+  assert.deepEqual(
+    timedtextRequests,
+    [],
+    "no timedtext request is sent for an only-auto-generated track list",
+  );
+  assert.equal(
+    v1Calls.some((call) => call.path.endsWith("/captions")),
+    false,
+    "no captions archive is attempted",
+  );
+
+  const pointer = helpers.readStored("ytd_active_capture");
+  const snapshot = helpers.readStored(`ytd_session_${pointer.sessionId}`);
+  assert.deepEqual(snapshot.captionsProbe, {
+    available: false,
+    reason: "only_auto_generated_captions",
+  });
 
   await helpers.handleEndLearning();
 });

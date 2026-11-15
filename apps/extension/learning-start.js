@@ -293,8 +293,65 @@ var YTD_LEARNING_START = (() => {
   }
 
   // ============================================================
+  // START GATING (ticket 6.3, issue #88)
+  // ============================================================
+
+  /** The gating reason when the target site's capability row says enabled=false. */
+  const SITE_DISABLED_REASON = "siteDisabled";
+
+  /**
+   * The 开始学习 gating verdict for one target URL (ticket 6.3): a site the
+   * server's capability table disabled (enabled=false) cannot open a
+   * Session — the panel disables the button with the 「站点未开放学习」
+   * copy and the worker wiring refuses the start hard. Pure and read-only:
+   * recognition and the capability row are injected (the capability store
+   * owns the 能力表 ∪ 适配器自身声明 merge), and the target state machine
+   * is never touched — gating runs BEFORE choose/lock. Collecting is not
+   * gated (spec: 任何网页可收藏); only the start paths consult this.
+   *
+   * Degradation rule: missing capability data (no lookup wired, a miss that
+   * returns null, a garbage URL) reads as allowed — the capability store
+   * serves the built-in default table upstream, so a tableless call is a
+   * caller without capability data at all, and the unknown-platform default
+   * row is enabled. Only an explicit enabled=false disables a site.
+   *
+   * @param {object} parts
+   * @param {unknown} parts.url the target page URL
+   * @param {(url: unknown) => {platformId: string|null, kind: string, timestampKind: string|null}} parts.recognizePage
+   *   the registry's recognition (the worker passes YTD_SOURCE_PLATFORMS.recognizePage)
+   * @param {((platformId: string) => {enabled?: boolean}|null)|undefined} [parts.capabilityFor]
+   *   the capability store's row lookup
+   * @returns {{allowed: boolean, reason: string|null, recognition: object}}
+   */
+  function evaluateStartGating({ url, recognizePage, capabilityFor } = {}) {
+    const recognize =
+      typeof recognizePage === "function"
+        ? recognizePage
+        : () => ({ platformId: null, kind: "none", timestampKind: null });
+    let recognition;
+    try {
+      recognition = recognize(url);
+    } catch (_error) {
+      recognition = { platformId: null, kind: "none", timestampKind: null };
+    }
+    if (!recognition || recognition.kind === "none") {
+      return { allowed: true, reason: null, recognition };
+    }
+    const row =
+      typeof capabilityFor === "function"
+        ? capabilityFor(recognition.platformId)
+        : null;
+    if (row && row.enabled === false) {
+      return { allowed: false, reason: SITE_DISABLED_REASON, recognition };
+    }
+    return { allowed: true, reason: null, recognition };
+  }
+
+  // ============================================================
   // PROGRESS WRITE CLIENT (contract §3.5, decision D4)
   // ============================================================
+
+
 
   /** The §3.5 endpoint path for one source. */
   function progressPath(sourceId) {
@@ -631,6 +688,8 @@ var YTD_LEARNING_START = (() => {
     serializeTarget,
     parseTarget,
     didLearningSourceSwitch,
+    SITE_DISABLED_REASON,
+    evaluateStartGating,
     progressPath,
     buildProgressApiUrl,
     buildProgressRequest,

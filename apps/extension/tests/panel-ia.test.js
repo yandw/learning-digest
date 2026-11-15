@@ -1832,3 +1832,56 @@ test("the 无字幕 empty state says the ASR pipeline already took over", () => 
   );
   assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
 });
+
+// --- site-capability copy (ticket 6.3, #88) ----------------------------------------
+
+test("a server-disabled site names 「站点未开放学习」 instead of the generic not-startable copy", () => {
+  const { course } = loadPanel();
+  // The background answers the choose with startable:false AND the
+  // siteDisabled flag; the status line must say WHY (the site is closed to
+  // learning), not the platform-unsupported line.
+  assert.match(
+    course.describeCourseTargetResolution({ startable: false, siteDisabled: true, resolve: { matched: false } }),
+    /站点未开放学习/,
+  );
+  assert.doesNotMatch(
+    course.describeCourseTargetResolution({ startable: false, siteDisabled: true, resolve: { matched: false } }),
+    /暂不支持开始学习采集/,
+  );
+  // A matched (favorited) disabled site says the same thing.
+  assert.match(
+    course.describeCourseTargetResolution({
+      startable: false,
+      siteDisabled: true,
+      resolve: { matched: true, resource: { id: "res_1", title: "已停课程" }, source: { id: "src_1", url: "https://x/", progress: null } },
+    }),
+    /站点未开放学习/,
+  );
+});
+
+test("the server-disabled captions probe names the site config, not a failed read", () => {
+  const panel = loadPanel({ stored: {} });
+
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state: activeSessionState({
+      transcriptOrigin: null,
+      captionsProbe: { available: false, reason: "captions_disabled_by_site" },
+      transcriptRecords: [],
+    }),
+    timestampKind: "video",
+  });
+
+  const transcript = panel.elementById("sessionTranscript");
+  const texts = findDescendants(transcript, "session-record-text").map((row) => row.textContent);
+  const notice = texts.join(" ");
+  assert.match(
+    notice,
+    /站点配置已关闭字幕采集/,
+    "the honest reason: the server switch, not a page read failure",
+  );
+  assert.match(notice, /已改用语音转写/, "the ASR takeover is stated as a fact");
+  assert.doesNotMatch(notice, /未读取到可用字幕/, "the generic 无字幕 copy is replaced");
+  assert.equal(findDescendants(transcript, "session-captions-empty").length, 1);
+});

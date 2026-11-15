@@ -22,6 +22,7 @@ from .ctx import AppContext
 from .http import read_json_body
 from .routes_auth import CtxDep, CredentialDep
 from .sessions import create_session, find_account_session, finish_session
+from .session_insights import generate_rolling_summary, get_overview
 from .transcripts import archive_captions, get_transcript
 from .usage import usage_view
 
@@ -84,6 +85,40 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )
         result = get_transcript(store=ctx.store, session=session)
+        return JSONResponse(status_code=result["status"], content=result["body"])
+
+    @app.post("/v1/sessions/{session_id}/rolling-summary")
+    async def post_rolling_summary(
+        session_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
+    ) -> JSONResponse:
+        # Rolling-summary tick (contract-r4 §6.2, ticket 6.4): any logged-in
+        # user; the request body is an empty object by contract (the debounce
+        # lives with the caller) — read and ignored like the session-create
+        # body. Idempotent: an empty window replays the current overview.
+        await read_json_body(request, ctx.config.max_body_bytes)
+        session = find_account_session(
+            store=ctx.store, account_id=credential["accountId"], session_id=session_id
+        )
+        result = generate_rolling_summary(
+            store=ctx.store,
+            account_id=credential["accountId"],
+            session=session,
+            ai_provider=ctx.ai_provider,
+            now=ctx.now,
+        )
+        return JSONResponse(status_code=result["status"], content=result["body"])
+
+    @app.get("/v1/sessions/{session_id}/overview")
+    async def get_session_overview(
+        session_id: str, credential: CredentialDep, ctx: CtxDep
+    ) -> JSONResponse:
+        # The current overview (contract-r4 §6.2): the bare SessionOverview;
+        # a known session with no generated overview is 404
+        # overview_not_generated, cross-account/unknown the D2 404.
+        session = find_account_session(
+            store=ctx.store, account_id=credential["accountId"], session_id=session_id
+        )
+        result = get_overview(store=ctx.store, session=session)
         return JSONResponse(status_code=result["status"], content=result["body"])
 
     @app.post("/v1/sessions/{session_id}/audio-segments")

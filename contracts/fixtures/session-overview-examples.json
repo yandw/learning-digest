@@ -1,0 +1,185 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "samples": [
+    {
+      "id": "api-rolling-summary-generate",
+      "description": "生成滚动摘要（首次，201）：ses_01JABC0033（ASR，进行中）已归档两条记录，服务端从覆盖游标（无 Topic 时为 0）之后的新记录组装 tick 输入并调 AI，落库首份概览。topics 只有一条、index 1、不带 continuation 键；lastCoveredMs 是最后一个 Topic 的终点（来源时间轴毫秒），下一次 tick 从这里继续",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "overview": {
+            "sessionId": "ses_01JABC0033",
+            "topics": [
+              {
+                "index": 1,
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "开场回顾与点积注意力",
+                "text": "本段先回顾上一课留下的三个问题，随后进入注意力分数的计算：把查询向量和键向量做点积。"
+              }
+            ],
+            "lastCoveredMs": 60000,
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1312
+            },
+            "generatedAt": "2026-11-10T09:40:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-rolling-summary-append",
+      "description": "追加 tick（200）：同一会话随后完成两段新转写（90000–120000、120000–150000，60000–90000 段转写失败无记录），再次触发时服务端只总结游标（60000）之后的新记录，把新 Topic 追加到时间轴——既有 Topic 原样保留（append-only，ADR 0002）、index 延续、新批第一条带 continuation:true，整份概览落库为最新版",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "overview": {
+            "sessionId": "ses_01JABC0033",
+            "topics": [
+              {
+                "index": 1,
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "开场回顾与点积注意力",
+                "text": "本段先回顾上一课留下的三个问题，随后进入注意力分数的计算：把查询向量和键向量做点积。"
+              },
+              {
+                "index": 2,
+                "startMs": 90000,
+                "endMs": 150000,
+                "title": "长序列处理与多头结构",
+                "text": "本段补充注意力机制在长序列下的处理思路，并延伸到多头注意力的并行结构。",
+                "continuation": true
+              }
+            ],
+            "lastCoveredMs": 150000,
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1470
+            },
+            "generatedAt": "2026-11-10T10:05:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-rolling-summary-replay",
+      "description": "幂等回放（200）：游标之后没有新记录时再次触发（调用方防抖重试），返回 200 与当前概览原样——不调 AI、topics 与 generatedAt 都不变、用量不计数；响应体与 api-rolling-summary-append 完全相同",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "overview": {
+            "sessionId": "ses_01JABC0033",
+            "topics": [
+              {
+                "index": 1,
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "开场回顾与点积注意力",
+                "text": "本段先回顾上一课留下的三个问题，随后进入注意力分数的计算：把查询向量和键向量做点积。"
+              },
+              {
+                "index": 2,
+                "startMs": 90000,
+                "endMs": 150000,
+                "title": "长序列处理与多头结构",
+                "text": "本段补充注意力机制在长序列下的处理思路，并延伸到多头注意力的并行结构。",
+                "continuation": true
+              }
+            ],
+            "lastCoveredMs": 150000,
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1470
+            },
+            "generatedAt": "2026-11-10T10:05:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-overview",
+      "description": "读当前概览（200）：GET 返回与最近一次 tick 落库完全相同的 SessionOverview（topics、lastCoveredMs、generation、generatedAt）——幂等读；从未生成过概览返回 404 overview_not_generated（见错误样例）",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_01JABC0033/overview"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "overview": {
+            "sessionId": "ses_01JABC0033",
+            "topics": [
+              {
+                "index": 1,
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "开场回顾与点积注意力",
+                "text": "本段先回顾上一课留下的三个问题，随后进入注意力分数的计算：把查询向量和键向量做点积。"
+              },
+              {
+                "index": 2,
+                "startMs": 90000,
+                "endMs": 150000,
+                "title": "长序列处理与多头结构",
+                "text": "本段补充注意力机制在长序列下的处理思路，并延伸到多头注意力的并行结构。",
+                "continuation": true
+              }
+            ],
+            "lastCoveredMs": 150000,
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1470
+            },
+            "generatedAt": "2026-11-10T10:05:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-usage-with-rolling-summary",
+      "description": "用量扩展（contract-r4 §6.3）：同一账号在第三轮故事之外完成两次滚动摘要 tick（1312+1470=2782 字符，幂等回放不计），GET /v1/usage 的 Usage 在既有四键之上追加 rollingSummaryCount 与 rollingSummaryInputChars 两键——既有键语义零改动（audioSeconds 120、summaryCount 2、summaryInputChars 4140 与 api-usage 一致）",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/usage"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "audioSeconds": 120,
+          "summaryCount": 2,
+          "summaryInputChars": 4140,
+          "rollingSummaryCount": 2,
+          "rollingSummaryInputChars": 2782,
+          "updatedAt": "2026-11-10T12:40:00Z"
+        }
+      }
+    }
+  ]
+}

@@ -8,7 +8,8 @@
 - 第二轮结构与端点：[contract-r2.md](contract-r2.md)
 - 第三轮结构与端点：[contract-r3.md](contract-r3.md)
 - 第四轮结构与端点：本文
-- 契约决策记录（第四轮 D19–D20）：[decisions.md](decisions.md)
+- 第六轮追加（面板 AI 服务端化 I，§6）：滚动摘要与概览；样例在 `fixtures/session-overview-examples.json`，tick prompt 外移 [../prompts/topic-tick.md](../prompts/topic-tick.md)
+- 契约决策记录（第四轮 D19–D20、面板轮 D21）：[decisions.md](decisions.md)
 - 样例：成功样例在 `fixtures/site-capability-examples.json`；错误样例追加在 `fixtures/error-examples.json` 尾部。
 
 ## 1. 通用约定（沿用与差异）
@@ -90,3 +91,69 @@ GET /v1/me 的 `account` 对象在既有 `id`/`email` 之上增加 `isAdmin`（b
 - 站点能力是**纯配置读**：不与 Resource/Source/Session 的任何状态耦合，不出现在资料详情与 Session 归档里；插件在发起字幕/ASR 前查询（或缓存）该表。
 - 管理面与第三轮用量端点同属「账号级服务端状态」家族，但能力行是**全局**的（无 accountId 维度）——行不属于账号，只属于平台。
 - 本契约与前三轮同属 `/v1` 接口代际，fixtures 共用 `learning-digest-contracts/v1` 标记；版本发布单元不受本契约影响（planning-only，不 bump）。
+
+## 6. 第六轮追加（面板 AI 服务端化 I）：滚动摘要与概览
+
+第六轮把 PoC 的课中 Topic 时间轴（Rolling Summary，ADR 0002：append-only 的 Topic 时间轴，术语见 GLOSSARY）收归服务端——插件在会话中按内容节奏触发，服务端提供幂等的生成与读取端点（Ticket 6.4，issue #89；决策 D21）。面板 AI 与课程总结共用同一 AI Provider seam（D16 的 LD_AI_PROVIDER / LD_AI_API_KEY 语义不变）。本轮样例：成功样例在 `fixtures/session-overview-examples.json`；错误样例追加在 `fixtures/error-examples.json` 尾部。
+
+### 6.1 SessionOverview（会话概览）
+
+按 Session 一份，存于服务端 `sessionInsights` 集合（键为 sessionId，同 transcripts 的键法，本轮不新增 ID 前缀）：
+
+| 字段 | 类型 | 必填 | 语义 |
+| --- | --- | --- | --- |
+| `sessionId` | string | 是 | 所属 Session |
+| `topics` | Topic[] | 是 | append-only 的 Topic 时间轴（ADR 0002），按时间轴次序 |
+| `lastCoveredMs` | integer ≥ 0 | 是 | 时间轴覆盖到的逐字稿位置：最后一个 Topic 的终点（来源时间轴毫秒）；下一次 tick 从这里继续 |
+| `generation` | object | 是 | 最近一次 tick 的生成元数据，形态同 contract-r3 §2.3（provider / model / inputChars） |
+| `generatedAt` | string | 服务端生成 | 最近一次 tick 的完成时间，ISO 8601 UTC |
+
+**Topic（概览条目）**：
+
+| 字段 | 类型 | 必填 | 语义 |
+| --- | --- | --- | --- |
+| `index` | integer ≥ 1 | 是 | 时间轴内的序号（1..N，时间轴次序），跨 tick 延续不重置 |
+| `startMs` / `endMs` | integer ≥ 0 | 是 | 话题段在来源时间轴上的毫秒区间（endMs ≥ startMs；与 contract-r2 records 同一时间轴） |
+| `title` | string | 是 | 不超过 20 字的短标题（服务端截断到 300 字硬上限） |
+| `text` | string | 是 | 2–4 句的总结（服务端截断到 1500 字硬上限） |
+| `continuation` | boolean | 否 | 仅当该 Topic 延续上一批最后一个话题时为 true；其余条目不带该键 |
+
+### 6.2 端点
+
+#### POST /v1/sessions/{id}/rolling-summary — 生成/追加滚动摘要（tick）
+
+- 请求体为空对象 `{}`；任何登录用户可调用（Bearer，不要求 isAdmin）。**防抖语义由调用方控制**（PoC 的 ≥15 分钟覆盖或 ≥10 条新记录的内容驱动节奏留在插件）：服务端不设定时器，只在被调用时处理当前材料。
+- 服务端从该 Session 已归档 transcript records 组装 tick 输入（PoC assembleTopicTickInput 移植）：覆盖游标（最后一个 Topic 的终点，无 Topic 时为 0）之后的 records（覆盖约定与 PoC 一致：记录 startMs 低于游标即视为已覆盖）、游标前 120 秒的仅上下文重叠尾（不总结成新 Topic）、既有 Topic 标题（延续锚）；按外移 prompt（[../prompts/topic-tick.md](../prompts/topic-tick.md)）组装后调 AI Provider。
+- **append-only 语义**（ADR 0002）：新 tick 只把解析出的 Topic 追加到时间轴——既有 Topic 永不改写，index 延续；整份概览落库为最新版（文档级覆盖落库，追加规则活在 topics 内部）。覆盖游标随最后一个 Topic 的终点推进；跨 tick 边界的话题段以 continuation 标注。
+- **幂等**：游标之后没有新记录时返回 200 与当前概览原样（**幂等回放**）——不调 AI、generatedAt 与 topics 不变、用量不计数；重复触发与重试因此安全。
+- 201 首次生成（概览创建）；200 追加或幂等回放。响应体 `{ overview }`（§6.1 全形态）。
+- 该 Session 没有任何已归档逐字稿记录：409 `no_session_transcript_to_summarize`，不发起 AI 调用（409 在 AI 调用前判定）。未知或其他账号的 Session 404（D2）。
+- 失败反馈形态：AI Provider 调用失败/超时/返回不可解析或零可用话题返回 502 `rolling_summary_failed`，**不落脏数据**——概览与用量都不出现本次尝试（D16/D18 同口径）。
+- 样例：`api-rolling-summary-generate`、`api-rolling-summary-append`、`api-rolling-summary-replay`、`error-rolling-summary-unauthorized`、`error-rolling-summary-cross-account`、`error-rolling-summary-no-transcript`、`error-rolling-summary-failed`。
+
+#### GET /v1/sessions/{id}/overview — 读当前概览
+
+- 返回 `{ overview }`（§6.1 全形态）：幂等读，与最近一次 tick 落库的文档一致。任何登录用户可调用（Bearer）。
+- 未登录 401；未知或其他账号的 Session 404（D2）；该 Session 从未成功生成过概览返回 404 `overview_not_generated`（会话存在但概览未生成，与 D2 的 not_found 是两个码）。
+- 样例：`api-session-overview`、`error-overview-unauthorized`、`error-overview-cross-account`、`error-overview-not-generated`。
+
+### 6.3 用量口径扩展（D18 同构）
+
+GET /v1/usage 的 Usage 在 contract-r3 §2.4 的四键之上追加两个键（既有键语义零改动，追加键不破坏既有消费者）：
+
+| 字段 | 类型 | 必填 | 语义 |
+| --- | --- | --- | --- |
+| `rollingSummaryCount` | integer ≥ 0 | 是 | 账号累计成功落库的滚动摘要 tick 次数（幂等回放不计） |
+| `rollingSummaryInputChars` | integer ≥ 0 | 是 | 账号累计滚动摘要输入字符量：历次 tick 的 `generation.inputChars` 之和（Unicode 码点数，D18 口径） |
+
+记录时点同 D18：tick 产物落库的同一时刻计数；失败 tick 与幂等回放不产生任何计数。
+
+### 6.4 错误码（面板轮新增）
+
+| HTTP | `error.code` | 语义 | 固定样例 |
+| --- | --- | --- | --- |
+| 409 | `no_session_transcript_to_summarize` | 该 Session 没有任何已归档逐字稿记录，tick 无法进行 | `error-rolling-summary-no-transcript` |
+| 502 | `rolling_summary_failed` | AI Provider 调用失败/超时/返回不可解析或零可用话题；不落库、不计数，可再次触发 | `error-rolling-summary-failed` |
+| 404 | `overview_not_generated` | 该 Session 还没有概览（从未成功生成过） | `error-overview-not-generated` |
+
+401 / 404（跨账号，D2）沿用 contract-v1 §4 的封套与语义；本轮无新增 400 形态（tick 请求体为空对象，无字段校验面）。

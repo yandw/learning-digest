@@ -1,7 +1,9 @@
 """AI Provider seam unit tests (contract-r3.md §2.3; decisions D16/D17,
-ticket 4.4 — Python port of test/ai-providers.test.js, issue #74). Seam
-under test: app/ai_providers.py — the interface the summary generation
-calls ({ id, model, generate(system, user) }), never the HTTP route.
+ticket 4.4 — Python port of test/ai-providers.test.js, issue #74; the
+rolling-summary tick operation is contract-r4.md §6, ticket 6.4). Seam
+under test: app/ai_providers.py — the interface the AI seams call
+({ id, model, generate(system, user), generate_topics(system, user) }),
+never the HTTP route.
 
 Testing Decisions: a replacement AI Provider makes tests repeatable. The
 stub must be deterministic (same input -> same output) and cite real
@@ -248,6 +250,97 @@ def test_qwen_provider_a_timed_out_call_does_not_poison_the_next_one():
         provider.generate(system="s", user="u")
     second = provider.generate(system="s", user="u")
     assert second["content"] == "ok"
+
+
+TICK_FIRST_BATCH_USER = "\n".join(
+    [
+        "这是本次会话的第一批话题段，此前没有已有话题。",
+        "",
+        "上文回顾（仅作上下文，不要总结成新的话题段）：",
+        "（无）",
+        "",
+        "本段新逐字稿：",
+        "[0–30000] 欢迎来到这一节，我们先回顾上一课留下的三个问题",
+        "[30000–60000] 注意力分数的计算，就是把查询向量和键向量做点积",
+    ]
+)
+
+TICK_CONTINUATION_USER = "\n".join(
+    [
+        "已有话题（按时间顺序）：",
+        "- 开场回顾",
+        "",
+        "上一批的最后一个话题：「开场回顾」",
+        "",
+        "上文回顾（仅作上下文，不要总结成新的话题段）：",
+        "[0–30000] 欢迎来到这一节",
+        "",
+        "本段新逐字稿：",
+        "[60000–90000] 最后我们补一段：注意力机制在长序列下的处理思路",
+    ]
+)
+
+
+def test_stub_provider_topics_chunk_the_tick_window_deterministically():
+    provider = create_stub_provider()
+    topics = provider.generate_topics(system="系统提示：只输出一个 JSON 数组。", user=TICK_FIRST_BATCH_USER)
+
+    # Deterministic rule: consecutive pairs of records become one Topic
+    # spanning the group; the title quotes the first line (12 chars).
+    assert topics == [
+        {
+            "start": 0,
+            "end": 60000,
+            "title": "欢迎来到这一节，我们先回",
+            "text": "欢迎来到这一节，我们先回顾上一课留下的三个问题；注意力分数的计算，就是把查询向量和键向量做点积",
+        }
+    ]
+    # Same input, same append (the tick stub is deterministic).
+    again = create_stub_provider().generate_topics(system="s", user=TICK_FIRST_BATCH_USER)
+    assert again == topics
+
+    # A tick after existing Topics marks the first output as continuation
+    # (the prompt's continuation rule), and the context tail is ignored.
+    continued = provider.generate_topics(system="s", user=TICK_CONTINUATION_USER)
+    assert continued == [
+        {
+            "start": 60000,
+            "end": 90000,
+            "title": "最后我们补一段：注意力机",
+            "text": "最后我们补一段：注意力机制在长序列下的处理思路",
+            "continuation": True,
+        }
+    ]
+
+
+def test_qwen_provider_topics_tolerate_fences_prose_and_wrappers():
+    bare = '[{"start":0,"end":60000,"title":"话题","text":"总结"}]'
+
+    def make_handler(content: str):
+        return lambda request: httpx.Response(
+            200, json={"choices": [{"message": {"content": content}}]}
+        )
+
+    parsed = [{"start": 0, "end": 60000, "title": "话题", "text": "总结"}]
+    for reply in (bare, f"```json\n{bare}\n```", f"好的，以下是切分结果：{bare}", f'{{"topics": {bare}}}'):
+        provider = create_qwen_provider(
+            api_key="k", transport=_capturing_transport([], make_handler(reply))
+        )
+        assert provider.generate_topics(system="s", user="u") == parsed, reply
+
+    # The most common LLM slip — a trailing comma before ] — is repaired.
+    repaired = create_qwen_provider(
+        api_key="k",
+        transport=_capturing_transport([], make_handler('[{"start":0,"end":60000,"title":"t","text":"x"},]')),
+    ).generate_topics(system="s", user="u")
+    assert repaired == [{"start": 0, "end": 60000, "title": "t", "text": "x"}]
+
+    # Unparseable replies raise — the domain answers the contract 502.
+    garbage = create_qwen_provider(
+        api_key="k", transport=_capturing_transport([], make_handler("完全不是 JSON"))
+    )
+    with pytest.raises(RuntimeError, match="unparseable topic-tick"):
+        garbage.generate_topics(system="s", user="u")
 
 
 def test_select_ai_provider_defaults_to_stub_gates_qwen_on_key_fails_loudly_on_unknown():

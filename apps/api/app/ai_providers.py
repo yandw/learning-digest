@@ -8,12 +8,17 @@ independent).
 
 Interface (the one thing consumers may rely on):
 
-    provider = { id: str, model: str, generate(*, system, user) }
+    provider = { id: str, model: str, generate(*, system, user),
+                 generate_topics(*, system, user) }
     generate returns { content: str, citations: RawCitation[] }
     where RawCitation = { quote, sessionId, startMs, endMs } — the shape
     the model is asked for by prompts/course-summary.md; every citation is
     later reconciled against the archived records (app/summaries.py)
     before anything lands.
+    generate_topics returns the RAW Topic entries the topic-tick prompt
+    (prompts/topic-tick.md, contract-r4.md §6) asks for — one JSON array
+    of {start, end, title, text, continuation?}; the rolling domain
+    (app/session_insights.py) sanitizes them before anything lands.
 
 Two implementations (D16: default deployment is the real product path,
 tests inject the stub):
@@ -169,9 +174,81 @@ class StubProvider:
             "citations": stub_citations(parsed["records"]),
         }
 
+    def generate_topics(self, *, system: str, user: str) -> list:
+        """The rolling-summary tick path (contract-r4.md §6): deterministic
+        Topic synthesis from the tick input. `system` shapes the real
+        provider's behavior; the stub only consumes the material."""
+        return stub_topics(parse_tick_user_prompt(user))
+
 
 def create_stub_provider(model: str | None = None) -> StubProvider:
     return StubProvider(model)
+
+
+# --- Rolling-summary tick support (contract-r4.md §6, ticket 6.4) -----------
+#
+# The panel AI shares the course summary's seam (LD_AI_PROVIDER /
+# LD_AI_API_KEY unchanged): one more operation on the same provider
+# interface — generate_topics(*, system, user) -> list[dict] — where the
+# topic-tick system prompt (prompts/topic-tick.md) demands a bare JSON
+# array of Topics {start, end, title, text, continuation?}. Entries come
+# back RAW; the domain sanitizes them (app/session_insights.py).
+
+# One tick's new-transcript line as assembled by app/session_insights.py:
+# [30000–60000] text — en dash between the ms marks.
+TICK_STAMPED_LINE = re.compile(r"^\[(\d+)–(\d+)\] (.+)$", re.MULTILINE)
+
+# The tick user prompt's section markers (prompts/topic-tick.md — the
+# stub parses them, it never re-derives the prompt copy).
+TICK_SECTION_EXISTING = "已有话题（按时间顺序）："
+TICK_SECTION_LAST = "上一批的最后一个话题："
+TICK_SECTION_NEW = "本段新逐字稿："
+
+
+def parse_tick_user_prompt(user: str) -> dict:
+    """Slice one tick's user prompt into the material the rolling stub
+    consumes: the new-window stamped records and the existing Topics'
+    titles (the continuation anchor)."""
+    new_start = user.find(TICK_SECTION_NEW)
+    new_section = user[new_start + len(TICK_SECTION_NEW) :] if new_start >= 0 else ""
+    records = [
+        {"startMs": int(match.group(1)), "endMs": int(match.group(2)), "text": match.group(3)}
+        for match in TICK_STAMPED_LINE.finditer(new_section)
+    ]
+    existing_start = user.find(TICK_SECTION_EXISTING)
+    last_start = user.find(TICK_SECTION_LAST)
+    titles: list[str] = []
+    if existing_start >= 0 and last_start > existing_start:
+        section = user[existing_start + len(TICK_SECTION_EXISTING) : last_start]
+        titles = [
+            line.strip()[2:] for line in section.split("\n") if line.strip().startswith("- ")
+        ]
+    return {"records": records, "existing_topic_titles": titles}
+
+
+def stub_topics(parsed: dict, group_size: int = 2) -> list[dict]:
+    """The rolling stub's deterministic rule: chunk the new-window records
+    into consecutive groups of `group_size`, one Topic per group spanning
+    its first record's start to its last record's end; the title quotes the
+    first record's text and the body joins the group's lines. The first
+    output Topic continues the previous tick when the timeline already
+    holds Topics (the prompt's continuation rule). Deterministic: same
+    input, same append."""
+    records = parsed["records"]
+    topics = []
+    for index in range(0, len(records), group_size):
+        group = records[index : index + group_size]
+        topics.append(
+            {
+                "start": group[0]["startMs"],
+                "end": group[-1]["endMs"],
+                "title": group[0]["text"][:12],
+                "text": "；".join(record["text"] for record in group),
+            }
+        )
+    if topics and parsed["existing_topic_titles"]:
+        topics[0]["continuation"] = True
+    return topics
 
 
 def _normalize_base_url(base_url: Any) -> str:
@@ -209,6 +286,48 @@ def parse_summary_payload(text: Any) -> dict | None:
         "content": data["content"],
         "citations": citations if isinstance(citations, list) else [],
     }
+
+
+def _parse_loose_json(text: str) -> Any:
+    """Port of the PoC's parseLooseJson (session-summary.js): tolerate the
+    small mistakes models make — code fences, prose around the payload,
+    trailing commas. Isolates the outermost { ... } or [ ... ], then parses;
+    returns None when nothing parseable remains."""
+    candidate = text.strip()
+    fence = re.match(r"^```[a-zA-Z]*\s*(.*?)\s*```$", candidate, re.DOTALL)
+    if fence:
+        candidate = fence.group(1).strip()
+    openers = [index for index in (candidate.find("{"), candidate.find("[")) if index >= 0]
+    closers = [index for index in (candidate.rfind("}"), candidate.rfind("]")) if index >= 0]
+    if openers and closers:
+        first, last = min(openers), max(closers)
+        if last > first:
+            candidate = candidate[first : last + 1]
+    try:
+        return json.loads(candidate)
+    except ValueError:
+        pass
+    # Most common LLM slip: a trailing comma right before a } or ].
+    try:
+        return json.loads(re.sub(r",(\s*[}\]])", r"\1", candidate))
+    except ValueError:
+        return None
+
+
+def parse_topics_payload(text: Any) -> list | None:
+    """Parse a topic-tick reply into RAW Topic entries. The system prompt
+    demands one bare JSON array, but real models wrap it: a bare array or
+    an object wrapping one under `topics` both parse (the PoC's
+    parseTopicTick acceptance). Anything else is None — the caller answers
+    the contract 502. Entries are sanitized by the domain, not here."""
+    if not isinstance(text, str) or text.strip() == "":
+        return None
+    parsed = _parse_loose_json(text)
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict) and isinstance(parsed.get("topics"), list):
+        return parsed["topics"]
+    return None
 
 
 def _reply_text(data: Any) -> str:
@@ -258,8 +377,10 @@ class QwenProvider:
         self._timeout_factory = timeout_factory
         self._client = httpx.Client(transport=transport)
 
-    def generate(self, *, system: str, user: str) -> dict:
-        # A fresh timeout per call, never one shared across calls.
+    def _chat(self, *, system: str, user: str) -> str:
+        """One chat/completions request, reply text back. A FRESH timeout
+        per call, never one shared across calls (the round-3 review fix's
+        discipline, shared by both operations)."""
         timeout = (
             self._timeout_factory(self._timeout_ms)
             if self._timeout_factory
@@ -289,10 +410,22 @@ class QwenProvider:
             raise RuntimeError(
                 f"Qwen AI Provider request failed with HTTP {response.status_code}{detail}"
             )
-        parsed = parse_summary_payload(_reply_text(response.json()))
+        return _reply_text(response.json())
+
+    def generate(self, *, system: str, user: str) -> dict:
+        parsed = parse_summary_payload(self._chat(system=system, user=user))
         if not parsed:
             raise RuntimeError("Qwen AI Provider returned an unparseable summary payload")
         return parsed
+
+    def generate_topics(self, *, system: str, user: str) -> list:
+        """One rolling-summary tick over chat/completions (contract-r4.md
+        §6): the topic-tick system prompt demands a bare JSON array of
+        Topics; unparseable replies raise — the domain answers the 502."""
+        topics = parse_topics_payload(self._chat(system=system, user=user))
+        if topics is None:
+            raise RuntimeError("Qwen AI Provider returned an unparseable topic-tick payload")
+        return topics
 
 
 def create_qwen_provider(

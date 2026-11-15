@@ -740,6 +740,144 @@
           }
         }
       }
+    },
+    {
+      "id": "error-rolling-summary-unauthorized",
+      "description": "面板轮 · 未登录触发滚动摘要：POST /v1/sessions/{id}/rolling-summary 要求有效凭据，未携带凭据返回 401",
+      "auth": "none",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-rolling-summary-cross-account",
+      "description": "面板轮 · 跨账号隔离：对另一账号的学习触发滚动摘要，返回 404，不发起任何生成（D2；ses_01JZZZZ9996 不是调用方的会话）",
+      "auth": "valid",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JZZZZ9996/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "not_found",
+            "message": "学习记录不存在或无权访问"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-rolling-summary-no-transcript",
+      "description": "面板轮 · 无逐字稿可总结：该 Session 没有任何已归档逐字稿记录（ses_01JABC0035 刚开始学习，尚无 records；只有 pending/failed 段同样算无文本），返回 409，不发起 AI 调用、不产生概览",
+      "auth": "valid",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0035/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "no_session_transcript_to_summarize",
+            "message": "这次学习还没有可总结的逐字稿记录，先归档后再生成"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-rolling-summary-failed",
+      "description": "面板轮 · tick 失败反馈形态：AI Provider 调用失败/超时/返回不可解析或零可用话题，返回 502；不落脏数据——概览与用量都不出现本次尝试，重试即再次触发",
+      "auth": "valid",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/rolling-summary"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 502,
+        "body": {
+          "error": {
+            "code": "rolling_summary_failed",
+            "message": "滚动摘要生成失败，请稍后重试；本次尝试不改变概览"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-overview-unauthorized",
+      "description": "面板轮 · 未登录读概览：GET /v1/sessions/{id}/overview 要求有效凭据，未携带凭据返回 401",
+      "auth": "none",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_01JABC0033/overview"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-overview-cross-account",
+      "description": "面板轮 · 跨账号隔离：读取另一账号的学习概览，返回 404（D2，与未知会话不可区分）",
+      "auth": "valid",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_01JZZZZ9996/overview"
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "not_found",
+            "message": "学习记录不存在或无权访问"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-overview-not-generated",
+      "description": "面板轮 · 概览尚不存在：ses_01JABC0031 从未成功生成过滚动摘要，GET 返回 404 overview_not_generated——会话存在但概览未生成，与跨账号 404 not_found 是两个码",
+      "auth": "valid",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_01JABC0031/overview"
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "overview_not_generated",
+            "message": "这次学习还没有生成过概览，先发起一次滚动摘要"
+          }
+        }
+      }
     }
   ]
 }

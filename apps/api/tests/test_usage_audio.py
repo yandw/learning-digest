@@ -120,10 +120,14 @@ def test_a_done_audio_segment_accrues_its_duration_in_seconds(start_app):
     try:
         account = started["accounts"][0]
         # Before any activity: zeros, nothing recorded yet.
+        # Contract-r4 §6.3 appends the rolling-summary pair; the r3 keys'
+        # semantics are unchanged.
         assert started["usageOf"](account) == {
             "audioSeconds": 0,
             "summaryCount": 0,
             "summaryInputChars": 0,
+            "rollingSummaryCount": 0,
+            "rollingSummaryInputChars": 0,
             "updatedAt": None,
         }
 

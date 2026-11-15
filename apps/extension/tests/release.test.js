@@ -27,6 +27,14 @@ test("manifest uses minimized install-time permissions", () => {
       `permissions must include ${permission}`,
     );
   }
+  // Ticket 5.7 (issue #96): the PO-token retry injects
+  // capturePlayerCaptionRequest into the watch tab's MAIN world. Host
+  // access to the watch pages comes from the content_scripts match below —
+  // no YouTube host_permissions (pinned above).
+  assert.ok(
+    manifest.permissions.includes("scripting"),
+    "permissions must include scripting (MAIN-world caption capture injection)",
+  );
   // P6 link flow: chrome.tabs URL visibility for the link confirmation tab
   // the extension itself opens (no host_permissions for the web origin —
   // ticket #26 stays open). The worker only ever reads the URL of a tab in
@@ -104,7 +112,11 @@ test("manifest uses minimized install-time permissions", () => {
   // 0.2.18 (ticket 5.6, issue #95): 开始学习 = 收藏 + 开始一体化 — the
   // start-flow auto-favorites an unmatched target (P8 collect core), the
   // 先收藏 blocker copy and the secondary collect button are retired.
-  assert.equal(manifest.version, "0.2.18");
+  // 0.2.19 (ticket 5.7, issue #96): the captions path gains the PO-token
+  // retry — the worker injects the MAIN-world capture (scripting
+  // permission) and re-reads gate-emptied timedtext with the player's own
+  // authorization; no new host permissions.
+  assert.equal(manifest.version, "0.2.19");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

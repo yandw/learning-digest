@@ -76,8 +76,10 @@
 | 2.1 | YouTube 有字幕视频已收藏 | 开始学习 | 字幕全文展示（读嵌入 ytInitialPlayerResponse、json3 解析为段级毫秒）；无采集指示 |
 | 2.2 | 2.1 完成 | 重复 1.3–1.5 | 同 B 站：原样归档、gaps 只收显式跳过、零 ASR、Web origin「字幕」 |
 | 2.3 | 样本为无字幕视频（或字幕轨需 PO token 授权不可读） | 开始学习 | 面板如实提示字幕不可用 → 按 §2.3 走 ASR 回退（属预期路径而非缺陷） |
+| 2.4 | （5.7 占位）2026-11-15 实测：timedtext 对全部轨（manual 含）启用 PO-token 门禁，direct 拉取 HTTP 200 空体 | 用真实门禁样本（如 watch?v=qtHozNsemsI，zh-TW manual 轨）开始学习，字幕初始关闭时保持关闭、开启时保持开启 | worker 注入 MAIN 世界捕获播放器带 pot 的 timedtext 请求（8s 预算）→ 授权重读成功 → 字幕直归档 origin「字幕」；播放器字幕开关状态在捕获后保持用户原状；捕获不可用/仍空则如实回退 §2.3 ASR（reason 保留），面板表现与 5.6 链路一致（自动收藏后的开课流不受影响） |
 
 - [ ] YouTube 有字幕：______
+- [ ] YouTube PO-token 门禁样本（5.7 捕获重试）：______
 
 ### 2.3 无字幕回退 · ASR 接管（B 站 / YouTube 分别实测）
 

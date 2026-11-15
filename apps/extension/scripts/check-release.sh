@@ -35,7 +35,7 @@ public_allowlist=(
   "collect.js"
   "learning-start.js"
   "notes.js"
-  "api-client.js",
+  "api-client.js"
   "site-capabilities.js"
   "transcript-shapes.js"
   "session-archive.js"
@@ -89,7 +89,7 @@ required_public_files=(
   "collect.js"
   "learning-start.js"
   "notes.js"
-  "api-client.js",
+  "api-client.js"
   "site-capabilities.js"
   "transcript-shapes.js"
   "session-archive.js"

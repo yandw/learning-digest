@@ -42,6 +42,17 @@
 var YTD_PAGE_BRIDGE = (() => {
   const POSITION_INTERVAL_MS = 1000;
 
+  // The pure PO-token merge (Ticket 5.7, #96): the getYouTubeCaptionsAuthorized
+  // command rewrites candidate URLs with the player-issued authorization. In
+  // the content script the manifest loads youtube-captions.js before this
+  // file (its global is visible); in Node tests the sibling module is
+  // required — the same loaded-before/require-fallback pattern
+  // youtube-captions.js uses for transcript-shapes.js.
+  const youtubeCaptionsModule =
+    typeof YTD_YOUTUBE_CAPTIONS !== "undefined" && YTD_YOUTUBE_CAPTIONS
+      ? YTD_YOUTUBE_CAPTIONS
+      : require("./youtube-captions.js");
+
   /**
    * @param {object} env
    * @param {Document} env.document
@@ -217,6 +228,9 @@ var YTD_PAGE_BRIDGE = (() => {
      * - getYouTubeCaptions (Ticket 2.6, #69): the same rule over the watch
      *   page's embedded ytInitialPlayerResponse — only the frame whose
      *   player response describes the video its own URL names answers.
+     * - getYouTubeCaptionsAuthorized (Ticket 5.7, #96): the worker's
+     *   PO-token retry — the same rule with the player-issued timedtext
+     *   request URL merged onto every candidate (authorizeUrl).
      *
      * With all_frames injection the message reaches every frame; frames
      * without media stay silent (return false) so only the frame holding
@@ -231,6 +245,24 @@ var YTD_PAGE_BRIDGE = (() => {
       }
       if (message?.action === "getYouTubeCaptions") {
         return handleCaptionsRequest(message, sendResponse, getYouTubeCaptionReader);
+      }
+      if (message?.action === "getYouTubeCaptionsAuthorized") {
+        // Ticket 5.7 (#96): the worker's PO-token retry — the direct read
+        // answered timedtext_failed and the MAIN-world capture returned the
+        // player-issued timedtext request. The reader re-reads with that
+        // request's pot/client parameters merged onto every candidate URL
+        // (withPlayerCaptionAuthorization); without a captured request the
+        // command stays silent, so the worker keeps its direct failure.
+        if (typeof message.playerRequestUrl !== "string" || message.playerRequestUrl === "") {
+          return false;
+        }
+        const playerRequestUrl = message.playerRequestUrl;
+        return handleCaptionsRequest(
+          message,
+          sendResponse,
+          getYouTubeCaptionReader,
+          (url) => youtubeCaptionsModule.withPlayerCaptionAuthorization(url, playerRequestUrl),
+        );
       }
       const isSeek = message?.action === "seekMedia";
       if (!isSeek && message?.action !== "restartFromBeginning" && message?.action !== "getMediaPosition") {
@@ -293,9 +325,11 @@ var YTD_PAGE_BRIDGE = (() => {
      * same only-the-owning-frame rule the media commands follow, extended
      * to the async case with a held-open sendResponse. A reader failure
      * answers available:false with an explicit reason: a failed read can
-     * never read as "captions found".
+     * never read as "captions found". Ticket 5.7 (#96): the authorized
+     * youtube re-read passes an authorizeUrl through to the reader, so the
+     * PO-token merge happens page-side over the same-origin transport.
      */
-    function handleCaptionsRequest(message, sendResponse, readerGetter) {
+    function handleCaptionsRequest(message, sendResponse, readerGetter, authorizeUrl = null) {
       const reader = readerGetter();
       if (!reader) return false;
       let probe;
@@ -308,6 +342,7 @@ var YTD_PAGE_BRIDGE = (() => {
       const options = {};
       if (message.intervalStartMs !== undefined) options.intervalStartMs = message.intervalStartMs;
       if (message.intervalEndMs !== undefined) options.intervalEndMs = message.intervalEndMs;
+      if (authorizeUrl) options.authorizeUrl = authorizeUrl;
       reader
         .read(options)
         .then((result) => {

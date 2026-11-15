@@ -20,6 +20,7 @@ const {
   parseTimedtextJson3,
   createYouTubeCaptionReader,
   parseBridgeCaptionResponse,
+  withPlayerCaptionAuthorization,
 } = require("../youtube-captions.js");
 
 // --- parsing: timedtext json3 → contract segments -------------------------------
@@ -227,6 +228,41 @@ test("read answers timedtext_failed when every candidate fetch is unusable", asy
   const result = await reader.read();
 
   assert.deepEqual(result, { available: false, reason: "timedtext_failed" });
+});
+
+test("read rewrites every candidate URL through the authorizeUrl seam (issue #96)", async () => {
+  // The PO-token gate (Ticket 5.7): the player-issued request URL carries
+  // the pot/client parameters; the read merges them onto each candidate
+  // with the same pure seam fetchCaptionTranscript already takes, keeping
+  // the candidate's own language parameters. The page fetch only yields a
+  // usable body for the authorized request — the gate's shape.
+  const fetched = [];
+  const playerRequest =
+    "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&pot=token&potc=1&c=WEB&cver=2.1";
+  const authorizedUrl =
+    "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans&potc=1&pot=token&c=WEB&cver=2.1&fmt=json3";
+  const reader = createYouTubeCaptionReader(
+    stubEnvironment({
+      windowResponse: PLAYER_RESPONSE,
+      fetchImpl: async (url) => {
+        fetched.push(url);
+        return url === authorizedUrl
+          ? { ok: true, json: async () => TIMEDTEXT_BODY }
+          : { ok: true, json: async () => ({ events: [] }) };
+      },
+    }),
+  );
+
+  const result = await reader.read({
+    authorizeUrl: (url) =>
+      withPlayerCaptionAuthorization(url, playerRequest),
+  });
+
+  assert.equal(result.available, true);
+  assert.deepEqual(fetched, [authorizedUrl]);
+  assert.deepEqual(result.segments, [
+    { startMs: 1000, endMs: 3000, text: "字幕正文" },
+  ]);
 });
 
 test("a page whose only track is auto-generated answers without any timedtext request (issue #85)", async () => {

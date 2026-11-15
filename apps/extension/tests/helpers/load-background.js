@@ -73,6 +73,11 @@ function loadBackgroundHelpers({
   // P10 learning-start seam: chrome.tabs.get(tabId) — the course-tab target
   // handlers read a chosen (possibly background) tab through it.
   tabsGet = null,
+  // Ticket 5.7 (#96) PO-token retry seam: chrome.scripting.executeScript —
+  // the MAIN-world capturePlayerCaptionRequest injection. Null (default)
+  // leaves executeScript unset, which the retry reads as "capture
+  // unavailable" and keeps the direct captions failure.
+  executeScriptImpl = null,
 } = {}) {
   const listeners = { addListener() {} };
   const createdTabs = [];
@@ -167,6 +172,9 @@ function loadBackgroundHelpers({
           return Promise.resolve({ success: true });
         },
       },
+      // Ticket 5.7 (#96): the MAIN-world injection seam for the caption
+      // PO-token capture (see executeScriptImpl above).
+      scripting: { executeScript: executeScriptImpl },
     },
     YTD_SPEECH_TRANSCRIPTION: require("../../speech-transcription.js"),
     // Round-1 review fix: the shared envelope/URL helpers, loaded first in

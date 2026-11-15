@@ -478,3 +478,263 @@ test("a reopened panel sees the YouTube captions Session presented as captions",
 
   await helpers.handleEndLearning();
 });
+
+// --- the PO-token retry (Ticket 5.7, issue #96) ----------------------------------
+//
+// YouTube gates every timedtext body on the PO Token its player puts only
+// on its own requests (2026-11-15 real-page measurement: HTTP 200, empty
+// body — manual tracks included). The worker's retry after a direct
+// timedtext_failed read (upstream :860 flow, adapted to this repo's
+// transport split — the fetch lives page-side, so the re-read rides the
+// bridge): inject capturePlayerCaptionRequest into the watch tab's MAIN
+// world, take the player-issued request URL, re-read through the bridge
+// with the authorization merge, and archive the captions on success.
+
+const PLAYER_REQUEST_URL =
+  "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&pot=token&potc=1&c=WEB&cver=2.1";
+
+/** A watch page whose timedtext only answers WITH the player's pot. */
+function gatePage(tabMessageCalls) {
+  const authorizedUrl =
+    "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans&potc=1&pot=token&c=WEB&cver=2.1&fmt=json3";
+  return (message) => {
+    if (message.action === "getYouTubeCaptions") {
+      return { success: true, available: false, reason: "timedtext_failed" };
+    }
+    if (message.action === "getYouTubeCaptionsAuthorized") {
+      tabMessageCalls.push(message);
+      // The shipped page-bridge contract: the authorized read carries the
+      // player-issued request as the reader's authorizeUrl option.
+      const reader = YTD_YOUTUBE_CAPTIONS.createYouTubeCaptionReader({
+        window: {
+          location: { href: YT_WATCH },
+          ytInitialPlayerResponse: {
+            videoDetails: { videoId: "AbCdEfGh123" },
+            captions: {
+              playerCaptionsTracklistRenderer: {
+                captionTracks: [
+                  {
+                    languageCode: "zh-Hans",
+                    baseUrl: "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans",
+                    isTranslatable: true,
+                  },
+                ],
+                translationLanguages: [],
+              },
+            },
+          },
+        },
+        document: { querySelectorAll: () => [] },
+        fetch: async (url) =>
+          url === authorizedUrl
+            ? { ok: true, json: async () => ({ events: [{ tStartMs: 1000, dDurationMs: 2000, segs: [{ utf8: "字幕正文" }] }] }) }
+            : { ok: true, json: async () => ({ events: [] }) },
+      });
+      return reader
+        .read({
+          authorizeUrl: (url) =>
+            YTD_YOUTUBE_CAPTIONS.withPlayerCaptionAuthorization(url, message.playerRequestUrl),
+        })
+        .then((result) => ({ success: true, ...result }));
+    }
+    return { success: true };
+  };
+}
+
+const ASR_FALLBACK_V1 = {
+  resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+  transcripts: [
+    {
+      status: 200,
+      body: {
+        sessionId: SESSION_CREATE.response.body.session.id,
+        sessionStatus: "active",
+        origin: null,
+        records: [],
+        gaps: [],
+        pending: [],
+        failed: [],
+      },
+    },
+  ],
+};
+
+const cutChunkSendMessage = (message) =>
+  message.action === "captureCut"
+    ? { dataUrl: "data:audio/webm;base64,SGk=", mimeType: "audio/webm", durationSeconds: 60 }
+    : { success: true };
+
+test("a gate-emptied direct read retries through the MAIN-world capture and archives as captions", async () => {
+  const tabMessageCalls = [];
+  const scriptCalls = [];
+  const { v1Calls, fetchImpl } = v1Fetch({
+    ...ASR_FALLBACK_V1,
+    sessions: [{ status: 201, body: { session: SESSION_CREATE.response.body.session } }],
+    captions: [{ status: 201, body: CAPTIONS_ARCHIVE.response.body }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    tabMessageImpl: gatePage(tabMessageCalls),
+    executeScriptImpl: async (injection) => {
+      scriptCalls.push(injection);
+      return [{ result: PLAYER_REQUEST_URL }];
+    },
+    sendMessageImpl: cutChunkSendMessage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "captions", "the authorized read wins the captions path");
+
+  assert.equal(scriptCalls.length, 1, "one MAIN-world capture injection");
+  assert.equal(scriptCalls[0].world, "MAIN");
+  // Spread first: the injection args array was built inside the worker's
+  // vm realm, so deepStrictEqual would compare array prototypes across
+  // realms.
+  assert.deepEqual([...scriptCalls[0].args], ["AbCdEfGh123", 8000]);
+  assert.equal(typeof scriptCalls[0].func, "function");
+
+  const authorized = tabMessageCalls.find((m) => m.action === "getYouTubeCaptionsAuthorized");
+  assert.ok(authorized, "the authorized re-read rode the bridge");
+  assert.equal(authorized.playerRequestUrl, PLAYER_REQUEST_URL);
+
+  const captionsCall = v1Calls.find((call) => call.path.endsWith("/captions"));
+  assert.ok(captionsCall, "the captured captions were archived");
+  const pointer = helpers.readStored("ytd_active_capture");
+  const snapshot = helpers.readStored(`ytd_session_${pointer.sessionId}`);
+  assert.equal(snapshot.transcriptOrigin, "captions");
+
+  await helpers.handleEndLearning();
+});
+
+test("an unavailable capture keeps the direct failure and falls back to ASR", async () => {
+  const tabMessageCalls = [];
+  let scriptCalls = 0;
+  const { v1Calls, fetchImpl } = v1Fetch(ASR_FALLBACK_V1);
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    tabMessageImpl: gatePage(tabMessageCalls),
+    executeScriptImpl: async () => {
+      scriptCalls += 1;
+      throw new Error("cannot inject into tab");
+    },
+    sendMessageImpl: cutChunkSendMessage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(scriptCalls, 1, "the capture was attempted once");
+  assert.equal(started.capturePath, "asr", "the ASR pipeline takes over unchanged");
+  assert.deepEqual(
+    tabMessageCalls.filter((m) => m.action === "getYouTubeCaptionsAuthorized"),
+    [],
+    "no authorized re-read without a captured request",
+  );
+  assert.equal(v1Calls.some((call) => call.path.endsWith("/captions")), false);
+
+  const pointer = helpers.readStored("ytd_active_capture");
+  const snapshot = helpers.readStored(`ytd_session_${pointer.sessionId}`);
+  assert.deepEqual(
+    snapshot.captionsProbe,
+    { available: false, reason: "timedtext_failed" },
+    "the direct failure's reason is preserved in the durable state",
+  );
+
+  await helpers.handleEndLearning();
+});
+
+test("a capture that yields no player request keeps the direct failure", async () => {
+  const tabMessageCalls = [];
+  const { fetchImpl } = v1Fetch(ASR_FALLBACK_V1);
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    tabMessageImpl: gatePage(tabMessageCalls),
+    executeScriptImpl: async () => [{ result: null }],
+    sendMessageImpl: cutChunkSendMessage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "asr");
+  assert.deepEqual(
+    tabMessageCalls.filter((m) => m.action === "getYouTubeCaptionsAuthorized"),
+    [],
+  );
+  const pointer = helpers.readStored("ytd_active_capture");
+  const snapshot = helpers.readStored(`ytd_session_${pointer.sessionId}`);
+  assert.deepEqual(snapshot.captionsProbe, { available: false, reason: "timedtext_failed" });
+
+  await helpers.handleEndLearning();
+});
+
+test("an authorized re-read that still comes back empty keeps the direct failure", async () => {
+  const { fetchImpl } = v1Fetch(ASR_FALLBACK_V1);
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    // The player request was captured but the gate still empties the body.
+    tabMessageImpl: (message) => {
+      if (message.action === "getYouTubeCaptions") {
+        return { success: true, available: false, reason: "timedtext_failed" };
+      }
+      if (message.action === "getYouTubeCaptionsAuthorized") {
+        return { success: true, available: false, reason: "timedtext_failed" };
+      }
+      return { success: true };
+    },
+    executeScriptImpl: async () => [{ result: PLAYER_REQUEST_URL }],
+    sendMessageImpl: cutChunkSendMessage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "asr");
+  const pointer = helpers.readStored("ytd_active_capture");
+  const snapshot = helpers.readStored(`ytd_session_${pointer.sessionId}`);
+  assert.deepEqual(snapshot.captionsProbe, { available: false, reason: "timedtext_failed" });
+
+  await helpers.handleEndLearning();
+});
+
+test("verdicts that are not the timedtext gate never trigger the MAIN-world capture", async () => {
+  const scriptCalls = [];
+  const { fetchImpl } = v1Fetch(ASR_FALLBACK_V1);
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    tabMessageImpl: (message) =>
+      message.action === "getYouTubeCaptions"
+        ? { success: true, available: false, reason: "no_subtitle_track" }
+        : { success: true },
+    executeScriptImpl: async (injection) => {
+      scriptCalls.push(injection);
+      return [{ result: PLAYER_REQUEST_URL }];
+    },
+    sendMessageImpl: cutChunkSendMessage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "asr");
+  assert.deepEqual(scriptCalls, [], "no capture without a fetch-failure-class reason");
+
+  await helpers.handleEndLearning();
+});

@@ -206,6 +206,15 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
   }
 
   /**
+   * The gate-emptied verdict: candidates existed but every fetch came back
+   * unusable — the PO-token gate's signature (HTTP 200 with an empty body).
+   * Named and exported so the worker's retry condition (Ticket 5.7) reads
+   * the same constant instead of re-declaring the literal: release.test.js
+   * pins the worker's runtime files free of the endpoint name.
+   */
+  const GATE_EMPTIED_REASON = "timedtext_failed";
+
+  /**
    * Walks the caption candidates and fetches their timedtext bodies until
    * one yields usable segments (upstream mechanism, contract-shaped
    * result). A listed track can still return an empty body, a non-ok
@@ -267,7 +276,7 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
     }
     return {
       available: false,
-      reason: candidates.length === 0 ? "no_subtitle_track" : "timedtext_failed",
+      reason: candidates.length === 0 ? "no_subtitle_track" : GATE_EMPTIED_REASON,
     };
   }
 
@@ -583,7 +592,16 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
         }
       });
 
-      const result = await fetchCaptionTranscript(tracks, fetchImpl);
+      // Ticket 5.7 (#96): the worker's PO-token retry supplies the merge of
+      // the player-issued timedtext request (withPlayerCaptionAuthorization
+      // over the captured URL) — every candidate fetch then carries the
+      // player's pot/client parameters. Without the option the read stays
+      // the direct (unauthorized) fetch, exactly as 2.6 shipped.
+      const authorizeUrl =
+        options && typeof options.authorizeUrl === "function"
+          ? options.authorizeUrl
+          : undefined;
+      const result = await fetchCaptionTranscript(tracks, fetchImpl, authorizeUrl);
       if (!result.available) return result;
 
       const coverage = computeCaptionCoverage(
@@ -653,6 +671,7 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
     fetchCaptionTranscript,
     createYouTubeCaptionReader,
     capturePlayerCaptionRequest,
+    GATE_EMPTIED_REASON,
     parseBridgeCaptionResponse,
   };
 })();

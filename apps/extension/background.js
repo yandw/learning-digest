@@ -1199,6 +1199,8 @@ const CAPTIONS_READERS = {
   },
   youtube: {
     command: "getYouTubeCaptions",
+    // Ticket 5.7 (#96): the PO-token retry's authorized re-read.
+    authorizedCommand: "getYouTubeCaptionsAuthorized",
     parse: (response) => YTD_YOUTUBE_CAPTIONS.parseBridgeCaptionResponse(response),
   },
 };
@@ -1231,7 +1233,7 @@ async function probeCoverageInterval(tabId) {
   }
 }
 
-async function readTabCaptions(tabId, platformId, interval = null) {
+async function readTabCaptions(tabId, platformId, interval = null, playerRequestUrl = null) {
   const reader = CAPTIONS_READERS[platformId];
   if (!reader) return { available: false, reason: "captions_not_supported" };
   // Ticket 2.7: the interval rides the command when known — the page-side
@@ -1241,6 +1243,14 @@ async function readTabCaptions(tabId, platformId, interval = null) {
   if (interval) {
     message.intervalStartMs = interval.intervalStartMs;
     message.intervalEndMs = interval.intervalEndMs;
+  }
+  // Ticket 5.7 (#96): the PO-token retry's authorized re-read carries the
+  // player-issued caption request URL; only the youtube reader declares
+  // the command, and the bridge merges the authorization page-side over
+  // the same same-origin transport the direct read uses.
+  if (playerRequestUrl !== null && reader.authorizedCommand) {
+    message.action = reader.authorizedCommand;
+    message.playerRequestUrl = playerRequestUrl;
   }
   try {
     const response = await Promise.race([
@@ -1255,6 +1265,59 @@ async function readTabCaptions(tabId, platformId, interval = null) {
     // or the extension context was invalidated): an honest unavailable.
     return { available: false, reason: "bridge_unreachable" };
   }
+}
+
+// Ticket 5.7 (#96): the MAIN-world capture's wall-clock budget — the
+// upstream value: long enough for the player's own captions request, short
+// enough not to stall the start click.
+const CAPTIONS_CAPTURE_TIMEOUT_MS = 8000;
+
+/**
+ * Ticket 5.7 (#96), the PO-token retry (upstream background.js :860 flow,
+ * adapted to this repo's transport split): YouTube gates every caption body
+ * on the PO Token its player puts only on the requests it issues itself
+ * (2026-11-15 real-page measurement — HTTP 200 with an empty body, manual
+ * tracks included), so a direct read answers the reader's gate-emptied
+ * verdict (GATE_EMPTIED_REASON) with candidates in hand. This injects
+ * capturePlayerCaptionRequest into the watch tab's MAIN world, takes the
+ * captured player request URL, and re-reads the captions through the bridge
+ * with the authorization merge as the reader's authorizeUrl. The fetch
+ * itself stays page-side (the bridge's same-origin transport) — the worker
+ * only owns the injection, which is why the retry is a background
+ * orchestration over two bridge commands. Anything short of an available
+ * read — capture unavailable (no chrome.scripting, no injection answer, no
+ * player request, wrong shape) or an authorized read that still finds
+ * nothing — returns the direct failure unchanged (reason 保留): the honest
+ * 无字幕 record that hands the start to the ASR pipeline.
+ */
+async function retryYouTubeCaptionsWithPlayerAuthorization(message, interval, directResult) {
+  const identity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(message.url);
+  if (!identity || identity.platformId !== "youtube" || !identity.platformVideoId) {
+    return directResult;
+  }
+  let playerRequestUrl = null;
+  try {
+    if (
+      typeof chrome.scripting === "undefined" ||
+      typeof chrome.scripting.executeScript !== "function"
+    ) {
+      return directResult;
+    }
+    const injectionResults = await chrome.scripting.executeScript({
+      target: { tabId: message.tabId },
+      world: "MAIN",
+      func: YTD_YOUTUBE_CAPTIONS.capturePlayerCaptionRequest,
+      args: [identity.platformVideoId, CAPTIONS_CAPTURE_TIMEOUT_MS],
+    });
+    const captured = injectionResults?.[0]?.result;
+    playerRequestUrl = typeof captured === "string" && captured ? captured : null;
+  } catch (_error) {
+    // Capture unavailable: keep the readable direct-fetch failure.
+    return directResult;
+  }
+  if (!playerRequestUrl) return directResult;
+  const retryResult = await readTabCaptions(message.tabId, "youtube", interval, playerRequestUrl);
+  return retryResult.available ? retryResult : directResult;
 }
 
 /** The §3.1 create (session-archive.js): empty body, the resolved source. */
@@ -3692,7 +3755,26 @@ async function handleStartLearning(message) {
     // Unknown interval (live stream, unloaded player, dead bridge) → no
     // coverage block → the captions archive exactly as 2.5 shipped.
     const coverageInterval = await probeCoverageInterval(message.tabId);
-    const captions = await readTabCaptions(message.tabId, recognition.platformId, coverageInterval);
+    let captions = await readTabCaptions(message.tabId, recognition.platformId, coverageInterval);
+    // Ticket 5.7 (#96): the PO-token retry — a direct read that found
+    // candidates but got gate-emptied bodies gets one authorized re-read
+    // with the player-issued request the MAIN-world capture returns. Only
+    // youtube (the PO-token gate is a YouTube mechanism); any other
+    // unavailable reason keeps its direct verdict, and the probe phase
+    // stays the single mount point — the retry lands BEFORE the 5.6
+    // fall-through (favorites + Session create + ASR), so a captured read
+    // wins the captions path exactly like a direct one.
+    if (
+      !captions.available &&
+      recognition.platformId === "youtube" &&
+      captions.reason === YTD_YOUTUBE_CAPTIONS.GATE_EMPTIED_REASON
+    ) {
+      captions = await retryYouTubeCaptionsWithPlayerAuthorization(
+        message,
+        coverageInterval,
+        captions,
+      );
+    }
     if (captions.available) {
       return startCaptionsSession(message, recognition, captions);
     }

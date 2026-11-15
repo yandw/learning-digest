@@ -702,3 +702,132 @@ test("getYouTubeCaptions drives the shipped reader over the embedded script", as
   assert.equal(responses[0].available, false, "a failed timedtext fetch is an honest unavailable");
   assert.equal(responses[0].reason, "timedtext_failed");
 });
+
+// --- youtube authorized captions command (Ticket 5.7, #96) -----------------------
+//
+// The worker's PO-token retry: after a direct timedtext read answers
+// timedtext_failed, the worker injects the MAIN-world capture and re-asks
+// the bridge with the player-issued request URL. The authorized command is
+// the same owning-frame rule; the reader's authorizeUrl seam now merges the
+// player's pot/client parameters onto every candidate URL page-side (the
+// same-origin transport the reader already uses).
+
+test("getYouTubeCaptionsAuthorized hands the reader an authorizeUrl built from the player request", async () => {
+  const reader = stubYouTubeReader({ readResult: YT_CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ createYouTubeCaptionReader: reader.create });
+  const responses = [];
+
+  bridge.handleMessage(
+    {
+      action: "getYouTubeCaptionsAuthorized",
+      playerRequestUrl:
+        "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&pot=token&c=WEB",
+    },
+    (r) => responses.push(r),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  const read = reader.calls.find((call) => call.kind === "read");
+  assert.equal(typeof read.options.authorizeUrl, "function");
+  const merged = new URL(
+    read.options.authorizeUrl(
+      "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans&fmt=json3",
+    ),
+  );
+  assert.equal(merged.searchParams.get("lang"), "zh-Hans", "the candidate's own language stays");
+  assert.equal(merged.searchParams.get("pot"), "token");
+  assert.equal(merged.searchParams.get("c"), "WEB");
+  assert.equal(merged.searchParams.get("fmt"), "json3", "fmt=json3 stays on the request");
+});
+
+test("getYouTubeCaptionsAuthorized passes the studied interval through to the reader", async () => {
+  const reader = stubYouTubeReader({ readResult: YT_CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ createYouTubeCaptionReader: reader.create });
+  const responses = [];
+
+  bridge.handleMessage(
+    {
+      action: "getYouTubeCaptionsAuthorized",
+      playerRequestUrl: "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&pot=token",
+      intervalStartMs: 1000,
+      intervalEndMs: 5000,
+    },
+    (r) => responses.push(r),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const read = reader.calls.find((call) => call.kind === "read");
+  assert.deepEqual(
+    { intervalStartMs: read.options.intervalStartMs, intervalEndMs: read.options.intervalEndMs },
+    { intervalStartMs: 1000, intervalEndMs: 5000 },
+  );
+});
+
+test("getYouTubeCaptionsAuthorized drives the shipped reader through the PO-token gate", async () => {
+  // No injected reader: the bridge wires the real youtube-captions.js over
+  // a stubbed watch page whose timedtext only answers WITH the player's pot
+  // on the request — the gate's exact shape (2026-11-15 real-page
+  // measurement: HTTP 200, empty body without it).
+  const playerRequestUrl =
+    "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&pot=token&potc=1&c=WEB&cver=2.1";
+  const authorizedUrl =
+    "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans&potc=1&pot=token&c=WEB&cver=2.1&fmt=json3";
+  const { bridge } = stubEnvironment({
+    location: { href: "https://www.youtube.com/watch?v=AbCdEfGh123" },
+    scripts: [
+      {
+        text: `var ytInitialPlayerResponse = ${JSON.stringify({
+          videoDetails: { videoId: "AbCdEfGh123" },
+          captions: {
+            playerCaptionsTracklistRenderer: {
+              captionTracks: [
+                {
+                  languageCode: "zh-Hans",
+                  baseUrl: "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=zh-Hans",
+                  isTranslatable: true,
+                },
+              ],
+              translationLanguages: [],
+            },
+          },
+        })};`,
+      },
+    ],
+    createYouTubeCaptionReader: YTD_YOUTUBE_CAPTIONS_MODULE.createYouTubeCaptionReader,
+    fetch: async (url) =>
+      url === authorizedUrl
+        ? { ok: true, json: async () => ({ events: [{ tStartMs: 1000, dDurationMs: 2000, segs: [{ utf8: "字幕正文" }] }] }) }
+        : { ok: true, json: async () => ({ events: [] }) },
+  });
+  const responses = [];
+
+  bridge.handleMessage(
+    { action: "getYouTubeCaptionsAuthorized", playerRequestUrl },
+    (r) => responses.push(r),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.equal(responses[0].available, true, "the authorized request passes the gate");
+  assert.deepEqual(responses[0].segments, [
+    { startMs: 1000, endMs: 3000, text: "字幕正文" },
+  ]);
+});
+
+test("getYouTubeCaptionsAuthorized without a player request URL stays silent", () => {
+  const reader = stubYouTubeReader({ readResult: YT_CAPTIONS_READ_RESULT });
+  const { bridge } = stubEnvironment({ createYouTubeCaptionReader: reader.create });
+  const responses = [];
+
+  const handled = bridge.handleMessage(
+    { action: "getYouTubeCaptionsAuthorized" },
+    (r) => responses.push(r),
+  );
+
+  assert.equal(handled, false, "no authorization, no authorized read");
+  assert.deepEqual(responses, []);
+  assert.deepEqual(reader.calls, [], "the reader is never probed");
+});

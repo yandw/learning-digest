@@ -277,14 +277,18 @@ def test_generate_no_archived_transcript_text_409_provider_never_called_nothing_
     assert calls["n"] == 0, "the AI provider must not be called without transcript text"
 
     usage = app.request("GET", "/v1/usage", headers=auth_header(a["token"]))
-    # Contract-r4 §6.3 appends the rolling-summary pair; the r3 keys'
-    # semantics are unchanged.
+    # Contract-r4 §6.3 appends the rolling-summary pair and §7 the digest/
+    # explain pairs; the r3 keys' semantics are unchanged.
     assert usage.json == {
         "audioSeconds": 0,
         "summaryCount": 0,
         "summaryInputChars": 0,
         "rollingSummaryCount": 0,
         "rollingSummaryInputChars": 0,
+        "digestCount": 0,
+        "digestInputChars": 0,
+        "explainCount": 0,
+        "explainInputChars": 0,
         "updatedAt": None,
     }
 
@@ -316,14 +320,18 @@ def test_generate_provider_failure_502_lands_nothing_usage_untouched_retry_works
     )
     assert listing.json == {"summaries": []}
     usage = app.request("GET", "/v1/usage", headers=auth_header(a["token"]))
-    # Contract-r4 §6.3 appends the rolling-summary pair; the r3 keys'
-    # semantics are unchanged.
+    # Contract-r4 §6.3 appends the rolling-summary pair and §7 the digest/
+    # explain pairs; the r3 keys' semantics are unchanged.
     assert usage.json == {
         "audioSeconds": 0,
         "summaryCount": 0,
         "summaryInputChars": 0,
         "rollingSummaryCount": 0,
         "rollingSummaryInputChars": 0,
+        "digestCount": 0,
+        "digestInputChars": 0,
+        "explainCount": 0,
+        "explainInputChars": 0,
         "updatedAt": None,
     }
 

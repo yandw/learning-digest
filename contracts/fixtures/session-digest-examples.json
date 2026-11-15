@@ -1,0 +1,214 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "samples": [
+    {
+      "id": "api-session-digest-generate",
+      "description": "生成学习纪要（首次，201）：ses_01JABC0036（已结束的 ASR 会话）已归档两条记录，服务端对全量逐字稿做一次全局整理（迁移的 prompts/session-report.md），落库首份 SessionDigest。report 五个部分齐备：核心要点（overview）、话题时间轴（topics，bullets 优先）、主题归纳（categories）、金句（quotes）、待办（todos，无行动项时为空数组）——固定五键恒在，空段为空数组",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0036/digest"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "digest": {
+            "sessionId": "ses_01JABC0036",
+            "overview": [
+              "注意力分数的计算核心是把查询向量和键向量做点积。",
+              "本节课先回顾了上一课留下的三个问题，再进入新内容。"
+            ],
+            "topics": [
+              {
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "开场回顾与点积注意力",
+                "bullets": [
+                  "回顾上一课留下的三个问题",
+                  "注意力分数的计算：查询向量与键向量做点积"
+                ],
+                "summary": "本段先回顾上一课的问题，随后进入注意力分数的计算。"
+              }
+            ],
+            "categories": [
+              {
+                "title": "注意力机制基础",
+                "points": [
+                  "注意力分数用点积衡量查询与键的相似度",
+                  "分数计算建立在上一课的问题清单之上"
+                ]
+              }
+            ],
+            "quotes": [
+              {
+                "startMs": 0,
+                "text": "欢迎来到这一节，我们先回顾上一课留下的三个问题"
+              },
+              {
+                "startMs": 30000,
+                "text": "注意力分数的计算，就是把查询向量和键向量做点积"
+              }
+            ],
+            "todos": [],
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1520
+            },
+            "generatedAt": "2026-11-10T11:20:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-digest-regenerate",
+      "description": "重新生成学习纪要（200）：同一会话再次调用，服务端重新对全量逐字稿做一次全局整理，把整份新纪要覆盖落库——整节一次性语义（D22），不是 append-only：topics 不延续编号、旧纪要不保留历史；与 Rolling Summary 相反，重新生成是真实 AI 调用，用量照计（api-usage-with-digest 的 digestCount 含它）",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0036/digest"
+      },
+      "request": {
+        "body": {}
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "digest": {
+            "sessionId": "ses_01JABC0036",
+            "overview": [
+              "点积注意力是本节课的主线：查询与键的点积给出相似度分数。",
+              "复习入口是上一课遗留的三个问题。"
+            ],
+            "topics": [
+              {
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "从问题清单到点积注意力",
+                "summary": "本段以回顾开场，落到注意力分数的点积计算，为下一课的多头结构做铺垫。"
+              }
+            ],
+            "categories": [
+              {
+                "title": "核心计算",
+                "points": ["点积给出查询与键的相似度"]
+              },
+              {
+                "title": "课程衔接",
+                "points": ["上一课的三个问题是本节课的入口"]
+              }
+            ],
+            "quotes": [
+              {
+                "startMs": 30000,
+                "text": "注意力分数的计算，就是把查询向量和键向量做点积"
+              }
+            ],
+            "todos": [],
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1520
+            },
+            "generatedAt": "2026-11-10T11:35:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-session-digest-read",
+      "description": "读当前纪要（200）：GET 返回与最近一次落库完全相同的 SessionDigest——幂等读；从未生成过纪要返回 404 digest_not_generated（见错误样例）",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_01JABC0036/digest"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "digest": {
+            "sessionId": "ses_01JABC0036",
+            "overview": [
+              "点积注意力是本节课的主线：查询与键的点积给出相似度分数。",
+              "复习入口是上一课遗留的三个问题。"
+            ],
+            "topics": [
+              {
+                "startMs": 0,
+                "endMs": 60000,
+                "title": "从问题清单到点积注意力",
+                "summary": "本段以回顾开场，落到注意力分数的点积计算，为下一课的多头结构做铺垫。"
+              }
+            ],
+            "categories": [
+              {
+                "title": "核心计算",
+                "points": ["点积给出查询与键的相似度"]
+              },
+              {
+                "title": "课程衔接",
+                "points": ["上一课的三个问题是本节课的入口"]
+              }
+            ],
+            "quotes": [
+              {
+                "startMs": 30000,
+                "text": "注意力分数的计算，就是把查询向量和键向量做点积"
+              }
+            ],
+            "todos": [],
+            "generation": {
+              "provider": "qwen",
+              "model": "qwen-plus",
+              "inputChars": 1520
+            },
+            "generatedAt": "2026-11-10T11:35:00Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "api-ai-explain",
+      "description": "选中文本解释（200）：POST /v1/ai/explain 无状态端点，登录即可（Bearer）；请求 {text 必填非空, context 可选}，服务端按迁移的 prompts/explain.md 组装后调 AI，返回 {explanation}——不落任何存储，只有 D18 用量计数（explainCount/explainInputChars）",
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/ai/explain"
+      },
+      "request": {
+        "body": {
+          "text": "把查询向量和键向量做点积",
+          "context": "注意力分数的计算先从相似度开始"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "explanation": "点积衡量查询向量与键向量的对齐程度，对齐越高、注意力分数越大。"
+        }
+      }
+    },
+    {
+      "id": "api-usage-with-digest",
+      "description": "用量扩展（contract-r4 §7.3）：同一账号在 r3/r4 故事之外落库两次纪要（1520×2=3040 字符，覆盖重生成同样计数——每次都是真实 AI 调用）并成功解释选中文本三次（690 字符），GET /v1/usage 的 Usage 在既有六键之上追加 digestCount/digestInputChars 与 explainCount/explainInputChars 四键——既有键语义零改动（audioSeconds 120、summaryCount 2、summaryInputChars 4140 与 api-usage 一致，rollingSummary 两键与 api-usage-with-rolling-summary 一致）",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/usage"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "audioSeconds": 120,
+          "summaryCount": 2,
+          "summaryInputChars": 4140,
+          "rollingSummaryCount": 2,
+          "rollingSummaryInputChars": 2782,
+          "digestCount": 2,
+          "digestInputChars": 3040,
+          "explainCount": 3,
+          "explainInputChars": 690,
+          "updatedAt": "2026-11-10T12:40:00Z"
+        }
+      }
+    }
+  ]
+}

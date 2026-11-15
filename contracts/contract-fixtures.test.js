@@ -250,6 +250,15 @@ function endpointTemplate(method, pathname) {
   if (method === "GET" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "overview") {
     return "GET /v1/sessions/{id}/overview";
   }
+  // Round-4 panel addition II (contract-r4.md §7, ticket #90): the session
+  // digest generate/read and the stateless selected-text explanation.
+  if (method === "POST" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "digest") {
+    return "POST /v1/sessions/{id}/digest";
+  }
+  if (method === "GET" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "digest") {
+    return "GET /v1/sessions/{id}/digest";
+  }
+  if (method === "POST" && joined === "v1/ai/explain") return "POST /v1/ai/explain";
   return null;
 }
 
@@ -520,20 +529,21 @@ test("api-examples keep idempotency and revision invariants", () => {
 // --- error-examples.json ----------------------------------------------------
 
 // status ↔ error.code mapping from contract-v1.md §4, contract-r2.md §4,
-// contract-r3.md §4 and contract-r4.md §6 (the round-2/3/4 codes are
+// contract-r3.md §4 and contract-r4.md §6/§7 (the round-2/3/4 codes are
 // additive; round-1 codes are unchanged).
 const ERROR_CODE_BY_STATUS = {
   400: new Set(["invalid_url", "validation_failed"]),
   401: new Set(["unauthorized"]),
-  404: new Set(["not_found", "overview_not_generated"]),
+  404: new Set(["not_found", "overview_not_generated", "digest_not_generated"]),
   409: new Set([
     "progress_revision_conflict",
     "session_already_finished",
     "transcript_origin_conflict",
     "no_transcript_to_summarize",
     "no_session_transcript_to_summarize",
+    "session_not_finished",
   ]),
-  502: new Set(["summary_generation_failed", "rolling_summary_failed"]),
+  502: new Set(["summary_generation_failed", "rolling_summary_failed", "digest_failed", "explain_failed"]),
 };
 
 test("error-examples parse, sit on the /v1 surface, and use the error envelope", () => {

@@ -27,6 +27,7 @@ from .errors import ApiError, internal_error, method_not_allowed, not_found_unkn
 from .invites import load_seed_invites
 from .mailer import create_memory_mailer
 from .persistence import create_memory_store
+from .routes_ai import register_ai_routes
 from .routes_auth import register_auth_routes
 from .routes_resources import register_resources_routes
 from .routes_site_capabilities import register_site_capabilities_routes
@@ -88,6 +89,7 @@ def create_app(
     register_sessions_routes(app, ctx)
     register_summaries_routes(app, ctx)
     register_site_capabilities_routes(app, ctx)
+    register_ai_routes(app, ctx)
     return app
 
 

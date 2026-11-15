@@ -9,8 +9,9 @@
 - 第三轮结构与端点：[contract-r3.md](contract-r3.md)
 - 第四轮结构与端点：本文
 - 第六轮追加（面板 AI 服务端化 I，§6）：滚动摘要与概览；样例在 `fixtures/session-overview-examples.json`，tick prompt 外移 [../prompts/topic-tick.md](../prompts/topic-tick.md)
-- 契约决策记录（第四轮 D19–D20、面板轮 D21）：[decisions.md](decisions.md)
-- 样例：成功样例在 `fixtures/site-capability-examples.json`；错误样例追加在 `fixtures/error-examples.json` 尾部。
+- 第六轮追加（面板 AI 服务端化 II，§7）：Session Digest 与选中文本解释；样例在 `fixtures/session-digest-examples.json`，digest prompt 外移 [../prompts/session-report.md](../prompts/session-report.md)、explain prompt 外移 [../prompts/explain.md](../prompts/explain.md)
+- 契约决策记录（第四轮 D19–D20、面板轮 D21–D22）：[decisions.md](decisions.md)
+- 样例：成功样例在 `fixtures/site-capability-examples.json` 与 `fixtures/session-digest-examples.json`；错误样例追加在 `fixtures/error-examples.json` 尾部。
 
 ## 1. 通用约定（沿用与差异）
 
@@ -157,3 +158,87 @@ GET /v1/usage 的 Usage 在 contract-r3 §2.4 的四键之上追加两个键（�
 | 404 | `overview_not_generated` | 该 Session 还没有概览（从未成功生成过） | `error-overview-not-generated` |
 
 401 / 404（跨账号，D2）沿用 contract-v1 §4 的封套与语义；本轮无新增 400 形态（tick 请求体为空对象，无字段校验面）。
+
+## 7. 第六轮追加（面板 AI 服务端化 II）：Session Digest 与选中文本解释
+
+第六轮把 PoC 的整节学习纪要（Session Digest，GLOSSARY 术语：已完成 Session 的按话题组织的汇总）与选中文本解释（Explain）收归服务端（Ticket 6.5，issue #90；决策 D22）。面板 AI 与课程总结共用同一 AI Provider seam（D16 的 LD_AI_PROVIDER / LD_AI_API_KEY 语义不变；seam 增加 digest 报告对象与 explain 两种形态）。本轮样例：成功样例在 `fixtures/session-digest-examples.json`；错误样例追加在 `fixtures/error-examples.json` 尾部。两个 prompt 外移为契约记录：digest 用 [../prompts/session-report.md](../prompts/session-report.md)（自 PoC `apps/extension/prompts/session-report.md` 迁移，时间轴从会话相对秒改为来源时间轴毫秒——D21 同一适配），explain 用 [../prompts/explain.md](../prompts/explain.md)（自 PoC `apps/extension/prompts/explain.md` 迁移；无状态请求不携带视频标题，VIDEO 行删除；context 缺省填 `None` 沿 PoC）。
+
+### 7.1 SessionDigest（会话纪要）
+
+按 Session 一份，存于服务端 `sessionDigests` 集合（键为 sessionId，同 transcripts/sessionInsights 的键法，本轮不新增 ID 前缀）：
+
+| 字段 | 类型 | 必填 | 语义 |
+| --- | --- | --- | --- |
+| `sessionId` | string | 是 | 所属 Session |
+| `overview` | string[] | 是 | 核心要点：3–5 条一句话核心结论（可为空数组） |
+| `topics` | DigestTopic[] | 是 | 话题时间轴：整节课的语义分段（可为空数组） |
+| `categories` | DigestCategory[] | 是 | 主题归纳：2–4 个跨话题的主题类别（可为空数组） |
+| `quotes` | DigestQuote[] | 是 | 金句：课中最有价值的原话（可为空数组） |
+| `todos` | string[] | 是 | 待办：逐字稿中确实出现的行动项（可为空数组） |
+| `generation` | object | 是 | 本次生成的元数据，形态同 contract-r3 §2.3（provider / model / inputChars） |
+| `generatedAt` | string | 服务端生成 | 本次生成的完成时间，ISO 8601 UTC |
+
+五个 report 键**固定恒在**：PoC 的「空节省略」是渲染语义（渲染器跳过空段），API 的存储与响应形态固定为五键，空段即空数组。至少一个部分有可用内容才落库（全空即生成失败，见 §7.4）。
+
+**DigestTopic（纪要话题条目）**：
+
+| 字段 | 类型 | 必填 | 语义 |
+| --- | --- | --- | --- |
+| `startMs` / `endMs` | integer ≥ 0 | 是 | 话题段在来源时间轴上的毫秒区间（endMs ≥ startMs；与 contract-r2 records 同一时间轴） |
+| `title` | string | 是 | 不超过 20 字的短标题（服务端截断到 300 字硬上限） |
+| `bullets` | string[] | 否 | 2–5 条概括这一话题的要点短句（优先形态；每条截断到 300 字） |
+| `summary` | string | 否 | 2–4 句的总结（v1 回退形态；截断到 1500 字） |
+
+`bullets` 与 `summary` 至少存在其一（服务端清洗后两者皆空的条目被丢弃）；两者都在时渲染方优先 bullets。**DigestCategory** = `{title: string, points: string[]}`（2–4 个类别、每类 2–4 条要点，服务端截断同上）。**DigestQuote** = `{startMs: integer ≥ 0, text: string}`（text 截断到 3000 字）。**todos** 条目为字符串（截断到 500 字）。
+
+### 7.2 端点
+
+#### POST /v1/sessions/{id}/digest — 生成/重新生成纪要
+
+- 请求体为空对象 `{}`；任何登录用户可调用（Bearer，不要求 isAdmin）。
+- **仅限已结束的 Session**（整节一次性语义的前提是材料定型）：未 finish 返回 409 `session_not_finished`，不发起 AI 调用（409 在 AI 调用前判定）。
+- 服务端对该 Session 的**全量 transcript** 组装 digest 输入：已归档 records 与 finish 上报的 skipped gaps（`已跳过，该范围未取得文本` 标记行）合并在单一来源时间轴上（startMs 升序，`[startMs–endMs]` 戳）；该 Session 的 Rolling Summary Topics 作为 liveTopics 合并提示随行（可参考、不可盲信，PoC 同语义）。
+- **整节一次性覆盖语义（D22，与 Rolling Summary 的 append-only 相反）**：每次成功 POST 都对全量逐字稿重新生成，并把整份新纪要**覆盖**落库——topics 从 1 起重新编号、旧纪要不保留历史。理由：纪要是对已结束会话的最终交付物，材料不再增长，重新生成是用户主动要求换一版，历史版本没有回查价值；PoC 亦如此（重跑 global pass 即覆写 `report_<sessionId>`）。
+- 201 首次落库；200 覆盖重生成。响应体 `{ digest }`（§7.1 全形态）。
+- 该 Session 没有任何已归档逐字稿记录：409 `no_session_transcript_to_summarize`（与 Rolling Summary 同码同文案），不发起 AI 调用。未知或其他账号的 Session 404（D2）。
+- 失败反馈形态：AI Provider 调用失败/超时/返回不可解析或零可用内容返回 502 `digest_failed`，**不落脏数据**——已有纪要与用量都不出现本次尝试（D16/D18 同口径）。
+- 样例：`api-session-digest-generate`、`api-session-digest-regenerate`、`api-session-digest-read`、`error-digest-unauthorized`、`error-digest-cross-account`、`error-digest-not-finished`、`error-digest-no-transcript`、`error-digest-failed`。
+
+#### GET /v1/sessions/{id}/digest — 读当前纪要
+
+- 返回 `{ digest }`（§7.1 全形态）：幂等读，与最近一次落库的文档一致。任何登录用户可调用（Bearer）。
+- 未登录 401；未知或其他账号的 Session 404（D2）；该 Session 从未成功生成过纪要返回 404 `digest_not_generated`（会话存在但纪要未生成，与 D2 的 not_found 是两个码）。
+- 样例：`api-session-digest-read`、`error-digest-read-unauthorized`、`error-digest-read-cross-account`、`error-digest-not-generated`。
+
+#### POST /v1/ai/explain — 选中文本解释（无状态）
+
+- 请求体 `{text, context?}`：`text` 必填且为非空字符串；`context` 可选字符串（空串与缺省同为「无上下文」，填 `None` 沿 PoC）。**无状态**：不落任何存储，登录即可（Bearer，不要求 isAdmin），回答即本次调用的全部产物。
+- 限长校验（400 `validation_failed`）：`text` 或 `context` 超过 8000 字符（Unicode 码点，D18 计数单位）；`text` 缺失/非字符串/空或纯空白；`context` 非字符串。校验失败不发起 AI 调用、不计数。
+- 200 `{ explanation }`：AI 的解释文本。失败反馈形态：AI Provider 调用失败/超时/返回不可用文本返回 502 `explain_failed`，用量不计本次尝试。
+- 样例：`api-ai-explain`、`error-explain-unauthorized`、`error-explain-empty-text`、`error-explain-text-too-long`、`error-explain-failed`。
+
+### 7.3 用量口径扩展（D18 同构）
+
+GET /v1/usage 的 Usage 在 contract-r4 §6.3 的六键之上追加四个键（既有键语义零改动，追加键不破坏既有消费者）：
+
+| 字段 | 类型 | 必填 | 语义 |
+| --- | --- | --- | --- |
+| `digestCount` | integer ≥ 0 | 是 | 账号累计成功落库的纪要生成次数（**覆盖重生成同样计数**——每次都是真实 AI 调用；失败尝试不计） |
+| `digestInputChars` | integer ≥ 0 | 是 | 账号累计纪要输入字符量：历次落库的 `generation.inputChars` 之和（Unicode 码点数，D18 口径） |
+| `explainCount` | integer ≥ 0 | 是 | 账号累计成功应答的选中文本解释次数（失败不计） |
+| `explainInputChars` | integer ≥ 0 | 是 | 账号累计解释输入字符量：历次提交的完整 prompt（system + user，Unicode 码点数，D18 口径）之和 |
+
+记录时点同 D18：digest 计数在纪要落库的同一时刻（201 与 200 都计）；explain 计数在 200 应答的同一时刻；失败尝试不产生任何计数。与 Rolling Summary 幂等回放不计数不同——digest 没有「回放」形态，覆盖重生成就是一次新的 AI 调用（D22）。
+
+### 7.4 错误码（面板轮 II 新增）
+
+| HTTP | `error.code` | 语义 | 固定样例 |
+| --- | --- | --- | --- |
+| 409 | `session_not_finished` | Session 未结束，纪要只能在结束后生成 | `error-digest-not-finished` |
+| 409 | `no_session_transcript_to_summarize` | 该 Session 没有任何已归档逐字稿记录（沿用 §6.4 的码与文案） | `error-digest-no-transcript` |
+| 502 | `digest_failed` | AI Provider 调用失败/超时/返回不可解析或零可用内容；不落库、不计数，可再次触发 | `error-digest-failed` |
+| 404 | `digest_not_generated` | 该 Session 还没有纪要（从未成功生成过） | `error-digest-not-generated` |
+| 400 | `validation_failed` | explain 请求体校验失败（text 非对象/缺失/非字符串/空/超 8000 码点、context 非字符串/超 8000 码点） | `error-explain-empty-text`、`error-explain-text-too-long` |
+| 502 | `explain_failed` | 解释的 AI Provider 调用失败/超时/返回不可用文本 | `error-explain-failed` |
+
+401 / 404（跨账号，D2）沿用 contract-v1 §4 的封套与语义（样例：`error-digest-unauthorized`、`error-digest-read-unauthorized`、`error-digest-read-cross-account`、`error-digest-cross-account`、`error-explain-unauthorized`）。

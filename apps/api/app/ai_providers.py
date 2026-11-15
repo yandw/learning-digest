@@ -9,7 +9,9 @@ independent).
 Interface (the one thing consumers may rely on):
 
     provider = { id: str, model: str, generate(*, system, user),
-                 generate_topics(*, system, user) }
+                 generate_topics(*, system, user),
+                 generate_digest(*, system, user),
+                 explain(*, system, user) }
     generate returns { content: str, citations: RawCitation[] }
     where RawCitation = { quote, sessionId, startMs, endMs } — the shape
     the model is asked for by prompts/course-summary.md; every citation is
@@ -19,6 +21,13 @@ Interface (the one thing consumers may rely on):
     (prompts/topic-tick.md, contract-r4.md §6) asks for — one JSON array
     of {start, end, title, text, continuation?}; the rolling domain
     (app/session_insights.py) sanitizes them before anything lands.
+    generate_digest returns the RAW report object the session-report
+    prompt (prompts/session-report.md, contract-r4.md §7) asks for — one
+    JSON object {overview?, topics, categories?, quotes, todos}; the
+    digest domain (app/session_digest.py) sanitizes it before anything
+    lands.
+    explain returns { explanation: str } — the stateless selected-text
+    explanation (contract-r4.md §7, prompts/explain.md).
 
 Two implementations (D16: default deployment is the real product path,
 tests inject the stub):
@@ -47,6 +56,8 @@ import re
 from typing import Any, Callable
 
 import httpx
+
+from .summaries import GAP_MARKER
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_MODEL = "qwen3.8-flash"
@@ -180,6 +191,16 @@ class StubProvider:
         provider's behavior; the stub only consumes the material."""
         return stub_topics(parse_tick_user_prompt(user))
 
+    def generate_digest(self, *, system: str, user: str) -> dict:
+        """The Session Digest path (contract-r4.md §7): deterministic
+        one-shot report synthesis from the full-transcript input."""
+        return stub_digest_report(parse_digest_user_prompt(user))
+
+    def explain(self, *, system: str, user: str) -> dict:
+        """The selected-text explanation path (contract-r4.md §7):
+        deterministic explanation from the filled explain template."""
+        return {"explanation": stub_explanation(parse_explain_user_prompt(user))}
+
 
 def create_stub_provider(model: str | None = None) -> StubProvider:
     return StubProvider(model)
@@ -251,6 +272,128 @@ def stub_topics(parsed: dict, group_size: int = 2) -> list[dict]:
     return topics
 
 
+# --- Session Digest support (contract-r4.md §7, ticket 6.5) -----------------
+#
+# The digest shares the course summary's seam (LD_AI_PROVIDER / LD_AI_API_KEY
+# unchanged): one more operation on the same provider interface —
+# generate_digest(*, system, user) -> dict — where the session-report system
+# prompt (prompts/session-report.md) demands one bare JSON object with the
+# rich report sections {overview?, topics, categories?, quotes, todos}.
+# The reply comes back RAW; the domain sanitizes it (app/session_digest.py).
+
+# The digest user prompt's section markers (prompts/session-report.md — the
+# stub parses them, it never re-derives the prompt copy).
+DIGEST_SECTION_LIVE_TOPICS = "课中已识别的话题段（可参考/合并）："
+DIGEST_SECTION_TRANSCRIPT = "完整逐字稿："
+
+
+def parse_digest_user_prompt(user: str) -> dict:
+    """Slice one digest's user prompt into the material the digest stub
+    consumes: the stamped transcript lines (records and skipped-gap
+    markers on one source timeline; the gap marker carries no summarizable
+    text) and the stored rolling Topics' titles (the merge hint)."""
+    transcript_start = user.find(DIGEST_SECTION_TRANSCRIPT)
+    transcript_section = (
+        user[transcript_start + len(DIGEST_SECTION_TRANSCRIPT) :]
+        if transcript_start >= 0
+        else ""
+    )
+    records = [
+        {"startMs": int(match.group(1)), "endMs": int(match.group(2)), "text": match.group(3)}
+        for match in TICK_STAMPED_LINE.finditer(transcript_section)
+        if match.group(3) != GAP_MARKER
+    ]
+    live_start = user.find(DIGEST_SECTION_LIVE_TOPICS)
+    live_end = user.find(DIGEST_SECTION_TRANSCRIPT)
+    titles: list[str] = []
+    if live_start >= 0 and live_end > live_start:
+        section = user[live_start + len(DIGEST_SECTION_LIVE_TOPICS) : live_end]
+        titles = [
+            line.strip()[2:] for line in section.split("\n") if line.strip().startswith("- ")
+        ]
+    return {"records": records, "live_topic_titles": titles}
+
+
+def stub_digest_report(parsed: dict) -> dict:
+    """The digest stub's deterministic rule (mirrors stub_topics' chunking):
+    chunk the transcript records into consecutive groups of two, one Topic
+    per group spanning its first record's start to its last record's end,
+    the title quoting the first record's text and the bullets listing the
+    group's lines; the first and last records become the 金句; the first
+    record's text stands in for the 核心要点 and the single 主题归纳 card;
+    todos stay empty (the stub never fabricates action items). Deterministic:
+    same input, same report."""
+    records = parsed["records"]
+    topics = []
+    for index in range(0, len(records), 2):
+        group = records[index : index + 2]
+        topics.append(
+            {
+                "start": group[0]["startMs"],
+                "end": group[-1]["endMs"],
+                "title": group[0]["text"][:12],
+                "bullets": [record["text"] for record in group],
+            }
+        )
+    quotes = []
+    if records:
+        quotes.append({"start": records[0]["startMs"], "text": records[0]["text"]})
+        if len(records) > 1:
+            quotes.append({"start": records[-1]["startMs"], "text": records[-1]["text"]})
+    return {
+        "overview": [records[0]["text"]] if records else [],
+        "topics": topics,
+        "categories": [{"title": "主题归纳", "points": [records[0]["text"]]}] if records else [],
+        "quotes": quotes,
+        "todos": [],
+    }
+
+
+# --- Selected-text explanation support (contract-r4.md §7, ticket 6.5) ------
+#
+# One more operation on the shared seam — explain(*, system, user) ->
+# {explanation: str} — where the explain system prompt
+# (prompts/explain.md) answers in plain prose, no JSON.
+
+# The explain user prompt's section markers (prompts/explain.md — the stub
+# parses them, it never re-derives the prompt copy).
+EXPLAIN_SECTION_SELECTED = 'SELECTED: "'
+EXPLAIN_SECTION_CONTEXT = "CONTEXT: "
+
+# The PoC's absent-context fallback, filled by the domain
+# (app/explanations.py NOTHING_CONTEXT); the stub reads it back.
+EXPLAIN_NO_CONTEXT = "None"
+
+
+def parse_explain_user_prompt(user: str) -> dict:
+    """Slice one explain's user prompt into the selection and the filled
+    context (the `None` literal when the request carried no context)."""
+    selected_start = user.find(EXPLAIN_SECTION_SELECTED)
+    context_start = user.find(EXPLAIN_SECTION_CONTEXT)
+    selected = ""
+    if selected_start >= 0:
+        open_quote = selected_start + len(EXPLAIN_SECTION_SELECTED)
+        close_quote = user.rfind('"', open_quote, context_start if context_start > open_quote else len(user))
+        selected = user[open_quote:close_quote] if close_quote > open_quote else user[open_quote:]
+    context = (
+        user[context_start + len(EXPLAIN_SECTION_CONTEXT) :].splitlines()[0].strip()
+        if context_start >= 0
+        else ""
+    )
+    return {"selected_text": selected, "context": context}
+
+
+def stub_explanation(parsed: dict) -> str:
+    """The explain stub's deterministic rule: explain the selection; the
+    filled context (when it is not the `None` fallback) shapes one clause."""
+    selected = parsed["selected_text"]
+    context = parsed["context"]
+    explanation = f"「{selected}」是所选内容里的关键表述"
+    if context and context != EXPLAIN_NO_CONTEXT:
+        explanation += f"，结合上下文（{context[:20]}）可以确认它的含义"
+    return explanation + "。"
+
+
 def _normalize_base_url(base_url: Any) -> str:
     """Trim trailing slashes; empty falls back to the Bailian endpoint."""
     trimmed = base_url.strip() if isinstance(base_url, str) else ""
@@ -316,7 +459,7 @@ def _parse_loose_json(text: str) -> Any:
 
 def parse_topics_payload(text: Any) -> list | None:
     """Parse a topic-tick reply into RAW Topic entries. The system prompt
-    demands one bare JSON array, but real models wrap it: a bare array or
+    demands a bare JSON array, but real models wrap it: a bare array or
     an object wrapping one under `topics` both parse (the PoC's
     parseTopicTick acceptance). Anything else is None — the caller answers
     the contract 502. Entries are sanitized by the domain, not here."""
@@ -328,6 +471,17 @@ def parse_topics_payload(text: Any) -> list | None:
     if isinstance(parsed, dict) and isinstance(parsed.get("topics"), list):
         return parsed["topics"]
     return None
+
+
+def parse_digest_payload(text: Any) -> dict | None:
+    """Parse a digest reply into the RAW report object (the PoC's
+    parseGlobalPass acceptance: the payload must be a JSON object — arrays
+    and scalars are not reports). Anything else is None — the caller
+    answers the contract 502. Sections are sanitized by the domain."""
+    if not isinstance(text, str) or text.strip() == "":
+        return None
+    parsed = _parse_loose_json(text)
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _reply_text(data: Any) -> str:
@@ -426,6 +580,24 @@ class QwenProvider:
         if topics is None:
             raise RuntimeError("Qwen AI Provider returned an unparseable topic-tick payload")
         return topics
+
+    def generate_digest(self, *, system: str, user: str) -> dict:
+        """One Session Digest pass over chat/completions (contract-r4.md
+        §7): the session-report system prompt demands a bare JSON object;
+        unparseable replies raise — the domain answers the 502."""
+        parsed = parse_digest_payload(self._chat(system=system, user=user))
+        if parsed is None:
+            raise RuntimeError("Qwen AI Provider returned an unparseable digest payload")
+        return parsed
+
+    def explain(self, *, system: str, user: str) -> dict:
+        """One selected-text explanation over chat/completions
+        (contract-r4.md §7): the reply is plain prose; an empty reply is
+        the failure the domain answers with the 502."""
+        text = self._chat(system=system, user=user).strip()
+        if not text:
+            raise RuntimeError("Qwen AI Provider returned an empty explanation")
+        return {"explanation": text}
 
 
 def create_qwen_provider(

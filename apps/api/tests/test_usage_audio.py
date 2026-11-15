@@ -128,6 +128,10 @@ def test_a_done_audio_segment_accrues_its_duration_in_seconds(start_app):
             "summaryInputChars": 0,
             "rollingSummaryCount": 0,
             "rollingSummaryInputChars": 0,
+            "digestCount": 0,
+            "digestInputChars": 0,
+            "explainCount": 0,
+            "explainInputChars": 0,
             "updatedAt": None,
         }
 

@@ -202,6 +202,15 @@ function endpointOf(sample) {
     return "GET /v1/sessions/{id}/overview";
   }
   if (method === "GET" && segs.join("/") === "v1/usage") return "GET /v1/usage";
+  // Panel addition II (contract-r4.md §7, ticket #90): the Session Digest
+  // generate/read and the stateless selected-text explanation.
+  if (method === "POST" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "digest") {
+    return "POST /v1/sessions/{id}/digest";
+  }
+  if (method === "GET" && segs.length === 4 && segs[1] === "sessions" && segs[3] === "digest") {
+    return "GET /v1/sessions/{id}/digest";
+  }
+  if (method === "POST" && segs.join("/") === "v1/ai/explain") return "POST /v1/ai/explain";
   return `${method} ${path}`;
 }
 
@@ -302,7 +311,9 @@ test("rounds 1-3 fixture samples are unchanged by round 4 (append-only)", () => 
   // the pre-existing ids stay exactly as the earlier rounds pinned them
   // (those suites keep passing — this pins the sample count they see).
   // The panel addition (ticket #89) appends its own error-* namespace the
-  // same way; rounds 1-3 still keep their 27 samples untouched.
+  // same way; rounds 1-3 still keep their 27 samples untouched. The panel
+  // addition II (ticket #90) appends the digest/explain error-* namespace
+  // the same way again.
   const errors = loadExamples("error-examples.json").samples;
   const round4Errors = errors.filter((e) => e.id.startsWith("error-") && (e.id.includes("site-capabilit")));
   assert.equal(round4Errors.length, 6, "round 4 appends exactly six error samples");
@@ -310,7 +321,11 @@ test("rounds 1-3 fixture samples are unchanged by round 4 (append-only)", () => 
     (e) => e.id.includes("rolling-summary") || e.id.includes("overview"),
   );
   assert.equal(panelErrors.length, 7, "the panel round appends exactly seven error samples");
-  const preExisting = errors.length - round4Errors.length - panelErrors.length;
+  const digestErrors = errors.filter(
+    (e) => e.id.includes("digest") || e.id.includes("explain"),
+  );
+  assert.equal(digestErrors.length, 12, "the digest/explain round appends exactly twelve error samples");
+  const preExisting = errors.length - round4Errors.length - panelErrors.length - digestErrors.length;
   assert.equal(preExisting, 27, "rounds 1-3 keep their 27 error samples");
 });
 
@@ -516,6 +531,248 @@ test("contract-r4.md §6 and decisions.md record the panel anchors", () => {
   const decisions = readDoc("decisions.md");
   assert.ok(decisions.includes("D21 ·"), "decisions.md must record D21");
   for (const token of ["幂等", "append-only", "rollingSummaryCount", "sessionInsights"]) {
+    assert.ok(decisions.includes(token), `decisions.md must cover ${token}`);
+  }
+});
+
+// --- panel addition II: session digest + explain (ticket #90) ---------------
+
+const DIGEST_ENDPOINTS = [
+  "POST /v1/sessions/{id}/digest",
+  "GET /v1/sessions/{id}/digest",
+  "POST /v1/ai/explain",
+];
+
+function assertDigestTopic(topic, where) {
+  assert.ok(topic && typeof topic === "object", `${where}: topic must be an object`);
+  const keys = Object.keys(topic).sort();
+  const withBullets = JSON.stringify(["bullets", "endMs", "startMs", "title"]);
+  const withSummary = JSON.stringify(["endMs", "startMs", "summary", "title"]);
+  const withBoth = JSON.stringify(["bullets", "endMs", "startMs", "summary", "title"]);
+  assert.ok(
+    JSON.stringify(keys) === withBullets || JSON.stringify(keys) === withSummary || JSON.stringify(keys) === withBoth,
+    `${where}: a digest topic carries exactly {startMs, endMs, title, bullets?, summary?} (at least one body form)`,
+  );
+  assert.ok(Number.isInteger(topic.startMs) && topic.startMs >= 0, `${where}: startMs is a non-negative integer`);
+  assert.ok(Number.isInteger(topic.endMs) && topic.endMs >= topic.startMs, `${where}: endMs >= startMs (source-timeline ms)`);
+  assert.equal(typeof topic.title, "string", `${where}: title is a string`);
+  assert.ok(topic.title.length > 0, `${where}: title is non-empty`);
+  if ("bullets" in topic) {
+    assert.ok(Array.isArray(topic.bullets) && topic.bullets.length > 0, `${where}: bullets is a non-empty array`);
+    topic.bullets.forEach((bullet) => assert.ok(typeof bullet === "string" && bullet.length > 0, `${where}: bullets are non-empty strings`));
+  }
+  if ("summary" in topic) {
+    assert.equal(typeof topic.summary, "string", `${where}: summary is a string`);
+    assert.ok(topic.summary.length > 0, `${where}: summary is non-empty`);
+  }
+}
+
+function assertDigestBody(body, where) {
+  assert.ok(body && typeof body === "object", `${where}: response body must be an object`);
+  const digest = body.digest;
+  assert.ok(digest && typeof digest === "object", `${where}: carries digest{}`);
+  assert.deepEqual(
+    Object.keys(digest).sort(),
+    ["categories", "generatedAt", "generation", "overview", "quotes", "sessionId", "todos", "topics"],
+    `${where}: the digest carries exactly {sessionId, overview, topics, categories, quotes, todos, generation, generatedAt}`,
+  );
+  assert.equal(typeof digest.sessionId, "string", `${where}: sessionId is a string`);
+  // The five report sections are FIXED keys (empty sections are empty
+  // arrays, never absent — the API's stored shape, D22).
+  for (const section of ["overview", "topics", "categories", "quotes", "todos"]) {
+    assert.ok(Array.isArray(digest[section]), `${where}: ${section} is an array (fixed key, D22)`);
+  }
+  assert.ok(digest.topics.length > 0, `${where}: the sampled digest has topics`);
+  digest.topics.forEach((topic, index) => assertDigestTopic(topic, `${where}: topics[${index}]`));
+  for (const quote of digest.quotes) {
+    assert.deepEqual(Object.keys(quote).sort(), ["startMs", "text"], `${where}: a quote carries exactly {startMs, text}`);
+    assert.ok(Number.isInteger(quote.startMs) && quote.startMs >= 0, `${where}: quote.startMs is a non-negative integer`);
+    assert.equal(typeof quote.text, "string", `${where}: quote.text is a string`);
+  }
+  for (const category of digest.categories) {
+    assert.deepEqual(Object.keys(category).sort(), ["points", "title"], `${where}: a category carries exactly {title, points}`);
+    assert.ok(typeof category.title === "string" && category.title.length > 0, `${where}: category.title is non-empty`);
+    assert.ok(Array.isArray(category.points) && category.points.length > 0, `${where}: category.points is non-empty`);
+  }
+  digest.overview.forEach((line) => assert.ok(typeof line === "string" && line.length > 0, `${where}: overview lines are non-empty strings`));
+  digest.todos.forEach((todo) => assert.ok(typeof todo === "string" && todo.length > 0, `${where}: todos are non-empty strings`));
+  const generation = digest.generation;
+  assert.deepEqual(Object.keys(generation).sort(), ["inputChars", "model", "provider"], `${where}: generation mirrors the contract-r3 §2.3 shape`);
+  assert.ok(Number.isInteger(generation.inputChars) && generation.inputChars >= 0, `${where}: generation.inputChars is a non-negative integer`);
+  assert.match(digest.generatedAt, ISO_TIMESTAMP, `${where}: generatedAt is ISO 8601 UTC`);
+}
+
+test("digest/explain fixtures parse and declare the contract", () => {
+  const fixture = loadExamples("session-digest-examples.json");
+  const ids = fixture.samples.map((s) => s.id);
+  assert.equal(new Set(ids).size, ids.length, "duplicate sample ids in session-digest-examples.json");
+  for (const sample of fixture.samples) {
+    assert.equal(typeof sample.description, "string", `${sample.id}: needs a description`);
+    assert.ok(sample.endpoint && typeof sample.endpoint === "object", `${sample.id}: needs endpoint{}`);
+    assert.ok(sample.response && typeof sample.response === "object", `${sample.id}: needs response{}`);
+    assert.ok(Number.isInteger(sample.response.status), `${sample.id}: response.status is an integer`);
+    assert.ok(
+      sample.response.status >= 200 && sample.response.status < 300,
+      `${sample.id}: session-digest-examples carry success responses`,
+    );
+  }
+});
+
+test("digest/explain fixtures conform to the SessionDigest, explain and Usage structures", () => {
+  const { samples } = loadExamples("session-digest-examples.json");
+  for (const sample of samples) {
+    if (sample.id.startsWith("api-session-digest")) {
+      assertDigestBody(sample.response.body, sample.id);
+      assert.equal(
+        sample.response.body.digest.sessionId,
+        "ses_01JABC0036",
+        `${sample.id}: the digest story lives on ses_01JABC0036`,
+      );
+    } else if (sample.id === "api-ai-explain") {
+      assert.equal(sample.response.status, 200, `${sample.id}: explain returns 200`);
+      const text = sample.request.body.text;
+      assert.ok(typeof text === "string" && text.length > 0, `${sample.id}: the explain sample carries a non-empty text`);
+      assert.equal(typeof sample.response.body.explanation, "string", `${sample.id}: explanation is a string`);
+      assert.ok(sample.response.body.explanation.length > 0, `${sample.id}: explanation is non-empty`);
+    } else if (sample.id === "api-usage-with-digest") {
+      const usage = sample.response.body;
+      assert.equal(sample.response.status, 200, `${sample.id}: usage returns 200`);
+      assert.deepEqual(
+        Object.keys(usage).sort(),
+        [
+          "audioSeconds", "digestCount", "digestInputChars", "explainCount", "explainInputChars",
+          "rollingSummaryCount", "rollingSummaryInputChars", "summaryCount", "summaryInputChars", "updatedAt",
+        ],
+        `${sample.id}: the Usage extends the §6.3 keys with the digest and explain pairs (contract-r4 §7.3)`,
+      );
+      for (const key of Object.keys(usage)) {
+        if (key === "updatedAt") continue;
+        assert.ok(Number.isInteger(usage[key]) && usage[key] >= 0, `${sample.id}: ${key} is a non-negative integer`);
+      }
+      assert.ok(usage.digestCount >= 1, `${sample.id}: the sample demonstrates landed digests`);
+      assert.ok(usage.explainCount >= 1, `${sample.id}: the sample demonstrates answered explains`);
+      assert.match(usage.updatedAt, ISO_TIMESTAMP, `${sample.id}: updatedAt is ISO 8601 UTC`);
+    }
+  }
+});
+
+test("the regenerate sample replaces the digest whole (整节一次性, not append-only)", () => {
+  const byId = new Map(loadExamples("session-digest-examples.json").samples.map((s) => [s.id, s]));
+  const first = byId.get("api-session-digest-generate").response.body.digest;
+  const regenerated = byId.get("api-session-digest-regenerate").response.body.digest;
+  const read = byId.get("api-session-digest-read").response.body.digest;
+
+  // D22: the overwrite is a NEW full report on the same session — topics
+  // renumber from 1, nothing of the old report is preserved by position.
+  assert.equal(regenerated.sessionId, first.sessionId, "the regenerate targets the same session");
+  assert.notDeepEqual(regenerated, first, "the regenerate produces a new report");
+  assert.ok(!("index" in regenerated.topics[0]), "digest topics carry no index key (unlike the rolling timeline)");
+  assert.notEqual(regenerated.generatedAt, first.generatedAt, "the regenerate re-stamps generatedAt");
+
+  // The GET serves the stored document — the regenerated one.
+  assert.deepEqual(read, regenerated, "GET /digest serves the same stored document");
+});
+
+test("every digest/explain endpoint has a success and a failure sample", () => {
+  const successTemplates = new Set(loadExamples("session-digest-examples.json").samples.map(endpointOf));
+  const errorSamples = loadExamples("error-examples.json").samples;
+  const failureTemplates = new Set(errorSamples.map(endpointOf));
+
+  for (const endpoint of DIGEST_ENDPOINTS) {
+    assert.ok(successTemplates.has(endpoint), `no success sample covers ${endpoint}`);
+    assert.ok(failureTemplates.has(endpoint), `no failure sample covers ${endpoint}`);
+  }
+  // The usage extension rides on the round-3 usage endpoint; its sample
+  // pins the appended keys.
+  assert.ok(successTemplates.has("GET /v1/usage"), "the usage-extension sample sits on GET /v1/usage");
+});
+
+test("digest/explain error samples pin the state gates, isolation and validation behaviors", () => {
+  const errorSamples = loadExamples("error-examples.json").samples;
+  const byId = new Map(errorSamples.map((e) => [e.id, e]));
+
+  const expected = [
+    // 401: all three endpoints need a credential.
+    ["error-digest-unauthorized", "POST /v1/sessions/{id}/digest", 401, "unauthorized"],
+    ["error-digest-read-unauthorized", "GET /v1/sessions/{id}/digest", 401, "unauthorized"],
+    ["error-explain-unauthorized", "POST /v1/ai/explain", 401, "unauthorized"],
+    // D2 isolation: another account's session is the same 404.
+    ["error-digest-cross-account", "POST /v1/sessions/{id}/digest", 404, "not_found"],
+    ["error-digest-read-cross-account", "GET /v1/sessions/{id}/digest", 404, "not_found"],
+    // The state gate: only a finished session can digest.
+    ["error-digest-not-finished", "POST /v1/sessions/{id}/digest", 409, "session_not_finished"],
+    // No archived records: shared code/copy with the rolling round.
+    ["error-digest-no-transcript", "POST /v1/sessions/{id}/digest", 409, "no_session_transcript_to_summarize"],
+    // Provider failure: 502, nothing landed.
+    ["error-digest-failed", "POST /v1/sessions/{id}/digest", 502, "digest_failed"],
+    ["error-explain-failed", "POST /v1/ai/explain", 502, "explain_failed"],
+    // A session that never generated a digest.
+    ["error-digest-not-generated", "GET /v1/sessions/{id}/digest", 404, "digest_not_generated"],
+    // Explain validation: empty text and the >8000-cap text.
+    ["error-explain-empty-text", "POST /v1/ai/explain", 400, "validation_failed"],
+    ["error-explain-text-too-long", "POST /v1/ai/explain", 400, "validation_failed"],
+  ];
+
+  for (const [id, template, status, code] of expected) {
+    const sample = byId.get(id);
+    assert.ok(sample, `required digest/explain error sample missing: ${id}`);
+    assert.equal(endpointOf(sample), template, `${id}: sits on ${template}`);
+    assert.equal(sample.response.status, status, `${id}: status is ${status}`);
+    assert.equal(sample.response.body.error.code, code, `${id}: error.code is ${code}`);
+    assert.equal(typeof sample.response.body.error.message, "string", `${id}: error.message is a string`);
+  }
+
+  // The not-finished sample targets the story's in-progress session; the
+  // no-transcript sample targets a finished session that never archived.
+  assert.equal(
+    byId.get("error-digest-not-finished").endpoint.path,
+    "/v1/sessions/ses_01JABC0033/digest",
+    "the not-finished sample targets the story's in-progress session",
+  );
+  assert.equal(
+    byId.get("error-digest-no-transcript").endpoint.path,
+    "/v1/sessions/ses_01JABC0037/digest",
+    "the no-transcript sample targets a finished session without archived records",
+  );
+
+  // The too-long sample really crosses the 8000-code-point cap.
+  const tooLong = byId.get("error-explain-text-too-long").request.body.text;
+  assert.equal(typeof tooLong, "string", "the too-long sample carries a string text");
+  assert.ok([...tooLong].length > 8000, "the too-long sample text exceeds 8000 code points");
+  const notFinishedCopy = byId.get("error-digest-no-transcript").response.body.error;
+  assert.equal(
+    notFinishedCopy.code,
+    byId.get("error-rolling-summary-no-transcript").response.body.error.code,
+    "the digest no-transcript sample shares the rolling round's code",
+  );
+  assert.equal(
+    notFinishedCopy.message,
+    byId.get("error-rolling-summary-no-transcript").response.body.error.message,
+    "the digest no-transcript sample shares the rolling round's copy",
+  );
+});
+
+test("contract-r4.md §7 and decisions.md record the digest/explain anchors", () => {
+  function readDoc(relativePath) {
+    return fs.readFileSync(path.join(CONTRACT_ROOT, relativePath), "utf8");
+  }
+
+  const r4 = readDoc("contract-r4.md");
+  for (const endpoint of DIGEST_ENDPOINTS) {
+    assert.ok(r4.includes(endpoint), `contract-r4.md must list ${endpoint}`);
+  }
+  for (const token of [
+    "SessionDigest", "sessionDigests", "digest_not_generated", "session_not_finished",
+    "digest_failed", "explain_failed", "session-report.md", "explain.md",
+    "digestCount", "digestInputChars", "explainCount", "explainInputChars",
+    "validation_failed", "整节一次性", "8000",
+  ]) {
+    assert.ok(r4.includes(token), `contract-r4.md must define ${token}`);
+  }
+
+  const decisions = readDoc("decisions.md");
+  assert.ok(decisions.includes("D22 ·"), "decisions.md must record D22");
+  for (const token of ["整节一次性", "sessionDigests", "digestCount", "explainCount", "8000"]) {
     assert.ok(decisions.includes(token), `decisions.md must cover ${token}`);
   }
 });

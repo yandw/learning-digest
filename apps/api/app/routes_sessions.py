@@ -21,6 +21,7 @@ from .audio_jobs import (
 from .ctx import AppContext
 from .http import read_json_body
 from .routes_auth import CtxDep, CredentialDep
+from .session_digest import generate_digest, get_digest
 from .sessions import create_session, find_account_session, finish_session
 from .session_insights import generate_rolling_summary, get_overview
 from .transcripts import archive_captions, get_transcript
@@ -119,6 +120,40 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )
         result = get_overview(store=ctx.store, session=session)
+        return JSONResponse(status_code=result["status"], content=result["body"])
+
+    @app.post("/v1/sessions/{session_id}/digest")
+    async def post_session_digest(
+        session_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
+    ) -> JSONResponse:
+        # Session Digest generation (contract-r4 §7.2, ticket 6.5): any
+        # logged-in user; the request body is an empty object by contract —
+        # read and ignored like the session-create body. One full pass over
+        # the finished Session's transcript; a repeat POST overwrites.
+        await read_json_body(request, ctx.config.max_body_bytes)
+        session = find_account_session(
+            store=ctx.store, account_id=credential["accountId"], session_id=session_id
+        )
+        result = generate_digest(
+            store=ctx.store,
+            account_id=credential["accountId"],
+            session=session,
+            ai_provider=ctx.ai_provider,
+            now=ctx.now,
+        )
+        return JSONResponse(status_code=result["status"], content=result["body"])
+
+    @app.get("/v1/sessions/{session_id}/digest")
+    async def get_session_digest(
+        session_id: str, credential: CredentialDep, ctx: CtxDep
+    ) -> JSONResponse:
+        # The current digest (contract-r4 §7.2): the bare SessionDigest; a
+        # known session with no generated digest is 404 digest_not_generated,
+        # cross-account/unknown the D2 404.
+        session = find_account_session(
+            store=ctx.store, account_id=credential["accountId"], session_id=session_id
+        )
+        result = get_digest(store=ctx.store, session=session)
         return JSONResponse(status_code=result["status"], content=result["body"])
 
     @app.post("/v1/sessions/{session_id}/audio-segments")

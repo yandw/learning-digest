@@ -161,7 +161,7 @@ function findDescendants(element, className, found = []) {
  * harness with recorded document listeners, a settable selection, and the
  * real settings module so the interval hint reads the stored value.
  */
-function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
+function loadPanel({ stored = {}, storageGetImpl = null, openOptionsPageImpl = null } = {}) {
   const elements = {};
   const elementById = (id) => elements[id] || (elements[id] = makeElement(id));
   const selectorResults = {
@@ -251,9 +251,11 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
         },
         // Ticket 5.4 (#93): the gate view's settings entry opens the options
         // page directly from the panel.
-        openOptionsPage: () => {
-          openOptionsCalls.push(true);
-        },
+        openOptionsPage: openOptionsPageImpl
+          ? openOptionsPageImpl
+          : () => {
+              openOptionsCalls.push(true);
+            },
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
       },
       tabs: {
@@ -305,6 +307,7 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
     runtimeMessageListeners,
     openOptionsCalls,
     alerts,
+    stored,
     flush,
     setSelection: (value) => {
       selection = value;
@@ -1420,6 +1423,24 @@ test("the guide's settings button opens the options page while gated", async () 
     !panel.sentMessages.some((message) => message.action === "openOptions"),
     "no message round-trip: the panel calls openOptionsPage directly",
   );
+});
+
+test("a refused options open from the gate entry is caught, not unhandled", async () => {
+  // r5-7 review fix: openOptionsPage can be denied (the promise rejects);
+  // the click must not leak an unhandled rejection — the failure lands in
+  // the storage breadcrumb channel instead.
+  const panel = loadPanel({
+    openOptionsPageImpl: () => Promise.reject(new Error("open denied")),
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  panel.elementById("authGateSettingsBtn").listeners.click();
+  await panel.flush();
+  await panel.flush();
+
+  assert.equal(panel.stored.ytd_last_options_open.outcome, "failed");
+  assert.equal(panel.stored.ytd_last_options_open.detail, "open denied");
 });
 
 // --- Collect current page (P8, #58): the welcome-state entry -----------------

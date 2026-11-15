@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .audio_jobs import delete_audio_file
 from .errors import ApiError, not_found_resource, validation_failed
 from .ids import generate_id
 from .notes import notes_for_resource
@@ -383,9 +384,16 @@ def delete_resource(*, store: Any, account_id: str, resource_id: str) -> dict:
     one cascade — its Sources, each source's progress row (keyed by
     sourceId), the account's notes on the resource (keyed by resourceId),
     the resource's Sessions and their per-Session documents (transcripts /
-    sessionInsights / sessionDigests are all keyed BY sessionId), and the
-    course summaries (keyed by resourceId). The usage ledger is NOT
-    touched — 账目不随删除消失 (D23).
+    sessionInsights / sessionDigests are all keyed BY sessionId), the
+    course summaries (keyed by resourceId), and the Sessions'
+    transcriptionTasks (audio_jobs.py's queue: rows found by sessionId,
+    their taskId keys). A dead task row never outlives the resource it
+    fed, and the audio bytes D14 kept for failed results go with it: every
+    cascaded task's temp file is unlinked after the snapshot through the
+    same delete_audio_file seam the done write-back uses (done files are
+    already gone; the unlink is a no-op there; pending/transcribing rows
+    can never be claimed again, so their files have no second consumer).
+    The usage ledger is NOT touched — 账目不随删除消失 (D23).
 
     Reads run with the accountId in the query (D2): unknown and
     other-account ids are the same 404, and deletion is TERMINAL — a
@@ -416,6 +424,12 @@ def delete_resource(*, store: Any, account_id: str, resource_id: str) -> dict:
         for s in store.list("sessions")
         if s["accountId"] == account_id and s["resourceId"] == resource_id
     ]
+    # The audio queue (audio_jobs.py) hangs off the Sessions: the task rows
+    # keyed by one of this resource's session ids die here, and their temp
+    # audio files (D14 kept the failed ones) do not outlive them.
+    task_rows = [
+        t for t in store.list("transcriptionTasks") if t["sessionId"] in session_ids
+    ]
     pending: dict[str, list[str]] = {
         "resources": [resource_id],
         "sources": source_ids,
@@ -431,6 +445,7 @@ def delete_resource(*, store: Any, account_id: str, resource_id: str) -> dict:
             for s in store.list("summaries")
             if s["accountId"] == account_id and s["resourceId"] == resource_id
         ],
+        "transcriptionTasks": [t["taskId"] for t in task_rows],
     }
     # Per-Session documents are keyed BY the session id (transcripts,
     # sessionInsights, sessionDigests): the pending keys are exactly this
@@ -440,4 +455,9 @@ def delete_resource(*, store: Any, account_id: str, resource_id: str) -> dict:
             sid for sid in session_ids if store.get(collection, sid) is not None
         ]
     store.delete_many(pending)
+    # The file sweep comes AFTER the snapshot: a crash between the two
+    # steps leaves at worst an orphan temp file — never a live task row
+    # whose audioFile claim's open() would miss.
+    for task in task_rows:
+        delete_audio_file(task["audioFile"])
     return {"status": 200, "body": {"deleted": True}}

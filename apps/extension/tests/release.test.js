@@ -28,12 +28,29 @@ test("manifest uses minimized install-time permissions", () => {
     );
   }
   // Ticket 5.7 (issue #96): the PO-token retry injects
-  // capturePlayerCaptionRequest into the watch tab's MAIN world. Host
-  // access to the watch pages comes from the content_scripts match below —
-  // no YouTube host_permissions (pinned above).
+  // capturePlayerCaptionRequest into the watch tab's MAIN world. Content
+  // script matches alone do NOT grant programmatic chrome.scripting access
+  // — that comes from host_permissions (0.2.20 review fix): the two caption
+  // collection sites are pinned below.
   assert.ok(
     manifest.permissions.includes("scripting"),
     "permissions must include scripting (MAIN-world caption capture injection)",
+  );
+  for (const host of ["https://www.youtube.com/*", "https://www.bilibili.com/*"]) {
+    assert.ok(
+      manifest.host_permissions.includes(host),
+      `host_permissions must include ${host} (MAIN-world caption capture injection)`,
+    );
+  }
+  // Narrow domain: only the caption-collection sites — the m./music.
+  // mirrors and the redirect hosts stay content-script-only (no
+  // programmatic injection there), and the API/AI host set is untouched
+  // (issue #26 semantics: no user-configured endpoints).
+  assert.ok(
+    !manifest.host_permissions.some((host) =>
+      /youtu\.be|m\.youtube\.com|music\.youtube\.com|m\.bilibili\.com/i.test(host),
+    ),
+    "host_permissions stay narrow: mirrors and redirect hosts are out",
   );
   // P6 link flow: chrome.tabs URL visibility for the link confirmation tab
   // the extension itself opens (no host_permissions for the web origin —
@@ -90,10 +107,6 @@ test("manifest uses minimized install-time permissions", () => {
     );
   }
   assert.ok(
-    !manifest.host_permissions.some((host) => /youtube|youtu\.be/i.test(host)),
-    "host_permissions must not include YouTube",
-  );
-  assert.ok(
     !manifest.host_permissions.some((host) => /groq/i.test(host)),
     "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
@@ -115,8 +128,12 @@ test("manifest uses minimized install-time permissions", () => {
   // 0.2.19 (ticket 5.7, issue #96): the captions path gains the PO-token
   // retry — the worker injects the MAIN-world capture (scripting
   // permission) and re-reads gate-emptied timedtext with the player's own
-  // authorization; no new host permissions.
-  assert.equal(manifest.version, "0.2.19");
+  // authorization.
+  // 0.2.20 (review fix): the MAIN-world injection gains its programmatic
+  // host access — host_permissions adds www.youtube.com and
+  // www.bilibili.com (narrow: the caption-collection sites only), so the
+  // timedtext retry chain is reachable in production.
+  assert.equal(manifest.version, "0.2.20");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -128,9 +145,10 @@ test("no legacy YouTube caption-collection code remains", () => {
   // youtube-captions.js reader module (its own release file, tested in
   // isolation), and the runtime files below still never embed the PoC
   // caption machinery themselves — no timedtext URLs, no player internals,
-  // no caption-track parsing outside the reader. host_permissions must not
-  // include YouTube (asserted above — the reader fetches same-origin from
-  // the content script), and the PoC files stay retired.
+  // no caption-track parsing outside the reader. host_permissions include
+  // only the www.youtube.com watch host for the MAIN-world capture
+  // injection (0.2.20 review fix) — the reader still fetches same-origin
+  // from the content script, and the PoC files stay retired.
   const runtime = ["background.js", "sidepanel.js", "options.js", "settings.js"]
     .map(read)
     .join("\n");

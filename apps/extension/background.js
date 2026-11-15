@@ -570,14 +570,22 @@ async function collectTabTarget(target) {
  * resolve missed (matched:false) — favorite it with the P8 collect core,
  * then re-resolve: decision-1 idempotence guarantees the POST returned the
  * SAME Resource, so the fresh resolve hits the SAME Source and the start
- * proceeds without a duplicate. The failure semantics are the caller's:
- * a favorite failure (network, 401 → the P7 handoff above, unconfigured)
- * reads as a failed start carrying the favorite's own message; the next
- * attempt re-resolves first and finds the favorite already in place.
- * The shape mirrors resolveSourceForTarget so call sites consume both
- * uniformly.
+ * proceeds without a duplicate.
+ *
+ * The failure semantics are the helper's own (r5-7 review fix: the three
+ * call sites' duplicated !ok / !matched blocks collapse into this one
+ * judgment — call sites convert ok:false to their failure envelope and
+ * otherwise proceed on the success path only). The return is the FINAL
+ * verdict: ok:true means the favorite landed AND the re-resolve hit a
+ * Source; every other outcome is ok:false carrying the user-facing copy —
+ * the favorite's own message, the 收藏失败 fallback when nothing more
+ * specific exists, or the 已收藏-无学习源 inconsistency copy. The favorite
+ * that DID land is kept — the next attempt re-resolves first and finds the
+ * favorite already in place. The shape mirrors resolveSourceForTarget so
+ * call sites consume both uniformly.
  */
 async function favoriteLearningTarget(target) {
+  const FAVORITE_FALLBACK = "收藏失败，请稍后重试。";
   const favorited = await postResourceFavorite(target);
   if (!favorited.ok) {
     return {
@@ -586,11 +594,24 @@ async function favoriteLearningTarget(target) {
       identityPresent: false,
       resource: null,
       source: null,
-      message: favorited.message,
+      message: favorited.message || FAVORITE_FALLBACK,
     };
   }
   const resolution = await resolveSourceForTarget(target);
-  if (resolution.ok && !resolution.matched) {
+  if (!resolution.ok) {
+    // The re-resolve itself died (network; a 401 handed off inside the
+    // core): the resolve's own message — or the favorite fallback when the
+    // resolve answered without one.
+    return {
+      ok: false,
+      matched: false,
+      identityPresent: resolution.identityPresent,
+      resource: null,
+      source: null,
+      message: resolution.message || FAVORITE_FALLBACK,
+    };
+  }
+  if (!resolution.matched || !resolution.source?.id) {
     // §3.1 says a successful favorite's re-resolve hits; anything else is a
     // server-side inconsistency — an honest failure beats starting without
     // a Source.
@@ -1311,8 +1332,17 @@ async function retryYouTubeCaptionsWithPlayerAuthorization(message, interval, di
     });
     const captured = injectionResults?.[0]?.result;
     playerRequestUrl = typeof captured === "string" && captured ? captured : null;
-  } catch (_error) {
-    // Capture unavailable: keep the readable direct-fetch failure.
+  } catch (error) {
+    // Capture unavailable: keep the readable direct-fetch failure. The
+    // injection failure stays observable (r5-7 review fix) — the same
+    // storage breadcrumb channel as the page-scope verdict, marked
+    // capture_unavailable so a silent injection death cannot masquerade as
+    // an honest 无字幕 page.
+    recordAuthBreadcrumb("ytd_last_page_scope", {
+      outcome: "capture_unavailable",
+      url: message.url,
+      detail: error?.message || "inject-failed",
+    });
     return directResult;
   }
   if (!playerRequestUrl) return directResult;
@@ -1652,13 +1682,12 @@ async function startCaptionsSession(message, recognition, captions) {
   }
   if (!resolution.matched) {
     // Ticket 5.6 (#95): the icon path's captions branch favorites inline
-    // too — 开始学习 = 收藏 + 开始, no 先收藏 intermediate step.
+    // too — 开始学习 = 收藏 + 开始, no 先收藏 intermediate step. The
+    // favorite's final judgment (failure copy included) lives in the
+    // helper; the call site only converts a failed verdict.
     resolution = await favoriteLearningTarget(collectTarget);
     if (!resolution.ok) {
-      return { success: false, error: resolution.message || "收藏失败，请稍后重试。" };
-    }
-    if (!resolution.matched) {
-      return { success: false, error: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。" };
+      return { success: false, error: resolution.message };
     }
   }
   const credential = await readStoredAuthCredential();
@@ -1798,15 +1827,14 @@ async function handleStartLearningForTarget({ tabId } = {}) {
     };
   }
   if (!resolution.matched) {
+    // Favorite network failure / 401 (the P7 handoff ran inside the
+    // core) / unconfigured / the 已收藏-无学习源 inconsistency: the
+    // helper's final verdict carries the copy — the error surfaces,
+    // nothing starts. The favorite that DID land is kept — the retry
+    // re-resolves first.
     resolution = await favoriteLearningTarget(target);
     if (!resolution.ok) {
-      // Favorite network failure / 401 (the P7 handoff ran inside the
-      // core) / unconfigured: the error surfaces, nothing starts. The
-      // favorite that DID land is kept — the retry re-resolves first.
-      return { success: false, error: resolution.message || "收藏失败，请稍后重试。" };
-    }
-    if (!resolution.matched) {
-      return { success: false, error: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。" };
+      return { success: false, error: resolution.message };
     }
   }
   const started = await handleStartLearning({ url: target.url, tabId: target.tabId, title: target.title });
@@ -3821,14 +3849,11 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
     // Ticket 5.6 (#95): the icon path's needsFavorite branch is retired —
     // an unmatched page favorites inline (P8 collect core) and re-resolves
     // (decision-1 idempotence: the SAME Source comes back), then the start
-    // proceeds. A favorite failure surfaces its own message and nothing
-    // starts; the favorite that DID land is kept for the retry.
+    // proceeds. The helper's final verdict carries every failure copy; the
+    // favorite that DID land is kept for the retry.
     resolution = await favoriteLearningTarget(collectTarget);
     if (!resolution.ok) {
-      return { success: false, error: resolution.message || "收藏失败，请稍后重试。" };
-    }
-    if (!resolution.matched || !resolution.source?.id) {
-      return { success: false, error: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。" };
+      return { success: false, error: resolution.message };
     }
   }
   const created = await postSessionCreate(settings, credential, resolution.source.id);

@@ -647,6 +647,14 @@ test("an unavailable capture keeps the direct failure and falls back to ASR", as
     { available: false, reason: "timedtext_failed" },
     "the direct failure's reason is preserved in the durable state",
   );
+  // r5-7 review fix: the injection failure is observable — the page-scope
+  // breadcrumb channel carries the capture_unavailable verdict with the
+  // failing URL.
+  const breadcrumb = helpers.readStored("ytd_last_page_scope");
+  assert.ok(breadcrumb, "the injection failure leaves a storage breadcrumb");
+  assert.equal(breadcrumb.outcome, "capture_unavailable");
+  assert.equal(breadcrumb.url, YT_WATCH);
+  assert.equal(breadcrumb.detail, "cannot inject into tab");
 
   await helpers.handleEndLearning();
 });

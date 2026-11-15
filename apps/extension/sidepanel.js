@@ -395,8 +395,27 @@ function setupEventListeners() {
   // Ticket 5.4 (#93): the guide's settings entry — the learning-service
   // address lives in the options page, and the gate hides the header's
   // 设置 button. Direct openOptionsPage call from the panel (no round-trip).
+  // r5-7 review fix: a refused open must not become an unhandled rejection
+  // — the failure lands in the storage breadcrumb channel (the same
+  // `{ at, ... }` shape the worker's breadcrumbs use) beside the console
+  // line.
   document.getElementById("authGateSettingsBtn")?.addEventListener("click", () => {
-    chrome.runtime.openOptionsPage();
+    void (async () => {
+      try {
+        await chrome.runtime.openOptionsPage();
+      } catch (error) {
+        console.error("[Learning Digest] 打开设置页失败:", error?.message || error);
+        chrome.storage.local
+          .set({
+            ytd_last_options_open: {
+              at: Date.now(),
+              outcome: "failed",
+              detail: error?.message || "open-failed",
+            },
+          })
+          .catch(() => {});
+      }
+    })();
   });
   document.getElementById("authRecheckBtn")?.addEventListener("click", () => {
     void (async () => {

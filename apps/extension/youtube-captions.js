@@ -325,10 +325,15 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
         if (settled) return;
         settled = true;
         restore();
-        if (
-          !captionsInitiallyOn &&
-          button.getAttribute("aria-pressed") === "true"
-        ) {
+        // The forced toggle must not change the user's caption state: bring
+        // the button back to its initial aria-pressed from BOTH sides
+        // (r5-7 review fix — a capture cut off between the initially-on
+        // run's two clicks, e.g. by an out-of-band pot request or the
+        // timeout firing before the re-enable, used to leave captions
+        // silently off).
+        const pressedNow =
+          button.getAttribute("aria-pressed") === "true";
+        if (pressedNow !== captionsInitiallyOn) {
           button.click();
         }
         resolve(url);

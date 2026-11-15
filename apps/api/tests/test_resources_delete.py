@@ -10,25 +10,31 @@ disk to pin the one-snapshot persistence.
 
 Pinned here: the cascade empties sources/progress/notes/sessions/
 transcripts/sessionInsights/sessionDigests/summaries for the deleted
-resource while the usage ledger stays (账目不随删除消失, D23); D2
-isolation (unknown id, other account, repeat delete — deletion is
-terminal, no tombstone); resolve answers no-match after a delete; the
-same URL can be re-favorited as a NEW resource; other resources of the
-same account are untouched.
+resource while the usage ledger stays (账目不随删除消失, D23); the
+review-fix addendum — the Sessions' transcriptionTasks rows leave with
+the resource and the audio files D14 kept for failed results are swept
+(D23 追加注记); D2 isolation (unknown id, other account, repeat delete —
+deletion is terminal, no tombstone); resolve answers no-match after a
+delete; the same URL can be re-favorited as a NEW resource; other
+resources of the same account are untouched.
 """
 
 import json
+import os
 
 from helpers import (
+    audio_example,
     auth_header,
     create_fixture_source,
     error_example,
+    make_audio_dir,
     open_account,
     open_session,
 )
 
 EMAIL_A = "delete-a@example.com"
 EMAIL_B = "delete-b@example.com"
+WORKER_TOKEN = "worker-service-token-delete-01"
 
 CAPTION_SEGMENTS = [
     {"startMs": 30000, "endMs": 60000, "text": "注意力分数的计算，就是把查询向量和键向量做点积"},
@@ -314,3 +320,78 @@ def test_deleting_one_resource_leaves_the_others_of_the_same_account_untouched(s
     )
     assert detail.status == 200
     assert detail.json["resource"]["id"] == survivor["resource"]["id"]
+
+
+def test_delete_cascades_transcription_tasks_and_failed_audio_files(start_app):
+    """D23 addendum (review fix): the audio queue hangs off the Sessions —
+    the resource delete takes its transcriptionTasks rows with it, and the
+    temp audio D14 kept for failed results does not outlive the dead rows
+    (the same delete_audio_file seam the done write-back uses). The usage
+    ledger still does not move."""
+    audio_dir = make_audio_dir()
+    app = start_app(
+        seed_emails=[EMAIL_A],
+        config={"audio_dir": audio_dir, "worker_token": WORKER_TOKEN},
+    )
+    token = open_account(app, EMAIL_A)
+    material = build_full_material(app, token)
+    resource_id = material["resource"]["id"]
+
+    # One ASR session on the same resource: upload a segment, claim it,
+    # and answer failed — D14 keeps the audio file from here on.
+    session = open_session(app, token, material["source"]["id"])
+    uploaded = app.request(
+        "POST",
+        f"/v1/sessions/{session['id']}/audio-segments",
+        headers=auth_header(token),
+        body=audio_example("api-audio-segment-upload")["request"]["body"],
+    )
+    assert uploaded.status == 201, uploaded.json
+    claimed = app.request(
+        "POST",
+        "/v1/worker/tasks/claim",
+        headers=auth_header(WORKER_TOKEN),
+        body={"limit": 1},
+    )
+    assert claimed.status == 200, claimed.json
+    task = claimed.json["tasks"][0]
+    failed = app.request(
+        "POST",
+        f"/v1/worker/tasks/{task['taskId']}/result",
+        headers=auth_header(WORKER_TOKEN),
+        body={
+            "status": "failed",
+            "error": {"code": "transcription_failed", "message": "Speech Provider 返回 429，重试后仍失败"},
+        },
+    )
+    assert failed.status == 200, failed.json
+    stored = app.store.get("transcriptionTasks", task["taskId"])
+    assert stored["status"] == "failed"
+    assert stored["audioFile"].startswith(audio_dir)
+    assert os.path.exists(stored["audioFile"]), "D14: failed audio is retained"
+    assert app.store.count("transcriptionTasks") == 1
+
+    usage_before = app.request("GET", "/v1/usage", headers=auth_header(token))
+    assert usage_before.status == 200
+
+    response = app.request(
+        "DELETE", f"/v1/resources/{resource_id}", headers=auth_header(token)
+    )
+    assert response.status == 200
+
+    # The dead task rows leave with the resource, and the failed audio
+    # does not outlive them.
+    assert app.store.count("transcriptionTasks") == 0
+    assert not os.path.exists(stored["audioFile"])
+    # The ledger stays (D23): usage is byte-identical after the delete —
+    # the failed result never accrued audioSeconds and the delete does not
+    # roll anything back.
+    usage_after = app.request("GET", "/v1/usage", headers=auth_header(token))
+    assert usage_after.status == 200
+    assert usage_after.json == usage_before.json
+
+    # One-snapshot persistence: a fresh store loading the same file sees
+    # no transcriptionTasks either.
+    reloaded_store = json.loads(open(app.store.file, encoding="utf-8").read())
+    assert reloaded_store.get("transcriptionTasks", {}) == {}
+    assert reloaded_store["usage"] != {}

@@ -265,6 +265,7 @@ GET /v1/usage 的 Usage 在 contract-r4 §6.3 的六键之上追加四个键（�
   | `sessionInsights` | sessionId | 上述全部 Session 的滚动概览 |
   | `sessionDigests` | sessionId | 上述全部 Session 的学习纪要 |
   | `summaries` | resourceId（summary.id 为行键） | 该 Resource 的历次课程总结 |
+  | `transcriptionTasks` | taskId | 上述全部 Session 的转写任务行（审查修复补入；任务行的临时音频文件——含 D14 为 failed 保留的——随级联删除，见 decisions D23 追加注记） |
 - **usage 不删（D23）**：`GET /v1/usage` 的账目（audioSeconds、summaryCount/summaryInputChars、rollingSummary/digest/explain 各键）原样保留——账目记录的是已经发生且计过的真实消耗，不随资料删除回滚（只记录不计费，D18；无扣减路径）。
 - 成功 200 `{"deleted": true}`：响应体只有这一个键，级联清空的集合不逐项回执。删除后：GET /v1/resources 列表不含该项；GET /v1/resources/{id} 详情 404；被删 Session 的 transcript/overview/digest 读端点 404（`学习记录不存在或无权访问`）；被删 Resource 的 summaries 列表 404；`POST /v1/sources/resolve` 对同 URL 返回 `matched: false`；同 URL 重新收藏按新建处理（201，新 Resource + 新 Source，不与已删 id 产生任何关联）。
 - **删除即终态（D23，无幂等保留）**：重复 DELETE 是同一个 404——不设墓碑、不区分「刚删过」与「从未存在」（D2 封套 `资源不存在或无权访问`）；客户端的「已被另一端删除」场景按 404 呈现即可。

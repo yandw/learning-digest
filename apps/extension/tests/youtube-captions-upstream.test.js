@@ -507,6 +507,24 @@ test("capturing the player's pot-bearing request restores captions that were ori
   assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
 });
 
+test("a capture cut off between the initially-on clicks still leaves captions on", async () => {
+  // r5-7 review fix: with captions initially on, the forced toggle runs
+  // off -> (100ms) -> on. A pot-bearing request the player issues on its
+  // own DURING the off window (quality change, ad break) finishes the
+  // capture before the re-enable click — finish() must still bring the
+  // switch back to the user's on state from that side too.
+  const harness = createCaptureHarness({ captionsInitiallyOn: true });
+  const pending = harness.capture("KvLw1234567", 8000);
+  assert.equal(harness.button.pressed, false, "the first click toggles off");
+
+  await harness.window.fetch(CAPTURED_REQUEST);
+
+  assert.equal(await pending, CAPTURED_REQUEST);
+  assert.equal(harness.button.pressed, true, "the switch is restored to on");
+  assert.equal(harness.window.fetch, harness.originalFetch);
+  assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
+});
+
 test("capturing leaves captions on when they were already on", async () => {
   // Initially on: capture clicks the switch off, the 100ms re-enable timer
   // clicks it back on (the fresh authorized request), and the switch ends

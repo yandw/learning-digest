@@ -6,11 +6,17 @@
       "id": "error-unauthorized-missing-token",
       "description": "未登录：请求未携带任何凭据，返回 401",
       "auth": "none",
-      "endpoint": { "method": "GET", "path": "/v1/resources" },
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/resources"
+      },
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
         }
       }
     },
@@ -18,7 +24,10 @@
       "id": "error-unauthorized-expired-token",
       "description": "凭据失效：Web 与插件联动退出后旧凭据访问受保护接口，返回 401",
       "auth": "expired",
-      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources"
+      },
       "request": {
         "body": {
           "url": "https://www.bilibili.com/video/BV1tx421c7ab",
@@ -28,7 +37,10 @@
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "凭据已失效，请重新登录并关联" }
+          "error": {
+            "code": "unauthorized",
+            "message": "凭据已失效，请重新登录并关联"
+          }
         }
       }
     },
@@ -36,11 +48,17 @@
       "id": "error-cross-account-resource",
       "description": "跨账号隔离：用有效凭据读取另一账号的资料，按 404 处理，不透露存在性",
       "auth": "valid",
-      "endpoint": { "method": "GET", "path": "/v1/resources/res_01JZZZZ9999" },
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/resources/res_01JZZZZ9999"
+      },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "资源不存在或无权访问"
+          }
         }
       }
     },
@@ -48,14 +66,23 @@
       "id": "error-cross-account-progress",
       "description": "跨账号隔离：对另一账号的来源写进度，返回 404，不产生任何写入",
       "auth": "valid",
-      "endpoint": { "method": "PUT", "path": "/v1/sources/src_01JZZZZ9998/progress" },
+      "endpoint": {
+        "method": "PUT",
+        "path": "/v1/sources/src_01JZZZZ9998/progress"
+      },
       "request": {
-        "body": { "positionMs": 60000, "expectedRevision": 0 }
+        "body": {
+          "positionMs": 60000,
+          "expectedRevision": 0
+        }
       },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "来源不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "来源不存在或无权访问"
+          }
         }
       }
     },
@@ -63,15 +90,27 @@
       "id": "error-progress-conflict",
       "description": "过期进度写入：expectedRevision=1 已过期（服务端已到 revision 2），返回 409 与当前进度",
       "auth": "valid",
-      "endpoint": { "method": "PUT", "path": "/v1/sources/src_01JABC0002/progress" },
+      "endpoint": {
+        "method": "PUT",
+        "path": "/v1/sources/src_01JABC0002/progress"
+      },
       "request": {
-        "body": { "positionMs": 999000, "expectedRevision": 1 }
+        "body": {
+          "positionMs": 999000,
+          "expectedRevision": 1
+        }
       },
       "response": {
         "status": 409,
         "body": {
-          "error": { "code": "progress_revision_conflict", "message": "进度已被其他端更新，请以 current 为准重试" },
-          "current": { "positionMs": 250000, "revision": 2 }
+          "error": {
+            "code": "progress_revision_conflict",
+            "message": "进度已被其他端更新，请以 current 为准重试"
+          },
+          "current": {
+            "positionMs": 250000,
+            "revision": 2
+          }
         }
       }
     },
@@ -79,17 +118,27 @@
       "id": "error-unauthorized-resolve",
       "description": "解析来源同样要求有效凭据：失效凭据调用 resolve 返回 401，不泄露任何匹配结果",
       "auth": "expired",
-      "endpoint": { "method": "POST", "path": "/v1/sources/resolve" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sources/resolve"
+      },
       "request": {
         "body": {
           "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
-          "identity": { "platformId": "bilibili", "platformVideoId": "BV1ab411L78c", "episodeId": "2" }
+          "identity": {
+            "platformId": "bilibili",
+            "platformVideoId": "BV1ab411L78c",
+            "episodeId": "2"
+          }
         }
       },
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "凭据已失效，请重新登录并关联" }
+          "error": {
+            "code": "unauthorized",
+            "message": "凭据已失效，请重新登录并关联"
+          }
         }
       }
     },
@@ -97,7 +146,10 @@
       "id": "error-cross-account-note-create",
       "description": "跨账号隔离：向另一账号的资料写笔记，返回 404，不产生任何写入",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JZZZZ9999/notes" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources/res_01JZZZZ9999/notes"
+      },
       "request": {
         "body": {
           "clientRequestId": "note-req-003",
@@ -107,7 +159,10 @@
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "资源不存在或无权访问"
+          }
         }
       }
     },
@@ -115,7 +170,10 @@
       "id": "error-validation-failed-empty-note-text",
       "description": "笔记正文为空：返回 400",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/notes" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources/res_01JABC0001/notes"
+      },
       "request": {
         "body": {
           "clientRequestId": "note-req-004",
@@ -125,7 +183,10 @@
       "response": {
         "status": 400,
         "body": {
-          "error": { "code": "validation_failed", "message": "笔记正文不能为空" }
+          "error": {
+            "code": "validation_failed",
+            "message": "笔记正文不能为空"
+          }
         }
       }
     },
@@ -133,14 +194,23 @@
       "id": "error-invalid-url",
       "description": "收藏非网页地址：服务端校验 URL 类型，仅接受 http(s)，返回 400",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources"
+      },
       "request": {
-        "body": { "url": "ftp://files.example.com/course.zip", "title": "课程压缩包" }
+        "body": {
+          "url": "ftp://files.example.com/course.zip",
+          "title": "课程压缩包"
+        }
       },
       "response": {
         "status": 400,
         "body": {
-          "error": { "code": "invalid_url", "message": "仅支持 http(s) 网页地址" }
+          "error": {
+            "code": "invalid_url",
+            "message": "仅支持 http(s) 网页地址"
+          }
         }
       }
     },
@@ -148,14 +218,22 @@
       "id": "error-validation-failed-missing-url",
       "description": "收藏请求缺少 url 字段：返回 400",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources"
+      },
       "request": {
-        "body": { "title": "没有地址的收藏" }
+        "body": {
+          "title": "没有地址的收藏"
+        }
       },
       "response": {
         "status": 400,
         "body": {
-          "error": { "code": "validation_failed", "message": "缺少必填字段 url" }
+          "error": {
+            "code": "validation_failed",
+            "message": "缺少必填字段 url"
+          }
         }
       }
     },
@@ -163,14 +241,20 @@
       "id": "error-session-create-unauthorized",
       "description": "第二轮 · 未登录开学习：Session 创建同样要求有效凭据，未携带凭据返回 401（401 语义沿用 D2 家族约定）",
       "auth": "none",
-      "endpoint": { "method": "POST", "path": "/v1/sources/src_01JABC0002/sessions" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sources/src_01JABC0002/sessions"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
         }
       }
     },
@@ -178,14 +262,20 @@
       "id": "error-session-create-cross-account-source",
       "description": "第二轮 · 跨账号隔离：对另一账号的来源创建学习 Session，返回 404，不创建任何数据",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/sources/src_01JZZZZ9998/sessions" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sources/src_01JZZZZ9998/sessions"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "来源不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "来源不存在或无权访问"
+          }
         }
       }
     },
@@ -193,14 +283,20 @@
       "id": "error-session-finish-already-finished",
       "description": "第二轮 · 已结束 Session 再收尾：finish 只对 active Session 有效，重复收尾返回 409 session_already_finished",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0031/finish" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0031/finish"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 409,
         "body": {
-          "error": { "code": "session_already_finished", "message": "本次学习已结束，无需重复收尾" }
+          "error": {
+            "code": "session_already_finished",
+            "message": "本次学习已结束，无需重复收尾"
+          }
         }
       }
     },
@@ -208,11 +304,17 @@
       "id": "error-cross-account-session-transcript",
       "description": "第二轮 · 跨账号隔离：读取另一账号 Session 的逐字稿，返回 404，不透露存在性（ses_01JZZZZ 为另一账号的 Session）",
       "auth": "valid",
-      "endpoint": { "method": "GET", "path": "/v1/sessions/ses_01JZZZZ9997/transcript" },
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/sessions/ses_01JZZZZ9997/transcript"
+      },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "学习记录不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "学习记录不存在或无权访问"
+          }
         }
       }
     },
@@ -220,7 +322,10 @@
       "id": "error-audio-segment-after-finish",
       "description": "第二轮 · 已结束 Session 收到音频：上传只对 active Session 有效，返回 409 session_already_finished，不产生任何写入（在途重发收到 409 后应停止上传）",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0031/audio-segments" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0031/audio-segments"
+      },
       "request": {
         "body": {
           "segmentIndex": 0,
@@ -233,7 +338,10 @@
       "response": {
         "status": 409,
         "body": {
-          "error": { "code": "session_already_finished", "message": "本次学习已结束，不再接收音频" }
+          "error": {
+            "code": "session_already_finished",
+            "message": "本次学习已结束，不再接收音频"
+          }
         }
       }
     },
@@ -241,7 +349,10 @@
       "id": "error-audio-segment-invalid-index",
       "description": "第二轮 · 段元数据非法：segmentIndex 为负数（或缺失、非整数）返回 400",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/audio-segments"
+      },
       "request": {
         "body": {
           "segmentIndex": -1,
@@ -254,7 +365,10 @@
       "response": {
         "status": 400,
         "body": {
-          "error": { "code": "validation_failed", "message": "segmentIndex 必须是不小于 0 的整数" }
+          "error": {
+            "code": "validation_failed",
+            "message": "segmentIndex 必须是不小于 0 的整数"
+          }
         }
       }
     },
@@ -262,7 +376,10 @@
       "id": "error-audio-segment-too-large",
       "description": "第二轮 · 音频超限：audioBase64 超过 10MB 编码上限（样例体以占位串示意，实际请求为超限音频）返回 400；约 30s 段的常规体积远低于该上限",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/audio-segments" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/audio-segments"
+      },
       "request": {
         "body": {
           "segmentIndex": 4,
@@ -275,7 +392,10 @@
       "response": {
         "status": 400,
         "body": {
-          "error": { "code": "validation_failed", "message": "音频超过 10MB 编码上限" }
+          "error": {
+            "code": "validation_failed",
+            "message": "音频超过 10MB 编码上限"
+          }
         }
       }
     },
@@ -283,18 +403,28 @@
       "id": "error-transcript-origin-conflict",
       "description": "第二轮 · 同区间单一路径（D15）：ses_01JABC0033 已按 ASR 路径锁定（音频段已入库），再提交字幕返回 409 transcript_origin_conflict；反向（字幕路径 Session 提交音频）同样 409。强制转写应在提交任何归档前决定路径",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/sessions/ses_01JABC0033/captions" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/sessions/ses_01JABC0033/captions"
+      },
       "request": {
         "body": {
           "segments": [
-            { "startMs": 0, "endMs": 30000, "text": "不应落库的字幕" }
+            {
+              "startMs": 0,
+              "endMs": 30000,
+              "text": "不应落库的字幕"
+            }
           ]
         }
       },
       "response": {
         "status": 409,
         "body": {
-          "error": { "code": "transcript_origin_conflict", "message": "本次学习已按音频转写归档，同一区间只采用一种方式" }
+          "error": {
+            "code": "transcript_origin_conflict",
+            "message": "本次学习已按音频转写归档，同一区间只采用一种方式"
+          }
         }
       }
     },
@@ -302,14 +432,22 @@
       "id": "error-worker-claim-unauthorized",
       "description": "第二轮 · Worker 凭据：任务领取只接受 Worker 凭据（与用户凭据分离），缺失或无效返回 401",
       "auth": "none",
-      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/claim" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/worker/tasks/claim"
+      },
       "request": {
-        "body": { "limit": 3 }
+        "body": {
+          "limit": 3
+        }
       },
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "Worker 凭据缺失或无效" }
+          "error": {
+            "code": "unauthorized",
+            "message": "Worker 凭据缺失或无效"
+          }
         }
       }
     },
@@ -317,7 +455,10 @@
       "id": "error-worker-result-unknown-task",
       "description": "第二轮 · 回写未知任务：taskId 不存在或不属于本 Worker 可见范围，返回 404（已终态任务的重发是 200 幂等，不是 404）",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/worker/tasks/tsk_01JZZZZ9999/result" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/worker/tasks/tsk_01JZZZZ9999/result"
+      },
       "request": {
         "body": {
           "status": "done",
@@ -327,7 +468,10 @@
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "任务不存在" }
+          "error": {
+            "code": "not_found",
+            "message": "任务不存在"
+          }
         }
       }
     },
@@ -335,14 +479,20 @@
       "id": "error-summary-generate-unauthorized",
       "description": "第三轮 · 未登录生成总结：课程总结同样要求有效凭据，未携带凭据返回 401",
       "auth": "none",
-      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/summaries" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources/res_01JABC0001/summaries"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
         }
       }
     },
@@ -350,14 +500,20 @@
       "id": "error-summary-generate-cross-account",
       "description": "第三轮 · 跨账号隔离：对另一账号的资料生成总结，返回 404，不发起任何生成（D2）",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JZZZZ9999/summaries" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources/res_01JZZZZ9999/summaries"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "资源不存在或无权访问"
+          }
         }
       }
     },
@@ -365,14 +521,20 @@
       "id": "error-summary-generate-no-transcript",
       "description": "第三轮 · 无逐字稿可生成：该 Resource 名下没有任何已归档逐字稿记录（res_01JABC0010 是普通网页，从未开始学习；只有 gaps/failed/静音段同样算无文本），返回 409，不发起 AI 调用、不产生记录",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0010/summaries" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources/res_01JABC0010/summaries"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 409,
         "body": {
-          "error": { "code": "no_transcript_to_summarize", "message": "这门资料还没有可总结的逐字稿，先学习并归档后再生成" }
+          "error": {
+            "code": "no_transcript_to_summarize",
+            "message": "这门资料还没有可总结的逐字稿，先学习并归档后再生成"
+          }
         }
       }
     },
@@ -380,14 +542,20 @@
       "id": "error-summary-generate-failed",
       "description": "第三轮 · 生成失败反馈形态（D16）：AI Provider 调用失败/超时/返回不可解析，返回 502；不落脏数据——不产生 Summary 记录，列表与用量不出现本次尝试，重试即用户再次发起",
       "auth": "valid",
-      "endpoint": { "method": "POST", "path": "/v1/resources/res_01JABC0001/summaries" },
+      "endpoint": {
+        "method": "POST",
+        "path": "/v1/resources/res_01JABC0001/summaries"
+      },
       "request": {
         "body": {}
       },
       "response": {
         "status": 502,
         "body": {
-          "error": { "code": "summary_generation_failed", "message": "总结生成失败，请稍后重试；本次尝试不产生总结记录" }
+          "error": {
+            "code": "summary_generation_failed",
+            "message": "总结生成失败，请稍后重试；本次尝试不产生总结记录"
+          }
         }
       }
     },
@@ -395,11 +563,17 @@
       "id": "error-summaries-list-cross-account",
       "description": "第三轮 · 跨账号隔离：读取另一账号资料的总结列表，返回 404，不透露存在性",
       "auth": "valid",
-      "endpoint": { "method": "GET", "path": "/v1/resources/res_01JZZZZ9999/summaries" },
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/resources/res_01JZZZZ9999/summaries"
+      },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "资源不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "资源不存在或无权访问"
+          }
         }
       }
     },
@@ -407,11 +581,17 @@
       "id": "error-cross-account-summary",
       "description": "第三轮 · 跨账号隔离：读取另一账号的总结详情，返回 404（sum_01JZZZZ 为另一账号的总结）",
       "auth": "valid",
-      "endpoint": { "method": "GET", "path": "/v1/summaries/sum_01JZZZZ9996" },
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/summaries/sum_01JZZZZ9996"
+      },
       "response": {
         "status": 404,
         "body": {
-          "error": { "code": "not_found", "message": "总结不存在或无权访问" }
+          "error": {
+            "code": "not_found",
+            "message": "总结不存在或无权访问"
+          }
         }
       }
     },
@@ -419,11 +599,145 @@
       "id": "error-usage-unauthorized",
       "description": "第三轮 · 未登录查用量：GET /v1/usage 要求有效凭据，未携带凭据返回 401",
       "auth": "none",
-      "endpoint": { "method": "GET", "path": "/v1/usage" },
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/usage"
+      },
       "response": {
         "status": 401,
         "body": {
-          "error": { "code": "unauthorized", "message": "未登录或凭据缺失" }
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-site-capabilities-unauthorized",
+      "description": "第四轮 · 未登录读站点能力表：GET /v1/site-capabilities 任何登录用户可读，未携带凭据返回 401",
+      "auth": "none",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/site-capabilities"
+      },
+      "response": {
+        "status": 401,
+        "body": {
+          "error": {
+            "code": "unauthorized",
+            "message": "未登录或凭据缺失"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-admin-site-capabilities-not-admin",
+      "description": "第四轮 · 非管理员访问管理面：GET /v1/admin/site-capabilities 要求 account.isAdmin；非管理员一律 404，不透露端点存在性（D2 语义）",
+      "auth": "valid",
+      "endpoint": {
+        "method": "GET",
+        "path": "/v1/admin/site-capabilities"
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "not_found",
+            "message": "接口不存在或无权访问"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-admin-site-capability-unknown-platform",
+      "description": "第四轮 · 未知平台：PUT /v1/admin/site-capabilities/{platformId} 只接受种子过的 platformId，未知平台返回 404",
+      "auth": "valid",
+      "endpoint": {
+        "method": "PUT",
+        "path": "/v1/admin/site-capabilities/douyin"
+      },
+      "request": {
+        "body": {
+          "captions": true
+        }
+      },
+      "response": {
+        "status": 404,
+        "body": {
+          "error": {
+            "code": "not_found",
+            "message": "平台不存在"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-admin-site-capability-invalid-field",
+      "description": "第四轮 · 字段校验：PUT 请求体的 captions/asr/enabled 必须是布尔值，非布尔返回 400",
+      "auth": "valid",
+      "endpoint": {
+        "method": "PUT",
+        "path": "/v1/admin/site-capabilities/bilibili"
+      },
+      "request": {
+        "body": {
+          "captions": "yes"
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "validation_failed",
+            "message": "captions 必须是布尔值"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-admin-site-capability-unknown-field",
+      "description": "第四轮 · 更新体只能是 {captions?, asr?, enabled?} 的子集：出现集合外的字段返回 400",
+      "auth": "valid",
+      "endpoint": {
+        "method": "PUT",
+        "path": "/v1/admin/site-capabilities/bilibili"
+      },
+      "request": {
+        "body": {
+          "volume": true
+        }
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "validation_failed",
+            "message": "不支持的字段 volume"
+          }
+        }
+      }
+    },
+    {
+      "id": "error-admin-site-capability-body-not-object",
+      "description": "第四轮 · 更新体必须是 JSON 对象：数组/字符串等非对象体返回 400",
+      "auth": "valid",
+      "endpoint": {
+        "method": "PUT",
+        "path": "/v1/admin/site-capabilities/bilibili"
+      },
+      "request": {
+        "body": [
+          "captions"
+        ]
+      },
+      "response": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "validation_failed",
+            "message": "请求体必须是对象"
+          }
         }
       }
     }

@@ -63,10 +63,14 @@ def open_or_login(
     opened = False
     if not account:
         opened = True
+        # Round 4 (issue #86): invitation marks — an invite flagged --admin
+        # opens the account as an admin; every other origin opens plain.
+        invite = store.get("invites", email)
         account = {
             "id": generate_id("acc"),
             "email": email,
             "createdAt": iso_from_ms(at_ms),
+            "isAdmin": bool(invite.get("isAdmin", False)) if invite else False,
         }
         store.set("accounts", email, account)
 

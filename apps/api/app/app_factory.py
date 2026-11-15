@@ -29,8 +29,10 @@ from .mailer import create_memory_mailer
 from .persistence import create_memory_store
 from .routes_auth import register_auth_routes
 from .routes_resources import register_resources_routes
+from .routes_site_capabilities import register_site_capabilities_routes
 from .routes_sessions import register_sessions_routes
 from .routes_summaries import register_summaries_routes
+from .site_capabilities import seed_site_capabilities
 
 
 def _default_now() -> int:
@@ -54,6 +56,11 @@ def create_app(
     # Invited emails are data: the seed file is loaded into the store on
     # every startup, idempotently (the invite CLI adds more at runtime).
     load_seed_invites(store, seed_file, now)
+
+    # Site capabilities are data too (round 4, issue #86): the known
+    # platforms get their default row on every startup — missing rows
+    # only, so admin edits survive restarts.
+    seed_site_capabilities(store)
 
     # D16: the AI Provider is resolved ONCE at startup — an unknown name or
     # a keyless qwen selection fails closed here, never per-request. Tests
@@ -80,6 +87,7 @@ def create_app(
     register_resources_routes(app, ctx)
     register_sessions_routes(app, ctx)
     register_summaries_routes(app, ctx)
+    register_site_capabilities_routes(app, ctx)
     return app
 
 

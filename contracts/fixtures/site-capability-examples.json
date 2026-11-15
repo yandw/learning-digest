@@ -1,0 +1,69 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "第四轮固定样例：站点能力注册表（GET /v1/site-capabilities、GET /v1/admin/site-capabilities、PUT /v1/admin/site-capabilities/{platformId}）与管理员标记（GET /v1/me 的 account.isAdmin）。能力行固定为 { platformId, captions, asr, enabled }，全布尔语义；种子默认见 contract-r4.md §2。错误样例追加在 error-examples.json 尾部（error-*site-capability* 系列）。",
+  "samples": [
+    {
+      "id": "api-site-capabilities-list",
+      "description": "普通用户读全表：任何登录用户可读，插件据此决定各平台的字幕/ASR/禁用行为。表为启动种子后的完整集合（种子默认，管理员未做修改时）",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/site-capabilities" },
+      "response": {
+        "status": 200,
+        "body": {
+          "capabilities": [
+            { "platformId": "bilibili", "captions": true, "asr": true, "enabled": true },
+            { "platformId": "youtube", "captions": true, "asr": true, "enabled": true },
+            { "platformId": "xiaoe", "captions": false, "asr": true, "enabled": true },
+            { "platformId": "xiaohongshu", "captions": false, "asr": true, "enabled": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "api-admin-site-capabilities-list",
+      "description": "管理员读全表：与普通用户 GET 同构（同一张表，不设分歧投影）。非管理员访问返回 404（D2，见 error-admin-site-capabilities-not-admin）",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/admin/site-capabilities" },
+      "response": {
+        "status": 200,
+        "body": {
+          "capabilities": [
+            { "platformId": "bilibili", "captions": true, "asr": true, "enabled": true },
+            { "platformId": "youtube", "captions": true, "asr": true, "enabled": true },
+            { "platformId": "xiaoe", "captions": false, "asr": true, "enabled": true },
+            { "platformId": "xiaohongshu", "captions": false, "asr": true, "enabled": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "api-admin-site-capability-update",
+      "description": "管理员改一行：PUT 请求体是 {captions?, asr?, enabled?} 的任意布尔子集；未提及的字段保持原值，返回更新后的完整行。样例把 bilibili 的 captions 关掉（改走 ASR）",
+      "auth": "valid",
+      "endpoint": { "method": "PUT", "path": "/v1/admin/site-capabilities/bilibili" },
+      "request": { "body": { "captions": false } },
+      "response": {
+        "status": 200,
+        "body": {
+          "capability": { "platformId": "bilibili", "captions": false, "asr": true, "enabled": true }
+        }
+      }
+    },
+    {
+      "id": "api-me-admin-flag",
+      "description": "管理员标记：GET /v1/me 的 account 增加 isAdmin 布尔字段（管理员账号为 true，普通账号缺省 false）。标记入口是邀请 CLI（python -m app.invites add --admin，邀请即标记），没有翻转 isAdmin 的 API",
+      "auth": "valid",
+      "endpoint": { "method": "GET", "path": "/v1/me" },
+      "response": {
+        "status": 200,
+        "body": {
+          "account": {
+            "id": "acc_01JABC0090",
+            "email": "owner@example.com",
+            "isAdmin": true
+          }
+        }
+      }
+    }
+  ]
+}

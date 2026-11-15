@@ -39,6 +39,12 @@ def audio_example(example_id: str) -> dict:
     return next(s for s in _load("audio-task-examples.json")["samples"] if s["id"] == example_id)
 
 
+def site_capability_example(example_id: str) -> dict:
+    """Round-4 sample (site-capability-examples.json): the site capability
+    registry reads/updates and the me isAdmin marker."""
+    return next(s for s in _load("site-capability-examples.json")["samples"] if s["id"] == example_id)
+
+
 def matching_samples() -> list[dict]:
     return _load("source-matching.json")["samples"]
 
@@ -50,6 +56,27 @@ def auth_header(token: str) -> dict:
 def parse_ms(iso: str) -> int:
     """Date.parse equivalent for the fixture ISO timestamps (UTC, Z form)."""
     return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+ADMIN = "owner@example.com"
+LEARNER = "learner@example.com"
+
+
+def admin_app(start_app, tmp_path, email: str = ADMIN, other_invites: tuple = ()):
+    """An app whose store carries a CLI-marked admin invite, started the
+    way ops runs it (round 4, issue #86): `python -m app.invites add
+    --admin` writes the state file, the server loads it. `other_invites`
+    are plain invited emails in the same state file (for opening second,
+    non-admin accounts through the public flow). Returns the started
+    TestApp; open the accounts through the public flow."""
+    from app.invites import main as invites_main
+    from app.persistence import create_file_store
+
+    state_file = str(tmp_path / "admin-registry-state.json")
+    assert invites_main(["add", "--admin", email, "--file", state_file]) == 0
+    for invited in other_invites:
+        assert invites_main(["add", invited, "--file", state_file]) == 0
+    return start_app(store=create_file_store({"file": state_file}))
 
 
 def open_account(app, email: str) -> str:

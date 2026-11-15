@@ -110,7 +110,15 @@ def register_auth_routes(app, ctx: AppContext) -> None:
         )
         return JSONResponse(
             status_code=200,
-            content={"account": {"id": credential["accountId"], "email": account["email"] if account else None}},
+            content={
+                "account": {
+                    "id": credential["accountId"],
+                    "email": account["email"] if account else None,
+                    # Round 4 (issue #86): admin marker; legacy rows predate
+                    # the field and read as non-admin.
+                    "isAdmin": bool(account.get("isAdmin", False)) if account else False,
+                }
+            },
         )
 
     @app.post("/v1/auth/logout")

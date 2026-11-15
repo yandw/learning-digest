@@ -58,6 +58,24 @@ def not_found_session() -> ApiError:
     return ApiError(404, "not_found", "学习记录不存在或无权访问")
 
 
+def not_found_admin_surface() -> ApiError:
+    """Admin-surface requests from non-admins (contract-r4 §4; D2: the
+    same 404 an unknown path gets, so the endpoint's existence does not
+    leak to accounts without account.isAdmin)."""
+    return ApiError(404, "not_found", "接口不存在或无权访问")
+
+
+def not_found_platform() -> ApiError:
+    """Admin capability write against a platformId with no registry row
+    (contract-r4 §4): only seeded platforms are administrable."""
+    return ApiError(404, "not_found", "平台不存在")
+
+
+def validation_body_not_object() -> ApiError:
+    """Admin capability PUT with a non-object body (contract-r4 §4)."""
+    return ApiError(400, "validation_failed", "请求体必须是对象")
+
+
 def session_already_finished() -> ApiError:
     """Writes against a finished Session (contract-r2 §3.2: repeat finish)."""
     return ApiError(409, "session_already_finished", "本次学习已结束，无需重复收尾")

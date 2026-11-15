@@ -4,9 +4,11 @@ data in the store's `invites` collection, plus a seed file loaded at
 startup and this module's CLI entry (`python -m app.invites`) — no admin
 UI in round 1.
 
-Run `python -m app.invites add <email> ...` / `list` with `--file` pointing
-at the API's embedded store file (same file the server uses); default
-apps/api/data/state.json, overridable with LD_API_STATE_FILE.
+Run `python -m app.invites add [--admin] <email> ...` / `list` with
+`--file` pointing at the API's embedded store file (same file the server
+uses); default apps/api/data/state.json, overridable with
+LD_API_STATE_FILE. `--admin` (round 4, issue #86) marks the invite — and
+an already-opened account for the same email — as an admin.
 """
 
 from __future__ import annotations
@@ -35,19 +37,37 @@ def normalize_email(value: Any) -> str | None:
 
 
 def add_invite(
-    store: Any, email: str, now: Callable[[], int] | None = None
-) -> bool:
+    store: Any,
+    email: str,
+    now: Callable[[], int] | None = None,
+    admin: bool = False,
+) -> str:
+    """Register an invited email (idempotent). With ``admin=True`` the
+    invite is marked `isAdmin` — and if that email already opened an
+    account, the stored account is promoted too (round 4, issue #86: the
+    invite CLI is the only admin-marking tool; invitation marks). Returns
+    "registered", "marked-admin" or "already-invited"."""
     normalized = normalize_email(email)
     if not normalized:
         raise ValueError(f"invalid invite email: {email}")
-    if store.get("invites", normalized) is not None:
-        return False  # already registered, idempotent
-    at_ms = (now or _default_now)()
-    store.set("invites", normalized, {
-        "email": normalized,
-        "invitedAt": iso_from_ms(at_ms),
-    })
-    return True
+    existing = store.get("invites", normalized)
+    if existing is None:
+        at_ms = (now or _default_now)()
+        store.set("invites", normalized, {
+            "email": normalized,
+            "invitedAt": iso_from_ms(at_ms),
+            "isAdmin": admin,
+        })
+        return "registered"
+    if admin and not existing.get("isAdmin", False):
+        existing["isAdmin"] = True
+        store.set("invites", normalized, existing)
+        account = store.get("accounts", normalized)
+        if account is not None and not account.get("isAdmin", False):
+            account["isAdmin"] = True
+            store.set("accounts", normalized, account)
+        return "marked-admin"
+    return "already-invited"
 
 
 def is_invited(store: Any, email: str) -> bool:
@@ -110,24 +130,39 @@ def main(argv: list[str], env: dict | None = None) -> int:
     operands = args[1:]
 
     if command == "add":
-        if not operands:
-            sys.stderr.write("usage: python -m app.invites add <email> [...]\n")
+        # --admin may sit anywhere among the operands (`add user@x --admin`
+        # and `add --admin user@x` both mark the invite).
+        admin = "--admin" in operands
+        emails = [value for value in operands if value != "--admin"]
+        if not emails:
+            sys.stderr.write(
+                "usage: python -m app.invites add [--admin] <email> [...]\n"
+            )
             return 1
-        for email in operands:
+        for email in emails:
             if not normalize_email(email):
                 sys.stderr.write(f"invalid email: {email}\n")
                 return 1
-        for email in operands:
-            added = add_invite(store, email)
-            sys.stdout.write(
-                f"{'registered' if added else 'already invited'}: "
-                f"{normalize_email(email)}\n"
-            )
+        for email in emails:
+            normalized = normalize_email(email)
+            status = add_invite(store, email, admin=admin)
+            if status == "registered":
+                line = f"registered: {normalized}" + (" (admin)" if admin else "")
+            elif status == "marked-admin":
+                line = f"marked admin: {normalized}"
+            else:
+                record = store.get("invites", normalized)
+                already_admin = bool(record.get("isAdmin", False))
+                line = f"already invited: {normalized}" + (" (admin)" if already_admin else "")
+            sys.stdout.write(f"{line}\n")
         return 0
 
     if command == "list":
         for invite in store.list("invites"):
-            sys.stdout.write(f"{invite['email']}\tinvited {invite['invitedAt']}\n")
+            line = f"{invite['email']}\tinvited {invite['invitedAt']}"
+            if invite.get("isAdmin", False):
+                line += "\tadmin"
+            sys.stdout.write(f"{line}\n")
         sys.stdout.write(f"({store.count('invites')} invited email(s))\n")
         return 0
 

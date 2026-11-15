@@ -231,6 +231,16 @@ function endpointTemplate(method, pathname) {
     return "GET /v1/summaries/{id}";
   }
   if (method === "GET" && joined === "v1/usage") return "GET /v1/usage";
+  // Round-4 surface (contract-r4.md, ticket #86): the site capability
+  // registry — the user read, and the admin surface guarded by isAdmin.
+  // Round-4 error samples in error-examples.json classify here.
+  if (method === "GET" && joined === "v1/site-capabilities") return "GET /v1/site-capabilities";
+  if (method === "GET" && joined === "v1/admin/site-capabilities") {
+    return "GET /v1/admin/site-capabilities";
+  }
+  if (method === "PUT" && segs.length === 4 && segs[1] === "admin" && segs[2] === "site-capabilities") {
+    return "PUT /v1/admin/site-capabilities/{platformId}";
+  }
   return null;
 }
 

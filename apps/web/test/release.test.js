@@ -14,15 +14,14 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.6", () => {
+test("apps/web release metadata is 0.1.7", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
-  // 0.1.6 (round 3, ticket 3.3 / issue #75): the resource detail grows the
-  // user-initiated course summary (generate button + generating state,
-  // safe markdown body rendering, citation blocks with best-effort jump
-  // URLs, the generation history), and the account area grows the usage
-  // entry (GET /v1/usage read line, D18 只记录不计费).
-  assert.equal(packageJson.version, "0.1.6");
+  // 0.1.7 (round 4, ticket 6.2 / issue #87): the shell grows the
+  // administrator's 站点管理 surface (isAdmin-driven nav entry, the
+  // site-capability table with per-row boolean-subset saves, the D2
+  // non-admin denied view) over the round-4 admin API.
+  assert.equal(packageJson.version, "0.1.7");
   assert.equal(packageJson.private, true);
 });
 

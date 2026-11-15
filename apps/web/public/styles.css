@@ -169,6 +169,24 @@ form input:focus {
   font-weight: 600;
 }
 
+/* The nav entries are buttons (the admin entry is isAdmin-driven and
+   toggles the surface); the current surface reads darker. */
+.nav-btn {
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.nav-btn:disabled {
+  cursor: default;
+}
+
+.nav-btn.active {
+  color: var(--ink);
+  cursor: default;
+}
+
 .account {
   display: flex;
   align-items: center;
@@ -770,4 +788,67 @@ form input:focus {
 .citation-session {
   font-size: 13px;
   color: var(--ink-soft);
+}
+
+/* ---------- 站点管理（round 4, #87） ---------- */
+
+/* The admin site-capability table: one row per platform, three switches
+   plus the row-level save; the denied placeholder reuses .empty-state. */
+.admin-table {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-table thead th {
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-table tbody tr:last-child th,
+.admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.admin-platform {
+  font-weight: 600;
+}
+
+.admin-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.admin-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.admin-row-status {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.admin-row-status-error {
+  color: var(--danger);
+}
+
+.admin-save-btn {
+  padding: 4px 12px;
+  font-size: 13px;
 }

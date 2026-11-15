@@ -144,5 +144,22 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("GET", "/v1/usage");
   }
 
-  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage };
+  // Round-4 admin surface (contract-r4 §3.2/§3.3, ticket 6.2): the
+  // site-capability table read and the one-row boolean-subset patch. A 404
+  // here is the D2 non-admin answer ("接口不存在或无权访问") — deliberately
+  // NOT routed through the 401 interceptor (the credential is fine; the
+  // admin flow presents the envelope as its denied view). Like every other
+  // id-bearing path, the platformId is encoded so a hostile value can never
+  // change the path shape.
+  function getAdminSiteCapabilities() {
+    return request("GET", "/v1/admin/site-capabilities");
+  }
+
+  function updateAdminSiteCapability(platformId, patch) {
+    return request("PUT", `/v1/admin/site-capabilities/${encodeURIComponent(String(platformId))}`, {
+      body: patch,
+    });
+  }
+
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
 }

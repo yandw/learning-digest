@@ -29,6 +29,28 @@ const apiSummaryExampleById = new Map(
   ).samples.map((s) => [s.id, s]),
 );
 
+// Round-4 contract fixtures (site-capability-examples.json): the admin
+// surface shapes for the site-capability table read and the one-row
+// subset patch (contract-r4.md §3.2/§3.3), plus the me() admin flag.
+const siteCapabilityExampleById = new Map(
+  JSON.parse(
+    fs.readFileSync(
+      path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "..", "..", "contracts", "fixtures", "site-capability-examples.json"),
+      "utf8",
+    ),
+  ).samples.map((s) => [s.id, s]),
+);
+// The round-4 error samples live at the tail of error-examples.json (the
+// capability fixture's own description pins that location).
+const errorExampleById = new Map(
+  JSON.parse(
+    fs.readFileSync(
+      path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "..", "..", "contracts", "fixtures", "error-examples.json"),
+      "utf8",
+    ),
+  ).samples.map((s) => [s.id, s]),
+);
+
 // The page's API access seam (pure module over an injectable fetch). Every
 // request carries the stored credential as `Authorization: Bearer <token>`;
 // a 401 on an authenticated call means the credential expired or was
@@ -399,4 +421,77 @@ test("getUsage() GETs /v1/usage with the stored credential", async () => {
   assert.equal(result.data.audioSeconds, 120);
   assert.equal(result.data.summaryCount, 2);
   assert.equal(result.data.summaryInputChars, 4140);
+});
+
+// Round-4 admin surface (contract-r4 §3.2/§3.3, ticket 6.2 / issue #87):
+// the site-capability table read and the one-row subset patch. A 404 here
+// is the D2 non-admin answer ("接口不存在或无权访问") — NOT a 401, so it must
+// leave the credential and the login shell alone; the admin flow presents
+// it as the denied view.
+
+test("getAdminSiteCapabilities() GETs /v1/admin/site-capabilities with the stored credential", async () => {
+  const list = siteCapabilityExampleById.get("api-admin-site-capabilities-list").response.body;
+  const fetcher = fakeFetch([{ status: 200, body: list }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.getAdminSiteCapabilities();
+
+  assert.equal(fetcher.calls[0].path, "/v1/admin/site-capabilities");
+  assert.equal(fetcher.calls[0].init.method, "GET");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.equal(result.ok, true);
+  assert.equal(result.data.capabilities.length, 4);
+  assert.deepEqual(result.data.capabilities[0], {
+    platformId: "bilibili",
+    captions: true,
+    asr: true,
+    enabled: true,
+  });
+});
+
+test("updateAdminSiteCapability() PUTs the subset patch to the encoded platform path", async () => {
+  const update = siteCapabilityExampleById.get("api-admin-site-capability-update");
+  const fetcher = fakeFetch([{ status: 200, body: update.response.body }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  const result = await api.updateAdminSiteCapability("bilibili", update.request.body);
+
+  assert.equal(fetcher.calls[0].path, "/v1/admin/site-capabilities/bilibili");
+  assert.equal(fetcher.calls[0].init.method, "PUT");
+  assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
+  assert.deepEqual(JSON.parse(fetcher.calls[0].init.body), { captions: false });
+  assert.equal(result.ok, true);
+  assert.equal(result.data.capability.captions, false);
+});
+
+test("updateAdminSiteCapability() encodes unsafe platformId characters", async () => {
+  const fetcher = fakeFetch([{ status: 404, body: { error: { code: "not_found", message: "x" } } }]);
+  const api = createApiClient({ fetchImpl: fetcher.impl, credentials: credentialsWith("tok-1") });
+
+  await api.updateAdminSiteCapability("plat/../../etc", { enabled: false });
+
+  assert.equal(fetcher.calls[0].path, `/v1/admin/site-capabilities/${encodeURIComponent("plat/../../etc")}`);
+});
+
+test("admin 404 (non-admin) presents the envelope verbatim without touching the credential", async () => {
+  const notAdmin = errorExampleById.get("error-admin-site-capabilities-not-admin");
+  const fetcher = fakeFetch([{ status: 404, body: notAdmin.response.body }]);
+  let unauthorizedCalls = 0;
+  const credentials = credentialsWith("tok-1");
+  const api = createApiClient({
+    fetchImpl: fetcher.impl,
+    credentials,
+    onUnauthorized: () => {
+      unauthorizedCalls += 1;
+    },
+  });
+
+  const result = await api.getAdminSiteCapabilities();
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 404);
+  assert.equal(result.data.error.code, "not_found");
+  assert.equal(result.data.error.message, "接口不存在或无权访问");
+  assert.equal(unauthorizedCalls, 0);
+  assert.equal(credentials.get()?.token, "tok-1");
 });

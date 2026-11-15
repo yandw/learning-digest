@@ -60,7 +60,10 @@
       <header class="topbar">
         <div class="brand">Learning Digest 学习库</div>
         <nav class="topnav" aria-label="学习库导航">
-          <span class="nav-item">学习列表</span>
+          <button id="libraryNavBtn" type="button" class="nav-item nav-btn active">学习列表</button>
+          <!-- 站点管理入口（round 4, #87）：仅管理员可见——GET /v1/me 的
+               account.isAdmin 驱动，非管理员完全不渲染。 -->
+          <button id="adminNavBtn" type="button" class="nav-item nav-btn" hidden>站点管理</button>
         </nav>
         <div class="account">
           <span id="accountEmail" class="account-email"></span>
@@ -171,6 +174,35 @@
             <div id="summaryContent" class="summary-content" hidden></div>
             <p id="summariesEmpty" class="hint">还没有课程总结；点击「生成总结」生成第一份。</p>
           </div>
+        </section>
+
+        <!-- 站点管理视图（round 4, #87）：管理员专属的站点能力开关表格。
+             每行 platformId + 字幕采集/ASR/启用三个开关 + 行级保存——PUT
+             /v1/admin/site-capabilities/{platformId} 只发改动的键（布尔子
+             集）。非管理员访问（API 404，D2）→ 无权限占位。 -->
+        <section id="adminSection" aria-labelledby="adminHeading" hidden>
+          <h1 id="adminHeading">站点管理</h1>
+
+          <p id="adminHint" class="hint" hidden></p>
+          <p id="adminError" class="error" role="alert" hidden></p>
+
+          <div id="adminDenied" class="empty-state" hidden>
+            <p>无权限</p>
+            <p id="adminDeniedText" class="hint"></p>
+          </div>
+
+          <table id="adminTable" class="admin-table" hidden>
+            <thead>
+              <tr>
+                <th scope="col">站点</th>
+                <th scope="col">字幕采集</th>
+                <th scope="col">ASR</th>
+                <th scope="col">启用</th>
+                <th scope="col">操作</th>
+              </tr>
+            </thead>
+            <tbody id="adminTableBody"></tbody>
+          </table>
         </section>
       </main>
     </div>

@@ -1,9 +1,10 @@
 /**
  * Page binding only: wires the login flow state machine, the library flow
- * (P5: collect / list / detail / retitle), the api client and the
- * credential store to the DOM. All decisions live in the pure modules
- * (login-flow.js / library.js / api-client.js / credentials.js); this file
- * only builds elements from their snapshots and view models.
+ * (P5: collect / list / detail / retitle), the admin site-capability flow
+ * (round 4: the 站点管理 table), the api client and the credential store to
+ * the DOM. All decisions live in the pure modules (login-flow.js /
+ * library.js / admin.js / api-client.js / credentials.js); this file only
+ * builds elements from their snapshots and view models.
  */
 import { createLoginFlow } from "./login-flow.js";
 import {
@@ -18,6 +19,7 @@ import {
   presentSummariesList,
   presentUsage,
 } from "./library.js";
+import { createAdminFlow, presentRowStatus, shouldShowAdminEntry } from "./admin.js";
 import { createApiClient } from "./api-client.js";
 import { createCredentialStore } from "./credentials.js";
 import { createSessionRevalidator } from "./session-revalidate.js";
@@ -44,11 +46,17 @@ const flow = createLoginFlow({ api, credentials });
 const identityExtractor =
   window.YTD_PLATFORM_VIDEO_ID || { extractVideoIdentity: () => null };
 const library = createLibraryFlow({ api, identity: identityExtractor });
+// Round-4 admin surface (contract-r4 §3.2/§3.3): the 站点管理 table. It
+// loads only when its surface opens (view "idle" marks never-loaded).
+const admin = createAdminFlow({ api });
 sessionExpiredHandler = () => flow.handleSessionExpired();
 
 const elements = {
   loginView: byId("loginView"),
   libraryView: byId("libraryView"),
+  // shell nav: the surface switcher + the admin entry (isAdmin-driven)
+  libraryNavBtn: byId("libraryNavBtn"),
+  adminNavBtn: byId("adminNavBtn"),
   emailForm: byId("emailForm"),
   codeForm: byId("codeForm"),
   emailInput: byId("emailInput"),
@@ -95,6 +103,14 @@ const elements = {
   usageBtn: byId("usageBtn"),
   usagePanel: byId("usagePanel"),
   usageText: byId("usageText"),
+  // admin view (round 4, #87): the site-capability table / denied placeholder
+  adminSection: byId("adminSection"),
+  adminHint: byId("adminHint"),
+  adminError: byId("adminError"),
+  adminDenied: byId("adminDenied"),
+  adminDeniedText: byId("adminDeniedText"),
+  adminTable: byId("adminTable"),
+  adminTableBody: byId("adminTableBody"),
 };
 
 function setMessage(element, text) {
@@ -454,6 +470,69 @@ function renderDetail(state) {
 // and session expiry below).
 let libraryLoaded = false;
 
+// The shell surface (round 4, #87): the nav switches the visible section
+// between the library views (list/detail, the flow's own state) and the
+// admin table. "admin" additionally loads the table on first open.
+let surface = "library";
+
+// The /v1/me account (one read per authenticated session): its isAdmin
+// flag drives the 站点管理 nav entry — non-admins never see it.
+let meAccount = null;
+let meLoaded = false;
+
+/** One admin table row: platformId + three switches + the row save. */
+function renderAdminRow(row) {
+  const tr = el("tr", "admin-row");
+  tr.appendChild(el("td", "admin-platform", row.platformId));
+
+  for (const field of ["captions", "asr", "enabled"]) {
+    const td = el("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = row[field];
+    checkbox.dataset.platform = row.platformId;
+    checkbox.dataset.field = field;
+    checkbox.disabled = row.saveState === "saving";
+    td.appendChild(checkbox);
+    tr.appendChild(td);
+  }
+
+  const actions = el("td", "admin-actions");
+  const status = el("span", "admin-row-status", presentRowStatus(row));
+  if (row.saveState === "error") {
+    status.classList.add("admin-row-status-error");
+  }
+  actions.appendChild(status);
+  const saveBtn = el("button", "secondary-btn admin-save-btn", "保存");
+  saveBtn.type = "button";
+  saveBtn.dataset.platform = row.platformId;
+  saveBtn.disabled = row.saveState === "saving" || row.changedKeys.length === 0;
+  actions.appendChild(saveBtn);
+  tr.appendChild(actions);
+
+  return tr;
+}
+
+/**
+ * The admin view (round 4): the table, or the denied placeholder — the
+ * two views, switched like the library's list/detail. loading/error/idle
+ * collapse into the shared hint/error lines. The denied text is the API's
+ * D2 404 message verbatim (「接口不存在或无权访问」).
+ */
+function renderAdmin(adminState) {
+  elements.adminTable.hidden = adminState.view !== "table";
+  elements.adminDenied.hidden = adminState.view !== "denied";
+  elements.adminDeniedText.textContent = adminState.view === "denied" ? adminState.error || "" : "";
+  elements.adminError.hidden = adminState.view !== "error";
+  elements.adminError.textContent = adminState.view === "error" ? adminState.error || "" : "";
+  setMessage(elements.adminHint, adminState.view === "loading" ? "站点能力加载中…" : "");
+  if (adminState.view === "table") {
+    elements.adminTableBody.replaceChildren(...adminState.rows.map((row) => renderAdminRow(row)));
+  } else {
+    elements.adminTableBody.replaceChildren();
+  }
+}
+
 function render() {
   const state = flow.getState();
   const authenticated = state.state === "authenticated";
@@ -479,15 +558,34 @@ function render() {
 
   if (!authenticated) {
     libraryLoaded = false;
+    // Leave no trace of the previous session: the admin table reloads per
+    // session too, and the shell starts back on the library surface.
+    meAccount = null;
+    meLoaded = false;
+    surface = "library";
+    admin.reset();
     return;
   }
 
   const credential = credentials.get();
   elements.accountEmail.textContent = credential ? credential.email : "";
 
+  // One /v1/me read per authenticated session: the account's isAdmin flag
+  // decides the 站点管理 nav entry (non-admins never see it), and legacy
+  // accounts without the field read as non-admin (fail closed).
+  if (!meLoaded) {
+    meLoaded = true;
+    void refreshAccount();
+  }
+
   const libraryState = library.getState();
-  elements.listSection.hidden = libraryState.view !== "list";
-  elements.detailSection.hidden = libraryState.view !== "detail";
+  elements.listSection.hidden = surface !== "library" || libraryState.view !== "list";
+  elements.detailSection.hidden = surface !== "library" || libraryState.view !== "detail";
+  elements.adminSection.hidden = surface !== "admin";
+
+  elements.libraryNavBtn.classList.toggle("active", surface === "library");
+  elements.adminNavBtn.classList.toggle("active", surface === "admin");
+  elements.adminNavBtn.hidden = !shouldShowAdminEntry(meAccount);
   elements.collectBtn.disabled = libraryState.busy;
   elements.saveTitleBtn.disabled = libraryState.busy;
   // 生成中状态（round 3）：按钮禁用 + 进行时文案；同步生成可达数十秒，
@@ -505,10 +603,28 @@ function render() {
     renderDetail(libraryState);
   }
 
+  if (surface === "admin") {
+    renderAdmin(admin.getState());
+  }
+
   if (!libraryLoaded) {
     libraryLoaded = true;
     act(() => library.load());
   }
+}
+
+/**
+ * The nav's surface switch (round 4): the admin table loads on its first
+ * open of the session (the flow's "idle" view marks never-loaded); act()
+ * renders when the load lands.
+ */
+function showSurface(next) {
+  surface = next;
+  if (next === "admin" && admin.getState().view === "idle") {
+    act(() => admin.load());
+    return;
+  }
+  render();
 }
 
 async function act(action) {
@@ -623,14 +739,48 @@ elements.titleForm.addEventListener("submit", (event) => {
   });
 });
 
+// --- admin surface bindings (round 4, contract-r4 §3.2/§3.3) -------------------
+
+elements.libraryNavBtn.addEventListener("click", () => {
+  showSurface("library");
+});
+
+elements.adminNavBtn.addEventListener("click", () => {
+  showSurface("admin");
+});
+
+// The table rows re-render wholesale on every render (the library list's
+// pattern), so row controls bind by delegation on the tbody: a checkbox
+// change toggles the flow's row state, a save click PUTs only that row's
+// diff — both decisions live in admin.js, this is fetch-and-bind only.
+elements.adminTableBody.addEventListener("change", (event) => {
+  const target = event.target;
+  if (target && target.type === "checkbox" && target.dataset.platform && target.dataset.field) {
+    act(() => admin.setToggle(target.dataset.platform, target.dataset.field, target.checked));
+  }
+});
+
+elements.adminTableBody.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-platform]");
+  if (button) {
+    act(() => admin.saveRow(button.dataset.platform));
+  }
+});
+
 /** Validate the stored credential at shell entry and show the account. */
 async function refreshAccount() {
   const result = await api.me();
-  if (result.ok && result.data && result.data.account && result.data.account.email) {
-    elements.accountEmail.textContent = result.data.account.email;
+  if (result.ok && result.data && result.data.account) {
+    // Round 4 (#87): keep the whole account — its isAdmin flag drives the
+    // 站点管理 nav entry through shouldShowAdminEntry.
+    meAccount = result.data.account;
+    if (result.data.account.email) {
+      elements.accountEmail.textContent = result.data.account.email;
+    }
   }
   // A 401 was already routed through the interceptor back to the login
-  // view; other failures just leave the stored email displayed.
+  // view; other failures just leave the stored email displayed (and, for
+  // the admin flag, fail closed: no entry without a confirmed isAdmin).
   render();
 }
 
@@ -679,8 +829,7 @@ window.addEventListener("focus", () => {
 });
 
 flow.resume().then(() => {
+  // render() fires the one-shot /v1/me read when authenticated, which
+  // brings back the account (isAdmin flag included) and re-renders.
   render();
-  if (flow.getState().state === "authenticated") {
-    refreshAccount();
-  }
 });

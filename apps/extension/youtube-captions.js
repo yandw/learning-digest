@@ -19,10 +19,16 @@
  * - segments are contract-shaped {startMs, endMs, text} on the source video
  *   timeline (json3 speaks milliseconds natively), not the upstream
  *   {text, start, duration, language} display shape;
- * - the upstream's PO-token capture (background.js MAIN-world fetch hook)
- *   is NOT ported — a timedtext request that needs the player-issued token
- *   fails honestly to available:false; withPlayerCaptionAuthorization stays
- *   as the pure seam for a future MAIN-world caller.
+ * - the MAIN-world PO-token capture (Ticket 5.7, issue #96) migrates as
+ *   capturePlayerCaptionRequest — the player only puts the PO Token and
+ *   client parameters on the timedtext request it issues itself, and the
+ *   2026-11-15 real-page measurement in the ticket showed YouTube gates
+ *   EVERY timedtext body on it (manual tracks included: HTTP 200, empty
+ *   body). It lives here rather than background.js because release.test.js
+ *   pins the runtime files free of player internals; the worker injects it
+ *   with chrome.scripting.executeScript({world: "MAIN"}) and re-reads the
+ *   captions through the bridge with the captured authorization (the
+ *   background side holds the tab, the bridge side holds the transport).
  *
  * 不猜、不误报: a missing/stale player response, an empty track list, a
  * failed fetch or an unusable body all answer {available: false, reason} —
@@ -263,6 +269,101 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
       available: false,
       reason: candidates.length === 0 ? "no_subtitle_track" : "timedtext_failed",
     };
+  }
+
+  // ============================================================
+  // MAIN-world player caption capture (Ticket 5.7, issue #96; upstream
+  // background.js capturePlayerCaptionRequest, ported per semantics)
+  // ============================================================
+
+  /**
+   * Runs in the YouTube MAIN world (chrome.scripting.executeScript serializes
+   * this source into the page, so it must stay self-contained — no closure
+   * references, only page-world globals). The player adds a PO Token and
+   * client parameters only when it issues its own timedtext request: hook
+   * window.fetch and XMLHttpRequest.prototype.open, force one captions
+   * toggle so the player sends that request, capture the URL, then restore
+   * both the patched network functions and the user's original
+   * caption-switch state. Resolves with the captured URL, or null when the
+   * player never sends one within timeoutMs (button absent, captions
+   * unavailable, no PO token issued). Requests for other videos, without a
+   * pot parameter, or malformed are ignored.
+   */
+  function capturePlayerCaptionRequest(expectedVideoId, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const button = document.querySelector(".ytp-subtitles-button");
+      if (!button) {
+        resolve(null);
+        return;
+      }
+
+      const captionsInitiallyOn =
+        button.getAttribute("aria-pressed") === "true";
+      const originalFetch = window.fetch;
+      const originalOpen = XMLHttpRequest.prototype.open;
+      let settled = false;
+      let timeoutId = null;
+      let reenableId = null;
+
+      function restore() {
+        window.fetch = originalFetch;
+        XMLHttpRequest.prototype.open = originalOpen;
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (reenableId !== null) clearTimeout(reenableId);
+      }
+
+      function finish(url) {
+        if (settled) return;
+        settled = true;
+        restore();
+        if (
+          !captionsInitiallyOn &&
+          button.getAttribute("aria-pressed") === "true"
+        ) {
+          button.click();
+        }
+        resolve(url);
+      }
+
+      function capture(input) {
+        try {
+          const raw =
+            typeof input === "string"
+              ? input
+              : input instanceof URL
+                ? input.toString()
+                : input?.url;
+          const url = new URL(raw, window.location.origin);
+          if (
+            url.pathname === "/api/timedtext" &&
+            url.searchParams.get("v") === expectedVideoId &&
+            url.searchParams.get("pot")
+          ) {
+            finish(url.toString());
+          }
+        } catch (_error) {
+          // Ignore unrelated or malformed requests.
+        }
+      }
+
+      window.fetch = function (input, ...args) {
+        capture(input);
+        return originalFetch.call(this, input, ...args);
+      };
+      XMLHttpRequest.prototype.open = function (method, url, ...args) {
+        capture(url);
+        return originalOpen.call(this, method, url, ...args);
+      };
+
+      timeoutId = setTimeout(() => finish(null), timeoutMs);
+      if (captionsInitiallyOn) {
+        // Force one fresh request, ending with captions on again.
+        button.click();
+        reenableId = setTimeout(() => button.click(), 100);
+      } else {
+        button.click();
+      }
+    });
   }
 
   // ============================================================
@@ -551,6 +652,7 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
     withPlayerCaptionAuthorization,
     fetchCaptionTranscript,
     createYouTubeCaptionReader,
+    capturePlayerCaptionRequest,
     parseBridgeCaptionResponse,
   };
 })();

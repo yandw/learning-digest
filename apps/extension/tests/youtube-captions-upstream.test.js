@@ -21,14 +21,21 @@
  *   available, and the NO_SUITABLE_CAPTION verdict reads as the honest
  *   available:false (无字幕).
  * - the withPlayerCaptionAuthorization cases migrate unchanged (the pure
- *   PO-token merge stays as a seam; its MAIN-world capture caller is not
- *   ported — see youtube-captions.js header).
+ *   PO-token merge stays as a seam).
+ * - tests/player-caption-capture.test.js — the MAIN-world capture migrates
+ *   in Ticket 5.7 (issue #96) as capturePlayerCaptionRequest in the reader
+ *   module (release.test.js pins the runtime files free of player
+ *   internals, so it cannot live in background.js like upstream's). The
+ *   tests drive the SAME function object the worker serializes into the
+ *   MAIN world: vm.runInNewContext over it, with hand-stubbed
+ *   window/document/XMLHttpRequest/timers standing in for the page.
  *
  * All page dependencies are stubbed (hand-rolled fetch doubles — no
  * network, no jsdom), matching the repo's node:test style.
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const vm = require("node:vm");
 
 const captions = require("../youtube-captions.js");
 
@@ -369,4 +376,204 @@ test("caption fetching can apply player authorization to its request URL", async
   assert.equal(parsed.searchParams.get("potc"), "1");
   assert.equal(parsed.searchParams.get("c"), "WEB");
   assert.equal(parsed.searchParams.get("fmt"), "json3");
+});
+
+// --- MAIN-world player caption capture (Ticket 5.7, issue #96) ------------------
+//
+// The player only puts the PO Token and client parameters on the timedtext
+// request it issues itself. capturePlayerCaptionRequest hooks fetch and
+// XMLHttpRequest.open, forces one captions toggle so the player sends that
+// request, resolves with its URL, then restores both the network functions
+// and the user's original caption-switch state. It runs in the page's MAIN
+// world, so every test drives it inside a vm context whose globals are the
+// stubs — the same free identifiers (window, document, XMLHttpRequest,
+// URL, setTimeout, clearTimeout) the injected function resolves there.
+
+const CAPTURED_REQUEST =
+  "https://www.youtube.com/api/timedtext?v=KvLw1234567&lang=en&potc=1&pot=token&c=WEB&fmt=json3";
+
+/**
+ * The page the capture sees: a subtitles button whose click plays the
+ * player (each click flips the switch; switching ON issues the timedtext
+ * request, over fetch or XHR per `viaXhr`), and controllable timers —
+ * sub-second timers (the 100ms re-enable click) only run at flushTimers(),
+ * the capture timeout only at fireTimeouts(), so each test decides when
+ * time passes. `playerRequestUrls` lists what the player sends when the
+ * switch turns on — only the pot-bearing one for the expected video may
+ * finish the capture; an empty list is the no-request timeout path.
+ */
+function createCaptureHarness({
+  captionsInitiallyOn,
+  playerRequestUrls = [CAPTURED_REQUEST],
+  viaXhr = false,
+}) {
+  const timers = new Map();
+  let nextTimerId = 1;
+  const originalFetch = async () => ({ ok: true });
+  const window = {
+    location: { origin: "https://www.youtube.com" },
+    fetch: originalFetch,
+  };
+  const issuedRequests = [];
+  const issuePlayerRequest = (url) => {
+    issuedRequests.push(String(url instanceof URL ? url.toString() : url));
+    if (viaXhr) {
+      void new XMLHttpRequest().open("GET", url);
+    } else {
+      void window.fetch(url);
+    }
+  };
+  const button = {
+    pressed: captionsInitiallyOn,
+    getAttribute(name) {
+      return name === "aria-pressed" ? String(this.pressed) : null;
+    },
+    click() {
+      this.pressed = !this.pressed;
+      if (this.pressed) {
+        for (const url of playerRequestUrls) issuePlayerRequest(url);
+      }
+    },
+  };
+  class XMLHttpRequest {
+    open(method, url) {
+      issuedRequests.push(`${method} ${url}`);
+    }
+  }
+  const originalOpen = XMLHttpRequest.prototype.open;
+  const sandbox = {
+    URL,
+    Promise,
+    window,
+    document: {
+      querySelector(selector) {
+        return selector === ".ytp-subtitles-button" ? button : null;
+      },
+    },
+    XMLHttpRequest,
+    setTimeout(fn, ms) {
+      const id = nextTimerId++;
+      timers.set(id, { fn, ms });
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+  };
+  sandbox.globalThis = sandbox;
+  const runTimers = (shouldRun) => {
+    for (let round = 0; round < 10; round++) {
+      const due = [...timers.entries()].filter(([, timer]) => shouldRun(timer.ms));
+      if (due.length === 0) return;
+      for (const [, timer] of due) timer.fn();
+    }
+  };
+  return {
+    button,
+    window,
+    document: sandbox.document,
+    originalFetch,
+    originalOpen,
+    XMLHttpRequest,
+    issuedRequests,
+    /** The player's own sub-second scheduling (the re-enable click). */
+    flushTimers() {
+      runTimers((ms) => ms < 1000);
+    },
+    /** The capture timeout's wall-clock expiry. */
+    fireTimeouts() {
+      runTimers((ms) => ms >= 1000);
+    },
+    capture(videoId, timeoutMs = 8000) {
+      // Rebuild the function INSIDE the context from its own source — the
+      // same self-contained source chrome.scripting serializes into the
+      // MAIN world. A host-built function object would keep resolving its
+      // free identifiers against this module's realm, not the sandbox's.
+      sandbox.__videoId = videoId;
+      sandbox.__timeoutMs = timeoutMs;
+      const fnSource = `(${captions.capturePlayerCaptionRequest.toString()})`;
+      return vm.runInNewContext(`${fnSource}(__videoId, __timeoutMs)`, sandbox);
+    },
+  };
+}
+
+test("capturing the player's pot-bearing request restores captions that were originally off", async () => {
+  const harness = createCaptureHarness({ captionsInitiallyOn: false });
+  const result = await harness.capture("KvLw1234567", 8000);
+
+  assert.equal(result, CAPTURED_REQUEST);
+  assert.equal(harness.button.pressed, false, "the switch is restored to off");
+  assert.equal(harness.window.fetch, harness.originalFetch);
+  assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
+});
+
+test("capturing leaves captions on when they were already on", async () => {
+  // Initially on: capture clicks the switch off, the 100ms re-enable timer
+  // clicks it back on (the fresh authorized request), and the switch ends
+  // where the user had it. The timer only runs at flushTimers().
+  const harness = createCaptureHarness({ captionsInitiallyOn: true });
+  const pending = harness.capture("KvLw1234567", 8000);
+  assert.equal(harness.button.pressed, false, "the first click toggles off");
+  harness.flushTimers();
+
+  assert.equal(await pending, CAPTURED_REQUEST);
+  assert.equal(harness.button.pressed, true, "the switch is restored to on");
+  assert.equal(harness.window.fetch, harness.originalFetch);
+  assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
+});
+
+test("the XHR open path is captured the same way", async () => {
+  const harness = createCaptureHarness({ captionsInitiallyOn: false, viaXhr: true });
+  const result = await harness.capture("KvLw1234567", 8000);
+
+  assert.equal(result, CAPTURED_REQUEST);
+  assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
+});
+
+test("a URL-instance input captures the same request URL", async () => {
+  const harness = createCaptureHarness({
+    captionsInitiallyOn: false,
+    playerRequestUrls: [new URL(CAPTURED_REQUEST)],
+  });
+  assert.equal(await harness.capture("KvLw1234567", 8000), CAPTURED_REQUEST);
+});
+
+test("a request for another video, or without pot, never finishes the capture", async () => {
+  const harness = createCaptureHarness({
+    captionsInitiallyOn: false,
+    playerRequestUrls: [
+      "https://www.youtube.com/api/timedtext?v=otherVideo1&lang=en&pot=token",
+      "https://www.youtube.com/api/timedtext?v=KvLw1234567&lang=en",
+    ],
+  });
+  const pending = harness.capture("KvLw1234567", 8000);
+  harness.flushTimers();
+  harness.fireTimeouts();
+  assert.equal(await pending, null, "only the timeout resolves it, as null");
+  assert.equal(harness.button.pressed, false, "the switch is restored to off");
+  assert.equal(harness.window.fetch, harness.originalFetch);
+});
+
+test("no authorized request at all times out to null with everything restored", async () => {
+  const harness = createCaptureHarness({
+    captionsInitiallyOn: false,
+    playerRequestUrls: [],
+  });
+  const pending = harness.capture("KvLw1234567", 8000);
+  harness.flushTimers();
+  harness.fireTimeouts();
+
+  assert.equal(await pending, null);
+  assert.equal(harness.button.pressed, false, "the forced enable is undone");
+  assert.equal(harness.window.fetch, harness.originalFetch);
+  assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
+});
+
+test("a frame without the subtitles button answers null and touches nothing", async () => {
+  const harness = createCaptureHarness({ captionsInitiallyOn: false });
+  harness.document.querySelector = () => null;
+
+  assert.equal(await harness.capture("KvLw1234567", 8000), null);
+  assert.equal(harness.window.fetch, harness.originalFetch);
+  assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
 });

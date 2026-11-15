@@ -235,6 +235,19 @@ async function startAsrSession(helpers, fetchSeams) {
   return started;
 }
 
+/**
+ * The 6.3 pre-start capability refresh (ticket #88) schedules its own
+ * timeout beat (site-capabilities DEFAULT_TIMEOUT_MS) before capture
+ * begins — the store has already cleared it by the time the start returns,
+ * but the captured list still holds the entry. Drain it so the assertions
+ * below drive the transcript-poll chain only.
+ */
+function drainCapabilityTimeoutBeat(timers) {
+  const YTD_SITE_CAPABILITIES = require("../site-capabilities.js");
+  const beat = timers.shift();
+  assert.equal(beat.delay, YTD_SITE_CAPABILITIES.DEFAULT_TIMEOUT_MS);
+}
+
 // --- the full pipeline: start → upload → poll → rows -----------------------------
 
 test("开始学习 on a no-captions platform creates the server Session, uploads Segments, and the poll lands the view", async () => {
@@ -286,6 +299,7 @@ test("开始学习 on a no-captions platform creates the server Session, uploads
     "one transcript beat at start",
   );
   assert.ok(timers.length >= 1, "the recurring poll is armed");
+  drainCapabilityTimeoutBeat(timers);
   assert.equal(timers[0].delay, 4000);
 
   // 30s of playback: the Segment uploads as the D11 contract body.
@@ -630,6 +644,7 @@ test("the poll backs off after a failed beat and stands down on the terminal vie
   await startAsrSession(helpers);
 
   // The start beat missed (500): the armed retry doubles the wait.
+  drainCapabilityTimeoutBeat(timers);
   assert.equal(timers[0].delay, 4000);
   await timers.shift().fn();
   assert.equal(timers.length, 1, "the chain re-armed after the miss");

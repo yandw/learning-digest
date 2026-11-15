@@ -199,6 +199,11 @@ function loadBackgroundHelpers({
     // Round-1 review fix: the shared envelope/URL helpers, loaded first in
     // the worker (importScripts) and required here for parity.
     YTD_API_CLIENT: require("../../api-client.js"),
+    // Ticket 6.3 (#88): the site-capability layer — the default table, the
+    // GET /v1/site-capabilities parsing and the cached store (background.js
+    // holds one store instance; importScripts loads it right after
+    // api-client.js).
+    YTD_SITE_CAPABILITIES: require("../../site-capabilities.js"),
     YTD_SESSION_PIPELINE: require("../../session-pipeline.js"),
     YTD_SESSION_TIMELINE: require("../../session-timeline.js"),
     YTD_SESSION_SUMMARY: require("../../session-summary.js"),

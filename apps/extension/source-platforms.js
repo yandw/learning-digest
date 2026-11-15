@@ -36,6 +36,24 @@ var YTD_SOURCE_PLATFORMS = (() => {
     return [...registry];
   }
 
+  /**
+   * The adapter-owned capability declaration (ticket 6.3, issue #88):
+   * whether the platform's adapter carries a captions reader — the second
+   * half of the gating data source (能力表 ∪ 适配器自身声明). The final
+   * captions capability is the server switch AND this, so a platform
+   * without a reader never enters the captions path whatever the server
+   * table says. Unknown ids (and garbage) read as "no reader" and never
+   * throw — the same total-function contract recognizePage has.
+   */
+  function captionsReaderFor(platformId) {
+    for (const adapter of registry) {
+      if (adapter.id === platformId) {
+        return !!(adapter.capabilities && adapter.capabilities.captionsReader);
+      }
+    }
+    return false;
+  }
+
   const NONE = Object.freeze({ platformId: null, kind: "none", timestampKind: null });
 
   /**
@@ -60,7 +78,7 @@ var YTD_SOURCE_PLATFORMS = (() => {
     return NONE;
   }
 
-  return { registerSourcePlatform, listSourcePlatforms, recognizePage };
+  return { registerSourcePlatform, listSourcePlatforms, recognizePage, captionsReaderFor };
 })();
 
 // --- xiaoe-tech.com Source Platform ----------------------------------------
@@ -137,7 +155,9 @@ var YTD_SOURCE_PLATFORM_XIAOE = (() => {
     return { platformId: null, kind: "none", timestampKind: null };
   }
 
-  return { id: ID, hostSuffix: HOST_SUFFIX, recognizePage };
+  // Ticket 6.3 (#88): xiaoe pages carry no captions reader — the adapter's
+  // own declaration, the AND half of the captions capability.
+  return { id: ID, hostSuffix: HOST_SUFFIX, recognizePage, capabilities: { captionsReader: false } };
 })();
 
 YTD_SOURCE_PLATFORMS.registerSourcePlatform(YTD_SOURCE_PLATFORM_XIAOE);
@@ -181,7 +201,7 @@ var YTD_SOURCE_PLATFORM_BILIBILI = (() => {
     return { platformId: null, kind: "none", timestampKind: null };
   }
 
-  return { id: ID, recognizePage };
+  return { id: ID, recognizePage, capabilities: { captionsReader: true } };
 })();
 
 YTD_SOURCE_PLATFORMS.registerSourcePlatform(YTD_SOURCE_PLATFORM_BILIBILI);
@@ -220,7 +240,7 @@ var YTD_SOURCE_PLATFORM_YOUTUBE = (() => {
     return { platformId: null, kind: "none", timestampKind: null };
   }
 
-  return { id: ID, recognizePage };
+  return { id: ID, recognizePage, capabilities: { captionsReader: true } };
 })();
 
 YTD_SOURCE_PLATFORMS.registerSourcePlatform(YTD_SOURCE_PLATFORM_YOUTUBE);
@@ -270,7 +290,8 @@ var YTD_SOURCE_PLATFORM_XIAOHONGSHU = (() => {
     return { platformId: null, kind: "none", timestampKind: null };
   }
 
-  return { id: ID, recognizePage };
+  // Ticket 6.3 (#88): no captions reader on note pages either — asr-only.
+  return { id: ID, recognizePage, capabilities: { captionsReader: false } };
 })();
 
 YTD_SOURCE_PLATFORMS.registerSourcePlatform(YTD_SOURCE_PLATFORM_XIAOHONGSHU);

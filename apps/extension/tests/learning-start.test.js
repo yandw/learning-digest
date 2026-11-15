@@ -828,3 +828,91 @@ test("no confirmable identity on either side means no confirmed switch", () => {
     "a missing extractor degrades to no-switch, never a false finish",
   );
 });
+
+// ============================================================
+// START GATING (ticket 6.3, issue #88)
+// ============================================================
+//
+// 开始学习 gating on the site capability table: a target site the server
+// disabled (enabled=false) must not open a Session. The decision is pure —
+// recognition and the capability row are injected — so the panel (button
+// disable + the 「站点未开放学习」 copy) and the worker wiring (the hard
+// refuse) share one verdict. 收藏 is unaffected by design: this function is
+// only ever consulted on the start paths.
+
+const REAL_PLATFORMS = require("../source-platforms.js");
+
+const GATING_FIXTURES = {
+  bilibili: { captions: true, asr: true, enabled: true },
+  youtube: { captions: true, asr: true, enabled: true },
+  "xiaoe-tech": { captions: false, asr: true, enabled: false }, // disabled by the operator
+  xiaohongshu: { captions: false, asr: true, enabled: true },
+};
+
+test("evaluateStartGating: an enabled=false site is refused with the siteDisabled reason", () => {
+  const verdict = YTD_LEARNING_START.evaluateStartGating({
+    url: "https://app12345.xiaoe-tech.com/v_5f0abc123",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+    capabilityFor: (id) => GATING_FIXTURES[id],
+  });
+  assert.equal(verdict.allowed, false);
+  assert.equal(verdict.reason, "siteDisabled");
+  assert.equal(verdict.recognition.platformId, "xiaoe-tech");
+});
+
+test("evaluateStartGating: enabled sites pass, recognition rides the verdict", () => {
+  const verdict = YTD_LEARNING_START.evaluateStartGating({
+    url: "https://www.bilibili.com/video/BV1ab411L78c?p=1",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+    capabilityFor: (id) => GATING_FIXTURES[id],
+  });
+  assert.equal(verdict.allowed, true);
+  assert.equal(verdict.reason, null);
+  assert.equal(verdict.recognition.platformId, "bilibili");
+});
+
+test("evaluateStartGating: a page no platform recognizes is not this gate's business", () => {
+  const verdict = YTD_LEARNING_START.evaluateStartGating({
+    url: "https://www.example.com/article",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+    capabilityFor: (id) => GATING_FIXTURES[id],
+  });
+  assert.equal(verdict.allowed, true);
+  assert.equal(verdict.recognition.kind, "none");
+});
+
+test("evaluateStartGating: missing capability data degrades to allowed (defaults serve upstream)", () => {
+  // No table wired at all.
+  const noTable = YTD_LEARNING_START.evaluateStartGating({
+    url: "https://app12345.xiaoe-tech.com/v_5f0abc123",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+  });
+  assert.equal(noTable.allowed, true);
+  // A table whose lookup misses reads as the unknown-platform default row
+  // (enabled) — the caller (the capability store) owns the fallback.
+  const missingRow = YTD_LEARNING_START.evaluateStartGating({
+    url: "https://app12345.xiaoe-tech.com/v_5f0abc123",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+    capabilityFor: () => null,
+  });
+  assert.equal(missingRow.allowed, true);
+  // Garbage URL: recognition is none, gate passes it through.
+  const garbage = YTD_LEARNING_START.evaluateStartGating({
+    url: "not a url",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+    capabilityFor: (id) => GATING_FIXTURES[id],
+  });
+  assert.equal(garbage.allowed, true);
+});
+
+test("evaluateStartGating: the toolbar-icon path's lockTarget refusal is separate — gating never mutates state", () => {
+  // The gating verdict is a read-only decision; the target state machine
+  // stays untouched (gating runs BEFORE choose/lock, never through them).
+  const state = YTD_LEARNING_START.createTargetState();
+  YTD_LEARNING_START.evaluateStartGating({
+    url: "https://app12345.xiaoe-tech.com/v_5f0abc123",
+    recognizePage: REAL_PLATFORMS.recognizePage,
+    capabilityFor: (id) => GATING_FIXTURES[id],
+  });
+  assert.equal(state.status, "idle");
+});

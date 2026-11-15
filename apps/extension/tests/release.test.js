@@ -90,11 +90,12 @@ test("manifest uses minimized install-time permissions", () => {
     "no Speech Provider host remains (ticket 2.4, D10: the Worker holds the ASR keys)",
   );
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  // 0.2.14 (ticket 5.3, issue #85): the YouTube caption-track selection
-  // policy — creator CC over auto-generated with the 简体→繁体→en preference,
-  // and the only-auto-generated short-circuit (only_auto_generated_captions)
-  // that skips the PO-token-gated timedtext fetch for a straight ASR fallback.
-  assert.equal(manifest.version, "0.2.14");
+  // 0.2.15 (ticket 6.3, issue #88): the extension consumes the site
+  // capability registry — GET /v1/site-capabilities with the built-in
+  // default-table fallback, the enabled=false start gating (站点未开放
+  // 学习) and the data-driven captions/ASR path decision (server switch
+  // AND the adapter's captionsReader declaration).
+  assert.equal(manifest.version, "0.2.15");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -496,6 +497,10 @@ test("core Learning Digest modules ship in the release and load in the service w
     // Round-1 review fix: the shared §1 envelope + base-URL helpers behind
     // auth-gate/collect/learning-start/notes.
     "api-client.js",
+    // Ticket 6.3 (#88): the site-capability layer — the built-in default
+    // table, the GET /v1/site-capabilities client and the cached store
+    // behind the start gating and the captions path decision.
+    "site-capabilities.js",
     // Round-2 review fix: the shared §2.2 Segment check + coverage helper
     // behind bilibili-captions/youtube-captions/session-archive.
     "transcript-shapes.js",
@@ -521,6 +526,6 @@ test("core Learning Digest modules ship in the release and load in the service w
   }
   assert.match(
     read("background.js"),
-    /importScripts\("api-client\.js", "transcript-shapes\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
+    /importScripts\("api-client\.js", "site-capabilities\.js", "transcript-shapes\.js", "settings\.js", "speech-transcription\.js", "session-pipeline\.js", "session-timeline\.js", "session-persistence\.js", "source-platforms\.js", "session-segmenter\.js", "session-summary\.js", "report-render\.js", "auth-gate\.js", "collect\.js", "learning-start\.js", "notes\.js", "session-archive\.js", "transcript-pipeline\.js", "bilibili-captions\.js", "youtube-captions\.js", "contracts\/platform-video-id\.js"\)/,
   );
 });

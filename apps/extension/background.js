@@ -21,7 +21,7 @@
 // chrome.storage.local and are never part of the extension source.
 // report-render.js is the one pure module shared by all three contexts: the
 // worker reads its REPORT_STORAGE_KEY_PREFIX to persist the artifact.
-importScripts("api-client.js", "transcript-shapes.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "youtube-captions.js", "contracts/platform-video-id.js");
+importScripts("api-client.js", "site-capabilities.js", "transcript-shapes.js", "settings.js", "speech-transcription.js", "session-pipeline.js", "session-timeline.js", "session-persistence.js", "source-platforms.js", "session-segmenter.js", "session-summary.js", "report-render.js", "auth-gate.js", "collect.js", "learning-start.js", "notes.js", "session-archive.js", "transcript-pipeline.js", "bilibili-captions.js", "youtube-captions.js", "contracts/platform-video-id.js");
 
 const DEBUG = false;
 // Startup marker: opening the service worker console must show this line
@@ -362,6 +362,67 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   pendingLinkTabs.delete(tabId);
 });
+
+// ============================================================
+// SITE CAPABILITIES (ticket 6.3, issue #88)
+// ============================================================
+//
+// The extension's view of the server-side site capability registry (6.1's
+// GET /v1/site-capabilities, any logged-in user, full table). The capability
+// store caches the fetched rows with a TTL (site-capabilities.js DEFAULT_
+// TTL_MS, 10 minutes) and serves the BUILT-IN DEFAULT TABLE whenever the
+// API is unreachable, times out or fails — a capability outage must never
+// change what the learner can do, only a server-expressed row may. The
+// gating data source is 能力表 ∪ 适配器自身声明: the final captions
+// capability is the server switch AND the Source Platform adapter's own
+// captionsReader declaration (the registry seam), and the start gating
+// reads the merged rows.
+//
+// Refresh points: the panel startup path (getCourseTabs — fire-and-forget,
+// the list never waits on it) and the pre-start path (handleStartLearning —
+// awaited, force=true, so the gating verdict at the moment of start is as
+// fresh as one GET). A 401 is a definitive dead credential: the P7
+// linked-logout path re-gates the panel, exactly like the collect/resolve
+// mid-action 401s.
+
+const capabilityStore = YTD_SITE_CAPABILITIES.createCapabilityStore({
+  // fetch/timers are passed explicitly (never defaulted): the worker's own
+  // globals here, and in the Node tests the sandbox's injectable seams.
+  fetchImpl: (url, init) => fetch(url, init),
+  setTimeoutImpl: (fn, delay) => setTimeout(fn, delay),
+  clearTimeoutImpl: (id) => clearTimeout(id),
+  declaresCaptionsReader: YTD_SOURCE_PLATFORMS.captionsReaderFor,
+  onUnauthorized: () => {
+    void handleCredentialsInvalidated("unauthorized");
+  },
+});
+
+/**
+ * Refreshes the capability cache when it is stale (or always, when forced).
+ * Requires a linked credential — without one the store simply keeps serving
+ * the defaults, and the panel is auth-gated anyway. Returns the refresh
+ * verdict ("ok" | "unauthorized" | "error") so the start path can route P7.
+ */
+async function refreshSiteCapabilities({ force = false } = {}) {
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  if (!credential) return { kind: "error", unconfigured: true };
+  return capabilityStore.ensureFresh({
+    apiBaseUrl: settings.apiBaseUrl,
+    token: credential.token,
+    force,
+  });
+}
+
+/** The current capability view, for the gating decisions below. */
+function siteCapabilityFor(platformId) {
+  return capabilityStore.capabilityFor(platformId);
+}
+
+/** The effective captions capability: 服务端开关 AND reader 可用. */
+function siteCaptionsEnabled(platformId) {
+  return capabilityStore.captionsEnabledFor(platformId);
+}
 
 // ============================================================
 // COLLECT CURRENT PAGE (P8, issue #58)
@@ -942,6 +1003,10 @@ async function resolveSourceForTarget(target) {
 }
 
 async function handleGetCourseTabs() {
+  // Ticket 6.3 (#88): the panel-open capability refresh — fire-and-forget:
+  // the list never waits on it, and until it lands the store serves the
+  // built-in default table (the same table an unreachable API would).
+  void refreshSiteCapabilities().catch(() => {});
   await loadLearningTargetState();
   const tabs = await chrome.tabs.query({});
   // The page bridge's real document titles win over chrome.tabs' own, the
@@ -998,12 +1063,26 @@ async function handleChooseLearningTarget({ tabId } = {}) {
   learningTargetState = chosen.state;
   await saveLearningTargetState();
   const resolution = await resolveSourceForTarget(target);
+  // Ticket 6.3 (#88): the chosen target's start gating rides the answer —
+  // a server-disabled site keeps the choice and the 一键收藏 available
+  // (收藏不受影响) but the panel disables 开始学习 with the
+  // 「站点未开放学习」 copy. The hard refuse still lives in
+  // handleStartLearning (the toolbar-icon path has no choose step). The
+  // refresh is TTL-gated (not forced): a fresh cache answers instantly, a
+  // cold one pays one GET — the same table the panel-open refresh shares.
+  await refreshSiteCapabilities();
+  const gating = YTD_LEARNING_START.evaluateStartGating({
+    url: target.url,
+    recognizePage: YTD_SOURCE_PLATFORMS.recognizePage,
+    capabilityFor: siteCapabilityFor,
+  });
   return {
     ok: true,
     target: learningTargetState.target,
     // Capture starts on registered Source Platform pages only; other
     // stations (and plain pages) stay listable/resolvable/favoritable.
-    startable: isStartablePageUrl(target.url),
+    startable: isStartablePageUrl(target.url) && gating.allowed,
+    siteDisabled: !gating.allowed,
     resolve: resolution,
   };
 }
@@ -2782,6 +2861,11 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleCollectLearningTarget,
   handleSeekLearningTarget,
   handleStartLearningForTarget,
+  // Site capabilities (ticket 6.3, #88): the refresh helper and the store
+  // view — see tests/plugin-site-capabilities-flow.test.js and
+  // tests/site-capabilities.test.js.
+  refreshSiteCapabilities,
+  capabilityStore,
   handleProgressAuthLoss,
   // P11 finish triggers (#60): the recording tab closed / navigated to a
   // different video or episode — see tests/plugin-learning-start-flow.test.js.
@@ -3663,12 +3747,45 @@ async function handleStartLearning(message) {
     };
   }
 
+  // Ticket 6.3 (#88): the pre-start capability refresh (forced — the gating
+  // verdict at the moment of start reads the freshest table one GET can
+  // fetch; a failure falls back to the defaults without failing the start).
+  // A 401 here is a definitive dead credential — the P7 re-gate has already
+  // run via the store's hook; the start refuses like the gate above.
+  const capabilityVerdict = await refreshSiteCapabilities({ force: true });
+  if (capabilityVerdict.kind === "unauthorized") {
+    return {
+      success: false,
+      error:
+        "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再开始学习。",
+    };
+  }
+
+  // Ticket 6.3 (#88): the start gating — a site the capability table
+  // disabled (enabled=false) cannot open a Session (站点未开放学习). The
+  // panel disables the button with the same copy; the hard refuse here also
+  // covers the toolbar-icon path. 收藏 is not consulted on this path.
+  const gating = YTD_LEARNING_START.evaluateStartGating({
+    url: message.url,
+    recognizePage: YTD_SOURCE_PLATFORMS.recognizePage,
+    capabilityFor: siteCapabilityFor,
+  });
+  if (!gating.allowed) {
+    return { success: false, siteDisabled: true, error: "站点未开放学习" };
+  }
+
   // Tickets 2.5/2.6 (#68/#69): a bilibili or youtube video page tries the
   // captions path first — 可用字幕优先直归档，全程零 ASR. An unavailable read
   // hands the start to the capture flow below, with the probe result landed
-  // in the Session state as the honest 无字幕 record.
+  // in the Session state as the honest 无字幕 record. Ticket 6.3 (#88): the
+  // decision is data-driven — the effective captions capability (server
+  // switch AND the adapter's reader declaration) gates the whole probe, so
+  // a bilibili/youtube page with captions switched off server-side skips
+  // straight to the ASR pipeline. The 5.3 track policy lives inside the
+  // reader and only ever sees a switched-on site: 先站点开关，再选轨策略.
   let captionsProbe = null;
   if (
+    siteCaptionsEnabled(recognition.platformId) &&
     (recognition.platformId === "bilibili" || recognition.platformId === "youtube") &&
     recognition.kind === "video"
   ) {
@@ -3682,6 +3799,14 @@ async function handleStartLearning(message) {
       return startCaptionsSession(message, recognition, captions);
     }
     captionsProbe = { available: false, reason: captions.reason };
+  } else if (
+    (recognition.platformId === "bilibili" || recognition.platformId === "youtube") &&
+    recognition.kind === "video"
+  ) {
+    // The site switch is off but the page would otherwise probe: the honest
+    // durable record — the panel names the server-disabled captions rather
+    // than a 无字幕 reading of the page.
+    captionsProbe = { available: false, reason: "captions_disabled_by_site" };
   }
 
   // Ticket 2.4 (#67, D10): local Speech Providers are retired — the audio

@@ -1080,6 +1080,10 @@ const COURSE_TAB_COPY = {
   fromStart: "从头开始",
   unmatched: "该页还未收藏：先收藏才能记录学习进度。",
   notStartable: "该平台暂不支持开始学习采集，可先收藏。",
+  // Ticket 6.3 (#88): the chosen site's capability row says enabled=false —
+  // the 开始学习 button is disabled and this line names why (the site is
+  // closed to learning, not the platform being unsupported; 收藏 stays up).
+  siteDisabled: "站点未开放学习",
   locked: "已有进行中的学习会话，先结束本次学习。",
   starting: "正在开始学习…",
   favoriting: "正在收藏…",
@@ -1252,6 +1256,10 @@ function renderCourseTabList(rows) {
 
 /** The resolve verdict → status copy: 续播位置, or the 先收藏 prompt. */
 function describeCourseTargetResolution(result) {
+  // Ticket 6.3 (#88): the site-capability gate outranks every other verdict
+  // — the learner must learn WHY the button is dead (站点未开放学习), even
+  // when the resolve below would have said 先收藏 or not-startable.
+  if (result.siteDisabled) return COURSE_TAB_COPY.siteDisabled;
   const source = result.resolve && result.resolve.source;
   if (result.resolve && result.resolve.matched && source) {
     const title =
@@ -2667,6 +2675,11 @@ function renderSessionTranscript(state) {
 function captionsUnavailableNoticeText(reason) {
   if (reason === "only_auto_generated_captions") {
     return "本页仅有自动生成字幕，本次学习已改用语音转写取得整个学习区间的逐字稿。";
+  }
+  // Ticket 6.3 (#88): the site switch is off server-side — the probe never
+  // even ran, so the honest copy names the site config, not a failed read.
+  if (reason === "captions_disabled_by_site") {
+    return "站点配置已关闭字幕采集，本次学习已改用语音转写取得整个学习区间的逐字稿。";
   }
   return "本页未读取到可用字幕，本次学习已改用语音转写取得整个学习区间的逐字稿。";
 }

@@ -10,7 +10,8 @@ Learning Digest is a personal learning library plus a Chrome side panel for stud
 - Resume study from the last recorded position, or start over; the extension records positions per Source and supports timestamped notes.
 - Follow a Session as Segments are transcribed; Bilibili and other video platforms contribute captions directly when available, and captured audio flows through the backend transcription worker otherwise.
 - Generate a course summary on demand from everything archived so far, with citations that trace back to the original text and timestamp.
-- Study in the original language, Simplified Chinese, or an aligned bilingual view; explain selected terms with your own AI key.
+- Study in the original language, Simplified Chinese, or an aligned bilingual view; explain selected terms with AI that runs on your own backend.
+- Administrators control what each platform may do from the web library's site administration page: captions, ASR, and a per-platform on/off switch that the extension follows.
 
 The productization line (0.2.x) adds the web library, backend API, transcription worker, and account linking to the frozen proof-of-concept extension (0.1.x). It is a bring-your-own-key project installed locally from GitHub. It is not available through the Chrome Web Store.
 
@@ -19,8 +20,8 @@ The productization line (0.2.x) adds the web library, backend API, transcription
 | Unit | Location | Role |
 | --- | --- | --- |
 | Browser extension | `apps/extension/` (`manifest.json`) | account linking, collection, course-tab selection, playback position, notes, captions/audio capture (Chrome MV3 side panel) |
-| Web library | `apps/web/` | invite login, collection, library list and detail, transcripts, course summaries, usage |
-| Backend API | `apps/api/` | identity, resources and sources, sessions, progress, notes, transcripts, summary generation, usage |
+| Web library | `apps/web/` | invite login, collection, library list and detail, transcripts, course summaries, usage, site administration for administrators |
+| Backend API | `apps/api/` | identity, resources and sources, sessions, progress, notes, transcripts, summary generation, panel AI (rolling summary, digest, explanations), site capability registry, usage |
 | Transcription worker | `apps/worker/` | pulls transcription tasks from the API, runs the Speech Provider, writes timestamped records back |
 
 `contracts/` holds the shared `/v1` interface contract, platform video-ID extraction rules, and JSON fixtures consumed by all units' tests. Domain vocabulary: [GLOSSARY.md](GLOSSARY.md). Data flow: [PRIVACY.md](PRIVACY.md). Contract decisions: [contracts/decisions.md](contracts/decisions.md).
@@ -54,6 +55,9 @@ uv run python -m app.main   # uvicorn entry; state in data/state.json, dev maile
 cd apps/worker
 uv sync
 LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
+# Real ASR later? Restart with a provider switch, for example:
+#   LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-... uv run python -m worker.main
+#   LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=http://<host>:<port> uv run python -m worker.main
 ```
 
 The token must match `LD_API_WORKER_TOKEN` given to the API (unset there means the worker endpoints answer 401). Real ASR: Bailian cloud (`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`) or a self-hosted service (`LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=...`, see Self-hosted / LAN ASR below).
@@ -74,16 +78,16 @@ Real email delivery, real ASR, and real AI generation are stubbed until configur
 ## Testing
 
 ```bash
-npm test                              # extension (apps/extension/tests/), 695 cases
-node --test contracts/                # shared contract fixtures, 52 cases
-cd apps/api    && uv run pytest tests/ -q  # API, 214 cases
+npm test                              # extension (apps/extension/tests/), 698 cases
+node --test contracts/                # shared contract fixtures, 71 cases
+cd apps/api    && uv run pytest tests/ -q  # API, 271 cases
 cd apps/worker && uv run pytest tests/ -q  # worker, 43 cases
-cd apps/web    && npm test            # web, 156 cases
+cd apps/web    && npm test            # web, 174 cases
 npm run check               # release-shape check (manifest, allowlist, importScripts, content_scripts)
 npm run package             # zip the extension
 ```
 
-All suites pass (1160 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
+All suites pass (1257 cases at the current tip) with no external network: HTTP tests bind loopback ephemeral ports, and the ASR/AI tests use deterministic stub providers or injected `fetch`, so CI needs no keys.
 
 The complete test-case list, grouped by unit and feature area with the verifying file for every automated case, plus the manual acceptance cases and known-limitation observations, is in [docs/test-cases.md](docs/test-cases.md). Manual acceptance checklists (real platforms, real keys, tabCapture authorization) live in [docs/round1-acceptance.md](docs/round1-acceptance.md) and [docs/round2-acceptance.md](docs/round2-acceptance.md).
 
@@ -99,8 +103,8 @@ The complete test-case list, grouped by unit and feature area with the verifying
 | `LD_API_OUTBOX_FILE` | `data/outbox.jsonl` | dev-mailer outbox (verification codes) |
 | `LD_API_WORKER_TOKEN` | unset (worker endpoints 401) | worker service credential for `/v1/worker/tasks/*` |
 | `LD_API_AUDIO_DIR` | system temp dir | temp audio for uploaded segments (deleted on success) |
-| `LD_AI_PROVIDER` | `stub` | `qwen` = Bailian compatible-mode for course summaries |
-| `LD_AI_API_KEY` | unset | Bailian key for `LD_AI_PROVIDER=qwen`, separate from the worker's speech key |
+| `LD_AI_PROVIDER` | `stub` | `qwen` = Bailian compatible-mode for course summaries and the panel AI features (rolling summary, digest, explanations) |
+| `LD_AI_API_KEY` | unset | Bailian key for `LD_AI_PROVIDER=qwen`, serving course summaries and panel AI from this one server-side seam, separate from the worker's speech key |
 | `LD_AI_MODEL` | `qwen3.8-flash` | model override |
 | `LD_AI_BASE_URL` | Bailian compatible-mode | endpoint override |
 | `LD_AI_TIMEOUT_MS` | `120000` | per-generation fetch timeout |
@@ -131,7 +135,7 @@ The complete test-case list, grouped by unit and feature area with the verifying
 
 ### Browser extension (Settings page)
 
-The extension keeps on the device only what belongs there: the AI API key for in-panel AI features, the session and Segment settings, and the 学习服务 base URLs used for account linking. Session transcription and course summaries run server-side with server-configured keys; no Speech Provider key is stored in the extension, and the settings migration removes legacy ASR keys on first read. Keys and settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
+The extension keeps on the device only what belongs there: the session and Segment settings, and the 学习服务 base URLs used for account linking. Panel AI (rolling summary, digest, explanations), course summaries, and Session transcription all run server-side with server-configured keys; no AI or Speech Provider key is stored in the extension, and the settings migration removes legacy ASR and AI keys on first read. Settings are stored in Chrome's local extension storage on your device. Release builds do not include or use `config.js`.
 
 ## Install with your coding agent
 
@@ -144,12 +148,12 @@ Your agent should:
 1. Ask where you want to keep the project, download or clone it there, and tell you the exact full path. If you want a suggestion, it can offer `~/Documents/learning-digest` on macOS or Linux, or `%USERPROFILE%\Documents\learning-digest` on Windows.
 2. Open the official Alibaba Cloud Bailian page below and help you create your own account.
 3. Walk you through selecting the exact project folder you chose in Chrome with **Load unpacked**.
-4. Show you where to enter your API keys in the extension's **Settings** page.
-5. Explain how the side panel, Session pipeline, and Speech Provider settings fit together.
+4. Help you set your API keys through environment variables on your own backend: the transcription worker's speech key and the API's AI key. The extension's **Settings** page has no key fields.
+5. Explain how the side panel, Session pipeline, and the server-configured keys fit together.
 
 Keep this folder in the same place after installation. Moving or deleting the source folder breaks the unpacked extension until you load it again from its new permanent folder.
 
-Never paste an API key into an AI chat, source file, screenshot, or public message. Enter keys yourself, directly in the Learning Digest Settings page. Your coding agent can point to the correct field without seeing the key.
+Never paste an API key into an AI chat, source file, screenshot, or public message. Enter keys yourself, directly into the backend configuration files or commands on your own machine. Your coding agent can point to the right environment variable without seeing the key.
 
 ## Install manually
 
@@ -168,7 +172,7 @@ Because this is an unpacked extension, it does not update automatically. After d
 
 ## Set up your API keys
 
-Learning Digest uses your own AI provider API key (Alibaba Cloud Bailian by default) for the in-panel AI features: explanations, translation, and note helpers. Session transcription and course summaries run in your backend, where the Speech Provider key (worker) and the AI key (API) are configured through environment variables, not in the extension.
+Learning Digest runs all of its AI on your own backend: course summaries, the panel's rolling summaries and digests, and explanations of selected text all use the AI provider configured on the API through environment variables. Session transcription uses the Speech Provider configured on the transcription worker the same way. The browser extension has no key fields and never talks to an AI or Speech Provider itself.
 
 ### Get an AI provider API key
 
@@ -176,12 +180,12 @@ Learning Digest uses your own AI provider API key (Alibaba Cloud Bailian by defa
 2. Sign in or create an Alibaba Cloud account when prompted, and activate Bailian (Model Studio) if asked.
 3. Create an API key, give it a recognizable name such as `Learning Digest`, and create it.
 4. Copy the key immediately. The full key may only be shown once.
-5. Paste it into **AI API key** in Learning Digest Settings.
+5. Set it as `LD_AI_API_KEY` in the API's environment (with `LD_AI_PROVIDER=qwen`), where it serves course summaries and the panel AI features.
 6. If Bailian reports insufficient quota, top up in your Bailian account and try again.
 
 See the [official Alibaba Cloud Model Studio documentation](https://help.aliyun.com/zh/model-studio/) for current account and API details.
 
-Open **Settings** from the side panel. You can also open the Learning Digest **Options** page from its card at `chrome://extensions` or by right-clicking its toolbar icon. Paste keys only into these Settings fields. Never paste a key into an AI chat, repository file, screenshot, or public message.
+Keys exist only in your backend's environment: set `LD_AI_API_KEY` where the API process starts and `QWEN_API_KEY` where the worker process starts. Never paste a key into an AI chat, repository file, screenshot, or public message.
 
 The published version uses Alibaba Cloud Bailian with the qwen3.8-flash model as its AI provider:
 
@@ -190,7 +194,7 @@ Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3.8-flash
 ```
 
-Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in Settings, so the only AI credential you enter is your Bailian API key. To use another provider or model, copy the safe customization prompt in Settings and give it to a coding agent for your local copy. Never add an API key to that prompt or chat.
+Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in the API's published configuration, so the only AI credential you enter is your Bailian API key in the API's environment. To use another provider or model, change the `LD_AI_*` variables or ask a coding agent to adapt your local copy. Never add an API key to that prompt or chat.
 
 ### Speech Provider key (backend)
 
@@ -201,7 +205,7 @@ Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3-asr-flash
 ```
 
-Set `LD_WORKER_PROVIDER=qwen` and `QWEN_API_KEY` on the worker, and give the API and the worker a shared `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN` pair. Course summaries use their own `LD_AI_PROVIDER=qwen` plus `LD_AI_API_KEY` on the API. Until these are set, the worker and the API run deterministic stub providers so the whole flow can be exercised without keys.
+Set `LD_WORKER_PROVIDER=qwen` and `QWEN_API_KEY` on the worker, and give the API and the worker a shared `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN` pair. The AI key on the API (`LD_AI_PROVIDER=qwen` plus `LD_AI_API_KEY`) serves course summaries and the panel AI features from one seam. Until these are set, the worker and the API run deterministic stub providers so the whole flow can be exercised without keys.
 
 ### Self-hosted / LAN ASR
 
@@ -210,13 +214,14 @@ Transcription can also run entirely on your own hardware, touching no cloud API:
 ## Use Learning Digest
 
 1. Log in to the web library with an invited email and link the extension from the authorization page.
-2. Collect a lesson link (paste it in the web library or save the current page from the panel).
-3. Open the lesson page, pick its tab in the panel, and start a Session.
+2. Collect a lesson link (paste it in the web library or save the current page from the panel). A disabled platform (site administration) can still be collected but not studied.
+3. Open the lesson page, pick its tab in the panel, and start a Session. The panel checks the server's site capability table first, so a platform your administrator disabled refuses to start with 站点未开放学习.
 4. Read the timestamped Transcript as Segments complete, or choose **Original**, **中文**, or **双语**.
-5. Watch the Rolling Summary refresh as the Session progresses; pause or drag freely, the last played position is what gets saved.
-6. Select transcript text when you want an AI explanation, or save it directly as a timestamped note.
-7. End the Session to generate the Session Digest; every Session's transcript is archived and readable from the web library.
+5. Watch the Rolling Summary refresh as the Session progresses; the panel asks your backend to extend the topic timeline as new transcript lands, and the Overview view reads back the same server data.
+6. Select transcript text when you want an AI explanation, or save it directly as a timestamped note. Explanations are answered by the API's AI provider.
+7. End the Session to generate the Session Digest; the API produces it and the panel renders the report, with everything readable from the web library.
 8. Generate a course summary whenever you like, unfinished courses included, and regenerate after more study.
+9. Administrators (accounts invited with the `--admin` flag) see a 站点管理 page in the web library to switch each platform's captions, ASR, and enabled flags; the extension follows the saved table.
 
 ## What works today
 
@@ -225,7 +230,8 @@ Transcription can also run entirely on your own hardware, touching no cloud API:
 - Collection with platform-aware source matching, per-Source playback positions with optimistic concurrency, and timestamped notes.
 - Session transcription through the backend worker: Bilibili-style captions archived directly when available, captured audio through the configured Speech Provider otherwise, at roughly 30 seconds per Segment.
 - Course summaries generated on demand from all archived transcripts and notes, with citations that trace back to the original text and timestamp, and a usage panel.
-- Alibaba Cloud Bailian (qwen3.8-flash) for the in-panel AI features. Other providers require a local code adaptation and are not supported by this published version.
+- Panel AI features (rolling summary timeline, session digest, explanations) answered by the backend API, sharing the server's AI provider configuration with course summaries.
+- Site capability administration: administrators switch per-platform captions/ASR/enabled flags from the web library, and the extension gates Session starts on the server's table.
 
 Real-lesson provider evaluation from the PoC is tracked in [docs/poc-evaluation.md](docs/poc-evaluation.md). Firefox, Safari, mobile browsers, and other Chromium browsers are not currently tested or supported.
 

@@ -9,6 +9,7 @@
 - 第三轮（课程总结与用量）人工步骤在 §3：默认 stub AI Provider 即可走通；真实 qwen provider 联调是 §5.5 占位（`LD_AI_API_KEY` 配置后）。
 - 已知限制与契约决策（D9–D15 第二轮、D16–D18 第三轮）映射见 §4，细节在 [contracts/decisions.md](../contracts/decisions.md)。
 - §5 是发布记录模板（版本矩阵 / env 配置 / 真实 ASR 与真实 AI 总结链路联调占位）。
+- 第六轮（站点能力管理 + 面板 AI 服务端化，#92）人工步骤与全链冒烟记录在 §6：管理后台（§6.1）、面板 AI 链路（§6.2）、settings v5 迁移（§6.3）、真进程冒烟记录（§6.4）。
 
 使用方式：逐项勾选。自动化项只需在合入时重跑一次；人工项按编号步骤走，把观察结果记到 §5.6 的汇总表。
 
@@ -276,6 +277,8 @@
 | 插件（根） | `npm test` | 695 pass / 0 fail | 同上 |
 | 发布检查 | `npm run check` | passed（45 allowlist） | 同上 |
 
+> 最新实测（第六轮 6.7 文档票，2026-11-15）见 §6.0：contracts 71 · api 271 · worker 43 · web 174 · 插件 698，合计 1257 pass / 0 fail；check 通过（(38 + 5) allowlisted files）。上表保留二/三轮时点记录。
+
 ### 5.3 环境配置清单（部署/联调）
 
 | 变量 | 单元 | 默认 | 说明 |
@@ -368,3 +371,95 @@
 - **整理/删除入口**（第一轮遗留延续）：重复收藏的整理入口仍无落点。
 - **计量/收费/账单 out of scope**（第三轮）：用量入口已随三轮落地（§3.6），但计量口径扩展、价格、付款、配额执行仍 out of scope（D18）——后续计费口径若需要维度扩展，加端点或参数，不改本形态。
 - **Markdown 渲染支持面最小**（第三轮 review 裁量）：标题/列表/粗体/段落之外的字面降级；渲染从不产出 HTML（§4.2），扩展渲染面属后续增强，不阻塞发布。
+
+## 6. 第六轮验收（站点能力管理 + 面板 AI 服务端化，#92）
+
+对应 [#92](https://github.com/yandw/learning-digest/issues/92)（spec #49 第六轮收官票）。契约面见 [contracts/contract-r4.md](../contracts/contract-r4.md)：§1–§5 站点能力注册表与管理员标记（D19–D20，6.1/6.2/6.3 三票）、§6 滚动摘要与概览（D21，6.4）、§7 Session Digest 与选中文本解释（D22，6.5）；插件接线与本地 AI 配置退役在 6.6（settings v5）。版本矩阵：插件 **0.2.16**、Web **0.1.7**、API **0.2.0**、Worker **0.2.1**（0.2.1 = 5.1 local provider；6.7 文档票零 bump）。
+
+与二/三轮的差异要点：面板 AI（滚动摘要/纪要/解释）与课程总结共用同一 AI Provider seam（API 侧 `LD_AI_*`，D21）；插件不再持有任何 AI/ASR 密钥（v5 迁移首读清除）；站点行为（字幕/ASR/禁用）以服务端注册表为准（D20），插件只读。
+
+### 6.0 自动化验收（本分支已绿）
+
+实测分支 tip：第六轮 6.7 文档票合入前（六轮功能票全部落地），日期 2026-11-15，六套件合计 **1257 pass / 0 fail**：
+
+- [x] **契约** — `node --test contracts/` → **71 pass / 0 fail**
+  v1/r2/r3 全量之上叠加 contract-r4：site-capability 6 例（`site-capability-examples.json` 4 成功样例 + 管理面错误样例）、session-overview 5 例、session-digest 5 例、error-examples 第四/六轮追加 25 例（既有 33 条零改动）。
+- [x] **API 边界** — `cd apps/api && uv run pytest tests/ -q` → **271 pass / 0 fail**
+  三轮 214 之外：管理员标记 9（`--admin` CLI、me.isAdmin、连带提升）+ 站点能力 19（种子/GET/PUT 子集校验/D2 404）+ 滚动摘要 11（append-only/幂等回放/409/502/usage 两键）+ digest/explain 18（409 session_not_finished、整节覆盖、五键恒在、explain 无状态、usage 四新键）。
+- [x] **Worker** — `cd apps/worker && uv run pytest tests/ -q` → **43 pass / 0 fail**（第六轮零行为变化）
+- [x] **Web 逻辑** — `cd apps/web && npm test` → **174 pass / 0 fail**
+  三轮 156 之外新增站点管理 18：`shouldShowAdminEntry` fail-closed、行级 diff 只发改动键、保存采纳回读行/失败保留脏行、admin 404 denied 视图（不走 401 拦截器）、me 读取时机（新登录也触发）。
+- [x] **插件纯模块与接线** — `npm test`（根，`node --test tests/*.test.js`）→ **698 pass / 0 fail**
+  panel-ai 16（契约路由/tick 防抖/overview/digest/explain 解析器 fixture 钉住）+ flow 6 + site-capabilities store/gating/flow；退役 session-summary（-61 用例）与 prompts/{topic-tick,session-report,explain}.md；settings v5 迁移（provider/aiApiKey/aiBaseUrl/aiModel 首读清除）。
+- [x] `npm run check` → Release checks passed（(38 + 5) allowlisted files）。
+
+### 6.1 管理后台人工步骤（管理员标记 → 站点管理 → 禁用 → 插件被拒可收藏 → 恢复）
+
+| # | 前置 | 操作 | 预期 |
+| --- | --- | --- | --- |
+| 1.1 | API 启动前 | `cd apps/api && uv run python -m app.invites add --admin admin@example.com`（可对已开户邮箱补打，连带提升已开户账号）；`list` 查看带 admin 列 | 邀请即标记（D19：无翻转 isAdmin 的 API） |
+| 1.2 | 用 admin 邮箱登录 Web | 观察导航 | 出现「站点管理」入口（`me.isAdmin` 驱动）；普通账号登录不出现该入口（fail-closed：字段缺失=非管理员） |
+| 1.3 | 站点管理页 | 读表 | 表格 = platformId + 字幕采集/ASR/启用三开关；种子 bilibili/youtube `{captions:true,asr:true,enabled:true}`、xiaoe/xiaohongshu `{captions:false,asr:true,enabled:true}` |
+| 1.4 | 禁用 bilibili（关掉「启用」开关，行级保存） | 观察 PUT | 只发改动键（`PUT /v1/admin/site-capabilities/bilibili` 体 `{enabled:false}`）；保存成功采纳回读行；子集外字段/非布尔/非对象体 400 固定文案；未知平台 404 |
+| 1.5 | 1.4 后 | `GET /v1/admin/site-capabilities` 回读 | bilibili 行 `enabled:false`，与页面显示一致 |
+| 1.6 | 插件已关联（可普通账号） | B 站视频页面板「开始学习」 | 被拒：「站点未开放学习」（面板先查 `GET /v1/site-capabilities`，`enabled:false` 拒开课）；**收藏不受限**：同页「收藏当前页」照常 201/200 |
+| 1.7 | 恢复 bilibili `enabled:true` | 再开课 | 恢复正常开课；字幕路径随服务端 `captions` 开关（6.3：先站点开关，再选轨策略） |
+| 1.8 | 普通账号直接调管理面 | `GET /v1/admin/site-capabilities`（Bearer 为普通凭据） | 404 `not_found`「接口不存在或无权访问」（D2：与非管理员不可区分）；匿名 401；管理面 404 不触发 Web 401 拦截器（凭据保留，denied 视图呈现） |
+| 1.9 | 管理员改行后 | 插件面板保持打开 | 能力表缓存 TTL 10 分钟；下一次开课 force 刷新，一个面板会话内至多滞后一次改表 |
+
+- [ ] 管理后台走查：______
+
+### 6.2 面板 AI 服务端化人工步骤（stub AI 下走通，占位文本属预期）
+
+面板 AI 全链不需要任何密钥（API 默认 stub provider）。插件侧只负责节奏（60s 检查节拍，≥15 分钟覆盖或 ≥10 条新记录才 POST rolling-summary）与渲染；生成、落库、计数全部在 API。
+
+| # | 前置 | 操作 | 预期 |
+| --- | --- | --- | --- |
+| 2.1 | 资源已收藏（ASR 平台或字幕平台均可） | 面板「开始学习」 | Session 开启（201，`origin:null`）；面板 AI 不再读本地 AI 配置（options 无 AI 卡片） |
+| 2.2 | Session 进行中 | 采集/上传段（约 30s 一段） | worker 领取转写回写；`GET /v1/sessions/{id}/transcript` records 渐进出现 |
+| 2.3 | 覆盖达标（≥15min 或 ≥10 条） | 面板自动 tick（或手工 `POST /v1/sessions/{id}/rolling-summary`，体 `{}`） | 201 首建：`{overview}` 返回，topics append-only、`lastCoveredMs` 推进、`generation` 元数据（provider/model/inputChars） |
+| 2.4 | 2.3 后继续学习再触发 | 观察 tick | 200 追加：既有 Topic 逐字不动、index 延续、跨 tick 边界 `continuation:true`；游标后无新记录 → 200 幂等回放（不调 AI、generatedAt 不变、usage 不计） |
+| 2.5 | 学习中打开面板概览 | 读概览 | `GET /v1/sessions/{id}/overview` 与最近一次 tick 落库一致；从未生成 → 404 `overview_not_generated` |
+| 2.6 | 「结束学习」（含跳过范围） | 收尾 | finish 200（gaps 上报）；面板随后 `POST /v1/sessions/{id}/digest` |
+| 2.7 | 2.6 完成 | 观察纪要 | 201：五键 report（overview/topics/categories/quotes/todos）固定恒在；面板渲染 report_\{sessionId\} 构件并广播 |
+| 2.8 | 已生成纪要的 Session | 重新生成（面板 regenerate） | 重 POST digest → 200 覆盖（D22：纪要整节覆盖语义，与 rolling 的 append-only 相反）；serverSessionId 落本地状态，重试跨 worker 重启仍可用 |
+| 2.9 | 面板选中逐字稿文本 | 「解释」 | `POST /v1/ai/explain` `{text, context?}` 200 返回 explanation（无状态，不带视频标题）；text 空/超 8000 码点 400 |
+| 2.10 | 以上完成后 | `GET /v1/usage` 对账 | 十键齐：`audioSeconds` + `rollingSummaryCount`/`rollingSummaryInputChars`（回放/失败不计）+ `digestCount`/`digestInputChars`（覆盖重生成也计=真实 AI 调用）+ `explainCount`/`explainInputChars`（200 应答计）+ 既有 summaryCount/summaryInputChars；`updatedAt` 单调 |
+| 2.11 | 2.10 后 | Web 详情页回查 | Session 列表 origin 徽标正确；逐字稿、纪要经面板/Web 一致（服务端同一份 `sessionDigests`/`sessionInsights`） |
+| 2.12 | 任一环节 | 凭据失效（Web 登出整组撤销）后面板再动 | 401 全路由 P7：面板回授权引导、停止面板 AI 节拍（与采集/收藏的 401 联动同口径） |
+
+- [ ] 面板 AI 链路走查：______
+
+### 6.3 settings v5 迁移验证（存量 AI key 首读清除）
+
+| # | 前置 | 操作 | 预期 |
+| --- | --- | --- | --- |
+| 3.1 | 从 0.2.15 或更早升级（存储里有 v4 blob：provider/aiApiKey/aiBaseUrl/aiModel，或更早的 speechProvider/stt* 残留） | 打开插件面板或 options（normalize 在设置首读时跑） | settingsVersion 置 5；provider/aiApiKey/aiBaseUrl/aiModel 与 ASR 残留键**全部清除**并落盘（照 v4 先例：首读即持久化清洗后的 blob） |
+| 3.2 | 3.1 后 | 检查 options 页 | 无 AI 卡片（无 aiApiKey/aiBaseUrl/aiModel 字段）；设置改动立即保存 |
+| 3.3 | grep 复核 | `grep -ri "aiApiKey\|aiBaseUrl\|aiModel\|chat/completions" apps/extension/*.js` | 运行时代码零匹配（本地 AI 配置退役） |
+
+- [ ] v5 迁移验证：______
+
+### 6.4 全链冒烟记录（真进程，隔离 state，2026-11-15）
+
+6.7 票以真进程跑通两场景：**场景 A** 管理员禁用 B 站 → 插件开课被拒/可收藏 → 恢复；**场景 B** 开课 → 上传段 → worker（stub）转写 → 滚动摘要 tick×2 → 概览 → finish → 纪要 → 解释 → 用量对账。隔离方式：`LD_API_STATE_FILE`/`LD_API_OUTBOX_FILE`/`LD_API_INVITE_SEED`/`LD_DEV_RUN_DIR` 指向 `/tmp/ld-r6-smoke/*`，与开发 state 完全隔离；结束后 `scripts/dev.sh stop` + 临时目录删除。
+
+- 启动：`LD_API_STATE_FILE=/tmp/ld-r6-smoke/state.json LD_API_OUTBOX_FILE=... LD_API_INVITE_SEED=... WEB_PORT=8090 scripts/dev.sh start` → api :8787 + worker（provider=stub）+ web :8090 三进程 RUNNING。
+- seed：`uv run python -m app.invites add --admin admin@example.com` + 普通邮箱各一；管理员验证码登录（dev outbox）→ `GET /v1/me` 返回 `"isAdmin":true`；普通账号 `"isAdmin":false`。
+- 管理面：`GET /v1/admin/site-capabilities` 返回四平台种子行；`PUT .../bilibili` 体 `{"enabled":false}` → `200 {"capability":{"platformId":"bilibili",...,"enabled":false}}`；GET 回读一致；普通账号 GET admin 表 → `404 {"error":{"code":"not_found","message":"接口不存在或无权访问"}}`。
+- 插件侧（真实纯模块 + 真服务）：`site-capabilities.js` store `ensureFresh` 对真 API 拉表 ok → bilibili 行 `enabled:false` → `learning-start.js` `evaluateStartGating` = `{allowed:false,reason:"siteDisabled"}`；youtube `{allowed:true}`；收藏 bilibili URL → `201`（不受限）。恢复 `enabled:true` 后 gating 回 `allowed:true`。
+- 场景 B 关键响应：`POST /v1/sources/{srcId}/sessions` → 201（origin null）；3 段 `POST audio-segments` → 201 pending，worker stub 数秒回写 → `GET transcript` 4 records（origin asr，pending 清空）；`POST rolling-summary` → 201（topics 1–2、lastCoveredMs 90000、generation stub）；新段后 tick → 200 追加 topic 3 `continuation:true`、lastCoveredMs 120000；空增量 tick → 200 幂等回放；`GET overview` 200 与最近 tick 一致；`POST finish`（gaps 120000–150000）→ 200 finished；`POST digest` → 201 五键齐（overview/topics/categories/quotes/todos=[]）；`GET digest` 200；重新生成 → 200 覆盖；`POST /v1/ai/explain` → 200 explanation。
+- 用量对账（`GET /v1/usage` 实测值）：`audioSeconds:120 · summaryCount:0 · rollingSummaryCount:2 · rollingSummaryInputChars:1571 · digestCount:2 · digestInputChars:2616 · explainCount:1 · explainInputChars:341`（覆盖重生成计入 digestCount=真实 AI 调用；幂等回放未计数——tick1 201 + tick2 追加 200 = 2）。
+- 负路径：空 Session tick → `409 no_session_transcript_to_summarize`「这次学习还没有可总结的逐字稿记录，先归档后再生成」；坏凭据 `GET overview` → `401`「凭据已失效，请重新登录并关联」。
+- settings v5（真实模块）：`settings.js` normalize 对 v4 blob（provider/aiApiKey/aiBaseUrl/aiModel）首读输出 `settingsVersion:5`、AI 四键 `undefined`、apiBaseUrl/webAppBaseUrl 保留、存量 key 不外泄。
+- 清理：`LD_DEV_RUN_DIR=/tmp/ld-r6-smoke/run scripts/dev.sh stop` → 三进程停止；`/tmp/ld-r6-smoke` 删除。
+
+### 6.5 第六轮人工验收结果汇总
+
+| 清单节 | 内容 | 结果 | 执行人 / 日期 |
+| --- | --- | --- | --- |
+| §6.1 | 管理后台（标记 → 站点管理 → 禁用/恢复 → 插件被拒可收藏 → D2/401） | ☐ 通过 ☐ 不通过 | |
+| §6.2 | 面板 AI 链路（tick/概览/纪要/解释/用量/401 联动） | ☐ 通过 ☐ 不通过 | |
+| §6.3 | settings v5 迁移（存量 AI key 首读清除） | ☐ 通过 ☐ 不通过 | |
+| §6.4 | 全链冒烟（真进程，隔离 state） | ☐ 已记录（2026-11-15） | 6.7 票 |
+| §6.2 | 真实 qwen provider 下面板 AI 链路复走 | ☐ 占位（`LD_AI_API_KEY` 配置后，随 §5.5 同场） | |

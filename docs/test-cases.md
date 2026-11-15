@@ -1,7 +1,7 @@
 # 测试用例清单
 
-状态:一期平台整合(spec #49)三轮完成时点,tip `fee2329`(2026-11-12);第四轮 ticket 4.6(#82)起服务层(apps/api、apps/worker)仅保留 Python 实现,测试命令为 pytest(Node 版已删除)。
-配套验收步骤文档:[docs/round1-acceptance.md](round1-acceptance.md)(第一轮时点快照)、[docs/round2-acceptance.md](round2-acceptance.md)(第二/三轮统一入口)。
+状态:一期平台整合(spec #49)三轮完成时点,tip `fee2329`(2026-11-12);第四轮 ticket 4.6(#82)起服务层(apps/api、apps/worker)仅保留 Python 实现,测试命令为 pytest(Node 版已删除);第六轮(站点能力管理 + 面板 AI 服务端化,#85–#91)与文档票 6.7(#92)用例已并入下表(统计为 2026-11-15 实测)。
+配套验收步骤文档:[docs/round1-acceptance.md](round1-acceptance.md)(第一轮时点快照)、[docs/round2-acceptance.md](round2-acceptance.md)(第二/三轮统一入口,§6 为第六轮验收入口)。
 
 ## 0. 如何运行与分层定义
 
@@ -22,7 +22,7 @@ npm run package          # 打包扩展 zip
 - **U3 端到端**:多进程真实链路(本地 stub upstream / 子进程启动),无外部网络。
 - **M 人工**:真实浏览器 + 真实平台/服务,步骤在验收文档(§ 引用)。
 
-统计(tip fee2329 + 第四轮 4.6 切换后 + 5.1 local provider):contracts 52 · api 214(pytest) · worker 42(pytest) · web 156 · 插件(根)695,合计 **1159 pass / 0 fail**。
+统计(第六轮功能票 85–91 全部落地 + 6.7 文档票,2026-11-15 实测):contracts 71 · api 271(pytest) · worker 43(pytest) · web 174 · 插件(根)698,合计 **1257 pass / 0 fail**。
 
 ---
 
@@ -38,8 +38,9 @@ npm run package          # 打包扩展 zip
 | TC-C-06 | r2 错误样例(session_already_finished、origin conflict、段重复)形态固定 | U1 | `contract-r2-fixtures.test.js` + `error-examples.json` |
 | TC-C-07 | r3 契约:Summaries 端点/Citation 结构/usage 样例;引用必须命中 r2/r3 真实归档记录、quote 逐字摘句、补学生成引用新 Session | U1 | `contract-r3-fixtures.test.js` |
 | TC-C-08 | r3 错误样例(no_transcript_to_summarize、summary_generation_failed) | U1 | `contract-r3-fixtures.test.js` |
+| TC-C-09 | r4 契约:SiteCapability 行形态/种子默认、admin 标记(me.isAdmin)、GET/PUT 管理面样例;rolling-summary/overview、digest/explain 样例;第四/六轮错误样例 25 例追加 | U1 | `contract-r4-fixtures.test.js` |
 
-## 2. 后端 API apps/api/(214,pytest)
+## 2. 后端 API apps/api/(271,pytest)
 
 ### 2.1 账号与凭据(决策 3)
 
@@ -105,7 +106,28 @@ npm run package          # 打包扩展 zip
 | TC-A-38 | server 入口:LD_AI_* env、server.timeout=max(10s, aiTimeoutMs+5s) | U3 | `test_server_entry.py` |
 | TC-A-39 | 发布元数据 0.2.0 独立 pin(pyproject.toml;4.6 切换后即权威元数据);受邀 seed 文件为 JSON 数组 | U2 | `test_release.py` |
 
-## 3. 转写 Worker apps/worker/(42,pytest)
+### 2.6 站点能力与管理员标记(第四轮,决策 D19–D20)
+
+| ID | 用例 | 层级 | 验证位置 |
+|---|---|---|---|
+| TC-A-40 | 邀请 CLI `--admin`:邀请即标记、已开户账号连带提升、无 `--admin` 重复 add 幂等;`list` 带 admin 列;GET /v1/me 返回 isAdmin | U2 | `test_admin_flag.py` |
+| TC-A-41 | siteCapabilities 种子(bilibili/youtube captions+asr+enabled 全 true、xiaoe/xiaohongshu captions:false;启动只补缺失行不覆写) | U2 | `test_site_capabilities.py` |
+| TC-A-42 | GET /v1/site-capabilities 任何登录用户可读;GET/PUT 管理面要求 isAdmin;已认证非管理员 404「接口不存在或无权访问」(D2);匿名 401 | U2 | `test_site_capabilities.py` |
+| TC-A-43 | PUT /v1/admin/site-capabilities/{platformId}:任意布尔子集(空对象合法)、子集外字段/非布尔/非对象体 400 固定文案、未知平台 404、最后写入幂等 | U2 | `test_site_capabilities.py` |
+
+### 2.7 面板 AI 服务端化(第六轮,决策 D21–D22)
+
+| ID | 用例 | 层级 | 验证位置 |
+|---|---|---|---|
+| TC-A-44 | POST rolling-summary:从已归档 records 增量组装(游标/120s 上下文重叠/延续锚);append-only 既有 Topic 逐字不动、index 延续;201 首建/200 追加;空游标增量=200 幂等回放不调 AI 不计数 | U2 | `test_session_overview.py` |
+| TC-A-45 | rolling-summary 负路径:无逐字稿 409 no_session_transcript_to_summarize(AI 调用前判定);AI 失败/不可解析/零话题 502 rolling_summary_failed 零写入;跨账号 404 | U2 | `test_session_overview.py` |
+| TC-A-46 | GET overview:与最近 tick 落库一致;未生成 404 overview_not_generated;跨账号 404 | U2 | `test_session_overview.py` |
+| TC-A-47 | POST digest:未 finish 409 session_not_finished、无记录 409 no_session_transcript_to_summarize;AI 失败/五段全空 502 digest_failed 零写入;201 首建/200 整节覆盖(D22);五键 report 恒在 | U2 | `test_session_digest.py` |
+| TC-A-48 | GET digest:无则 404 digest_not_generated;digest Topic bullets/summary 至少其一,清洗后全空条目丢弃 | U2 | `test_session_digest.py` |
+| TC-A-49 | POST /v1/ai/explain:无状态 {text, context?};text 空/超 8000 码点 400;AI 失败 502;200 计数 | U2 | `test_ai_explain.py` |
+| TC-A-50 | usage 扩展到十键:rollingSummaryCount/rollingSummaryInputChars(回放/失败不计)、digestCount/digestInputChars(覆盖重生成也计)、explainCount/explainInputChars(200 应答计) | U2 | `test_usage_audio.py` |
+
+## 3. 转写 Worker apps/worker/(43,pytest)
 
 | ID | 用例 | 层级 | 验证位置 |
 |---|---|---|---|
@@ -118,7 +140,7 @@ npm run package          # 打包扩展 zip
 | TC-W-07 | 发布元数据 0.2.1 独立 pin(pyproject.toml;4.6 切换后即权威元数据);运行时仅 httpx | U2 | `test_release.py` |
 | TC-W-08 | local provider(5.1):multipart 请求形状(file/model/language/可选 Bearer)、有 segments 逐段毫秒/无 segments 整段/空文本=静音、HTTP 失败 providerHttpError 等价、超时异常透传、缺 LD_WORKER_LOCAL_BASE_URL 构造期抛;LD_WORKER_LOCAL_* env 与 fail fast;runOnce 多记录折叠到来源时间轴;loopback 链(真端口 stub transcription 服务+API 子进程+worker):上传→claim→local 转写→回写→GET transcript | U1/U2/U3 | `test_local_provider.py` `test_config.py` `test_run_once.py` `test_loopback_local.py` |
 
-## 4. Web 学习库 apps/web/(156)
+## 4. Web 学习库 apps/web/(174)
 
 | ID | 用例 | 层级 | 验证位置 |
 |---|---|---|---|
@@ -135,9 +157,12 @@ npm run package          # 打包扩展 zip
 | TC-B-11 | Markdown 安全渲染:**从不产出 HTML 字符串**、零 innerHTML;`<script>`/`<img onerror>` 字面化;支持面最小(降级字面) | U1 | `markdown.test.js` |
 | TC-B-12 | 生成总结:飞行期禁用+防抖、201 聚焦新记录、历史切换缓存、跨资源导航守卫、409/502 呈现、引用回跳(sessionId→sourceId 映射) | U1 | `library-flow.test.js` |
 | TC-B-13 | 用量面板:口径格式化、updatedAt=null→「从未产生用量」 | U1 | `library-flow.test.js` |
-| TC-B-14 | 服务入口真实子进程;发布元数据 0.1.5 pin | U3/U2 | `server-entry.test.js`、`release.test.js` |
+| TC-B-14 | 服务入口真实子进程;发布元数据 0.1.7 pin | U3/U2 | `server-entry.test.js`、`release.test.js` |
+| TC-B-15 | admin-flow:`shouldShowAdminEntry` fail-closed(isAdmin 缺失/junk=非管理员);表格视图=三开关行;行级 changedKeys 只发改动键(PUT 布尔子集);保存成功采纳回读行、失败保留脏行+封套原文 | U1 | `admin-flow.test.js` |
+| TC-B-16 | 管理面 404(非管理员 D2)→ denied 视图+「接口不存在或无权访问」,不走 401 拦截器(凭据保留);其他失败=加载错误原文 | U1 | `admin-flow.test.js` |
+| TC-B-17 | me 读取时机:render 内一次性触发(meLoaded 旗标),resume 与新登录都覆盖;导航「站点管理」入口由 me.isAdmin 驱动渲染 | U1/U2 | `library-flow.test.js`、`admin-flow.test.js` |
 
-## 5. 浏览器插件(apps/extension/tests/,695)
+## 5. 浏览器插件(apps/extension/tests/,698)
 
 ### 5.1 账号门槛与关联(P6)
 
@@ -183,9 +208,19 @@ npm run package          # 打包扩展 zip
 |---|---|---|---|
 | TC-P-19 | notes.js:请求构建/幂等键稳定/草稿保留复用原 clientRequestId/毒草稿清除;时间戳=媒体位置,读不到落纯文本 | U1 | `notes.test.js`、`plugin-note-timestamp.test.js` |
 | TC-P-20 | 联动退出:登出撤组+清凭据+停采;断网仍登出;401 中途失效停采保留 records/breadcrumbs;重登→重新关联解锁;Web visibility 校验在插件侧的对应探测 | U2 | `plugin-logout.test.js` |
-| TC-P-21 | settings v4 迁移:speechProvider/stt* 输出清除、存量 ASR key 读写即清;apiBaseUrl/webAppBaseUrl;面板 IA(授权态/欢迎态/学习态) | U1/U2 | `settings.test.js`、`panel-ia.test.js`、`options-check.test.js` |
+| TC-P-21 | settings v4/v5 迁移:v4 清 speechProvider/stt* 输出与存量 ASR key;v5(6.6)清 provider/aiApiKey/aiBaseUrl/aiModel(存量本地 AI key 首读清除);apiBaseUrl/webAppBaseUrl;面板 IA(授权态/欢迎态/学习态) | U1/U2 | `settings.test.js`、`panel-ia.test.js`、`options-check.test.js` |
 | TC-P-22 | #48 回归:anchor/seek/hole-fill 61 测试全部重接到上传+轮询缝(echo transcript stub + pollTranscriptForTest) | U2 | `session-timeline.test.js`、`session-segmenter.test.js` 等 |
 | TC-P-23 | 发布形状:三处版本 pin 一致、allowlist/importScripts/content_scripts 形状、manifest 权限(tabs,无 host_permissions 放宽) | U2 | `release.test.js` + `npm run check` |
+
+### 5.6 站点能力接线与面板 AI 服务端化(第六轮)
+
+| ID | 用例 | 层级 | 验证位置 |
+|---|---|---|---|
+| TC-P-24 | site-capabilities:内置默认表兜底(失败/超时/未登录不改变行为)、服务端行合并、normalizeRow、TTL 缓存 ensureFresh(force 刷新)、并发共享 in-flight、401→onUnauthorized(P7) | U1/U2 | `site-capabilities.test.js` |
+| TC-P-25 | 开课 gating:capabilityFor 读合并表;enabled=false → allowed:false/reason=siteDisabled(「站点未开放学习」);开课前 force 刷新;收藏路径不读能力表(禁用仍可收藏);字幕路径先站点开关(captions_disabled_by_site)再选轨策略 | U2 | `plugin-site-capabilities-flow.test.js` |
+| TC-P-26 | panel-ai 纯客户端:契约路由、PoC tick 防抖(游标外置)、overview/digest/explain 解析器(fixture 逐字钉住)、digest→report_\{sessionId\} 构件映射、共享封套分类器 | U1 | `panel-ai.test.js` |
+| TC-P-27 | 面板 AI 接线:60s 检查节拍(≥15min 覆盖+≥10 条,计数器留指针)→ POST rolling-summary;概览广播+getSessionState 携带;结束→finish→POST digest→五键构件+广播;regenerate 重 POST digest(serverSessionId 落本地状态,重试跨 worker 重启);explain POST /v1/ai/explain;401 全路由 P7 | U2 | `plugin-panel-ai-flow.test.js` |
+| TC-P-28 | 本地 AI 配置退役:session-summary.js/prompts 三个 md 删除;requestAiCompletion/checkConfig/options AI 卡片零残留;grep aiApiKey/aiBaseUrl/aiModel/chat/completions 运行时零匹配 | U2 | `release.test.js`、`options-check.test.js` |
 
 ## 6. 人工验收用例(M)
 
@@ -223,6 +258,19 @@ npm run package          # 打包扩展 zip
 | TC-M-R3-06 | 用量对账:转写时长/总结次数/输入字符 | round2 §3.6 |
 | TC-M-R3-07 ⚑ | 真实 Qwen ASR 链路(发布前至少一次,LD_AI_API_KEY 同场联调;含可选 502 演示) | round2 §5.4/§5.5 |
 
+### 第六轮(站点能力管理 + 面板 AI 服务端化)→ docs/round2-acceptance.md §6
+
+| ID | 用例 | 文档引用 |
+|---|---|---|
+| TC-M-R4-01 | 管理员标记(--admin)→ Web 站点管理入口(me.isAdmin 驱动,非管理员不渲染) | round2 §6.1 |
+| TC-M-R4-02 | 站点管理页:行级保存只发改动键;禁用 bilibili → GET 回读一致;插件开课被拒(站点未开放学习)且收藏不受限;恢复后可开课 | round2 §6.1 |
+| TC-M-R4-03 | 管理面权限面:非管理员 404「接口不存在或无权访问」(D2)、匿名 401、未知平台 404、非法子集 400 | round2 §6.1 |
+| TC-M-R4-04 | 面板 AI 链路(stub AI):开课→上传段→rolling-summary tick(201 首建/200 追加/幂等回放)→GET overview→finish→digest(201/覆盖 200)→GET digest→explain→usage 十键对账 | round2 §6.2 |
+| TC-M-R4-05 | 面板 AI 401 联动:凭据失效后面板动作回授权引导(P7) | round2 §6.2 |
+| TC-M-R4-06 | settings v5 迁移:存量本地 AI key(provider/aiApiKey/aiBaseUrl/aiModel)首读清除,options 无 AI 卡片 | round2 §6.3 |
+| TC-M-R4-07 | 全链冒烟(真进程,隔离 state):管理员禁用 B 站场景 + 面板 AI 全链场景,关键响应已记录 | round2 §6.4 |
+| TC-M-R4-08 ⚑ | 真实 qwen provider 下面板 AI 链路复走(随真实总结联调同场) | round2 §6.5 |
+
 ## 7. 已知限制相关的观察用例(非缺陷,验收时按现状记录)
 
 | ID | 现象 | 出处 |
@@ -234,3 +282,5 @@ npm run package          # 打包扩展 zip
 | TC-L-05 | 多 Source 资料的总结聚合按裸毫秒合并穿插(回查可解析,分节留作演进) | D17 多 Source 记录 |
 | TC-L-06 | 慢 API 时 Web 详情页整体 busy(并发拉取全部 session transcript) | r2-review 记录 |
 | TC-L-07 | 收集/删除重复收藏无入口(用户故事 11 延期,决策 1 第 4 条) | #49 记录 |
+| TC-L-08 | 站点能力表缓存 TTL 10 分钟:面板保持打开时管理面改表至多滞后一个面板会话;下一次开课 force 刷新保证开课判定取当次最新 | D20、round2 §6.1 |
+| TC-L-09 | manifest 遗留 host permissions(dashscope/openrouter/deepseek)仍在声明,发布流程已不从浏览器直连这些源(AI/ASR 全在服务端);清理属后续票,PRIVACY.md 已按现状注明 | 6.6 退役、#92 记录 |

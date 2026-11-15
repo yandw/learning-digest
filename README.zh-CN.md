@@ -10,7 +10,8 @@ Learning Digest 是一个个人学习库，加上一个用于在课程平台上�
 - 从上次记录的位置继续学习，或从头开始；插件按 Source 记录播放位置，支持带时间戳的笔记。
 - Session 进行中跟随 Segment 转写；B 站等视频平台有可用字幕时直接归档，其余走后端转写 Worker。
 - 任意时点基于已归档的材料生成课程总结，每条引用都可回查原文与时间戳。
-- 用原文、简体中文或双语对照的方式学习；用自己的 AI 密钥解释选中的术语。
+- 用原文、简体中文或双语对照的方式学习；解释选中的术语时，AI 在你自己的后端上运行。
+- 管理员在 Web 学习库的「站点管理」页控制每个平台能做什么：字幕采集、ASR，以及让插件跟随的平台级启用开关。
 
 产品化分支（0.2.x）在冻结的概念验证扩展（0.1.x）之上增加了 Web 学习库、后端 API、转写 Worker 和账号关联。这是一个自带密钥（bring-your-own-key）、从 GitHub 本地安装的项目。它不在 Chrome 应用商店上架。
 
@@ -19,8 +20,8 @@ Learning Digest 是一个个人学习库，加上一个用于在课程平台上�
 | 单元 | 位置 | 职责 |
 | --- | --- | --- |
 | 浏览器插件 | `apps/extension/`（`manifest.json`） | 账号关联、收藏、课程标签页选择、播放位置、笔记、字幕/音频采集（Chrome MV3 侧边栏） |
-| Web 学习库 | `apps/web/` | 邀请登录、收藏、学习列表与详情、逐字稿、课程总结、用量 |
-| 后端 API | `apps/api/` | 身份、资料与来源、Session、进度、笔记、逐字稿、总结生成、用量 |
+| Web 学习库 | `apps/web/` | 邀请登录、收藏、学习列表与详情、逐字稿、课程总结、用量、管理员的站点管理 |
+| 后端 API | `apps/api/` | 身份、资料与来源、Session、进度、笔记、逐字稿、总结生成、面板 AI（滚动摘要、纪要、解释）、站点能力注册表、用量 |
 | 转写 Worker | `apps/worker/` | 从 API 领取转写任务，运行 Speech Provider，回写带时间戳的记录 |
 
 `contracts/` 存放三端共享的 `/v1` 接口契约、平台视频 ID 提取规则和 JSON 样例，各单元的测试直接消费。领域词汇见 [GLOSSARY.md](GLOSSARY.md)，数据流向见 [PRIVACY.md](PRIVACY.md)，契约决策见 [contracts/decisions.md](contracts/decisions.md)。
@@ -54,6 +55,9 @@ uv run python -m app.main   # uvicorn 入口；状态存 data/state.json，dev m
 cd apps/worker
 uv sync
 LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
+# 之后接真实 ASR？换 provider 重启即可，例如：
+#   LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-... uv run python -m worker.main
+#   LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=http://<host>:<port> uv run python -m worker.main
 ```
 
 该 token 必须与 API 侧的 `LD_API_WORKER_TOKEN` 一致（API 未设置则 worker 端点一律 401）。真实 ASR：百炼云端（`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`）或自建服务（`LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=...`，见下方「自建/局域网 ASR」）。
@@ -74,16 +78,16 @@ npm start          # LD_API_UPSTREAM 默认 http://127.0.0.1:8787
 ## 测试
 
 ```bash
-npm test                              # 浏览器插件（apps/extension/tests/）, 695 条用例
-node --test contracts/                # 共享契约样例, 52 条用例
-cd apps/api    && uv run pytest tests/ -q  # API, 214 条用例
+npm test                              # 浏览器插件（apps/extension/tests/）, 698 条用例
+node --test contracts/                # 共享契约样例, 71 条用例
+cd apps/api    && uv run pytest tests/ -q  # API, 271 条用例
 cd apps/worker && uv run pytest tests/ -q  # worker, 43 条用例
-cd apps/web    && npm test            # web, 156 条用例
+cd apps/web    && npm test            # web, 174 条用例
 npm run check               # 发布形状检查（manifest、allowlist、importScripts、content_scripts）
 npm run package             # 打包扩展 zip
 ```
 
-全部套件通过（当前 tip 共 1160 条），且不访问外部网络：HTTP 测试绑定 loopback 临时端口，ASR/AI 测试使用确定性 stub provider 或注入 `fetch`，CI 不需要任何密钥。
+全部套件通过（当前 tip 共 1257 条），且不访问外部网络：HTTP 测试绑定 loopback 临时端口，ASR/AI 测试使用确定性 stub provider 或注入 `fetch`，CI 不需要任何密钥。
 
 完整的测试用例清单（按单元和功能域分组、每条自动化用例的验证文件，以及人工验收用例与已知限制观察项）见 [docs/test-cases.md](docs/test-cases.md)。人工验收清单（真实平台、真实密钥、tabCapture 授权）见 [docs/round1-acceptance.md](docs/round1-acceptance.md) 与 [docs/round2-acceptance.md](docs/round2-acceptance.md)。
 
@@ -99,8 +103,8 @@ npm run package             # 打包扩展 zip
 | `LD_API_OUTBOX_FILE` | `data/outbox.jsonl` | dev mailer outbox（验证码） |
 | `LD_API_WORKER_TOKEN` | 未设置（worker 端点 401） | `/v1/worker/tasks/*` 的 worker 服务凭据 |
 | `LD_API_AUDIO_DIR` | 系统临时目录 | 上传分段的临时音频（成功即删） |
-| `LD_AI_PROVIDER` | `stub` | `qwen` = 百炼 compatible-mode（课程总结） |
-| `LD_AI_API_KEY` | 未设置 | `LD_AI_PROVIDER=qwen` 时的百炼密钥，与 worker 的转写密钥分开 |
+| `LD_AI_PROVIDER` | `stub` | `qwen` = 百炼 compatible-mode（课程总结与面板 AI 功能：滚动摘要、纪要、解释） |
+| `LD_AI_API_KEY` | 未设置 | `LD_AI_PROVIDER=qwen` 时的百炼密钥，在服务端同一 seam 上服务课程总结与面板 AI，与 worker 的转写密钥分开 |
 | `LD_AI_MODEL` | `qwen3.8-flash` | 模型覆盖 |
 | `LD_AI_BASE_URL` | 百炼 compatible-mode | 端点覆盖 |
 | `LD_AI_TIMEOUT_MS` | `120000` | 单次生成 fetch 超时 |
@@ -131,7 +135,7 @@ npm run package             # 打包扩展 zip
 
 ### 浏览器插件（设置页）
 
-插件只保留属于设备本地的配置：面板内 AI 功能的 AI API 密钥、Session 与 Segment 设置，以及账号关联用的「学习服务」base URL。Session 转写与课程总结在服务端运行，密钥由服务端配置；插件不存任何 Speech Provider 密钥，设置迁移会在首次读取时清除旧的 ASR 密钥。密钥和设置保存在本机 Chrome 的本地扩展存储中。发布版本不包含也不使用 `config.js`。
+插件只保留属于设备本地的配置：Session 与 Segment 设置，以及账号关联用的「学习服务」base URL。面板 AI（滚动摘要、纪要、解释）、课程总结与 Session 转写都在服务端运行，密钥由服务端配置；插件不存任何 AI 或 Speech Provider 密钥，设置迁移会在首次读取时清除旧的 ASR 与 AI 密钥。设置保存在本机 Chrome 的本地扩展存储中。发布版本不包含也不使用 `config.js`。
 
 ## 让你的编程 Agent 帮你安装
 
@@ -144,12 +148,12 @@ npm run package             # 打包扩展 zip
 1. 询问你想把项目保存在哪里，把它下载或克隆到那里，并告诉你准确的完整路径。如果你需要建议，它可以推荐 macOS 或 Linux 上的 `~/Documents/learning-digest`，或 Windows 上的 `%USERPROFILE%\Documents\learning-digest`，你也可以使用其他文件夹。
 2. 打开下面的阿里云百炼页面，帮你创建自己的账号。
 3. 带你完成在 Chrome 中通过“加载已解压的扩展程序”选择你刚才确定的那个准确项目文件夹。
-4. 告诉你如何在扩展的 **Settings** 页面输入 API 密钥。
-5. 说明侧边栏、Session 流水线和 Speech Provider 设置如何配合工作。
+4. 帮你通过自己后端的环境变量配置 API 密钥：转写 worker 的语音密钥与 API 的 AI 密钥。扩展的 **Settings** 页面没有密钥输入框。
+5. 说明侧边栏、Session 流水线和服务器端配置的密钥如何配合工作。
 
 安装后请把文件夹保持在原位置。如果移动或删除源代码文件夹，Chrome 中加载的扩展会失效，需要从新的位置重新加载。
 
-永远不要把 API 密钥粘贴到 AI 聊天、源代码文件、截图或公开信息中。请直接在 Learning Digest 设置页面自行输入密钥。你的编程 Agent 可以指出正确的输入位置，但不需要看到密钥本身。
+永远不要把 API 密钥粘贴到 AI 聊天、源代码文件、截图或公开信息中。请自行在你本机的后端配置文件或命令里直接输入密钥。你的编程 Agent 可以指出正确的环境变量，但不需要看到密钥本身。
 
 ## 手动安装
 
@@ -168,7 +172,7 @@ npm run package             # 打包扩展 zip
 
 ## 设置 API 密钥
 
-Learning Digest 使用你自己的 AI 服务密钥（默认阿里云百炼）驱动面板内的 AI 功能：解释内容、翻译和笔记辅助。Session 转写与课程总结在你的后端运行，Speech Provider 密钥（worker）与 AI 密钥（API）通过环境变量配置，不在插件里。
+Learning Digest 的全部 AI 都运行在你自己的后端：课程总结、面板的滚动摘要与纪要、选中文本解释，都使用通过环境变量在 API 侧配置的 AI 服务。Session 转写使用同样方式在转写 Worker 上配置的 Speech Provider。浏览器插件没有密钥输入框，也不会自己调用任何 AI 或 Speech Provider。
 
 ### 获取 AI 服务 API 密钥
 
@@ -176,12 +180,12 @@ Learning Digest 使用你自己的 AI 服务密钥（默认阿里云百炼）驱
 2. 按提示登录或创建阿里云账号，并按需开通百炼（Model Studio）服务。
 3. 创建 API Key，起一个容易识别的名字，例如 `Learning Digest`。
 4. 立即复制密钥，完整密钥可能只显示一次。
-5. 把密钥粘贴到 Learning Digest 设置的 **AI API 密钥** 字段中。
+5. 把它设置为 API 环境中的 `LD_AI_API_KEY`（配合 `LD_AI_PROVIDER=qwen`），这一把密钥同时服务课程总结与面板 AI 功能。
 6. 如果百炼提示额度不足，请在百炼账号中充值后重试。
 
 当前账号和 API 详情以 [阿里云百炼官方文档](https://help.aliyun.com/zh/model-studio/) 为准。
 
-从侧边栏打开 **Settings**。你也可以在 `chrome://extensions` 的扩展卡片上打开 Learning Digest 的 **Options** 页面，或右键点击工具栏图标。请只在这些设置字段中粘贴密钥，永远不要把密钥粘贴到 AI 聊天、仓库文件、截图或公开信息中。
+密钥只存在于你后端的环境变量里：在 API 进程的启动环境设置 `LD_AI_API_KEY`，在 worker 进程的启动环境设置 `QWEN_API_KEY`。永远不要把密钥粘贴到 AI 聊天、仓库文件、截图或公开信息中。
 
 发布版本通过阿里云百炼使用 qwen3.8-flash 模型作为 AI 服务：
 
@@ -190,7 +194,7 @@ Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3.8-flash
 ```
 
-Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在设置中固定，因此你需要输入的 AI 凭证只有百炼 API 密钥。如果想换其他服务或模型，请复制设置页中安全自定义提示词，交给编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
+Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在 API 的发布配置中固定，因此你需要输入的 AI 凭证只有 API 环境中的百炼 API 密钥。如果想换其他服务或模型，调整 `LD_AI_*` 变量，或让编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
 
 ### Speech Provider 密钥（后端）
 
@@ -201,7 +205,7 @@ Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3-asr-flash
 ```
 
-在 worker 上设置 `LD_WORKER_PROVIDER=qwen` 和 `QWEN_API_KEY`，并给 API 与 worker 配一对共享的 `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN`。课程总结使用 API 侧独立的 `LD_AI_PROVIDER=qwen` 加 `LD_AI_API_KEY`。配置之前，worker 与 API 运行确定性 stub provider，整条流程无需密钥即可跑通。
+在 worker 上设置 `LD_WORKER_PROVIDER=qwen` 和 `QWEN_API_KEY`，并给 API 与 worker 配一对共享的 `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN`。API 侧的 AI 密钥（`LD_AI_PROVIDER=qwen` 加 `LD_AI_API_KEY`）在同一个 seam 上服务课程总结与面板 AI 功能。配置之前，worker 与 API 运行确定性 stub provider，整条流程无需密钥即可跑通。
 
 ### 自建/局域网 ASR
 
@@ -210,13 +214,14 @@ Model: qwen3-asr-flash
 ## 使用 Learning Digest
 
 1. 用受邀邮箱登录 Web 学习库，并在授权页关联插件。
-2. 收藏课程链接（在 Web 学习库粘贴，或从面板保存当前页）。
-3. 打开课程页，在面板里选择它的标签页，开始一个 Session。
+2. 收藏课程链接（在 Web 学习库粘贴，或从面板保存当前页）。被站点管理禁用的平台仍可收藏，但不能开始学习。
+3. 打开课程页，在面板里选择它的标签页，开始一个 Session。面板会先查服务端的站点能力表，被管理员禁用的平台会以「站点未开放学习」拒绝开课。
 4. 随着 Segment 转写完成阅读带时间戳的 Transcript，或选择 **Original**、**中文**、**双语**。
-5. 滚动摘要会随 Session 进度自动刷新；暂停或拖拽都可以，保存的是最后播放位置。
-6. 选中 Transcript 文本获取 AI 解释，或直接把它保存为带时间戳的笔记。
-7. 结束 Session，生成 Session Digest；每次 Session 的逐字稿都归档，可在 Web 学习库回查。
+5. 滚动摘要会随 Session 进度自动刷新；面板在新逐字稿落地后请服务端续写话题时间轴，「概览」读回的也是同一份服务端数据。
+6. 选中 Transcript 文本获取 AI 解释，或直接把它保存为带时间戳的笔记。解释由 API 的 AI 服务作答。
+7. 结束 Session，生成 Session Digest；由 API 生成、面板渲染报告，全部内容可在 Web 学习库回查。
 8. 任意时点生成课程总结（未学完也可以），补学后再生成。
+9. 管理员（用 `--admin` 标记邀请的账号）在 Web 学习库看到「站点管理」页，可切换各平台的字幕、ASR 与启用开关；插件跟随保存后的能力表。
 
 ## 目前可用的功能
 
@@ -225,7 +230,8 @@ Model: qwen3-asr-flash
 - 平台感知的来源匹配收藏、按 Source 的播放位置（乐观并发）与带时间戳的笔记。
 - 经后端 Worker 的 Session 转写：B 站等平台有字幕时直接归档，其余采集音频走配置的 Speech Provider，约 30 秒一个 Segment。
 - 基于全部已归档逐字稿与笔记的按需课程总结（引用可回查原文与时间戳）和用量面板。
-- 面板内 AI 功能通过阿里云百炼使用 qwen3.8-flash。其他服务需要你自行修改本地代码，发布版本不提供支持。
+- 面板 AI 功能（滚动摘要时间轴、Session 纪要、选中文本解释）由后端 API 作答，与课程总结共享服务端 AI 配置。
+- 站点能力管理：管理员在 Web 学习库切换各平台的字幕/ASR/启用开关，插件按服务端能力表拦截开课。
 
 真实课程上的 Provider 评估见 [docs/poc-evaluation.md](docs/poc-evaluation.md)。Firefox、Safari、移动端浏览器和其他 Chromium 浏览器目前未做测试和支持。
 

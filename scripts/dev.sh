@@ -48,7 +48,7 @@ resolved_ports() {
   WEB_PORT="${WEB_PORT_GIVEN:-${REMEMBERED_WEB_PORT:-8080}}"
 }
 
-port_busy() { lsof -ti ":$1" >/dev/null 2>&1; }
+port_busy() { lsof -ti ":$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
 pid_alive() {
   local file="$1"

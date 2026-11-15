@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy to apps/api/config.json (gitignored) and fill in your values: cp config.example.json config.json. Field tables and precedence (env > file > built-in defaults) are in the README, section 'Service configuration files'. PORT is managed by scripts/dev.sh and is not a config-file field. workerToken must match the worker's token. Relative data paths resolve against the directory the API process starts in (scripts/dev.sh starts it in apps/api). Unknown keys like this one are ignored.",
+  "workerToken": "dev-worker-token",
+  "aiProvider": "stub",
+  "aiApiKey": "",
+  "aiModel": "qwen3.8-flash",
+  "aiBaseUrl": "",
+  "aiTimeoutMs": 120000,
+  "stateFile": "data/state.json",
+  "inviteSeed": "data/invites.seed.json",
+  "outboxFile": "data/outbox.jsonl",
+  "audioDir": ""
+}

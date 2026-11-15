@@ -2,9 +2,28 @@
 provider seam and the loop are the behavior. Ported intent:
 apps/worker/test/config.test.js. apiBase / token / provider / poll interval
 come from LD_WORKER_* env vars; the Qwen key from QWEN_API_KEY. A qwen
-selection without a key fails at startup (fail fast, not per task)."""
+selection without a key fails at startup (fail fast, not per task).
 
-from worker.config import create_provider_from_config, load_worker_config
+Ticket 5.8 (#97) adds the config-file layer: apps/worker/config.json (when
+it exists) is the base values layer, env overrides it, DEFAULTS fill the
+rest. config_file=None keeps the pure env/defaults behavior — unit tests
+stay hermetic against a developer's real config.json; the production
+entrypoint (worker/main.py) passes DEFAULT_CONFIG_FILE."""
+
+import json
+
+import pytest
+
+from worker.config import (
+    create_provider_from_config,
+    load_worker_config,
+)
+
+
+def write_config_file(tmp_path, payload):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 def test_defaults_to_the_loopback_api_stub_provider_and_5s_poll():
@@ -128,3 +147,104 @@ def test_local_selection_uses_the_provider_defaults():
     assert provider["id"] == "local"
     # model/language/mime defaults land in the request shape, pinned at the
     # HTTP seam in test_local_provider.py.
+
+
+def test_missing_config_file_changes_nothing(tmp_path):
+    # Zero breakage: without apps/worker/config.json the loader is exactly
+    # the pre-5.8 env/defaults loader.
+    config = load_worker_config({}, config_file=tmp_path / "config.json")
+    assert config == load_worker_config({})
+
+
+def test_config_file_values_form_the_base_layer(tmp_path):
+    path = write_config_file(
+        tmp_path,
+        {
+            "_comment": "field docs live in README (Service configuration files)",
+            "apiBase": "https://api.example.com",
+            "token": "file-secret",
+            "provider": "qwen",
+            "pollIntervalMs": 12000,
+            "errorBackoffMs": 20000,
+            "qwenApiKey": "sk-file",
+        },
+    )
+    config = load_worker_config({}, config_file=path)
+    assert config["apiBase"] == "https://api.example.com"
+    assert config["token"] == "file-secret"
+    assert config["provider"] == "qwen"
+    assert config["pollIntervalMs"] == 12000
+    assert config["errorBackoffMs"] == 20000
+    assert config["qwenApiKey"] == "sk-file"
+    # Unknown keys (the _comment pointer) and untouched fields keep the
+    # built-in defaults.
+    assert config["qwenModel"] == "qwen3-asr-flash"
+    assert config["localLanguage"] == "zh"
+
+
+def test_env_overrides_the_config_file(tmp_path):
+    # Precedence env > file > defaults, per ticket 5.8.
+    path = write_config_file(
+        tmp_path,
+        {
+            "token": "file-secret",
+            "apiBase": "https://file.example.com",
+            "provider": "qwen",
+            "pollIntervalMs": 12000,
+            "qwenApiKey": "sk-file",
+        },
+    )
+    config = load_worker_config(
+        {
+            "LD_WORKER_TOKEN": "env-secret",
+            "LD_WORKER_API_BASE": "https://env.example.com",
+            "LD_WORKER_PROVIDER": "local",
+            "LD_WORKER_POLL_INTERVAL_MS": "9000",
+            "QWEN_API_KEY": "sk-env",
+            "LD_WORKER_LOCAL_BASE_URL": "http://nas.local:9000",
+        },
+        config_file=path,
+    )
+    assert config["token"] == "env-secret"
+    assert config["apiBase"] == "https://env.example.com"
+    assert config["provider"] == "local"
+    assert config["pollIntervalMs"] == 9000
+    assert config["qwenApiKey"] == "sk-env"
+    # The file still supplies what env did not set.
+    assert config["localModel"] == "whisper-1"
+
+
+def test_invalid_json_in_config_file_fails_fast_with_the_path(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"token": "unterminated', encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        load_worker_config({}, config_file=path)
+    # Fail fast, with the file path named so the operator can fix it.
+    assert str(path) in str(error.value)
+    assert "JSON" in str(error.value)
+
+
+def test_non_object_config_file_fails_fast_with_the_path(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        load_worker_config({}, config_file=path)
+    assert str(path) in str(error.value)
+
+
+def test_qwen_api_key_from_the_file_builds_the_provider(tmp_path):
+    # Key semantics: QWEN_API_KEY env and the file's qwenApiKey are the same
+    # seam — either alone satisfies the fail-fast startup check.
+    path = write_config_file(tmp_path, {"provider": "qwen", "qwenApiKey": "sk-file"})
+    provider = create_provider_from_config(load_worker_config({}, config_file=path))
+    assert provider["id"] == "qwen"
+
+
+def test_default_config_file_points_at_apps_worker_config_json():
+    # The production entrypoint wires this path in; it must be the
+    # documented location next to pyproject.toml (apps/worker/config.json).
+    from worker.config import DEFAULT_CONFIG_FILE
+
+    assert DEFAULT_CONFIG_FILE.name == "config.json"
+    assert DEFAULT_CONFIG_FILE.parent.name == "worker"
+    assert (DEFAULT_CONFIG_FILE.parent / "pyproject.toml").exists()

@@ -126,6 +126,7 @@ npm run package          # 打包扩展 zip
 | TC-A-48 | GET digest:无则 404 digest_not_generated;digest Topic bullets/summary 至少其一,清洗后全空条目丢弃 | U2 | `test_session_digest.py` |
 | TC-A-49 | POST /v1/ai/explain:无状态 {text, context?};text 空/超 8000 码点 400;AI 失败 502;200 计数 | U2 | `test_ai_explain.py` |
 | TC-A-50 | usage 扩展到十键:rollingSummaryCount/rollingSummaryInputChars(回放/失败不计)、digestCount/digestInputChars(覆盖重生成也计)、explainCount/explainInputChars(200 应答计) | U2 | `test_usage_audio.py` |
+| TC-A-51 | 配置文件层(5.8):`load_config` 优先级 env>config.json>内置默认;workerToken/aiProvider/aiApiKey/aiModel/aiBaseUrl/aiTimeoutMs/stateFile/inviteSeed/outboxFile/audioDir 全字段;文件缺失零破坏;非法 JSON/非对象启动即报错并指明路径;`build_app` 从 config.json 取 store/mailer/seed 与 worker 凭据(PORT 不在配置文件范围) | U2 | `test_config.py` |
 
 ## 3. 转写 Worker apps/worker/(43,pytest)
 
@@ -139,6 +140,7 @@ npm run package          # 打包扩展 zip
 | TC-W-06 | client:claim/result 请求形态与服务凭据头 | U2 | `test_client.py` |
 | TC-W-07 | 发布元数据 0.2.1 独立 pin(pyproject.toml;4.6 切换后即权威元数据);运行时仅 httpx | U2 | `test_release.py` |
 | TC-W-08 | local provider(5.1):multipart 请求形状(file/model/language/可选 Bearer)、有 segments 逐段毫秒/无 segments 整段/空文本=静音、HTTP 失败 providerHttpError 等价、超时异常透传、缺 LD_WORKER_LOCAL_BASE_URL 构造期抛;LD_WORKER_LOCAL_* env 与 fail fast;runOnce 多记录折叠到来源时间轴;loopback 链(真端口 stub transcription 服务+API 子进程+worker):上传→claim→local 转写→回写→GET transcript | U1/U2/U3 | `test_local_provider.py` `test_config.py` `test_run_once.py` `test_loopback_local.py` |
+| TC-W-09 | 配置文件层(5.8):`loadWorkerConfig(config_file)` 优先级 env>config.json>DEFAULTS(camelCase 全字段);文件缺失零破坏;非法 JSON/非对象启动即抛并指明路径;密钥字段从文件读取(file 的 qwenApiKey 可满足 qwen 启动校验、token/apiBase 等落入 config);DEFAULT_CONFIG_FILE 指向 apps/worker/config.json(生产入口注入,单测不碰文件系统) | U1 | `test_config.py` |
 
 ## 4. Web 学习库 apps/web/(174)
 

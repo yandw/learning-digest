@@ -3,6 +3,10 @@ worker.js (ticket 4.5). One runtime dependency: httpx.
 
 Run: python -m worker.main
 
+Configuration (ticket 5.8, issue #97): apps/worker/config.json (see
+config.example.json) holds the base values; environment variables override
+them; built-in defaults fill the rest. A missing config file is fine.
+
 Environment (see worker/config.py for the full list):
   LD_WORKER_API_BASE          API base (default http://127.0.0.1:8787)
   LD_WORKER_TOKEN             worker service credential (required for the
@@ -25,13 +29,17 @@ import sys
 from typing import Any
 
 from .client import create_worker_client
-from .config import create_provider_from_config, load_worker_config
+from .config import (
+    DEFAULT_CONFIG_FILE,
+    create_provider_from_config,
+    load_worker_config,
+)
 from .loop import run_loop
 
 
 def main(env: dict[str, str] | None = None) -> Any:
     env = os.environ if env is None else env
-    config = load_worker_config(env)
+    config = load_worker_config(env, config_file=DEFAULT_CONFIG_FILE)
     provider = create_provider_from_config(config)
     client = create_worker_client(api_base=config["apiBase"], token=config["token"])
 

@@ -8,11 +8,14 @@
 #   scripts/dev.sh logs     tail the three service logs
 #   scripts/dev.sh restart  stop + start
 #
-# Overrides: API_PORT (default 8787), WEB_PORT (default 8080),
-# LD_WORKER_TOKEN (default dev-worker-token, set on BOTH api and worker),
-# LD_WORKER_PROVIDER (stub | qwen | local), plus any LD_* env you export
-# is passed through to the child processes. The chosen ports are
-# remembered in $LD_DEV_RUN_DIR/ports.env so stop/status match start.
+# Overrides: API_PORT (default 8787), WEB_PORT (default 8080), plus any
+# LD_* / QWEN_* env you export is passed through to the child processes.
+# Credentials are NOT synthesized here (ticket 5.8, #97): the api and the
+# worker read their own apps/api/config.json / apps/worker/config.json
+# (copy each unit's config.example.json; the two token fields must match).
+# With neither config file nor exported env the worker endpoints fail
+# closed (401). Ports stay script-managed: the chosen ports are remembered
+# in $LD_DEV_RUN_DIR/ports.env so stop/status match start.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +28,6 @@ API_PORT_GIVEN="${API_PORT:-}"
 WEB_PORT_GIVEN="${WEB_PORT:-}"
 API_PORT="${API_PORT:-8787}"
 WEB_PORT="${WEB_PORT:-8080}"
-WORKER_TOKEN="${LD_WORKER_TOKEN:-dev-worker-token}"
 mkdir -p "$LOG_DIR"
 
 remember_ports() {
@@ -183,15 +185,14 @@ start() {
   fi
   start_one api "$RUN_DIR/api.pid" "$LOG_DIR/api.log" "$ROOT/apps/api" "$API_PORT" "app.main" \
     "http://127.0.0.1:$API_PORT (GET /v1/me 返回 401 = 正常)" \
-    env PORT="$API_PORT" LD_API_WORKER_TOKEN="$WORKER_TOKEN" \
+    env PORT="$API_PORT" \
     uv run python -m app.main
   if ! port_busy "$API_PORT"; then
     echo "[worker] api port $API_PORT is free, skip starting worker (start api first)"
   else
     start_one worker "$RUN_DIR/worker.pid" "$LOG_DIR/worker.log" "$ROOT/apps/worker" "" "" \
-      "pull 模式,无监听端口: 从 http://127.0.0.1:$API_PORT 领任务(provider: ${LD_WORKER_PROVIDER:-stub})" \
+      "pull 模式,无监听端口: 从 http://127.0.0.1:$API_PORT 领任务(凭 apps/worker/config.json 配置)" \
       env LD_WORKER_API_BASE="http://127.0.0.1:$API_PORT" \
-      LD_WORKER_TOKEN="$WORKER_TOKEN" \
       uv run python -m worker.main
   fi
   if port_busy "$WEB_PORT" && ! pid_alive "$RUN_DIR/web.pid"; then

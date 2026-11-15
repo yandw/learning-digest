@@ -1,0 +1,18 @@
+{
+  "_comment": "Copy to apps/worker/config.json (gitignored) and fill in your values: cp config.example.json config.json. Field tables and precedence (env > file > built-in defaults) are in the README, section 'Service configuration files'. token must match the API's workerToken. Unknown keys like this one are ignored.",
+  "apiBase": "http://127.0.0.1:8787",
+  "token": "dev-worker-token",
+  "provider": "stub",
+  "pollIntervalMs": 5000,
+  "errorBackoffMs": null,
+  "qwenApiKey": "",
+  "qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "qwenModel": "qwen3-asr-flash",
+  "qwenTimeoutMs": 120000,
+  "localBaseUrl": "",
+  "localModel": "whisper-1",
+  "localToken": "",
+  "localLanguage": "zh",
+  "localMimeType": "",
+  "localResponseFormat": "verbose_json"
+}

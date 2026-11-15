@@ -54,13 +54,13 @@ uv run python -m app.main   # uvicorn entry; state in data/state.json, dev maile
 ```bash
 cd apps/worker
 uv sync
-LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
-# Real ASR later? Restart with a provider switch, for example:
-#   LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-... uv run python -m worker.main
+uv run python -m worker.main   # token comes from apps/worker/config.json (copy config.example.json first)
+# Env overrides still work, for example:
+#   LD_WORKER_TOKEN=... LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-... uv run python -m worker.main
 #   LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=http://<host>:<port> uv run python -m worker.main
 ```
 
-The token must match `LD_API_WORKER_TOKEN` given to the API (unset there means the worker endpoints answer 401). Real ASR: Bailian cloud (`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`) or a self-hosted service (`LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=...`, see Self-hosted / LAN ASR below).
+Give the API and the worker one shared token: fill `workerToken` in `apps/api/config.json` and `token` in `apps/worker/config.json` with the same value (see Service configuration files above; unset everywhere means the worker endpoints answer 401). Real ASR: Bailian cloud (`provider: "qwen"` + `qwenApiKey`, or env `LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`) or a self-hosted service (`provider: "local"` + `localBaseUrl`, see Self-hosted / LAN ASR below).
 
 4. Start the web library (port 8080, proxies `/v1` to the API):
 
@@ -73,7 +73,7 @@ npm start          # LD_API_UPSTREAM defaults to http://127.0.0.1:8787
 
 6. Walk the flow: open `http://127.0.0.1:8080`, log in with the invited email, take the verification code from the dev outbox (`data/outbox.jsonl` next to `apps/api/`, also printed to the API's stdout), then open the extension side panel and follow the authorization guide. After linking, open a lesson page, save it from the panel, start a Session, and watch playback positions, transcripts, and summaries land in the web library.
 
-Real email delivery, real ASR, and real AI generation are stubbed until configured: the dev mailer writes codes to the outbox file, the worker defaults to the stub Speech Provider, and the API defaults to the stub AI Provider. Real providers need the keys listed in the environment tables.
+Real email delivery, real ASR, and real AI generation are stubbed until configured: the dev mailer writes codes to the outbox file, the worker defaults to the stub Speech Provider, and the API defaults to the stub AI Provider. Real providers need the keys from the service configuration files or the environment tables.
 
 ## Testing
 
@@ -91,7 +91,59 @@ All suites pass (1257 cases at the current tip) with no external network: HTTP t
 
 The complete test-case list, grouped by unit and feature area with the verifying file for every automated case, plus the manual acceptance cases and known-limitation observations, is in [docs/test-cases.md](docs/test-cases.md). Manual acceptance checklists (real platforms, real keys, tabCapture authorization) live in [docs/round1-acceptance.md](docs/round1-acceptance.md) and [docs/round2-acceptance.md](docs/round2-acceptance.md).
 
+## Service configuration files
+
+The API and the worker each read an optional runtime config file next to their code: `apps/api/config.json` and `apps/worker/config.json`. Both are gitignored: copy the committed examples and fill in your own values:
+
+```bash
+cd apps/api    && cp config.example.json config.json
+cd apps/worker && cp config.example.json config.json
+```
+
+Every field follows the same precedence: **environment variable > config file > built-in default**. A missing `config.json` is fine (the defaults and any exported env apply); an invalid one fails at startup with the file path named. The config file holds the same settings as the environment tables below, keyed by these camelCase names.
+
+### apps/api/config.json
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `workerToken` | unset (worker endpoints 401) | worker service credential for `/v1/worker/tasks/*`; must match the worker's `token` |
+| `aiProvider` | `stub` | `qwen` = Bailian compatible-mode for course summaries and the panel AI features (rolling summary, digest, explanations) |
+| `aiApiKey` | unset | Bailian key for `aiProvider: "qwen"`, serving course summaries and panel AI from this one server-side seam, separate from the worker's speech key |
+| `aiModel` | `qwen3.8-flash` | model override |
+| `aiBaseUrl` | Bailian compatible-mode | endpoint override |
+| `aiTimeoutMs` | `120000` | per-generation fetch timeout |
+| `stateFile` | `data/state.json` | embedded store override (relative paths resolve against the API's start directory) |
+| `inviteSeed` | `data/invites.seed.json` | invited-email seed override |
+| `outboxFile` | `data/outbox.jsonl` | dev-mailer outbox override (verification codes) |
+| `audioDir` | system temp dir | temp audio for uploaded segments (deleted on success) |
+
+The listen port is not a config-file field: `scripts/dev.sh` owns `PORT`.
+
+### apps/worker/config.json
+
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `apiBase` | `http://127.0.0.1:8787` | API base |
+| `token` | unset | worker service credential; must match the API's `workerToken` |
+| `provider` | `stub` | `qwen` = Bailian qwen3-asr-flash; `local` = self-hosted OpenAI-compatible transcription |
+| `pollIntervalMs` | `5000` | idle poll interval |
+| `errorBackoffMs` | poll interval | sleep after a failed cycle |
+| `qwenApiKey` | unset | Bailian speech key (required when the provider is `qwen`; checked at startup) |
+| `qwenBaseUrl` | Bailian compatible-mode | endpoint override |
+| `qwenModel` | `qwen3-asr-flash` | model override |
+| `qwenTimeoutMs` | `120000` | per-request ASR timeout |
+| `localBaseUrl` | unset | self-hosted / LAN ASR endpoint (`local` provider; required when selected) |
+| `localModel` | `whisper-1` | local transcription model |
+| `localToken` | unset | optional Bearer token for the local service |
+| `localLanguage` | `zh` | transcription language hint |
+| `localMimeType` | unset | audio MIME override for picky services |
+| `localResponseFormat` | `verbose_json` | local transcription response format |
+
+Credential hygiene: the `config.json` files hold real keys and never enter the repository (they are gitignored; the `config.example.json` files carry placeholders only). `scripts/dev.sh` does not invent a dev token: it starts both services with whatever the config files and your exported env provide, so with neither a config file nor env the worker endpoints fail closed (401). Put the same non-placeholder token in both files and the worker can claim tasks.
+
 ## Environment variables
+
+These are the same settings as the config files above with their variable names. The order is **environment variable > config file > built-in default**: a variable overrides its config-file field; both override the defaults below. Env stays the tool for CI, tests, and one-off overrides.
 
 ### apps/api (`app/main.py`)
 
@@ -149,7 +201,7 @@ Your agent should:
 1. Ask where you want to keep the project, download or clone it there, and tell you the exact full path. If you want a suggestion, it can offer `~/Documents/learning-digest` on macOS or Linux, or `%USERPROFILE%\Documents\learning-digest` on Windows.
 2. Open the official Alibaba Cloud Bailian page below and help you create your own account.
 3. Walk you through selecting the exact project folder you chose in Chrome with **Load unpacked**.
-4. Help you set your API keys through environment variables on your own backend: the transcription worker's speech key and the API's AI key. The extension's **Settings** page has no key fields.
+4. Help you set your API keys in your own backend's configuration files (the gitignored `config.json` files) or environment variables: the transcription worker's speech key and the API's AI key. The extension's **Settings** page has no key fields.
 5. Explain how the side panel, Session pipeline, and the server-configured keys fit together.
 
 Keep this folder in the same place after installation. Moving or deleting the source folder breaks the unpacked extension until you load it again from its new permanent folder.
@@ -173,7 +225,7 @@ Because this is an unpacked extension, it does not update automatically. After d
 
 ## Set up your API keys
 
-Learning Digest runs all of its AI on your own backend: course summaries, the panel's rolling summaries and digests, and explanations of selected text all use the AI provider configured on the API through environment variables. Session transcription uses the Speech Provider configured on the transcription worker the same way. The browser extension has no key fields and never talks to an AI or Speech Provider itself.
+Learning Digest runs all of its AI on your own backend: course summaries, the panel's rolling summaries and digests, and explanations of selected text all use the AI provider configured on the API (through `apps/api/config.json` or environment variables). Session transcription uses the Speech Provider configured on the transcription worker the same way. The browser extension has no key fields and never talks to an AI or Speech Provider itself.
 
 ### Get an AI provider API key
 
@@ -181,12 +233,12 @@ Learning Digest runs all of its AI on your own backend: course summaries, the pa
 2. Sign in or create an Alibaba Cloud account when prompted, and activate Bailian (Model Studio) if asked.
 3. Create an API key, give it a recognizable name such as `Learning Digest`, and create it.
 4. Copy the key immediately. The full key may only be shown once.
-5. Set it as `LD_AI_API_KEY` in the API's environment (with `LD_AI_PROVIDER=qwen`), where it serves course summaries and the panel AI features.
+5. Set it as `aiApiKey` in the API's `apps/api/config.json` (with `"aiProvider": "qwen"`), where it serves course summaries and the panel AI features. The environment variable `LD_AI_API_KEY` (with `LD_AI_PROVIDER=qwen`) works too and wins if both are set.
 6. If Bailian reports insufficient quota, top up in your Bailian account and try again.
 
 See the [official Alibaba Cloud Model Studio documentation](https://help.aliyun.com/zh/model-studio/) for current account and API details.
 
-Keys exist only in your backend's environment: set `LD_AI_API_KEY` where the API process starts and `QWEN_API_KEY` where the worker process starts. Never paste a key into an AI chat, repository file, screenshot, or public message.
+Keys exist only on your backend, inside the two gitignored config files or the processes' environment: put `aiApiKey` in `apps/api/config.json` and `qwenApiKey` in `apps/worker/config.json`. Never commit them; the `.gitignore` rule is your guard (the committed `config.example.json` files carry placeholders only). Never paste a key into an AI chat, a versioned file, a screenshot, or a public message.
 
 The published version uses Alibaba Cloud Bailian with the qwen3.8-flash model as its AI provider:
 
@@ -195,22 +247,22 @@ Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3.8-flash
 ```
 
-Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in the API's published configuration, so the only AI credential you enter is your Bailian API key in the API's environment. To use another provider or model, change the `LD_AI_*` variables or ask a coding agent to adapt your local copy. Never add an API key to that prompt or chat.
+Learning Digest sends every request in non-thinking mode for responsive, predictable interactions. The endpoint and model are fixed in the API's published configuration, so the only AI credential you enter is your Bailian API key in the API's config file (or environment). To use another provider or model, change the `ai*` fields in `apps/api/config.json` (or the `LD_AI_*` variables) or ask a coding agent to adapt your local copy. Never add an API key to that prompt or chat.
 
 ### Speech Provider key (backend)
 
-Session transcription defaults to Qwen ASR on Alibaba Cloud Bailian, configured in the transcription worker through environment variables:
+Session transcription defaults to Qwen ASR on Alibaba Cloud Bailian, configured in the transcription worker (through `apps/worker/config.json` or environment variables):
 
 ```text
 Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3-asr-flash
 ```
 
-Set `LD_WORKER_PROVIDER=qwen` and `QWEN_API_KEY` on the worker, and give the API and the worker a shared `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN` pair. The AI key on the API (`LD_AI_PROVIDER=qwen` plus `LD_AI_API_KEY`) serves course summaries and the panel AI features from one seam. Until these are set, the worker and the API run deterministic stub providers so the whole flow can be exercised without keys.
+Set `"provider": "qwen"` and `qwenApiKey` in the worker's config file (env: `LD_WORKER_PROVIDER=qwen`, `QWEN_API_KEY`), and give the API and the worker a shared token pair: `workerToken` in `apps/api/config.json` matching `token` in `apps/worker/config.json` (env: `LD_API_WORKER_TOKEN` / `LD_WORKER_TOKEN`). The AI key on the API (`aiProvider: "qwen"` plus `aiApiKey`) serves course summaries and the panel AI features from one seam. Until these are set, the worker and the API run deterministic stub providers so the whole flow can be exercised without keys.
 
 ### Self-hosted / LAN ASR
 
-Transcription can also run entirely on your own hardware, touching no cloud API: point the worker at a self-hosted, OpenAI-compatible transcription service (faster-whisper-server, LocalAI, and whisper.cpp server all speak this shape) with `LD_WORKER_PROVIDER=local` and `LD_WORKER_LOCAL_BASE_URL=http://<host>:<port>`. The worker posts multipart audio to `{base}/v1/audio/transcriptions` with the model and language (defaults `whisper-1` and `zh`) and, when `LD_WORKER_LOCAL_TOKEN` is set, a Bearer token. `LD_WORKER_LOCAL_MIME_TYPE` overrides the audio MIME type for services that are picky about containers (wav/webm are common). A `local` selection without a base URL fails at startup, the same fail-fast rule as a `qwen` selection without a key.
+Transcription can also run entirely on your own hardware, touching no cloud API: point the worker at a self-hosted, OpenAI-compatible transcription service (faster-whisper-server, LocalAI, and whisper.cpp server all speak this shape) with `"provider": "local"` and `localBaseUrl: "http://<host>:<port>"` in the worker's config file (env: `LD_WORKER_PROVIDER=local`, `LD_WORKER_LOCAL_BASE_URL=http://<host>:<port>`). The worker posts multipart audio to `{base}/v1/audio/transcriptions` with the model and language (defaults `whisper-1` and `zh`) and, when `localToken` (env `LD_WORKER_LOCAL_TOKEN`) is set, a Bearer token. `localMimeType` (env `LD_WORKER_LOCAL_MIME_TYPE`) overrides the audio MIME type for services that are picky about containers (wav/webm are common). A `local` selection without a base URL fails at startup, the same fail-fast rule as a `qwen` selection without a key.
 
 ## Use Learning Digest
 

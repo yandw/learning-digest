@@ -6,6 +6,13 @@
 /config.js
 /apps/extension/config.js
 
+# Server unit runtime config (ticket 5.8, issue #97): the api/worker
+# config.json files hold credentials — copy each unit's
+# config.example.json to config.json locally; the example is committed,
+# the real file never is.
+/apps/api/config.json
+/apps/worker/config.json
+
 # OS / editor cruft
 .DS_Store
 

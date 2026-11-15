@@ -2,14 +2,17 @@
 
 Run: python -m app.main
 
+Configuration (ticket 5.8, issue #97): apps/api/config.json (see
+config.example.json) holds the base values; environment variables override
+them; built-in defaults fill the rest. A missing config file is fine. The
+listen port is not a config-file field — scripts/dev.sh manages it.
+
 Environment (same names and meanings as the Node server.js):
   PORT                  listen port (default 8787; 0 = ephemeral)
   LD_API_STATE_FILE     embedded store file (default data/state.json)
   LD_API_INVITE_SEED    invited-email seed file (default data/invites.seed.json)
   LD_API_OUTBOX_FILE    dev-mailer JSONL outbox (default data/outbox.jsonl)
-  LD_API_WORKER_TOKEN   worker service credential (round-2 endpoints; the
-                        Python side accepts it into config until those
-                        domains land in a later round-4 ticket)
+  LD_API_WORKER_TOKEN   worker service credential (round-2 endpoints)
   LD_API_AUDIO_DIR      temp audio directory for uploaded segments (D14)
   LD_AI_PROVIDER        AI Provider for course summaries (D16)
   LD_AI_API_KEY         provider API key (separate from the worker's
@@ -29,9 +32,10 @@ from __future__ import annotations
 import os
 import socket
 import sys
-import tempfile
 
 import uvicorn
+
+from .config import DEFAULT_CONFIG_FILE
 
 
 def _parse_int(value: str | None, fallback: int) -> int:
@@ -50,39 +54,34 @@ def keep_alive_seconds(ai_timeout_ms: int) -> float:
     return max(10.0, ai_timeout_ms / 1000 + 5.0)
 
 
-def build_app(env: dict):
+def build_app(env: dict, config_file: str | None = None):
     from .app_factory import create_app
+    from .config import load_config
     from .mailer import create_dev_mailer
     from .persistence import create_file_store
 
-    package_dir = os.path.dirname(os.path.abspath(__file__))
-    api_dir = os.path.dirname(package_dir)
-    state_file = env.get("LD_API_STATE_FILE") or os.path.join(api_dir, "data", "state.json")
-    seed_file = env.get("LD_API_INVITE_SEED") or os.path.join(api_dir, "data", "invites.seed.json")
-    out_file = env.get("LD_API_OUTBOX_FILE") or os.path.join(api_dir, "data", "outbox.jsonl")
-
-    store = create_file_store({"file": state_file})
-    mailer = create_dev_mailer(out_file=out_file)
+    cfg = load_config(env, config_file=config_file)
+    store = create_file_store({"file": cfg["stateFile"]})
+    mailer = create_dev_mailer(out_file=cfg["outboxFile"])
     return create_app(
         store=store,
         mailer=mailer,
-        seed_file=seed_file,
+        seed_file=cfg["inviteSeed"],
         config={
-            "worker_token": env.get("LD_API_WORKER_TOKEN") or "",
-            "audio_dir": env.get("LD_API_AUDIO_DIR")
-            or os.path.join(tempfile.gettempdir(), "ld-api-audio"),
-            "ai_provider_name": env.get("LD_AI_PROVIDER") or "",
-            "ai_api_key": env.get("LD_AI_API_KEY") or "",
-            "ai_model": env.get("LD_AI_MODEL") or "",
-            "ai_base_url": env.get("LD_AI_BASE_URL") or "",
-            "ai_timeout_ms": _parse_int(env.get("LD_AI_TIMEOUT_MS"), 120_000),
+            "worker_token": cfg["workerToken"],
+            "audio_dir": cfg["audioDir"],
+            "ai_provider_name": cfg["aiProvider"],
+            "ai_api_key": cfg["aiApiKey"],
+            "ai_model": cfg["aiModel"],
+            "ai_base_url": cfg["aiBaseUrl"],
+            "ai_timeout_ms": cfg["aiTimeoutMs"],
         },
     )
 
 
 def main(env: dict | None = None) -> None:
     env = dict(os.environ if env is None else env)
-    app = build_app(env)
+    app = build_app(env, config_file=DEFAULT_CONFIG_FILE)
     port = _parse_int(env.get("PORT"), 8787)
 
     # Bind before printing so PORT=0 reports the real port (server.js

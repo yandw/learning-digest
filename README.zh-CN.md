@@ -54,13 +54,13 @@ uv run python -m app.main   # uvicorn 入口；状态存 data/state.json，dev m
 ```bash
 cd apps/worker
 uv sync
-LD_WORKER_TOKEN=dev-worker-token uv run python -m worker.main
-# 之后接真实 ASR？换 provider 重启即可，例如：
-#   LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-... uv run python -m worker.main
+uv run python -m worker.main   # token 来自 apps/worker/config.json（先复制 config.example.json）
+# env 覆盖依然可用，例如：
+#   LD_WORKER_TOKEN=... LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-... uv run python -m worker.main
 #   LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=http://<host>:<port> uv run python -m worker.main
 ```
 
-该 token 必须与 API 侧的 `LD_API_WORKER_TOKEN` 一致（API 未设置则 worker 端点一律 401）。真实 ASR：百炼云端（`LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`）或自建服务（`LD_WORKER_PROVIDER=local LD_WORKER_LOCAL_BASE_URL=...`，见下方「自建/局域网 ASR」）。
+给 API 与 worker 配一对共享 token：在 `apps/api/config.json` 的 `workerToken` 与 `apps/worker/config.json` 的 `token` 里填同一个值（见上方「服务配置文件」；处处未设置则 worker 端点一律 401）。真实 ASR：百炼云端（`"provider": "qwen"` + `qwenApiKey`，或 env `LD_WORKER_PROVIDER=qwen QWEN_API_KEY=sk-...`）或自建服务（`"provider": "local"` + `localBaseUrl`，见下方「自建/局域网 ASR」）。
 
 4. 启动 Web 学习库（端口 8080，`/v1` 反代到 API）：
 
@@ -73,7 +73,7 @@ npm start          # LD_API_UPSTREAM 默认 http://127.0.0.1:8787
 
 6. 走一遍流程：打开 `http://127.0.0.1:8080`，用受邀邮箱登录，从 dev outbox（`apps/api/` 旁的 `data/outbox.jsonl`，API 的 stdout 也会打印）取验证码，然后打开插件侧边栏按授权引导操作。关联完成后，打开课程页，从面板收藏，开始 Session，观看播放位置、逐字稿和总结落到 Web 学习库。
 
-真实邮件、真实 ASR、真实 AI 生成在配置前均为 stub：dev mailer 把验证码写进 outbox 文件，worker 默认 stub Speech Provider，API 默认 stub AI Provider。真实 provider 需要配置环境变量表中的密钥。
+真实邮件、真实 ASR、真实 AI 生成在配置前均为 stub：dev mailer 把验证码写进 outbox 文件，worker 默认 stub Speech Provider，API 默认 stub AI Provider。真实 provider 的密钥来自服务配置文件或环境变量表。
 
 ## 测试
 
@@ -91,7 +91,59 @@ npm run package             # 打包扩展 zip
 
 完整的测试用例清单（按单元和功能域分组、每条自动化用例的验证文件，以及人工验收用例与已知限制观察项）见 [docs/test-cases.md](docs/test-cases.md)。人工验收清单（真实平台、真实密钥、tabCapture 授权）见 [docs/round1-acceptance.md](docs/round1-acceptance.md) 与 [docs/round2-acceptance.md](docs/round2-acceptance.md)。
 
+## 服务配置文件
+
+API 与 worker 各自读取代码旁边的可选运行时配置文件：`apps/api/config.json` 与 `apps/worker/config.json`。两者都已加入 .gitignore：复制入库的 example 文件并填入你自己的值：
+
+```bash
+cd apps/api    && cp config.example.json config.json
+cd apps/worker && cp config.example.json config.json
+```
+
+每个字段的优先级一致：**环境变量 > 配置文件 > 内置默认**。没有 `config.json` 也没关系（生效的是默认值和你 export 的环境变量）；JSON 非法时启动即报错，错误信息指明文件路径。配置文件承载的就是下方环境变量表中的同一批设置，键名为 camelCase。
+
+### apps/api/config.json
+
+| 字段 | 默认 | 用途 |
+| --- | --- | --- |
+| `workerToken` | 未设置（worker 端点 401） | `/v1/worker/tasks/*` 的 worker 服务凭据，必须与 worker 的 `token` 一致 |
+| `aiProvider` | `stub` | `qwen` = 百炼 compatible-mode（课程总结与面板 AI 功能：滚动摘要、纪要、解释） |
+| `aiApiKey` | 未设置 | `aiProvider: "qwen"` 时的百炼密钥，在服务端同一 seam 上服务课程总结与面板 AI，与 worker 的转写密钥分开 |
+| `aiModel` | `qwen3.8-flash` | 模型覆盖 |
+| `aiBaseUrl` | 百炼 compatible-mode | 端点覆盖 |
+| `aiTimeoutMs` | `120000` | 单次生成 fetch 超时 |
+| `stateFile` | `data/state.json` | 内嵌存储覆盖（相对路径相对 API 进程启动目录解析） |
+| `inviteSeed` | `data/invites.seed.json` | 受邀邮箱 seed 覆盖 |
+| `outboxFile` | `data/outbox.jsonl` | dev mailer outbox 覆盖（验证码） |
+| `audioDir` | 系统临时目录 | 上传分段的临时音频（成功即删） |
+
+监听端口不是配置文件字段：`PORT` 由 `scripts/dev.sh` 管理。
+
+### apps/worker/config.json
+
+| 字段 | 默认 | 用途 |
+| --- | --- | --- |
+| `apiBase` | `http://127.0.0.1:8787` | API base |
+| `token` | 未设置 | worker 服务凭据，必须与 API 的 `workerToken` 一致 |
+| `provider` | `stub` | `qwen` = 百炼 qwen3-asr-flash；`local` = 自建 OpenAI 兼容 transcription 服务 |
+| `pollIntervalMs` | `5000` | 空闲轮询间隔 |
+| `errorBackoffMs` | 轮询间隔 | 失败周期后的退避 |
+| `qwenApiKey` | 未设置 | 百炼转写密钥（provider 为 `qwen` 时必填，启动即校验） |
+| `qwenBaseUrl` | 百炼 compatible-mode | 端点覆盖 |
+| `qwenModel` | `qwen3-asr-flash` | 模型覆盖 |
+| `qwenTimeoutMs` | `120000` | 单次 ASR 请求超时 |
+| `localBaseUrl` | 未设置 | 自建/局域网 ASR 端点（`local` provider，选中即必填） |
+| `localModel` | `whisper-1` | local 转写模型 |
+| `localToken` | 未设置 | local 服务可选 Bearer 凭据 |
+| `localLanguage` | `zh` | 转写语言提示 |
+| `localMimeType` | 未设置 | 音频 MIME 覆盖（对容器挑剔的服务用） |
+| `localResponseFormat` | `verbose_json` | local 转写响应格式 |
+
+密钥卫生：`config.json` 里放的是真实密钥，永远不入仓（已被 .gitignore 覆盖；入库的 `config.example.json` 只有占位值）。`scripts/dev.sh` 不再合成 dev token：它带着配置文件和你 export 的环境变量原样启动两个服务；配置文件与环境变量都没有 token 时，worker 端点 fail closed（401）。把同一个非占位 token 填进两份文件，worker 即可正常领任务。
+
 ## 环境变量
+
+这里的变量与上方配置文件是同一批设置。顺序为 **环境变量 > 配置文件 > 内置默认**：环境变量覆盖对应的配置文件字段，两者都覆盖下表默认值。env 保留给 CI、测试与临时覆盖。
 
 ### apps/api（`app/main.py`）
 
@@ -149,7 +201,7 @@ npm run package             # 打包扩展 zip
 1. 询问你想把项目保存在哪里，把它下载或克隆到那里，并告诉你准确的完整路径。如果你需要建议，它可以推荐 macOS 或 Linux 上的 `~/Documents/learning-digest`，或 Windows 上的 `%USERPROFILE%\Documents\learning-digest`，你也可以使用其他文件夹。
 2. 打开下面的阿里云百炼页面，帮你创建自己的账号。
 3. 带你完成在 Chrome 中通过“加载已解压的扩展程序”选择你刚才确定的那个准确项目文件夹。
-4. 帮你通过自己后端的环境变量配置 API 密钥：转写 worker 的语音密钥与 API 的 AI 密钥。扩展的 **Settings** 页面没有密钥输入框。
+4. 帮你在自己后端的配置文件（已被 gitignore 的 `config.json`）或环境变量里配置 API 密钥：转写 worker 的语音密钥与 API 的 AI 密钥。扩展的 **Settings** 页面没有密钥输入框。
 5. 说明侧边栏、Session 流水线和服务器端配置的密钥如何配合工作。
 
 安装后请把文件夹保持在原位置。如果移动或删除源代码文件夹，Chrome 中加载的扩展会失效，需要从新的位置重新加载。
@@ -173,7 +225,7 @@ npm run package             # 打包扩展 zip
 
 ## 设置 API 密钥
 
-Learning Digest 的全部 AI 都运行在你自己的后端：课程总结、面板的滚动摘要与纪要、选中文本解释，都使用通过环境变量在 API 侧配置的 AI 服务。Session 转写使用同样方式在转写 Worker 上配置的 Speech Provider。浏览器插件没有密钥输入框，也不会自己调用任何 AI 或 Speech Provider。
+Learning Digest 的全部 AI 都运行在你自己的后端：课程总结、面板的滚动摘要与纪要、选中文本解释，都使用在 API 侧配置（`apps/api/config.json` 或环境变量）的 AI 服务。Session 转写使用同样方式在转写 Worker 上配置的 Speech Provider。浏览器插件没有密钥输入框，也不会自己调用任何 AI 或 Speech Provider。
 
 ### 获取 AI 服务 API 密钥
 
@@ -181,12 +233,12 @@ Learning Digest 的全部 AI 都运行在你自己的后端：课程总结、面
 2. 按提示登录或创建阿里云账号，并按需开通百炼（Model Studio）服务。
 3. 创建 API Key，起一个容易识别的名字，例如 `Learning Digest`。
 4. 立即复制密钥，完整密钥可能只显示一次。
-5. 把它设置为 API 环境中的 `LD_AI_API_KEY`（配合 `LD_AI_PROVIDER=qwen`），这一把密钥同时服务课程总结与面板 AI 功能。
+5. 把它设置为 `apps/api/config.json` 中的 `aiApiKey`（配合 `"aiProvider": "qwen"`），这一把密钥同时服务课程总结与面板 AI 功能。环境变量 `LD_AI_API_KEY`（配合 `LD_AI_PROVIDER=qwen`）同样有效，且两者同时设置时环境变量优先。
 6. 如果百炼提示额度不足，请在百炼账号中充值后重试。
 
 当前账号和 API 详情以 [阿里云百炼官方文档](https://help.aliyun.com/zh/model-studio/) 为准。
 
-密钥只存在于你后端的环境变量里：在 API 进程的启动环境设置 `LD_AI_API_KEY`，在 worker 进程的启动环境设置 `QWEN_API_KEY`。永远不要把密钥粘贴到 AI 聊天、仓库文件、截图或公开信息中。
+密钥只存在于你的后端：放进两份已被 gitignore 的配置文件，或各进程的环境变量。`aiApiKey` 放进 `apps/api/config.json`，`qwenApiKey` 放进 `apps/worker/config.json`。永远不要提交它们，`.gitignore` 规则是你的护栏（入库的 `config.example.json` 只有占位值）。永远不要把密钥粘贴到 AI 聊天、入仓文件、截图或公开信息中。
 
 发布版本通过阿里云百炼使用 qwen3.8-flash 模型作为 AI 服务：
 
@@ -195,22 +247,22 @@ Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3.8-flash
 ```
 
-Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在 API 的发布配置中固定，因此你需要输入的 AI 凭证只有 API 环境中的百炼 API 密钥。如果想换其他服务或模型，调整 `LD_AI_*` 变量，或让编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
+Learning Digest 所有 AI 请求都以非思考模式发送，保证响应迅速、行为可预期。端点和模型在 API 的发布配置中固定，因此你需要输入的 AI 凭证只有 API 配置文件（或环境变量）中的百炼 API 密钥。如果想换其他服务或模型，调整 `apps/api/config.json` 的 `ai*` 字段（或 `LD_AI_*` 变量），或让编程 Agent 修改你的本地副本。永远不要把 API 密钥加入这段提示词或聊天。
 
 ### Speech Provider 密钥（后端）
 
-Session 转写默认使用阿里云百炼 Qwen ASR，在转写 Worker 中通过环境变量配置：
+Session 转写默认使用阿里云百炼 Qwen ASR，在转写 Worker 中配置（`apps/worker/config.json` 或环境变量）：
 
 ```text
 Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
 Model: qwen3-asr-flash
 ```
 
-在 worker 上设置 `LD_WORKER_PROVIDER=qwen` 和 `QWEN_API_KEY`，并给 API 与 worker 配一对共享的 `LD_API_WORKER_TOKEN`/`LD_WORKER_TOKEN`。API 侧的 AI 密钥（`LD_AI_PROVIDER=qwen` 加 `LD_AI_API_KEY`）在同一个 seam 上服务课程总结与面板 AI 功能。配置之前，worker 与 API 运行确定性 stub provider，整条流程无需密钥即可跑通。
+在 worker 的配置文件里设置 `"provider": "qwen"` 和 `qwenApiKey`（env：`LD_WORKER_PROVIDER=qwen`、`QWEN_API_KEY`），并给 API 与 worker 配一对共享 token：`apps/api/config.json` 的 `workerToken` 与 `apps/worker/config.json` 的 `token` 填同一个值（env：`LD_API_WORKER_TOKEN` / `LD_WORKER_TOKEN`）。API 侧的 AI 密钥（`"aiProvider": "qwen"` 加 `aiApiKey`）在同一个 seam 上服务课程总结与面板 AI 功能。配置之前，worker 与 API 运行确定性 stub provider，整条流程无需密钥即可跑通。
 
 ### 自建/局域网 ASR
 
-转写也可以完全跑在自己的硬件上，不触碰任何云端 API：把 worker 指向一个自建的 OpenAI 兼容 transcription 服务（faster-whisper-server、LocalAI、whisper.cpp server 都是这个形状），设置 `LD_WORKER_PROVIDER=local` 和 `LD_WORKER_LOCAL_BASE_URL=http://<host>:<port>`。worker 以 multipart 把音频 POST 到 `{base}/v1/audio/transcriptions`，携带 model 与 language（默认 `whisper-1` 与 `zh`），配置了 `LD_WORKER_LOCAL_TOKEN` 时附带 Bearer 凭据。`LD_WORKER_LOCAL_MIME_TYPE` 可覆盖音频 MIME 类型（本机服务常要 wav/webm）。`local` 选择缺 BASE_URL 时启动即失败，与 `qwen` 缺 key 的 fail-fast 规则一致。
+转写也可以完全跑在自己的硬件上，不触碰任何云端 API：把 worker 指向一个自建的 OpenAI 兼容 transcription 服务（faster-whisper-server、LocalAI、whisper.cpp server 都是这个形状），在 worker 的配置文件里设置 `"provider": "local"` 和 `localBaseUrl: "http://<host>:<port>"`（env：`LD_WORKER_PROVIDER=local`、`LD_WORKER_LOCAL_BASE_URL=http://<host>:<port>`）。worker 以 multipart 把音频 POST 到 `{base}/v1/audio/transcriptions`，携带 model 与 language（默认 `whisper-1` 与 `zh`），配置了 `localToken`（env `LD_WORKER_LOCAL_TOKEN`）时附带 Bearer 凭据。`localMimeType`（env `LD_WORKER_LOCAL_MIME_TYPE`）可覆盖音频 MIME 类型（本机服务常要 wav/webm）。`local` 选择缺 BASE_URL 时启动即失败，与 `qwen` 缺 key 的 fail-fast 规则一致。
 
 ## 使用 Learning Digest
 

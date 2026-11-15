@@ -12,10 +12,12 @@
 # generation (`/v1`) is unchanged. 0.2.1 adds the local Speech Provider
 # (self-hosted / LAN ASR, ticket 5.1, issue #83); 0.2.2 gives the qwen
 # Speech Provider an explicit per-request ASR timeout
-# (LD_WORKER_QWEN_TIMEOUT_MS, default 120000 ms).
+# (LD_WORKER_QWEN_TIMEOUT_MS, default 120000 ms); 0.2.3 (ticket 5.8,
+# issue #97) adds the config-file layer: apps/worker/config.json (base
+# values) < env overrides < built-in defaults.
 [project]
 name = "learning-digest-worker"
-version = "0.2.2"
+version = "0.2.3"
 description = "Learning Digest transcription worker: pulls pending tasks from the API (contract-r2 §3.7, D13 pull model), transcribes through a Speech Provider seam (stub, Qwen qwen3-asr-flash, or a self-hosted OpenAI-compatible local service), and writes results back. The sole service-layer implementation (ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [

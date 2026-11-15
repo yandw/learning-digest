@@ -11,10 +11,12 @@
 # Node/FastAPI duality collapses onto Python alone — while the contract
 # generation (`/v1`) is unchanged. 0.2.1 (round-4/6 review fixes) delivers
 # the AI provider timeout to httpx in seconds not milliseconds and moves
-# the four AI-pass routes onto the threadpool (def routes).
+# the four AI-pass routes onto the threadpool (def routes). 0.2.2 (ticket
+# 5.5, issue #94) delivers DELETE /v1/resources/{id}: the resource-delete
+# cascade (D23) with a one-snapshot batch delete in the store.
 [project]
 name = "learning-digest-api"
-version = "0.2.1"
+version = "0.2.2"
 description = "Learning Digest backend API: /v1 auth, resources, progress, notes, sessions, transcripts, summaries, usage domains (Python/FastAPI; the sole service-layer implementation, ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [

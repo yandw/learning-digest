@@ -10,7 +10,8 @@
 - 第四轮结构与端点：本文
 - 第六轮追加（面板 AI 服务端化 I，§6）：滚动摘要与概览；样例在 `fixtures/session-overview-examples.json`，tick prompt 外移 [../prompts/topic-tick.md](../prompts/topic-tick.md)
 - 第六轮追加（面板 AI 服务端化 II，§7）：Session Digest 与选中文本解释；样例在 `fixtures/session-digest-examples.json`，digest prompt 外移 [../prompts/session-report.md](../prompts/session-report.md)、explain prompt 外移 [../prompts/explain.md](../prompts/explain.md)
-- 契约决策记录（第四轮 D19–D20、面板轮 D21–D22）：[decisions.md](decisions.md)
+- 第七轮追加（删除能力，§8）：DELETE /v1/resources/{id}；样例在 `fixtures/resource-delete-examples.json`，错误样例复用既有 `error-cross-account-resource` / `error-unauthorized-missing-token`（不新增错误样例）
+- 契约决策记录（第四轮 D19–D20、面板轮 D21–D22、删除轮 D23）：[decisions.md](decisions.md)
 - 样例：成功样例在 `fixtures/site-capability-examples.json` 与 `fixtures/session-digest-examples.json`；错误样例追加在 `fixtures/error-examples.json` 尾部。
 
 ## 1. 通用约定（沿用与差异）
@@ -242,3 +243,37 @@ GET /v1/usage 的 Usage 在 contract-r4 §6.3 的六键之上追加四个键（�
 | 502 | `explain_failed` | 解释的 AI Provider 调用失败/超时/返回不可用文本 | `error-explain-failed` |
 
 401 / 404（跨账号，D2）沿用 contract-v1 §4 的封套与语义（样例：`error-digest-unauthorized`、`error-digest-read-unauthorized`、`error-digest-read-cross-account`、`error-digest-cross-account`、`error-explain-unauthorized`）。
+
+## 8. 第七轮追加（删除能力）：DELETE /v1/resources/{id}
+
+第七轮给学习资料补上删除（Ticket 5.5，issue #94；决策 D23）。收藏（contract-v1 §3.1）的对偶操作：删除一条 Resource 即删除它名下的**全部**学习数据，只有用量账目保留。样例：成功样例在 `fixtures/resource-delete-examples.json`（`api-resource-delete`）；**不新增错误样例**——401 与 404 沿用既有封套，三端直接引用 `fixtures/error-examples.json` 的 `error-unauthorized-missing-token`（401）与 `error-cross-account-resource`（404，`资源不存在或无权访问`）。
+
+### 8.1 端点
+
+#### DELETE /v1/resources/{id} — 删除一条学习资料（级联）
+
+- 任何登录用户可调用（Bearer）；请求体为空（无 body）。
+- **级联语义（D23）**：删除该 Resource 名下全部数据——
+  | 集合 | 键法 | 删除范围 |
+  | --- | --- | --- |
+  | `resources` | resourceId | 该 Resource 本行 |
+  | `sources` | sourceId | 该 Resource 名下全部 Source |
+  | `progress` | sourceId | 上述全部 Source 的进度行 |
+  | `notes` | resourceId（note.id 为行键） | 该账号在该 Resource 上的全部笔记 |
+  | `sessions` | sessionId | 该 Resource 名下全部 Session |
+  | `transcripts` | sessionId | 上述全部 Session 的逐字稿文档 |
+  | `sessionInsights` | sessionId | 上述全部 Session 的滚动概览 |
+  | `sessionDigests` | sessionId | 上述全部 Session 的学习纪要 |
+  | `summaries` | resourceId（summary.id 为行键） | 该 Resource 的历次课程总结 |
+- **usage 不删（D23）**：`GET /v1/usage` 的账目（audioSeconds、summaryCount/summaryInputChars、rollingSummary/digest/explain 各键）原样保留——账目记录的是已经发生且计过的真实消耗，不随资料删除回滚（只记录不计费，D18；无扣减路径）。
+- 成功 200 `{"deleted": true}`：响应体只有这一个键，级联清空的集合不逐项回执。删除后：GET /v1/resources 列表不含该项；GET /v1/resources/{id} 详情 404；被删 Session 的 transcript/overview/digest 读端点 404（`学习记录不存在或无权访问`）；被删 Resource 的 summaries 列表 404；`POST /v1/sources/resolve` 对同 URL 返回 `matched: false`；同 URL 重新收藏按新建处理（201，新 Resource + 新 Source，不与已删 id 产生任何关联）。
+- **删除即终态（D23，无幂等保留）**：重复 DELETE 是同一个 404——不设墓碑、不区分「刚删过」与「从未存在」（D2 封套 `资源不存在或无权访问`）；客户端的「已被另一端删除」场景按 404 呈现即可。
+- 隔离（D2）：未知 id 与其他账号的 id 是同一个 404，不透露存在性；跨账号的 DELETE 删除不了任何数据。
+- 未登录 401（与一切受保护端点一致）。
+- 持久化原子性：服务端**先收集全部待删键，再一次性删除，最后单次快照落盘**——级联的多集合删除不产生中间态文件（单进程 JSON 存储，一次 store 快照写完成全部删除）。
+- 样例：`api-resource-delete`（200）；401 复用 `error-unauthorized-missing-token`；404 复用 `error-cross-account-resource`。
+
+### 8.2 消费端约定
+
+- **Web**：学习列表条目与资源详情页各提供删除入口，均为**两步确认**（首次点击变「确认删除」，超时/失焦恢复，再点才发 DELETE）；详情页确认文案明确「将同时删除该资料的逐字稿、笔记与课程总结」。删除成功后清空该资料的 summaries/详情前端缓存并回学习列表；DELETE 命中 404（已被另一端删除）按「资料已不存在」呈现并从列表移除该项。
+- **插件零改动**：对已删除资源的 resolve/开课按既有「无匹配」语义自然工作（`POST /v1/sources/resolve` 返回 `matched: false`，再次收藏即新建）。

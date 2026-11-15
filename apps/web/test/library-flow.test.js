@@ -58,6 +58,7 @@ const USAGE = summaryExampleById.get("api-usage").response.body;
 function fakeApi({
   createResult,
   listResult,
+  listResults,
   detailResult,
   detailResults,
   retitleResult,
@@ -69,8 +70,10 @@ function fakeApi({
   generateResults,
   summaryDetailById,
   summaryDetailResult,
+  deleteResult,
+  deleteResults,
 } = {}) {
-  const calls = { create: [], list: 0, detail: [], retitle: [], transcript: [], summariesList: [], generate: [], summaryDetail: [] };
+  const calls = { create: [], list: 0, detail: [], retitle: [], transcript: [], summariesList: [], generate: [], summaryDetail: [], delete: [] };
   return {
     calls,
     async createResource(body) {
@@ -79,6 +82,9 @@ function fakeApi({
     },
     async listResources() {
       calls.list += 1;
+      if (listResults && listResults.length > 0) {
+        return listResults.shift();
+      }
       return listResult || { ok: true, status: 200, data: apiExampleById.get("api-resources-list").response.body };
     },
     async getResourceDetail(id) {
@@ -123,6 +129,14 @@ function fakeApi({
         return summaryDetailById[summaryId];
       }
       return summaryDetailResult || { ok: true, status: 200, data: summaryExampleById.get("api-summary-detail").response.body };
+    },
+    // Resource delete (contract-r4 §8, ticket 5.5): the cascade DELETE.
+    async deleteResource(id) {
+      calls.delete.push(id);
+      if (deleteResults && deleteResults.length > 0) {
+        return deleteResults.shift();
+      }
+      return deleteResult || { ok: true, status: 200, data: { deleted: true } };
     },
     // login-flow methods exist on the seam but the library flow never calls them.
     async requestCode() { throw new Error("not used"); },
@@ -1040,4 +1054,151 @@ test("reset clears the summaries state for the next session", async () => {
   assert.deepEqual(state.summaryDetails, {});
   assert.equal(state.summariesError, null);
   assert.equal(state.generating, false);
+});
+
+// --- delete (ticket 5.5, issue #94, contract-r4 §8, D23) ------------------------
+//
+// The two-step confirm is a flow decision (the page only renders the armed
+// label): the FIRST click arms — button shows 确认删除, no request flies;
+// the SECOND click sends the DELETE. Blur/timeout disarms. Success
+// refreshes the list (and from the detail view: back to the list, summary
+// caches wiped). A 404 means the resource is already gone (another end):
+// the row leaves the list with the 资料已不存在 notice. Other failures
+// present the envelope verbatim and touch nothing.
+
+const LIST_BODY = apiExampleById.get("api-resources-list").response.body;
+
+function listWithIds(...ids) {
+  return {
+    ok: true,
+    status: 200,
+    data: { resources: LIST_BODY.resources.filter((item) => ids.includes(item.resource.id)) },
+  };
+}
+
+test("the first delete click arms the confirm and sends nothing", async () => {
+  const api = fakeApi();
+  const flow = flowWith({ api });
+
+  const result = await flow.deleteClick("res_01JABC0001", "list");
+
+  assert.deepEqual(result, { ok: false, armed: true });
+  assert.deepEqual(flow.getState().armedDelete, { id: "res_01JABC0001", surface: "list" });
+  assert.equal(api.calls.delete.length, 0, "arming never sends the DELETE");
+  assert.equal(api.calls.list, 0, "arming never reloads the list");
+});
+
+test("the second click deletes, reloads the list without the item and notices", async () => {
+  const api = fakeApi({
+    // The refresh after the delete: the row is gone server-side.
+    listResults: [listWithIds("res_01JABC0010")],
+  });
+  const flow = flowWith({ api });
+
+  await flow.deleteClick("res_01JABC0001", "list");
+  const result = await flow.deleteClick("res_01JABC0001", "list");
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(api.calls.delete, ["res_01JABC0001"]);
+  assert.equal(api.calls.list, 1, "the list is refreshed after the delete");
+  assert.deepEqual(flow.getState().resources.map((item) => item.resource.id), ["res_01JABC0010"]);
+  assert.equal(flow.getState().armedDelete, null);
+  assert.equal(flow.getState().notice, "已删除");
+  assert.equal(flow.getState().error, null);
+});
+
+test("disarm (blur / cancel) reverts the confirm without deleting", async () => {
+  const api = fakeApi();
+  const flow = flowWith({ api });
+
+  await flow.deleteClick("res_01JABC0001", "list");
+  assert.equal(flow.disarmDelete(), true, "a change is reported so the page re-renders");
+  assert.equal(flow.getState().armedDelete, null);
+  assert.equal(api.calls.delete.length, 0);
+
+  // A later click arms afresh (still no request until the second click).
+  const result = await flow.deleteClick("res_01JABC0001", "list");
+  assert.deepEqual(result, { ok: false, armed: true });
+  assert.equal(api.calls.delete.length, 0);
+});
+
+test("the confirm auto-reverts after the timeout", async () => {
+  const api = fakeApi();
+  const flow = createLibraryFlow({ api, identity: platformVideoId, deleteConfirmMs: 20 });
+
+  await flow.deleteClick("res_01JABC0001", "list");
+  assert.deepEqual(flow.getState().armedDelete, { id: "res_01JABC0001", surface: "list" });
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.equal(flow.getState().armedDelete, null, "the armed state times out");
+  assert.equal(api.calls.delete.length, 0, "a timed-out confirm never deletes");
+});
+
+test("arming another resource moves the confirm there without deleting", async () => {
+  const api = fakeApi();
+  const flow = flowWith({ api });
+
+  await flow.deleteClick("res_01JABC0010", "list");
+  await flow.deleteClick("res_01JABC0001", "list");
+
+  assert.deepEqual(flow.getState().armedDelete, { id: "res_01JABC0001", surface: "list" });
+  assert.equal(api.calls.delete.length, 0);
+});
+
+test("deleting from the detail view returns to the list and clears the summary caches", async () => {
+  const api = fakeApi({
+    detailResult: { ok: true, status: 200, data: DETAIL_WITH_SESSIONS },
+    summariesListResult: { ok: true, status: 200, data: { summaries: SUMMARY_LIST } },
+    summaryDetailById: { sum_01JABC0052: { ok: true, status: 200, data: { summary: SUMMARY_DETAIL } } },
+    listResults: [listWithIds("res_01JABC0010")],
+  });
+  const flow = flowWith({ api });
+  await flow.openDetail("res_01JABC0001");
+  assert.equal(flow.getState().summaries.length, SUMMARY_LIST.length, "precondition: the caches are warm");
+
+  await flow.deleteClick("res_01JABC0001", "detail");
+  await flow.deleteClick("res_01JABC0001", "detail");
+
+  const state = flow.getState();
+  assert.equal(state.view, "list");
+  assert.equal(state.detail, null);
+  assert.deepEqual(state.summaries, []);
+  assert.equal(state.activeSummaryId, null);
+  assert.deepEqual(state.summaryDetails, {});
+  assert.equal(state.notice, "已删除");
+  assert.deepEqual(state.resources.map((item) => item.resource.id), ["res_01JABC0010"]);
+});
+
+test("a 404 delete presents 资料已不存在 and removes the row", async () => {
+  const api = fakeApi({
+    deleteResult: { ok: false, status: 404, data: { error: { code: "not_found", message: "资源不存在或无权访问" } } },
+    listResults: [listWithIds("res_01JABC0010")],
+  });
+  const flow = flowWith({ api });
+
+  await flow.deleteClick("res_01JABC0001", "list");
+  const result = await flow.deleteClick("res_01JABC0001", "list");
+
+  assert.equal(result.ok, false);
+  assert.equal(flow.getState().notice, "资料已不存在");
+  assert.equal(flow.getState().error, null);
+  assert.deepEqual(flow.getState().resources.map((item) => item.resource.id), ["res_01JABC0010"]);
+  assert.equal(api.calls.list, 1, "the list resyncs after the other end already deleted");
+});
+
+test("a delete failure presents the envelope verbatim and changes nothing", async () => {
+  const api = fakeApi({
+    deleteResult: { ok: false, status: 502, data: { error: { code: "internal_error", message: "服务内部错误" } } },
+  });
+  const flow = flowWith({ api });
+
+  await flow.deleteClick("res_01JABC0001", "list");
+  const result = await flow.deleteClick("res_01JABC0001", "list");
+
+  assert.equal(result.ok, false);
+  assert.equal(flow.getState().error, "服务内部错误");
+  assert.equal(flow.getState().notice, null);
+  assert.equal(api.calls.list, 0, "a failed delete does not reload the list");
+  assert.equal(flow.getState().armedDelete, null);
 });

@@ -257,3 +257,15 @@
 **理由**：覆盖而非追加，因为两种产物的生命周期不同——Rolling Summary 是课中过程（材料持续增长，游标推进、话题追加是学习过程的回查锚点，ADR 0002），而 Digest 是已结束会话的最终交付物：材料定型后重新生成只可能是用户主动要求换一版，历史版本没有回查价值，PoC 亦如此（重跑 global pass 即覆写 `report_<sessionId>`）。「仅限已结束」是这个语义的前提：进行中的会话材料未定型，整节生成既昂贵又会立刻过时。五键固定恒在是把 PoC 渲染器的「空节省略」翻译成 API 的固定形态（渲染方判空即可，不必探测键是否存在）；全空即 502 沿用 rolling 的「零可用话题」家族规则——落库的纪要至少有一个非空段，web 渲染永不出现空壳。explain 保持无状态，因为解释是即用即弃的阅读辅助（PoC 就不持久化），落库只会制造无人回查的数据；8000 码点上限覆盖最长的逐字稿选段 + 上下文，D18 计数单位一致。
 
 **影响**：新增错误码——409 `session_not_finished`、502 `digest_failed`、404 `digest_not_generated`、502 `explain_failed`（explain 的 400 沿用 `validation_failed`，文案由样例固定：`text 必须是非空字符串` / `text 不能超过 8000 字符` / `context 必须是字符串` / `context 不能超过 8000 字符`）；409 `no_session_transcript_to_summarize` 沿用 §6.4 的码与文案。Seam 再扩展（`generate_digest` / `explain`），stub 与 qwen 两个实现都提供；测试注入点不变。Usage 形态自 r3 的四键经 §6.3 的六键至此十键（追加键不破坏既有消费者）。插件接线（结束后触发 digest、选中即请求 explain）在 6.6；插件本地的 global pass 与 prompts/session-report.md、prompts/explain.md 副本本轮不动、届时退役。
+
+---
+
+第七轮决策（删除能力，Ticket 5.5，issue #94；端点与级联清单见 [contract-r4.md](contract-r4.md) §8）：
+
+## D23 · 删除级联语义：Resource 级整档删除，usage 账目保留；删除即终态，一次快照落盘
+
+**决策**：学习资料的删除以 **Resource 为粒度**——`DELETE /v1/resources/{id}` 删除该 Resource 名下**全部**数据：`sources`（其名下全部 Source）、`progress`（按 sourceId）、`notes`（按 resourceId）、`sessions`（按 resourceId 归属）、`transcripts` / `sessionInsights` / `sessionDigests`（三者都按 sessionId 键，待删键 = 该 Resource 名下全部 Session 的 id）、`summaries`（按 resourceId）；**`usage` 集合不动**——账目不随删除消失。成功 200 `{"deleted": true}`，不逐项回执；**删除即终态**：重复 DELETE、未知 id、跨账号 id 是同一个 404（D2 封套，复用 `error-cross-account-resource`，不新增错误样例），不设墓碑、无幂等保留。持久化原子性：服务端先收集全部待删键，再一次性删除（store 的批量删除原语），最后**单次快照落盘**——多集合级联不产生中间态文件。Source 级单删（同一资料多来源时只删某一集）延后：当前删除动作的产品语义是「这条资料我不要了」，按整档清理；逐来源粒度等出现真实需求再扩展端点。
+
+**理由**：**usage 保留**是因为账目的口径是「已发生且已计过的真实消耗」（D18 只记录不计费、单调递增无扣减路径）——删除资料是整理学习库，不是否认消耗发生过；同 URL 重新收藏会新建 Resource，其后续用量继续累进同一账号账目，保留账目才保得住账号的真实成本历史，回滚账目反而制造与计费/审计口径的分裂。**删除即终态**是因为账号对一条资料只有「在」与「不在」两态：引入「刚删除」墓碑就要让 list/detail/resolve 全链路过滤它，而客户端的「已被另一端删除」场景用 404 呈现即可，两态语义让删除后的 resolve「无匹配」与重新收藏「新建」（D3 去重只作用于存活 Source）自然成立。**Resource 级粒度**是因为逐字稿/笔记/总结/概览/纪要全部挂在 Resource（或其 Sessions）下，单删 Resource 而留下任何一份衍生产物都会成为不可达的死数据。
+
+**影响**：级联清单把 `sessionDigests`（D22 的集合）与 `sessionInsights` 一并纳入——票面清单点名了 rolling 概览，digest 同为按 Session 键的派生产物，按「删全档」原则同批清除。插件零改动：对已删除资源的 resolve/开课按既有「无匹配」语义自然工作。Web 侧两步确认（列表与详情两入口，详情确认文案明示级联范围）与本决策的实现票落地；DELETE 404 在 Web 呈现为「资料已不存在」并从列表移除。

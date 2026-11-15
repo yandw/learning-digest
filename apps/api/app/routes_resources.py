@@ -13,6 +13,7 @@ from .notes import create_note
 from .progress import save_progress
 from .resources import (
     create_favorite,
+    delete_resource,
     get_resource_detail,
     list_resources,
     match_source,
@@ -94,6 +95,20 @@ def register_resources_routes(app, ctx: AppContext) -> None:
             account_id=credential["accountId"],
             resource_id=resource_id,
             body=body,
+        )
+        return JSONResponse(status_code=result["status"], content=result["body"])
+
+    @app.delete("/v1/resources/{resource_id}")
+    async def remove_resource(
+        resource_id: str, credential: CredentialDep, ctx: CtxDep
+    ) -> JSONResponse:
+        # Delete (contract-r4 §8; ticket 5.5, decision D23): the whole
+        # cascade leaves in one store batch (one snapshot write); the usage
+        # ledger stays. Cross-account and unknown ids are the same 404 (D2),
+        # and a repeat delete is that same 404 — deletion is terminal, no
+        # idempotent tombstone.
+        result = delete_resource(
+            store=ctx.store, account_id=credential["accountId"], resource_id=resource_id
         )
         return JSONResponse(status_code=result["status"], content=result["body"])
 

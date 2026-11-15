@@ -12,6 +12,12 @@
  *   duplicate IS the same resource — "已收藏，返回同一条资料");
  * - retitle goes through PATCH /v1/resources/{id} (contract §3.7, the
  *   round-1 supplement) with a locally-checked non-empty title;
+ * - delete goes through DELETE /v1/resources/{id} (contract-r4 §8,
+ *   ticket 5.5, decision D23) behind a TWO-STEP CONFIRM: the first click
+ *   arms (button shows 确认删除, nothing is sent), the second click sends;
+ *   blur or the 3s timeout disarms. Deletion is terminal (D23): a 404 is
+ *   the "already deleted at the other end" presentation and the row
+ *   leaves the list with 资料已不存在;
  * - every failed call presents the contract error envelope verbatim
  *   (`error.message`), so wording always matches the fixtures.
  *
@@ -445,14 +451,23 @@ export function presentUsage(usage) {
 }
 
 /**
+ * The delete confirm window (ticket 5.5): how long the armed 「确认删除」
+ * state stays before reverting. The page re-renders when it elapses; the
+ * decision lives here, main.js only imports the number for its render.
+ */
+export const DELETE_CONFIRM_MS = 3000;
+
+/**
  * @param {object} options
  * @param {object} options.api createApiClient-shaped seam:
- *   { createResource, listResources, getResourceDetail, updateResourceTitle }
- *   -> { ok, status, data }
+ *   { createResource, listResources, getResourceDetail, updateResourceTitle,
+ *     deleteResource } -> { ok, status, data }
  * @param {object} options.identity the shared contracts module:
  *   { extractVideoIdentity } (browser: window.YTD_PLATFORM_VIDEO_ID)
+ * @param {number} [options.deleteConfirmMs] the armed-confirm window (tests
+ *   shrink it; the page never overrides the 3s default)
  */
-export function createLibraryFlow({ api, identity }) {
+export function createLibraryFlow({ api, identity, deleteConfirmMs = DELETE_CONFIRM_MS }) {
   let view = "list"; // "list" | "detail"
   let resources = [];
   let detail = null;
@@ -468,13 +483,110 @@ export function createLibraryFlow({ api, identity }) {
   let summaryDetails = {};
   let summariesError = null;
   let generating = false;
+  // Delete two-step confirm (contract-r4 §8, ticket 5.5): armedDelete is
+  // the one armed button ({ id, surface: "list" | "detail" }) or null;
+  // disarmTimer reverts it after the window (and is cancelled by the
+  // second click, a blur disarm, navigation or reset).
+  let armedDelete = null;
+  let disarmTimer = null;
 
   function getState() {
-    return { view, resources, detail, notice, error, busy, summaries, activeSummaryId, summaryDetails, summariesError, generating };
+    return { view, resources, detail, notice, error, busy, summaries, activeSummaryId, summaryDetails, summariesError, generating, armedDelete };
   }
 
   function envelopeMessage(data) {
     return (data && data.error && data.error.message) || "请求失败，请稍后重试";
+  }
+
+  function cancelDisarmTimer() {
+    if (disarmTimer !== null) {
+      clearTimeout(disarmTimer);
+      disarmTimer = null;
+    }
+  }
+
+  function scheduleAutoDisarm() {
+    cancelDisarmTimer();
+    disarmTimer = setTimeout(() => {
+      disarmTimer = null;
+      armedDelete = null;
+    }, deleteConfirmMs);
+    // A dangling timer must not hold a node:test process open (browsers
+    // return a plain number without unref).
+    if (typeof disarmTimer.unref === "function") {
+      disarmTimer.unref();
+    }
+  }
+
+  /**
+   * Disarm the confirm (blur, explicit cancel, navigation): the button
+   * reverts, nothing is sent. Returns whether anything changed so the
+   * page only re-renders on a real flip.
+   */
+  function disarmDelete() {
+    cancelDisarmTimer();
+    if (!armedDelete) {
+      return false;
+    }
+    armedDelete = null;
+    return true;
+  }
+
+  /** The summary caches belong to one resource; a delete wipes them. */
+  function clearSummaryState() {
+    summaries = [];
+    activeSummaryId = null;
+    summaryDetails = {};
+    summariesError = null;
+  }
+
+  /**
+   * The delete entry point, shared by the list rows and the detail page
+   * (contract-r4 §8, D23). Toggle semantics: the first click arms (no
+   * request), the second — while armed for the SAME id AND surface —
+   * sends the DELETE.
+   *
+   * - 200: the row is gone server-side; refresh the list (资源已不在) and
+   *   clear the summary caches; from the detail view, return to the list.
+   * - 404: deletion is terminal (D23) — this is "already deleted at the
+   *   other end": drop the row locally, resync the list, present
+   *   资料已不存在 (not an error).
+   * - other failures: the envelope verbatim, nothing touched.
+   */
+  async function deleteClick(id, surface = "list") {
+    if (busy) {
+      return { ok: false };
+    }
+    if (!armedDelete || armedDelete.id !== id || armedDelete.surface !== surface) {
+      armedDelete = { id, surface };
+      scheduleAutoDisarm();
+      return { ok: false, armed: true };
+    }
+    disarmDelete();
+    busy = true;
+    const result = await api.deleteResource(id);
+    busy = false;
+    if (!result.ok) {
+      if (result.status === 404) {
+        resources = resources.filter((item) => !item.resource || item.resource.id !== id);
+        clearSummaryState();
+        notice = "资料已不存在";
+        error = null;
+        await load();
+        return { ok: false, gone: true };
+      }
+      error = envelopeMessage(result.data);
+      return { ok: false };
+    }
+    notice = "已删除";
+    error = null;
+    clearSummaryState();
+    if (surface === "detail" && detail && detail.resource.id === id) {
+      view = "list";
+      detail = null;
+    }
+    await load();
+    return { ok: true };
   }
 
   async function load() {
@@ -582,6 +694,7 @@ export function createLibraryFlow({ api, identity }) {
   }
 
   async function openDetail(id) {
+    disarmDelete();
     busy = true;
     const result = await api.getResourceDetail(id);
     if (!result.ok) {
@@ -612,12 +725,14 @@ export function createLibraryFlow({ api, identity }) {
   }
 
   function backToList() {
+    disarmDelete();
     view = "list";
     detail = null;
   }
 
   /** Full wipe for the next session (logout / login as another account). */
   function reset() {
+    disarmDelete();
     view = "list";
     resources = [];
     detail = null;
@@ -708,5 +823,5 @@ export function createLibraryFlow({ api, identity }) {
     return { ok: true };
   }
 
-  return { getState, load, collect, openDetail, backToList, retitle, generateSummary, showSummary, reset };
+  return { getState, load, collect, openDetail, backToList, retitle, deleteClick, disarmDelete, generateSummary, showSummary, reset };
 }

@@ -213,6 +213,31 @@ form input:focus {
   cursor: default;
 }
 
+/* 危险操作按钮（ticket 5.5）：删除资料的两步确认入口。 */
+.danger-btn {
+  padding: 6px 14px;
+  font-size: 14px;
+  color: var(--danger);
+  background: var(--surface);
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.danger-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 两步确认的已武装态：实底红，确认动作不可误读。 */
+.danger-btn.armed,
+.link-btn.delete-btn.armed {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+  text-decoration: none;
+}
+
 .library-main {
   max-width: 720px;
   margin: 0 auto;
@@ -368,6 +393,11 @@ form input:focus {
 
 .resource-meta .link-btn {
   margin: 0;
+}
+
+/* 列表条目删除按钮（ticket 5.5）：与「详情」并列，危险色弱化为文字。 */
+.resource-meta .delete-btn {
+  color: var(--danger);
 }
 
 /* ---------- 资源详情（P5） ---------- */
@@ -661,6 +691,18 @@ form input:focus {
 .summaries-toolbar .primary-btn {
   width: auto;
   white-space: nowrap;
+}
+
+/* 详情页脚删除入口（ticket 5.5, contract-r4 §8）：与上文区块隔开，确认
+   时提示级联范围（逐字稿、笔记与课程总结一并删除）。 */
+.detail-delete-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
 }
 
 .summaries-toolbar .hint {

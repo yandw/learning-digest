@@ -90,11 +90,13 @@ def open_account(app, email: str) -> str:
     return verified.json["credential"]["token"]
 
 
-def create_fixture_source(app, token, title: str | None = None) -> dict:
+def create_fixture_source(app, token, title: str | None = None, url: str | None = None) -> dict:
     """Favorite the round-2 fixture bilibili Source through the public
     favoriting endpoint (the session fixtures' src_01JABC0002 is that
-    source). Returns the { resource, source } body like the Node helper."""
-    body = {"url": "https://www.bilibili.com/video/BV1ab411L78c?p=2"}
+    source). Returns the { resource, source } body like the Node helper.
+    `url` overrides the address (e.g. another p= episode for a second
+    Source of the same platform)."""
+    body = {"url": url or "https://www.bilibili.com/video/BV1ab411L78c?p=2"}
     if title is not None:
         body["title"] = title
     created = app.request("POST", "/v1/resources", headers=auth_header(token), body=body)

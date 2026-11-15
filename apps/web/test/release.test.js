@@ -14,14 +14,18 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.7", () => {
+test("apps/web release metadata is 0.1.8", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
+  // 0.1.8 (ticket 5.5, issue #94): the delete entry lands on the list rows
+  // and the detail footer — two-step confirm (arm → 确认删除, blur/3s
+  // revert), cascade notice on the detail, DELETE 404 presented as
+  // 资料已不存在 (contract-r4 §8, D23).
   // 0.1.7 (round 4, ticket 6.2 / issue #87): the shell grows the
   // administrator's 站点管理 surface (isAdmin-driven nav entry, the
   // site-capability table with per-row boolean-subset saves, the D2
   // non-admin denied view) over the round-4 admin API.
-  assert.equal(packageJson.version, "0.1.7");
+  assert.equal(packageJson.version, "0.1.8");
   assert.equal(packageJson.private, true);
 });
 

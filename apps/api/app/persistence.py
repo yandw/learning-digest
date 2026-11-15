@@ -38,6 +38,20 @@ class MemoryStore:
         entries = self.collections.get(collection, {})
         return entries.pop(key, _MISSING) is not _MISSING
 
+    def delete_many(self, keys: dict[str, list[str]]) -> int:
+        """Batch delete across collections: pop every (collection, key) pair
+        that exists, return the number removed. The multi-collection
+        resource-delete cascade (contract-r4 §8, D23) runs through this so
+        it can collect all pending keys first and remove them in one pass —
+        see the FileStore override for the persistence side."""
+        removed = 0
+        for collection, ids in keys.items():
+            entries = self.collections.get(collection, {})
+            for key in ids:
+                if entries.pop(key, _MISSING) is not _MISSING:
+                    removed += 1
+        return removed
+
     def list(self, collection: str) -> list[Any]:
         return list(self.collections.get(collection, {}).values())
 
@@ -80,6 +94,14 @@ class FileStore(MemoryStore):
         if existed:
             self._save()
         return existed
+
+    def delete_many(self, keys: dict[str, list[str]]) -> int:
+        """Batch delete persists ONCE, after every removal — never an
+        intermediate snapshot between the collections of one cascade."""
+        removed = super().delete_many(keys)
+        if removed:
+            self._save()
+        return removed
 
 
 def create_memory_store() -> MemoryStore:

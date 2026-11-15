@@ -121,6 +121,9 @@ function v1Fetch({ resolve = [], collect = null, progress = [] } = {}) {
     }
     if (path === "/v1/resources") {
       v1Calls.push({ path, method: init.method, body: JSON.parse(init.body) });
+      // Ticket 5.6 (#95): "network" scripts the fetch itself dying — the
+      // POST never reaches the API.
+      if (collect === "network") throw new Error("network down");
       return answer(collect, COLLECT_CREATED_BODY);
     }
     if (/^\/v1\/sources\/[^/]+\/sessions$/.test(path)) {
@@ -825,10 +828,18 @@ test("end flush hitting 409 adopts current.revision and still writes the latest 
   assert.equal(helpers.readStored("ytd_learning_target"), undefined);
 });
 
-// --- favorite-first flow ---------------------------------------------------------
+// --- favorite-first flow (ticket 5.6, #95: 开始学习 = 收藏 + 开始) ---------------
+//
+// The pre-5.6 flow broke here: an unmatched target was refused with
+// needsFavorite and the learner had to visit the Web app (or the secondary
+// button) first. Now ONE 开始学习 click favorites the page with the P8
+// collect core, re-resolves (decision 1: the same Resource comes back, the
+// SAME Source is hit — no duplicate), and opens the Session.
 
-test("an unmatched chosen target: start asks to favorite first, one-click collect, then start proceeds", async () => {
+test("an unmatched chosen target: 开始学习 favorites inline, then opens the Session in one action", async () => {
   const { v1Calls, fetchImpl } = v1Fetch({
+    // choose resolve → miss; start resolve → miss; re-resolve after the
+    // favorite → hit; every later resolve repeats the hit (idempotence).
     resolve: [
       { status: 200, body: { matched: false } },
       { status: 200, body: { matched: false } },
@@ -846,23 +857,205 @@ test("an unmatched chosen target: start asks to favorite first, one-click collec
 
   await helpers.handleChooseLearningTarget({ tabId: 7 });
 
-  const refused = await helpers.handleStartLearningForTarget({ tabId: 7 });
-  assert.equal(refused.success, false);
-  assert.equal(refused.needsFavorite, true, "未收藏的视频页开始学习时提示先收藏");
-  const state = await helpers.handleGetSessionState();
-  assert.equal(state.active, false, "no capture started without a resolved source");
+  const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
 
-  const collected = await helpers.handleCollectLearningTarget({ tabId: 7 });
-  assert.equal(collected.ok, true);
-  assert.equal(collected.outcome, "created");
+  assert.equal(started.success, true, "one 开始学习 click completes 收藏+开始");
+  assert.equal(started.needsFavorite, undefined, "the 先收藏 intermediate step is retired");
+  assert.equal(started.resource.id, "res_01JABC0001", "the favorited resource rides the result");
+  assert.equal(started.source.id, "src_01JABC0002");
+
+  // The one-action order: POST /v1/resources lands BEFORE the §3.1 POST
+  // sessions — the favorite is a prerequisite of the Session, in the same
+  // action, not a follow-up.
+  const collectIndex = v1Calls.findIndex((call) => call.path === "/v1/resources");
+  const sessionIndex = v1Calls.findIndex((call) => call.path.endsWith("/sessions"));
+  assert.ok(collectIndex !== -1, "POST /v1/resources went out");
+  assert.ok(sessionIndex !== -1, "POST /v1/sources/{id}/sessions went out");
+  assert.ok(collectIndex < sessionIndex, "the favorite precedes the Session create");
   const collectCalls = v1Calls.filter((call) => call.path === "/v1/resources");
-  assert.equal(collectCalls.length, 1);
+  assert.equal(collectCalls.length, 1, "exactly one favorite for one start");
   assert.equal(collectCalls[0].method, "POST");
   assert.equal(collectCalls[0].body.url, XIAOE_LESSON);
 
-  const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.active, true, "the Session records after the favorite");
+  assert.equal(
+    helpers.readStored("ytd_learning_target").sourceId,
+    "src_01JABC0002",
+    "the locked target carries the (freshly favorited) Source id",
+  );
+
+  await helpers.handleEndLearning();
+});
+
+test("the icon path on an unmatched page also favorites inline before the Session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [
+      { status: 200, body: { matched: false } },
+      { status: 200, body: RESOLVE_MATCHED_BODY },
+    ],
+    collect: { status: 201, body: COLLECT_CREATED_BODY },
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl,
+    sendMessageImpl: cutReply,
+  });
+
+  // The toolbar-icon path starts without a chosen target: handleStartLearning
+  // owns the resolve-miss now (the needsFavorite branch is retired here too).
+  const started = await helpers.handleStartLearning({ url: XIAOE_LESSON, tabId: 7 });
+
   assert.equal(started.success, true);
+  assert.equal(started.needsFavorite, undefined, "no 先收藏 refusal on the icon path");
+  const collectIndex = v1Calls.findIndex((call) => call.path === "/v1/resources");
+  const sessionIndex = v1Calls.findIndex((call) => call.path.endsWith("/sessions"));
+  assert.ok(collectIndex !== -1 && sessionIndex !== -1);
+  assert.ok(collectIndex < sessionIndex, "the favorite precedes the Session create");
+  assert.equal(v1Calls.filter((call) => call.path === "/v1/resources").length, 1);
+  assert.equal(
+    helpers.readStored("ytd_learning_target").sourceId,
+    "src_01JABC0002",
+    "the icon-path lock carries the real sourceId (no longer null)",
+  );
+
+  await helpers.handleEndLearning();
+});
+
+test("a favorite failure (network) fails the start without opening a Session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [
+      { status: 200, body: { matched: false } },
+      { status: 200, body: { matched: false } },
+    ],
+    collect: "network",
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+    sendMessageImpl: cutReply,
+  });
+  await helpers.handleChooseLearningTarget({ tabId: 7 });
+
+  const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
+
+  assert.equal(started.success, false);
+  assert.equal(started.error, "无法连接学习服务，请稍后重试。", "the favorite's own failure message surfaces");
+  assert.equal(v1Calls.some((call) => call.path.endsWith("/sessions")), false, "no Session without the favorite");
+  const state = await helpers.handleGetSessionState();
+  assert.equal(state.active, false, "nothing records");
+});
+
+test("a favorite 401 fails the start and routes the panel back through the authorization guide", async () => {
+  const sentMessages = [];
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [
+      { status: 200, body: { matched: false } },
+      { status: 200, body: { matched: false } },
+    ],
+    collect: { status: 401, body: { error: { code: "unauthorized", message: "学习库授权已失效，请重新关联账号" } } },
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+    sentMessages,
+    sendMessageImpl: cutReply,
+  });
+  await helpers.handleChooseLearningTarget({ tabId: 7 });
+
+  const started = await helpers.handleStartLearningForTarget({ tabId: 7 });
+
+  assert.equal(started.success, false, "the 401 favorite stops the start (P7)");
+  assert.equal(v1Calls.some((call) => call.path.endsWith("/sessions")), false);
+  assert.ok(
+    sentMessages.some((message) => message.action === "authState" && message.authorized === false),
+    "the P7 handoff pushes the authorization guide",
+  );
+});
+
+test("the Session create failing after a successful favorite keeps the favorite; the retry does NOT re-favorite", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    // choose → miss; start 1 → miss; re-resolve → hit; retry resolves → hit
+    // (the scripted last entry repeats for every later resolve).
+    resolve: [
+      { status: 200, body: { matched: false } },
+      { status: 200, body: { matched: false } },
+      { status: 200, body: RESOLVE_MATCHED_BODY },
+    ],
+    collect: { status: 201, body: COLLECT_CREATED_BODY },
+  });
+  // The Session create 500s on the FIRST attempt and 201s afterwards; the
+  // favorite endpoint behaves identically across both attempts (the server's
+  // decision-1 idempotence).
+  const sessionResponses = [
+    { status: 500, body: { error: { code: "boom", message: "服务暂不可用" } } },
+    { status: 201, body: { session: SESSION_CREATED_BODY } },
+  ];
+  let sessionIndex = 0;
+  const flakySessionsFetch = async (url, init) => {
+    const path = String(url).replace(/^https:\/\/api\.example\.com/, "");
+    if (/^\/v1\/sources\/[^/]+\/sessions$/.test(path)) {
+      v1Calls.push({ path, method: init.method, body: JSON.parse(init.body) });
+      const scripted = sessionResponses[sessionIndex++] ?? sessionResponses[sessionResponses.length - 1];
+      return { status: scripted.status, ok: scripted.status < 400, json: async () => scripted.body };
+    }
+    return fetchImpl(url, init);
+  };
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl: flakySessionsFetch,
+    sendMessageImpl: cutReply,
+  });
+  await helpers.handleChooseLearningTarget({ tabId: 7 });
+
+  const failed = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  assert.equal(failed.success, false, "the Session failure surfaces");
+  assert.equal(failed.error, "服务暂不可用");
+  assert.equal(v1Calls.filter((call) => call.path === "/v1/resources").length, 1, "the favorite landed once");
+  assert.equal(
+    helpers.readStored("ytd_learning_target").status,
+    "chosen",
+    "the target is not locked without a Session",
+  );
+
+  // Retry: the resolve now HITS the favorited Source (idempotence), so the
+  // same click proceeds without a second POST /v1/resources.
+  const retry = await helpers.handleStartLearningForTarget({ tabId: 7 });
+  assert.equal(retry.success, true);
+  assert.equal(
+    v1Calls.filter((call) => call.path === "/v1/resources").length,
+    1,
+    "the retry re-resolves to the SAME Source — no duplicate favorite",
+  );
   assert.equal(helpers.readStored("ytd_learning_target").sourceId, "src_01JABC0002");
+
+  await helpers.handleEndLearning();
+});
+
+test("the explicit 一键收藏 handler keeps favoriting a chosen tab unchanged (P8 core)", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    collect: { status: 201, body: COLLECT_CREATED_BODY },
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: XIAOE_LESSON, title: "小鹅通课程" }),
+    fetchImpl,
+  });
+
+  const collected = await helpers.handleCollectLearningTarget({ tabId: 7 });
+
+  assert.equal(collected.ok, true);
+  assert.equal(collected.outcome, "created");
+  assert.equal(collected.source.id, "src_01JABC0002");
+  assert.equal(v1Calls.filter((call) => call.path === "/v1/resources").length, 1);
 });
 
 // --- 401 mid-recording ------------------------------------------------------------

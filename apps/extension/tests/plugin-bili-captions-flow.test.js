@@ -85,19 +85,20 @@ function captionsTabMessage(segments = CAPTIONS_ARCHIVE.request.body.segments) {
 /** One fetch seam for the whole captions flow, recorded per /v1 call. */
 function v1Fetch({
   resolve = [],
+  collect = [],
   sessions = [],
   captions = [],
   transcripts = [],
   finishes = [],
 } = {}) {
   const v1Calls = [];
-  let resolveIndex = 0;
-  let sessionsIndex = 0;
-  let captionsIndex = 0;
-  let transcriptsIndex = 0;
-  let finishesIndex = 0;
-  const next = (list, indexRef, fallbackBody) => {
-    const scripted = list[indexRef.index++] ?? list[list.length - 1];
+  // Per-path cursors in a mutable holder: the old `indexRef.index++` passed
+  // the index BY VALUE (a number), so multi-entry scripts never advanced and
+  // every call read the LAST entry — only single-entry scripts ever worked.
+  // Ticket 5.6 (#95) needs a two-step resolve script (miss → re-resolve hit).
+  const cursors = { resolve: 0, collect: 0, sessions: 0, captions: 0, transcripts: 0, finishes: 0 };
+  const next = (list, key, fallbackBody) => {
+    const scripted = list[cursors[key]++] ?? list[list.length - 1];
     if (scripted === null || scripted === undefined) {
       return { status: 200, ok: true, json: async () => fallbackBody };
     }
@@ -110,23 +111,31 @@ function v1Fetch({
     const pathName = String(url).replace(/^https:\/\/api\.example\.com/, "");
     if (pathName === "/v1/sources/resolve") {
       v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
-      return next(resolve, resolveIndex, { matched: false });
+      return next(resolve, "resolve", { matched: false });
+    }
+    if (pathName === "/v1/resources") {
+      // Ticket 5.6 (#95): the start-flow auto-favorite (P8 collect core).
+      v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
+      return next(collect, "collect", {
+        resource: RESOLVE_MATCHED_BODY.resource,
+        source: { ...RESOLVED_SOURCE, progress: null },
+      });
     }
     if (/^\/v1\/sources\/[^/]+\/sessions$/.test(pathName)) {
       v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
-      return next(sessions, sessionsIndex, { session: SESSION_CREATE.response.body.session });
+      return next(sessions, "sessions", { session: SESSION_CREATE.response.body.session });
     }
     if (/^\/v1\/sessions\/[^/]+\/captions$/.test(pathName)) {
       v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
-      return next(captions, captionsIndex, { transcript: CAPTIONS_ARCHIVE.response.body.transcript });
+      return next(captions, "captions", { transcript: CAPTIONS_ARCHIVE.response.body.transcript });
     }
     if (/^\/v1\/sessions\/[^/]+\/transcript$/.test(pathName)) {
       v1Calls.push({ path: pathName, method: init.method, body: undefined });
-      return next(transcripts, transcriptsIndex, TRANSCRIPT_FINISHED.response.body);
+      return next(transcripts, "transcripts", TRANSCRIPT_FINISHED.response.body);
     }
     if (/^\/v1\/sessions\/[^/]+\/finish$/.test(pathName)) {
       v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body || "{}") });
-      return next(finishes, finishesIndex, { session: FINISH_GAPS.response.body.session });
+      return next(finishes, "finishes", { session: FINISH_GAPS.response.body.session });
     }
     if (/^\/v1\/sources\/[^/]+\/progress$/.test(pathName)) {
       v1Calls.push({ path: pathName, method: init.method, body: JSON.parse(init.body) });
@@ -363,18 +372,33 @@ test("a failed Session create fails the start instead of guessing", async () => 
   assert.equal(helpers.readStored("ytd_active_capture"), undefined, "nothing is left running");
 });
 
-test("an unmatched page asks for 收藏 before any captions path can run", async () => {
+test("an unmatched page favorites inline before the captions path runs (ticket 5.6, #95)", async () => {
   const { v1Calls, fetchImpl } = v1Fetch({
-    resolve: [{ status: 200, body: { matched: false } }],
+    // The start resolve misses; the re-resolve after the auto-favorite hits
+    // the same Source (decision-1 idempotence; the last script repeats).
+    resolve: [{ status: 200, body: { matched: false } }, { status: 200, body: RESOLVE_MATCHED_BODY }],
+    collect: [
+      {
+        status: 201,
+        body: { resource: RESOLVE_MATCHED_BODY.resource, source: { ...RESOLVED_SOURCE, progress: null } },
+      },
+    ],
   });
   const helpers = captionsFlowHelpers({ fetchImpl, tabMessageImpl: captionsTabMessage() });
 
   const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
 
-  assert.equal(started.success, false);
-  assert.equal(started.needsFavorite, true);
-  assert.equal(v1Calls.some((call) => call.path.endsWith("/sessions")), false);
-  assert.equal(v1Calls.some((call) => call.path.endsWith("/captions")), false);
+  assert.equal(started.success, true, "one click completes 收藏+开始 on the captions path too");
+  assert.equal(started.needsFavorite, undefined, "the 先收藏 refusal is retired");
+  const collectIndex = v1Calls.findIndex((call) => call.path === "/v1/resources");
+  const sessionIndex = v1Calls.findIndex((call) => call.path.endsWith("/sessions"));
+  assert.ok(collectIndex !== -1, "POST /v1/resources went out");
+  assert.ok(sessionIndex !== -1, "POST sessions went out after the favorite");
+  assert.ok(collectIndex < sessionIndex, "the favorite precedes the Session create");
+  assert.equal(v1Calls.filter((call) => call.path === "/v1/resources").length, 1);
+  assert.equal(v1Calls.some((call) => call.path.endsWith("/captions")), true, "the captions archive follows as usual");
+
+  await helpers.handleEndLearning();
 });
 
 // --- P11 finish ------------------------------------------------------------------

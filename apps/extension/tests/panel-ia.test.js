@@ -2036,6 +2036,58 @@ test("a server-disabled site names 「站点未开放学习」 instead of the ge
   );
 });
 
+// --- favorite-first CTA copy (ticket 5.6, #95) --------------------------------------
+//
+// The pre-5.6 unmatched state BLOCKED the learner: 「该页还未收藏：先收藏才能
+// 记录学习进度」 plus a secondary 一键收藏并开始 button. Now the main CTA is
+// 一体化 — one 开始学习 click favorites and starts — so the status line
+// names what the click will do, and the separate button is gone.
+
+test("the unmatched target's status line says the start will favorite, not a 先收藏 blocker", () => {
+  const { course } = loadPanel();
+  const copy = course.describeCourseTargetResolution({
+    startable: true,
+    resolve: { matched: false, resource: null, source: null },
+  });
+  assert.match(copy, /开始学习将同时收藏该页/);
+  assert.doesNotMatch(copy, /先收藏才能记录学习进度/, "the blocking prompt is retired");
+  // The not-startable copy is untouched gating (收藏 stays available there).
+  assert.match(
+    course.describeCourseTargetResolution({ startable: false, resolve: { matched: false } }),
+    /该平台暂不支持开始学习采集，可先收藏。/,
+  );
+});
+
+test("the panel has no secondary 收藏并开始 button and the main CTA flips to 收藏并开始学习", () => {
+  const { course, elementById } = loadPanel();
+  // The retired intermediate step is gone from the markup entirely.
+  const html = read("sidepanel.html");
+  assert.doesNotMatch(html, /collectTargetBtn/);
+
+  const startBtn = elementById("startLearningForTargetBtn");
+  // No chosen target yet: the plain 开始学习 label (disabled, nothing chosen).
+  course.courseTargetUi.chosenTabId = null;
+  course.courseTargetUi.matched = false;
+  course.courseTargetUi.startable = false;
+  course.courseTargetUi.busy = false;
+  course.updateStartButtons();
+  assert.equal(startBtn.textContent, "开始学习");
+
+  // A chosen, still-unfavorited target: the main CTA names the whole action.
+  course.courseTargetUi.chosenTabId = 7;
+  course.courseTargetUi.matched = false;
+  course.courseTargetUi.startable = true;
+  course.updateStartButtons();
+  assert.equal(startBtn.textContent, "收藏并开始学习");
+  assert.equal(startBtn.disabled, false);
+
+  // A favorited target: the plain 开始学习 label returns (zero-change path).
+  course.courseTargetUi.matched = true;
+  course.updateStartButtons();
+  assert.equal(startBtn.textContent, "开始学习");
+  assert.equal(startBtn.disabled, false);
+});
+
 test("the server-disabled captions probe names the site config, not a failed read", () => {
   const panel = loadPanel({ stored: {} });
 

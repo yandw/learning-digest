@@ -473,21 +473,14 @@ function collectTargetFromTab(tab) {
 }
 
 /**
- * POST /v1/resources for one tab target (contract §3.1) — the shared core
- * of the P8 收藏当前页 entry (the active tab) and P10's 一键收藏 for a
- * chosen course tab. Authoritative gate first (a collect click is a
- * deliberate action, same shape as handleStartLearning); a 401 from the API
- * routes the panel back through the P6 authorization guide. Every outcome
- * lands in the ytd_last_collect breadcrumb.
+ * The POST /v1/resources favorite core (contract §3.1) — extracted from the
+ * P8 collectTabTarget so the ticket 5.6 (#95) learning-start paths reuse the
+ * exact same request, breadcrumbs and 401 handoff instead of copying.
+ * The caller owns the authoritative auth gate and the collectable-URL
+ * checks; a 401 from the API routes through the P6 authorization guide
+ * here, and every outcome lands in the ytd_last_collect breadcrumb.
  */
-async function collectTabTarget(target) {
-  const auth = await gateForPanelAction();
-  if (!auth.authorized) {
-    return {
-      ok: false,
-      message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再收藏当前页。",
-    };
-  }
+async function postResourceFavorite(target) {
   if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
     return { ok: false, message: "当前标签页没有可收藏的网页地址。" };
   }
@@ -553,6 +546,64 @@ async function collectTabTarget(target) {
     await handleCredentialsInvalidated("unauthorized");
   }
   return { ok: false, message: result.message };
+}
+
+/**
+ * POST /v1/resources for one tab target (contract §3.1) — the P8
+ * 收藏当前页 / 一键收藏 entry over the shared favorite core. Authoritative
+ * gate first (a collect click is a deliberate action, same shape as
+ * handleStartLearning).
+ */
+async function collectTabTarget(target) {
+  const auth = await gateForPanelAction();
+  if (!auth.authorized) {
+    return {
+      ok: false,
+      message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再收藏当前页。",
+    };
+  }
+  return postResourceFavorite(target);
+}
+
+/**
+ * Ticket 5.6 (#95): the auto-favorite behind 开始学习. The chosen page's
+ * resolve missed (matched:false) — favorite it with the P8 collect core,
+ * then re-resolve: decision-1 idempotence guarantees the POST returned the
+ * SAME Resource, so the fresh resolve hits the SAME Source and the start
+ * proceeds without a duplicate. The failure semantics are the caller's:
+ * a favorite failure (network, 401 → the P7 handoff above, unconfigured)
+ * reads as a failed start carrying the favorite's own message; the next
+ * attempt re-resolves first and finds the favorite already in place.
+ * The shape mirrors resolveSourceForTarget so call sites consume both
+ * uniformly.
+ */
+async function favoriteLearningTarget(target) {
+  const favorited = await postResourceFavorite(target);
+  if (!favorited.ok) {
+    return {
+      ok: false,
+      matched: false,
+      identityPresent: false,
+      resource: null,
+      source: null,
+      message: favorited.message,
+    };
+  }
+  const resolution = await resolveSourceForTarget(target);
+  if (resolution.ok && !resolution.matched) {
+    // §3.1 says a successful favorite's re-resolve hits; anything else is a
+    // server-side inconsistency — an honest failure beats starting without
+    // a Source.
+    return {
+      ok: false,
+      matched: false,
+      identityPresent: resolution.identityPresent,
+      resource: null,
+      source: null,
+      message: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。",
+    };
+  }
+  return resolution;
 }
 
 /**
@@ -1527,17 +1578,25 @@ async function finishServerSession(context) {
  */
 async function startCaptionsSession(message, recognition, captions) {
   const settings = await getSettings();
-  const collectTarget = collectTargetFromTab({ id: message.tabId, url: message.url, title: "" });
-  const resolution = await resolveSourceForTarget(collectTarget);
+  const collectTarget = collectTargetFromTab({
+    id: message.tabId,
+    url: message.url,
+    title: typeof message.title === "string" ? message.title : "",
+  });
+  let resolution = await resolveSourceForTarget(collectTarget);
   if (!resolution.ok) {
     return { success: false, error: resolution.message || "来源解析失败，请稍后重试。" };
   }
   if (!resolution.matched) {
-    return {
-      success: false,
-      needsFavorite: true,
-      error: "该页面还没有收藏到学习库：先收藏才能记录学习进度。",
-    };
+    // Ticket 5.6 (#95): the icon path's captions branch favorites inline
+    // too — 开始学习 = 收藏 + 开始, no 先收藏 intermediate step.
+    resolution = await favoriteLearningTarget(collectTarget);
+    if (!resolution.ok) {
+      return { success: false, error: resolution.message || "收藏失败，请稍后重试。" };
+    }
+    if (!resolution.matched) {
+      return { success: false, error: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。" };
+    }
   }
   const credential = await readStoredAuthCredential();
   const created = await postSessionCreate(settings, credential, resolution.source.id);
@@ -1647,10 +1706,11 @@ async function startCaptionsSession(message, recognition, captions) {
 
 /**
  * The 开始学习 click for the chosen course tab: resolve first (fresh
- * expectedRevision at start time), refuse to capture an unresolved page
- * (progress needs a Source — the panel offers 一键收藏 first), then hand
- * over to the PoC capture flow, whose success path locks the target and
- * arms the progress writer.
+ * expectedRevision at start time); an unmatched page favorites INLINE with
+ * the P8 collect core and re-resolves (ticket 5.6 #95: 开始学习 = 收藏 +
+ * 开始 — the 先收藏 intermediate step is retired), then hands over to the
+ * capture flow, whose success path locks the target and arms the progress
+ * writer.
  */
 async function handleStartLearningForTarget({ tabId } = {}) {
   await loadLearningTargetState();
@@ -1667,7 +1727,7 @@ async function handleStartLearningForTarget({ tabId } = {}) {
   if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
     return { success: false, error: "目标标签页没有可学习的网页地址。" };
   }
-  const resolution = await resolveSourceForTarget(target);
+  let resolution = await resolveSourceForTarget(target);
   if (!resolution.ok) {
     return {
       success: false,
@@ -1675,13 +1735,18 @@ async function handleStartLearningForTarget({ tabId } = {}) {
     };
   }
   if (!resolution.matched) {
-    return {
-      success: false,
-      needsFavorite: true,
-      error: "该页面还没有收藏到学习库：先收藏才能记录学习进度。",
-    };
+    resolution = await favoriteLearningTarget(target);
+    if (!resolution.ok) {
+      // Favorite network failure / 401 (the P7 handoff ran inside the
+      // core) / unconfigured: the error surfaces, nothing starts. The
+      // favorite that DID land is kept — the retry re-resolves first.
+      return { success: false, error: resolution.message || "收藏失败，请稍后重试。" };
+    }
+    if (!resolution.matched) {
+      return { success: false, error: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。" };
+    }
   }
-  const started = await handleStartLearning({ url: target.url, tabId: target.tabId });
+  const started = await handleStartLearning({ url: target.url, tabId: target.tabId, title: target.title });
   if (!started.success) return started;
   return { ...started, resource: resolution.resource, source: resolution.source };
 }
@@ -2358,7 +2423,15 @@ async function handleActionClicked(tab) {
     await endActiveSession(existing, { reason: "course-switch", report: false });
   }
 
-  const result = await handleStartLearning({ url: tab.url, tabId: tab.id, streamId });
+  // Ticket 5.6 (#95): the tab title rides along so a start-flow auto-favorite
+  // (an unmatched page) collects a titled Resource like the panel's collect
+  // entry does — the bridge's document title still wins when it reported one.
+  const result = await handleStartLearning({
+    url: tab.url,
+    tabId: tab.id,
+    streamId,
+    title: typeof tab.title === "string" ? tab.title : "",
+  });
   if (result && !result.success) {
     // The panel just opened but may still be loading; retry briefly so the
     // failure reason is visible instead of a silently empty session view.
@@ -3653,18 +3726,28 @@ async function handleStartLearning(message) {
 async function startCaptureFlowSession(message, recognition, captionsProbe) {
   const settings = await getSettings();
   const credential = await readStoredAuthCredential();
-  const resolution = await resolveSourceForTarget(
-    collectTargetFromTab({ id: message.tabId, url: message.url, title: "" }),
-  );
+  const collectTarget = collectTargetFromTab({
+    id: message.tabId,
+    url: message.url,
+    title: typeof message.title === "string" ? message.title : "",
+  });
+  let resolution = await resolveSourceForTarget(collectTarget);
   if (!resolution.ok) {
     return { success: false, error: resolution.message || "来源解析失败，请稍后重试。" };
   }
   if (!resolution.matched || !resolution.source?.id) {
-    return {
-      success: false,
-      needsFavorite: true,
-      error: "该页面还没有收藏到学习库：先收藏才能记录学习进度。",
-    };
+    // Ticket 5.6 (#95): the icon path's needsFavorite branch is retired —
+    // an unmatched page favorites inline (P8 collect core) and re-resolves
+    // (decision-1 idempotence: the SAME Source comes back), then the start
+    // proceeds. A favorite failure surfaces its own message and nothing
+    // starts; the favorite that DID land is kept for the retry.
+    resolution = await favoriteLearningTarget(collectTarget);
+    if (!resolution.ok) {
+      return { success: false, error: resolution.message || "收藏失败，请稍后重试。" };
+    }
+    if (!resolution.matched || !resolution.source?.id) {
+      return { success: false, error: "该页面已收藏，但学习库尚未建立对应的学习源，请稍后重试。" };
+    }
   }
   const created = await postSessionCreate(settings, credential, resolution.source.id);
   if (!created.ok) {

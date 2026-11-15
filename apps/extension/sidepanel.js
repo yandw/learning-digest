@@ -425,18 +425,14 @@ function setupEventListeners() {
     });
 
   // Course tab list (P10, #59): 开始学习 opens the Session on the chosen
-  // course tab; 收藏并开始 covers the resolve-missed target in one click.
-  // P11 (#60): 继续学习/从头开始 position the player for a chosen target
-  // with progress — only 开始学习 records.
+  // course tab — and for an unresolved target it favorites INLINE first
+  // (ticket 5.6, #95: 收藏+开始一体化; the old secondary collect button is
+  // gone). P11 (#60): 继续学习/从头开始 position the player for a chosen
+  // target with progress — only 开始学习 records.
   document
     .getElementById("startLearningForTargetBtn")
     ?.addEventListener("click", () => {
       void startLearningForTarget();
-    });
-  document
-    .getElementById("collectTargetBtn")
-    ?.addEventListener("click", () => {
-      void collectAndStartTarget();
     });
   document
     .getElementById("seekResumeTargetBtn")
@@ -1084,7 +1080,10 @@ async function collectCurrentPage() {
 // confirmable platform identity, which are the ones with a media player),
 // the learner picks one as the target and the background resolves it
 // against the library (contract §3.4: matched with the resume position, or
-// unmatched → 先收藏). Only the 开始学习 click opens the Session. While a
+// unmatched → 开始学习 will favorite it first). Only the 开始学习 click
+// opens the Session — ticket 5.6 (#95): an unmatched target favorites
+// INLINE in the same action (收藏+开始一体化), so the main CTA's label
+// names the whole action and there is no separate collect button. While a
 // Session records, the list is locked: the box yields to the session view
 // and the bar names the recorded target (decision 4 of #49 — focus and tab
 // switches cannot change it); when the Session ends the list comes back
@@ -1095,7 +1094,9 @@ const COURSE_TAB_COPY = {
   matched: "已在你的学习库：",
   resume: "上次学到",
   fromStart: "从头开始",
-  unmatched: "该页还未收藏：先收藏才能记录学习进度。",
+  // Ticket 5.6 (#95): the old unmatched line blocked the learner (先收藏才能
+  // 记录学习进度). Now the status line says what the ONE click will do.
+  unmatched: "开始学习将同时收藏该页。",
   notStartable: "该平台暂不支持开始学习采集，可先收藏。",
   // Ticket 6.3 (#88): the chosen site's capability row says enabled=false —
   // the 开始学习 button is disabled and this line names why (the site is
@@ -1103,7 +1104,6 @@ const COURSE_TAB_COPY = {
   siteDisabled: "站点未开放学习",
   locked: "已有进行中的学习会话，先结束本次学习。",
   starting: "正在开始学习…",
-  favoriting: "正在收藏…",
   failed: "操作没有完成，请稍后重试。",
   // P11 (#60): the 继续学习/从头开始 options position the player only —
   // the status line reminds the learner that recording starts with
@@ -1179,19 +1179,20 @@ function setCourseTabBusy(busy) {
 
 function updateStartButtons() {
   const startBtn = document.getElementById("startLearningForTargetBtn");
-  const collectBtn = document.getElementById("collectTargetBtn");
   const resumeBtn = document.getElementById("seekResumeTargetBtn");
   const fromStartBtn = document.getElementById("seekFromStartTargetBtn");
   if (startBtn) {
+    // Ticket 5.6 (#95): the main CTA is 一体化 — a chosen, still-unfavorited
+    // target names the WHOLE action (收藏并开始学习); a matched one stays
+    // the plain 开始学习. One click either way; no separate collect button.
+    startBtn.textContent =
+      courseTargetUi.chosenTabId && !courseTargetUi.matched
+        ? "收藏并开始学习"
+        : "开始学习";
     startBtn.disabled =
       courseTargetUi.busy ||
       !courseTargetUi.chosenTabId ||
       !courseTargetUi.startable;
-  }
-  if (collectBtn) {
-    collectBtn.style.display =
-      courseTargetUi.chosenTabId && !courseTargetUi.matched ? "" : "none";
-    collectBtn.disabled = courseTargetUi.busy;
   }
   // P11 (#60): the 定位选项 appear only for a chosen, startable, matched
   // target that HAS progress; without progress 开始学习 alone is the flow.
@@ -1271,7 +1272,7 @@ function renderCourseTabList(rows) {
   }
 }
 
-/** The resolve verdict → status copy: 续播位置, or the 先收藏 prompt. */
+/** The resolve verdict → status copy: 续播位置, or what 开始学习 will do. */
 function describeCourseTargetResolution(result) {
   // Ticket 6.3 (#88): the site-capability gate outranks every other verdict
   // — the learner must learn WHY the button is dead (站点未开放学习), even
@@ -1367,8 +1368,9 @@ async function seekChosenTarget(positionMs) {
 }
 
 /**
- * The 开始学习 click: resolve-before-start happens in the background; on
- * success the sessionUpdate broadcast takes over and the list yields.
+ * The 开始学习 click: resolve-before-start (and the inline favorite for an
+ * unmatched target — ticket 5.6 #95) happens in the background; on success
+ * the sessionUpdate broadcast takes over and the list yields.
  */
 async function startLearningForTarget() {
   if (!courseTargetUi.chosenTabId) return;
@@ -1389,37 +1391,7 @@ async function startLearningForTarget() {
     updateCourseTabsVisibility();
     return;
   }
-  if (result && result.needsFavorite) {
-    courseTargetUi.matched = false;
-    setCourseTabStatus(result.error || COURSE_TAB_COPY.unmatched);
-    updateStartButtons();
-    return;
-  }
   setCourseTabStatus((result && result.error) || COURSE_TAB_COPY.failed);
-}
-
-/** 一键收藏并开始 for the chosen, still-unfavorited target. */
-async function collectAndStartTarget() {
-  if (!courseTargetUi.chosenTabId) return;
-  setCourseTabBusy(true);
-  setCourseTabStatus(COURSE_TAB_COPY.favoriting);
-  let collected = null;
-  try {
-    collected = await chrome.runtime.sendMessage({
-      action: "collectLearningTarget",
-      tabId: courseTargetUi.chosenTabId,
-    });
-  } catch (_error) {
-    collected = null;
-  }
-  if (!collected || !collected.ok) {
-    setCourseTabBusy(false);
-    setCourseTabStatus((collected && collected.message) || COURSE_TAB_COPY.failed);
-    return;
-  }
-  courseTargetUi.matched = true;
-  setCourseTabBusy(false);
-  await startLearningForTarget();
 }
 
 /** The bar's 学习目标 line: the recorded target while a Session runs. */
@@ -2358,11 +2330,14 @@ globalThis.__YTD_OVERVIEW_TESTING__ = {
 };
 
 // Course-target resume helpers for the repository's Node tests (P11 +
-// round-1 review fix). The extension does not read this object at runtime.
+// round-1 review fix; ticket 5.6 #95 adds the CTA label seam). The
+// extension does not read this object at runtime.
 globalThis.__YTD_COURSE_TESTING__ = {
   formatResumePosition,
   hasResumableProgress,
   describeCourseTargetResolution,
+  updateStartButtons,
+  courseTargetUi,
 };
 
 // Session-mode IA helpers for the repository's Node tests (0.1.37). The

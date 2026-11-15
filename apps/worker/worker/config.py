@@ -16,6 +16,9 @@ DEFAULTS: dict[str, Any] = {
     "pollIntervalMs": 5000,
     "qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "qwenModel": "qwen3-asr-flash",
+    # Per-request ASR timeout (ms): a 30s segment is routine, far beyond
+    # httpx's 5s shared default — the provider sends an explicit timeout.
+    "qwenTimeoutMs": 120000,
     # LD_WORKER_LOCAL_BASE_URL has no default (required, fail fast without it).
     "localModel": "whisper-1",
     "localResponseFormat": "verbose_json",
@@ -56,6 +59,7 @@ def load_worker_config(env: dict[str, str] | None = None) -> dict[str, Any]:
         "qwenApiKey": env_string(env, "QWEN_API_KEY"),
         "qwenBaseUrl": env_string(env, "LD_WORKER_QWEN_BASE_URL", DEFAULTS["qwenBaseUrl"]),
         "qwenModel": env_string(env, "LD_WORKER_QWEN_MODEL", DEFAULTS["qwenModel"]),
+        "qwenTimeoutMs": env_number(env, "LD_WORKER_QWEN_TIMEOUT_MS", DEFAULTS["qwenTimeoutMs"]),
         "localBaseUrl": env_string(env, "LD_WORKER_LOCAL_BASE_URL"),
         "localModel": env_string(env, "LD_WORKER_LOCAL_MODEL", DEFAULTS["localModel"]),
         "localToken": env_string(env, "LD_WORKER_LOCAL_TOKEN"),
@@ -81,6 +85,7 @@ def create_provider_from_config(config: dict[str, Any]) -> dict[str, Any]:
             api_key=config["qwenApiKey"],
             base_url=config["qwenBaseUrl"],
             model=config["qwenModel"],
+            timeout_ms=config["qwenTimeoutMs"],
         )
     if provider == "local":
         from .providers.local import create_local_provider

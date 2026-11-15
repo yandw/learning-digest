@@ -66,10 +66,12 @@ def load_explain_template() -> dict:
 
 
 def fill_explain_template(template: str, values: dict) -> str:
-    """Fill the explain template's two variables in ONE pass (the digest
-    template's fill semantics: a fill value that itself contains a
-    `{...}` token is never re-replaced; a missing value becomes an empty
-    string; an unknown placeholder stays visible)."""
+    """Fill the explain template's two variables in ONE pass (the
+    tick/digest fill semantics: a fill value that itself contains a
+    `{...}` token is never re-replaced; an unknown placeholder stays
+    visible; missing values fill as the EMPTY string and values are
+    str()-coerced — deliberately one notch stricter than the course-summary
+    filler, see app/session_insights.py fill_tick_template)."""
     filled = dict(values)
 
     def replace(match: re.Match) -> str:

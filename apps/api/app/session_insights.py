@@ -101,11 +101,17 @@ def load_topic_tick_template() -> dict:
 
 
 def fill_tick_template(template: str, values: dict) -> str:
-    """Fill the tick template's four variables in ONE pass (the course
-    summary's fill_template semantics: a fill value that itself contains a
-    `{...}` token is never re-replaced; a missing value becomes an empty
-    string; an unknown placeholder stays visible). String arguments may be
-    wrapped in functions for lazy assembly."""
+    """Fill the tick template's four variables in ONE pass (a fill value
+    that itself contains a `{...}` token is never re-replaced; an unknown
+    placeholder stays visible). String arguments may be wrapped in
+    functions for lazy assembly.
+
+    Missing values fill as the EMPTY string and values are str()-coerced —
+    deliberately one notch stricter than the course-summary filler
+    (app/summaries.py fill_template), which leaves a missing placeholder
+    visible and returns values uncoerced. The four domain fillers share the
+    one-pass shape but keep their own variable regexes; the divergence is
+    documented, not unified."""
     filled = dict(values)
 
     def replace(match: re.Match) -> str:

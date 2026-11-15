@@ -9,10 +9,12 @@
 # Release versioning (AGENTS.md): the API unit owns its release version
 # here since the switchover. 0.2.0 marks the implementation rewrite — the
 # Node/FastAPI duality collapses onto Python alone — while the contract
-# generation (`/v1`) is unchanged.
+# generation (`/v1`) is unchanged. 0.2.1 (round-4/6 review fixes) delivers
+# the AI provider timeout to httpx in seconds not milliseconds and moves
+# the four AI-pass routes onto the threadpool (def routes).
 [project]
 name = "learning-digest-api"
-version = "0.2.0"
+version = "0.2.1"
 description = "Learning Digest backend API: /v1 auth, resources, progress, notes, sessions, transcripts, summaries, usage domains (Python/FastAPI; the sole service-layer implementation, ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [

@@ -18,6 +18,7 @@ def test_defaults_to_the_loopback_api_stub_provider_and_5s_poll():
         "qwenApiKey": "",
         "qwenBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "qwenModel": "qwen3-asr-flash",
+        "qwenTimeoutMs": 120000,
         "localBaseUrl": "",
         "localModel": "whisper-1",
         "localToken": "",
@@ -37,6 +38,7 @@ def test_env_overrides_flow_through():
             "QWEN_API_KEY": "sk-test",
             "LD_WORKER_QWEN_BASE_URL": "https://mirror.example.com/v1/",
             "LD_WORKER_QWEN_MODEL": "qwen3-asr-flash-test",
+            "LD_WORKER_QWEN_TIMEOUT_MS": "90000",
         }
     )
     assert config["apiBase"] == "https://api.example.com"
@@ -46,6 +48,7 @@ def test_env_overrides_flow_through():
     assert config["qwenApiKey"] == "sk-test"
     assert config["qwenBaseUrl"] == "https://mirror.example.com/v1/"
     assert config["qwenModel"] == "qwen3-asr-flash-test"
+    assert config["qwenTimeoutMs"] == 90000
 
 
 def test_local_env_overrides_flow_through():

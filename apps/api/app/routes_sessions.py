@@ -7,7 +7,7 @@ the usage read endpoint the transcription write-back accrues into.
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import Depends, Request
 from fastapi.responses import JSONResponse
 
 from .audio_jobs import (
@@ -29,6 +29,19 @@ from .usage import usage_view
 
 
 def register_sessions_routes(app, ctx: AppContext) -> None:
+    async def ignored_body(request: Request) -> None:
+        # Read-and-ignored body as an async dependency: the drain/validation
+        # stays on the event loop while the sync (def) routes below run
+        # their blocking AI passes in the threadpool. The contract makes
+        # these bodies empty objects; oversize/invalid JSON still answer
+        # 400 exactly as when the route awaited inline. Passed via the
+        # decorator's dependencies=[...] (a runtime value): this file uses
+        # `from __future__ import annotations`, and a Depends() closure name
+        # inside a parameter annotation cannot be evaluated against module
+        # globals (Python 3.14 lazy annotations) — it would degrade into a
+        # required query parameter.
+        await read_json_body(request, ctx.config.max_body_bytes)
+
     @app.post("/v1/sources/{source_id}/sessions")
     async def post_session(
         source_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
@@ -88,15 +101,23 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
         result = get_transcript(store=ctx.store, session=session)
         return JSONResponse(status_code=result["status"], content=result["body"])
 
-    @app.post("/v1/sessions/{session_id}/rolling-summary")
-    async def post_rolling_summary(
-        session_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
+    @app.post(
+        "/v1/sessions/{session_id}/rolling-summary",
+        dependencies=[Depends(ignored_body)],
+    )
+    def post_rolling_summary(
+        session_id: str, credential: CredentialDep, ctx: CtxDep
     ) -> JSONResponse:
         # Rolling-summary tick (contract-r4 §6.2, ticket 6.4): any logged-in
         # user; the request body is an empty object by contract (the debounce
         # lives with the caller) — read and ignored like the session-create
-        # body. Idempotent: an empty window replays the current overview.
-        await read_json_body(request, ctx.config.max_body_bytes)
+        # body (drained by the async dependency above). Idempotent: an empty
+        # window replays the current overview.
+        #
+        # def, not async: generate_rolling_summary is a blocking sync AI/IO
+        # pass (provider call + archive reconcile); FastAPI runs def routes
+        # in the threadpool, so one slow generation no longer serializes the
+        # event loop for every other request.
         session = find_account_session(
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )
@@ -122,15 +143,23 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
         result = get_overview(store=ctx.store, session=session)
         return JSONResponse(status_code=result["status"], content=result["body"])
 
-    @app.post("/v1/sessions/{session_id}/digest")
-    async def post_session_digest(
-        session_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
+    @app.post(
+        "/v1/sessions/{session_id}/digest",
+        dependencies=[Depends(ignored_body)],
+    )
+    def post_session_digest(
+        session_id: str, credential: CredentialDep, ctx: CtxDep
     ) -> JSONResponse:
         # Session Digest generation (contract-r4 §7.2, ticket 6.5): any
         # logged-in user; the request body is an empty object by contract —
-        # read and ignored like the session-create body. One full pass over
-        # the finished Session's transcript; a repeat POST overwrites.
-        await read_json_body(request, ctx.config.max_body_bytes)
+        # read and ignored like the session-create body (drained by the
+        # async dependency above). One full pass over the finished Session's
+        # transcript; a repeat POST overwrites.
+        #
+        # def, not async: generate_digest is a blocking sync AI/IO pass
+        # (provider call + sanitize); FastAPI runs def routes in the
+        # threadpool, so one slow generation no longer serializes the event
+        # loop for every other request.
         session = find_account_session(
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )

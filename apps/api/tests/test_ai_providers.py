@@ -204,7 +204,7 @@ def test_qwen_provider_http_failure_and_unparseable_payloads_both_raise():
 
 
 def test_qwen_provider_timeout_is_created_fresh_per_generate_call():
-    factory_calls: list[int] = []
+    factory_calls: list[float] = []
     timeouts_seen: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -213,9 +213,9 @@ def test_qwen_provider_timeout_is_created_fresh_per_generate_call():
             200, json={"choices": [{"message": {"content": '{"content":"c","citations":[]}'}}]}
         )
 
-    def timeout_factory(ms: int) -> httpx.Timeout:
-        factory_calls.append(ms)
-        return httpx.Timeout(ms)
+    def timeout_factory(seconds: float) -> httpx.Timeout:
+        factory_calls.append(seconds)
+        return httpx.Timeout(seconds)
 
     provider = create_qwen_provider(
         api_key="k",
@@ -230,8 +230,40 @@ def test_qwen_provider_timeout_is_created_fresh_per_generate_call():
     # value. A construction-time signal/timeout would expire once and make
     # every later generation fail (the pre-fix production regression).
     assert len(timeouts_seen) == 2
-    assert factory_calls == [120000, 120000]
+    assert factory_calls == [120.0, 120.0]
     assert timeouts_seen[0] is not None and timeouts_seen[1] is not None
+
+
+def test_qwen_provider_timeout_units_are_seconds_not_milliseconds():
+    """config/main promise milliseconds (LD_AI_TIMEOUT_MS); httpx.Timeout
+    speaks seconds. The default path (no injected factory) must convert:
+    timeout_ms=120000 reaches the transport as 120.0s, never 120000s."""
+    timeouts_seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeouts_seen.append(request.extensions.get("timeout"))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"content":"c","citations":[]}'}}]}
+        )
+
+    provider = create_qwen_provider(
+        api_key="k",
+        transport=_capturing_transport([], handler),
+        timeout_ms=120000,
+    )
+    provider.generate(system="s", user="u")
+
+    assert len(timeouts_seen) == 1
+    # httpx stores the timeout on the request extensions as a plain
+    # {connect, read, write, pool} dict of SECONDS.
+    timeout = timeouts_seen[0]
+    assert timeout is not None
+    assert timeout == {
+        "connect": 120.0,
+        "read": 120.0,
+        "write": 120.0,
+        "pool": 120.0,
+    }
 
 
 def test_qwen_provider_a_timed_out_call_does_not_poison_the_next_one():

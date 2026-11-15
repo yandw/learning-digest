@@ -515,7 +515,7 @@ class QwenProvider:
         model: Any = "",
         transport: httpx.BaseTransport | None = None,
         timeout_ms: Any = None,
-        timeout_factory: Callable[[int], httpx.Timeout] | None = None,
+        timeout_factory: Callable[[float], httpx.Timeout] | None = None,
     ):
         trimmed_key = api_key.strip() if isinstance(api_key, str) else ""
         if not trimmed_key:
@@ -534,11 +534,17 @@ class QwenProvider:
     def _chat(self, *, system: str, user: str) -> str:
         """One chat/completions request, reply text back. A FRESH timeout
         per call, never one shared across calls (the round-3 review fix's
-        discipline, shared by both operations)."""
+        discipline, shared by both operations).
+
+        Units: config holds milliseconds (LD_AI_TIMEOUT_MS), but
+        httpx.Timeout speaks SECONDS — so the ms value is divided by 1000
+        before it reaches httpx. The injectable `timeout_factory` observes
+        the converted seconds value, i.e. exactly what httpx is handed."""
+        timeout_seconds = self._timeout_ms / 1000
         timeout = (
-            self._timeout_factory(self._timeout_ms)
+            self._timeout_factory(timeout_seconds)
             if self._timeout_factory
-            else httpx.Timeout(self._timeout_ms)
+            else httpx.Timeout(timeout_seconds)
         )
         response = self._client.post(
             f"{self._base_url}/chat/completions",
@@ -607,7 +613,7 @@ def create_qwen_provider(
     model: Any = "",
     transport: httpx.BaseTransport | None = None,
     timeout_ms: Any = None,
-    timeout_factory: Callable[[int], httpx.Timeout] | None = None,
+    timeout_factory: Callable[[float], httpx.Timeout] | None = None,
 ) -> QwenProvider:
     return QwenProvider(
         api_key=api_key,

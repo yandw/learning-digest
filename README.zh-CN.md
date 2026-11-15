@@ -120,6 +120,7 @@ npm run package             # 打包扩展 zip
 | `LD_WORKER_POLL_INTERVAL_MS` | `5000` | 空闲轮询间隔 |
 | `LD_WORKER_ERROR_BACKOFF_MS` | 轮询间隔 | 失败周期后的退避 |
 | `LD_WORKER_QWEN_BASE_URL`、`LD_WORKER_QWEN_MODEL` | 百炼、`qwen3-asr-flash` | 端点/模型覆盖 |
+| `LD_WORKER_QWEN_TIMEOUT_MS` | `120000` | 单次 ASR 请求超时（httpx 默认 5 秒，30 秒音频段会误杀） |
 | `LD_WORKER_LOCAL_BASE_URL` | 未设置 | 自建/局域网 ASR 端点(`local` provider,选中即必填) |
 | `LD_WORKER_LOCAL_MODEL`、`LD_WORKER_LOCAL_LANGUAGE`、`LD_WORKER_LOCAL_TOKEN`、`LD_WORKER_LOCAL_MIME_TYPE`、`LD_WORKER_LOCAL_RESPONSE_FORMAT` | `whisper-1`、`zh`、未设置、未设置、`verbose_json` | local provider 调优 |
 | `LD_WORKER_LOCAL_BASE_URL` | 未设置 | 自建 ASR 服务地址（provider 为 `local` 时必填，缺失启动即失败） |

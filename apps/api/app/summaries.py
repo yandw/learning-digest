@@ -160,7 +160,14 @@ TEMPLATE_VARIABLE = re.compile(r"\{(resourceTitle|transcriptLines|gapLines|noteL
 def fill_template(template: str, values: dict) -> str:
     """Fill the template's four variables in ONE pass — a fill value that
     itself contains a `{...}` token is never re-replaced (Node's replace-
-    with-function semantics). String arguments are wrapped in functions."""
+    with-function semantics). String arguments are wrapped in functions.
+
+    A MISSING value leaves the placeholder visible, and values are returned
+    uncoerced — deliberately one notch looser than the three r4 fillers
+    (fill_tick_template / fill_digest_template / fill_explain_template),
+    which fill missing values as "" and str()-coerce. The four domain
+    fillers share the one-pass shape but keep their own variable regexes;
+    the divergence is documented, not unified."""
     filled = {name: values[name] for name in values}
 
     def replace(match: re.Match) -> str:

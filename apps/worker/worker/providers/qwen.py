@@ -20,6 +20,11 @@ DEFAULTS = {
     "model": "qwen3-asr-flash",
 }
 
+# Per-request ASR timeout in milliseconds (LD_WORKER_QWEN_TIMEOUT_MS).
+# 120s: a 30s audio segment is routine ASR work, far beyond httpx's 5s
+# shared default, but bounded so a wedged connection cannot stall the loop.
+DEFAULT_TIMEOUT_MS = 120_000
+
 
 def normalize_base_url(base_url: str | None) -> str:
     trimmed = base_url.strip() if isinstance(base_url, str) else ""
@@ -47,11 +52,18 @@ def create_qwen_provider(
     base_url: str | None = None,
     model: str | None = None,
     transport: httpx.BaseTransport | None = None,
+    timeout_ms: Any = None,
 ) -> dict[str, Any]:
     trimmed_key = api_key.strip() if isinstance(api_key, str) else ""
     if not trimmed_key:
         raise ValueError("Qwen Speech Provider requires a Bailian API key")
     client = httpx.Client(transport=transport)
+    # An EXPLICIT timeout, never the httpx 5s default: a 30s ASR segment is
+    # routine, so the shared default would abort legitimate work. Config
+    # holds milliseconds (LD_WORKER_QWEN_TIMEOUT_MS, default 120000);
+    # httpx.Timeout speaks seconds — a FRESH timeout object per transcribe
+    # call, mirroring apps/api's QwenProvider discipline.
+    timeout_seconds = (timeout_ms if isinstance(timeout_ms, (int, float)) and timeout_ms > 0 else DEFAULT_TIMEOUT_MS) / 1000
 
     def transcribe(*, audio_base64: str, audio_mime_type: str, segment: dict) -> list[dict]:
         media_type = audio_mime_type or "audio/mpeg"
@@ -73,6 +85,7 @@ def create_qwen_provider(
                 ],
                 "asr_options": {"language": "zh", "enable_itn": True},
             },
+            timeout=httpx.Timeout(timeout_seconds),
         )
         if not (200 <= response.status_code < 300):
             raise provider_http_error(response)

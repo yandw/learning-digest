@@ -120,6 +120,7 @@ The complete test-case list, grouped by unit and feature area with the verifying
 | `LD_WORKER_POLL_INTERVAL_MS` | `5000` | idle poll interval |
 | `LD_WORKER_ERROR_BACKOFF_MS` | poll interval | sleep after a failed cycle |
 | `LD_WORKER_QWEN_BASE_URL`, `LD_WORKER_QWEN_MODEL` | Bailian, `qwen3-asr-flash` | endpoint/model overrides |
+| `LD_WORKER_QWEN_TIMEOUT_MS` | `120000` | per-request ASR timeout (httpx's 5s default is too short for a 30s segment) |
 | `LD_WORKER_LOCAL_BASE_URL` | unset | self-hosted / LAN ASR endpoint (`local` provider; required when selected) |
 | `LD_WORKER_LOCAL_MODEL`, `LD_WORKER_LOCAL_LANGUAGE`, `LD_WORKER_LOCAL_TOKEN`, `LD_WORKER_LOCAL_MIME_TYPE`, `LD_WORKER_LOCAL_RESPONSE_FORMAT` | `whisper-1`, `zh`, unset, unset, `verbose_json` | local provider tuning |
 | `LD_WORKER_LOCAL_BASE_URL` | unset | self-hosted ASR service base URL (required when the provider is `local`; missing fails at startup) |

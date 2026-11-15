@@ -17,12 +17,17 @@ from .summaries import generate_summary, get_summary, list_summaries
 
 def register_summaries_routes(app, ctx: AppContext) -> None:
     @app.post("/v1/resources/{resource_id}/summaries")
-    async def post_summary(
+    def post_summary(
         resource_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
     ) -> JSONResponse:
         # Generate a course summary (contract-r3 §3.1): the request body is
         # an empty object by contract (no client-side input trimming, D17) —
         # nothing to validate, nothing to read.
+        #
+        # def, not async: generate_summary is a blocking sync AI/IO pass
+        # (provider call + archive reconcile); FastAPI runs def routes in
+        # the threadpool, so one slow generation no longer serializes the
+        # event loop for every other request.
         result = generate_summary(
             store=ctx.store,
             account_id=credential["accountId"],

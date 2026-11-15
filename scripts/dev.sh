@@ -18,20 +18,34 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="${LD_DEV_RUN_DIR:-/tmp/learning-digest-dev}"
 LOG_DIR="$RUN_DIR/logs"
+# Ports the caller set on the command line must survive resolved_ports()
+# (WEB_PORT=8090 scripts/dev.sh restart must reach the stop segment too):
+# precedence is explicit override > remembered file > built-in default.
+API_PORT_GIVEN="${API_PORT:-}"
+WEB_PORT_GIVEN="${WEB_PORT:-}"
 API_PORT="${API_PORT:-8787}"
 WEB_PORT="${WEB_PORT:-8080}"
 WORKER_TOKEN="${LD_WORKER_TOKEN:-dev-worker-token}"
 mkdir -p "$LOG_DIR"
 
 remember_ports() {
-  printf 'API_PORT=%s\nWEB_PORT=%s\n' "$API_PORT" "$WEB_PORT" > "$RUN_DIR/ports.env"
+  printf 'REMEMBERED_API_PORT=%s\nREMEMBERED_WEB_PORT=%s\n' "$API_PORT" "$WEB_PORT" > "$RUN_DIR/ports.env"
 }
 
 resolved_ports() {
+  REMEMBERED_API_PORT="" REMEMBERED_WEB_PORT=""
   if [ -f "$RUN_DIR/ports.env" ]; then
     # shellcheck disable=SC1091
     . "$RUN_DIR/ports.env"
   fi
+  # Fill from the remembered file only when the caller did not set the
+  # variable; remember_ports keeps recording the final effective values.
+  # Manual check (restart override survives the stop segment):
+  #   scripts/dev.sh start                 # remembers defaults
+  #   WEB_PORT=8090 scripts/dev.sh restart # web must come back on :8090,
+  #   scripts/dev.sh status                #   and status must show web :8090
+  API_PORT="${API_PORT_GIVEN:-${REMEMBERED_API_PORT:-8787}}"
+  WEB_PORT="${WEB_PORT_GIVEN:-${REMEMBERED_WEB_PORT:-8080}}"
 }
 
 port_busy() { lsof -ti ":$1" >/dev/null 2>&1; }
@@ -48,10 +62,16 @@ pid_alive() {
   [ -n "$stat" ] && [ "${stat:0:1}" != "Z" ]
 }
 
-our_listener() { # port, marker: is this port held by OUR process?
+process_cwd_contains() { # pid, substring: does the process cwd match?
+  lsof -a -p "$1" -d cwd -Fn 2>/dev/null | grep -q "$2"
+}
+
+our_listener() { # port, marker, cwd_guard: is this port held by OUR process?
   local pid
   for pid in $(lsof -ti :"$1" 2>/dev/null); do
-    ps -p "$pid" -o command= 2>/dev/null | grep -q "$2" && return 0
+    ps -p "$pid" -o command= 2>/dev/null | grep -q "$2" || continue
+    if [ -n "$3" ] && ! process_cwd_contains "$pid" "$3"; then continue; fi
+    return 0
   done
   return 1
 }
@@ -65,37 +85,45 @@ wait_for_port() { # port: wait up to ~4s for a listener (api/web health)
   return 1
 }
 
-kill_orphans() { # marker, web_guard: clear stale instances of our own services
-  local marker="$1" web_guard="$2" pid child grandchild
-  for pid in $(pgrep -f "$marker" 2>/dev/null); do
-    if $web_guard; then
-      lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -q "apps/web" || continue
-    fi
-    for child in $(pgrep -P "$pid" 2>/dev/null); do
-      for grandchild in $(pgrep -P "$child" 2>/dev/null); do
-        kill "$grandchild" 2>/dev/null || true
-      done
-      kill "$child" 2>/dev/null || true
+kill_tree() { # pid: kill a process AND two levels of children, soft first
+              # then hard (uv -> python, npm -> sh -> node survive a plain
+              # parent kill; the -9 pass reaps whatever ignored SIGTERM)
+  local pid="$1" child grandchild
+  [ -n "$pid" ] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    for grandchild in $(pgrep -P "$child" 2>/dev/null); do
+      kill "$grandchild" 2>/dev/null || true
     done
-    kill "$pid" 2>/dev/null || true
+    kill "$child" 2>/dev/null || true
+  done
+  kill "$pid" 2>/dev/null || true
+  sleep 0.4
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    for grandchild in $(pgrep -P "$child" 2>/dev/null); do
+      kill -9 "$grandchild" 2>/dev/null || true
+    done
+    kill -9 "$child" 2>/dev/null || true
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+kill_orphans() { # marker, cwd_guard: clear stale instances of our own services
+                 # (cwd_guard = substring the process cwd must contain; empty
+                 # disables the guard)
+  local marker="$1" cwd_guard="$2" pid
+  for pid in $(pgrep -f "$marker" 2>/dev/null); do
+    if [ -n "$cwd_guard" ] && ! process_cwd_contains "$pid" "$cwd_guard"; then continue; fi
+    kill_tree "$pid"
   done
 }
 
-kill_port_holders() { # port, marker, web_guard: free the port if held by OUR process
-  local port="$1" marker="$2" web_guard="$3" pid child grandchild freed=false
+kill_port_holders() { # port, marker, cwd_guard: free the port if held by OUR process
+  local port="$1" marker="$2" cwd_guard="$3" pid freed=false
   for pid in $(lsof -ti ":$port" 2>/dev/null); do
     ps -p "$pid" -o command= 2>/dev/null | grep -q "$marker" || continue
-    if $web_guard; then
-      lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -q "apps/web" || continue
-    fi
+    if [ -n "$cwd_guard" ] && ! process_cwd_contains "$pid" "$cwd_guard"; then continue; fi
     echo "[port $port] 发现本程序旧实例 (pid $pid),停止它并重启"
-    for child in $(pgrep -P "$pid" 2>/dev/null); do
-      for grandchild in $(pgrep -P "$child" 2>/dev/null); do
-        kill "$grandchild" 2>/dev/null || true
-      done
-      kill "$child" 2>/dev/null || true
-    done
-    kill "$pid" 2>/dev/null || true
+    kill_tree "$pid"
     freed=true
   done
   $freed && sleep 0.8
@@ -112,12 +140,12 @@ start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), listener_
   rm -f "$pidfile"
   ( cd "$cwd" && "$@" > "$logfile" 2>&1 & echo $! > "$pidfile" )
   if [ -n "$port" ]; then
-    if wait_for_port "$port" && pid_alive "$pidfile" && our_listener "$port" "$listener_marker"; then
+    if wait_for_port "$port" && pid_alive "$pidfile" && our_listener "$port" "$listener_marker" "$cwd"; then
       echo "[$name] started (pid $(cat "$pidfile"))"
       echo "[$name] $url"
       return 0
     fi
-    if wait_for_port "$port" && ! our_listener "$port" "$listener_marker"; then
+    if wait_for_port "$port" && ! our_listener "$port" "$listener_marker" "$cwd"; then
       echo "[$name] FAILED: 端口 $port 被其他应用占用(非本项目进程)"
       echo "[$name] 换端口重试: $name=$port-别名 例如 WEB_PORT=8090 scripts/dev.sh start"
       stop_one "$pidfile"
@@ -142,11 +170,11 @@ start_one() { # name, pidfile, logfile, cwd, listen_port("" for none), listener_
 
 start() {
   remember_ports
-  kill_orphans "python -m app.main" false
-  kill_orphans "python -m worker.main" false
-  kill_orphans "node server.js" true
+  kill_orphans "python -m app.main" "apps/api"
+  kill_orphans "python -m worker.main" "apps/worker"
+  kill_orphans "node server.js" "apps/web"
   if port_busy "$API_PORT" && ! pid_alive "$RUN_DIR/api.pid"; then
-    kill_port_holders "$API_PORT" "app.main" false
+    kill_port_holders "$API_PORT" "app.main" "apps/api"
   fi
   if port_busy "$API_PORT"; then
     echo "[api] FAILED: 端口 $API_PORT 被其他应用占用(非本项目进程)"
@@ -167,7 +195,7 @@ start() {
       uv run python -m worker.main
   fi
   if port_busy "$WEB_PORT" && ! pid_alive "$RUN_DIR/web.pid"; then
-    kill_port_holders "$WEB_PORT" "node server.js" true
+    kill_port_holders "$WEB_PORT" "node server.js" "apps/web"
   fi
   if port_busy "$WEB_PORT"; then
     echo "[web] FAILED: 端口 $WEB_PORT 被其他应用占用(非本项目进程)"
@@ -186,22 +214,7 @@ stop_one() { # pidfile: kill the tracked pid AND two levels of children
   local pid
   pid="$(cat "$pidfile" 2>/dev/null)"
   [ -n "$pid" ] || return 0
-  local child grandchild
-  for child in $(pgrep -P "$pid" 2>/dev/null); do
-    for grandchild in $(pgrep -P "$child" 2>/dev/null); do
-      kill "$grandchild" 2>/dev/null || true
-    done
-    kill "$child" 2>/dev/null || true
-  done
-  kill "$pid" 2>/dev/null || true
-  sleep 0.4
-  for child in $(pgrep -P "$pid" 2>/dev/null); do
-    for grandchild in $(pgrep -P "$child" 2>/dev/null); do
-      kill -9 "$grandchild" 2>/dev/null || true
-    done
-    kill -9 "$child" 2>/dev/null || true
-  done
-  kill -9 "$pid" 2>/dev/null || true
+  kill_tree "$pid"
 }
 
 stop() {
@@ -214,9 +227,9 @@ stop() {
     fi
     rm -f "$pidfile"
   done
-  kill_orphans "python -m app.main" false
-  kill_orphans "python -m worker.main" false
-  kill_orphans "node server.js" true
+  kill_orphans "python -m app.main" "apps/api"
+  kill_orphans "python -m worker.main" "apps/worker"
+  kill_orphans "node server.js" "apps/web"
   for port in "$WEB_PORT" "$API_PORT"; do
     if port_busy "$port"; then
       echo "[warn] port $port 仍被非本项目的进程占用"

@@ -105,3 +105,30 @@ def test_missing_api_key_fails_at_construction_before_any_request():
     else:
         raise AssertionError("missing api key must fail at construction")
     assert transport.calls == []
+
+
+def test_every_request_carries_an_explicit_120s_timeout_not_the_5s_default():
+    """The default httpx timeout is 5s — far too short for a routine 30s ASR
+    segment. Every request must carry an explicit 120s (default) timeout;
+    httpx stores it on the request extensions as a plain {connect, read,
+    write, pool} dict of SECONDS (config speaks ms, httpx speaks s)."""
+    transport = StubTransport({"choices": [{"message": {"content": "回"}}]})
+    provider = create_qwen_provider(api_key="qwen-key", transport=transport)
+    provider["transcribe"](**SEGMENT_INPUT)
+
+    assert len(transport.calls) == 1
+    timeout = transport.calls[0].extensions.get("timeout")
+    assert timeout is not None
+    assert timeout == {"connect": 120.0, "read": 120.0, "write": 120.0, "pool": 120.0}
+
+    # LD_WORKER_QWEN_TIMEOUT_MS override flows through, converted ms → s.
+    override = StubTransport({"choices": [{"message": {"content": "回"}}]})
+    create_qwen_provider(
+        api_key="qwen-key", transport=override, timeout_ms=90000
+    )["transcribe"](**SEGMENT_INPUT)
+    assert override.calls[0].extensions.get("timeout") == {
+        "connect": 90.0,
+        "read": 90.0,
+        "write": 90.0,
+        "pool": 90.0,
+    }

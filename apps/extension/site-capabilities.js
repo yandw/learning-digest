@@ -31,10 +31,12 @@ var YTD_SITE_CAPABILITIES = (() => {
   const SITE_CAPABILITIES_PATH = "/v1/site-capabilities";
 
   /**
-   * The cache lifetime for a fetched server table. A site the operator just
-   * disabled can keep starting for up to this long when the panel stays
-   * open — the next panel open and the next start both refresh first, so in
-   * practice the staleness window is one panel session.
+   * The cache lifetime for a fetched server table. Past the TTL the stale
+   * table keeps serving (capability reads never wait for a refresh) and
+   * every ensureFresh call keeps retrying the fetch until one succeeds —
+   * so a site the operator just disabled can keep starting until the next
+   * successful refresh round, and a failing refresh never blocks the
+   * panel.
    */
   const DEFAULT_TTL_MS = 10 * 60 * 1000;
 

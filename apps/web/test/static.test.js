@@ -43,6 +43,12 @@ test("GET / serves the shell with login and library views wired to main.js", asy
     assert.match(response.text, /id="detailTranscripts"[\s\S]*id="detailSummaries"/);
     assert.match(response.text, /id="usageBtn"/);
     assert.match(response.text, /id="usagePanel"/);
+    // Ticket 5.5 (contract-r4 §8): the detail delete entry mounts in the
+    // detail footer, after the summaries block — two-step confirm button
+    // plus the cascade hint (D23).
+    assert.match(response.text, /id="deleteResourceBtn"/);
+    assert.match(response.text, /id="deleteResourceHint"/);
+    assert.match(response.text, /id="detailSummaries"[\s\S]*id="detailDelete"/);
   } finally {
     await web.close();
   }

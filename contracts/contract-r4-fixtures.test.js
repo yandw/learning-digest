@@ -211,6 +211,11 @@ function endpointOf(sample) {
     return "GET /v1/sessions/{id}/digest";
   }
   if (method === "POST" && segs.join("/") === "v1/ai/explain") return "POST /v1/ai/explain";
+  // §8 delete (contract-r4.md §8, ticket 5.5, issue #94): the resource
+  // delete cascade.
+  if (method === "DELETE" && segs.length === 3 && segs[1] === "resources") {
+    return "DELETE /v1/resources/{id}";
+  }
   return `${method} ${path}`;
 }
 
@@ -773,6 +778,89 @@ test("contract-r4.md §7 and decisions.md record the digest/explain anchors", ()
   const decisions = readDoc("decisions.md");
   assert.ok(decisions.includes("D22 ·"), "decisions.md must record D22");
   for (const token of ["整节一次性", "sessionDigests", "digestCount", "explainCount", "8000"]) {
+    assert.ok(decisions.includes(token), `decisions.md must cover ${token}`);
+  }
+});
+
+// --- §8 delete (ticket 5.5, issue #94, decision D23) ------------------------------
+//
+// The delete cascade's success sample lives in its own fixture file; the
+// error paths deliberately reuse the round-1 error-examples.json samples
+// (no new error samples): 401 is the shared unauthorized envelope, the 404
+// is the D2 notFoundResource family the detail endpoint already pins.
+
+const DELETE_ENDPOINT = "DELETE /v1/resources/{id}";
+const REUSED_ERROR_IDS = ["error-unauthorized-missing-token", "error-cross-account-resource"];
+
+test("delete fixtures parse and declare the contract", () => {
+  const fixture = loadExamples("resource-delete-examples.json");
+  assert.ok(fixture.description.includes("D23"), "the file declares the delete decision");
+});
+
+test("the delete success sample pins the cascade contract shape", () => {
+  const sample = sampleById(loadExamples("resource-delete-examples.json").samples, "api-resource-delete");
+  assert.equal(sample.endpoint.method, "DELETE");
+  assert.match(sample.endpoint.path, /^\/v1\/resources\/res_/);
+  assert.equal(sample.response.status, 200);
+  assert.deepEqual(sample.response.body, { deleted: true }, "the body is exactly {deleted: true}");
+});
+
+test("delete error paths reuse the existing error samples (none added)", () => {
+  const errorSamples = loadExamples("error-examples.json").samples;
+  const before = errorSamples.length;
+  const byId = new Map(errorSamples.map((e) => [e.id, e]));
+
+  // 401: the shared missing-token envelope.
+  const unauthorized = byId.get("error-unauthorized-missing-token");
+  assert.ok(unauthorized, "the 401 sample must exist from round 1");
+  assert.equal(unauthorized.response.status, 401);
+  assert.equal(unauthorized.response.body.error.code, "unauthorized");
+  assert.equal(unauthorized.response.body.error.message, "未登录或凭据缺失");
+
+  // 404: the D2 notFoundResource family (unknown id / cross-account /
+  // repeat delete are the same body).
+  const notFound = byId.get("error-cross-account-resource");
+  assert.ok(notFound, "the 404 sample must exist from round 1");
+  assert.equal(notFound.response.status, 404);
+  assert.equal(notFound.response.body.error.code, "not_found");
+  assert.equal(notFound.response.body.error.message, "资源不存在或无权访问");
+
+  // Nothing was appended for the delete round.
+  assert.equal(errorSamples.filter((s) => s.id.includes("delete")).length, 0,
+    "the delete round must not append error samples");
+  const after = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, "error-examples.json"), "utf8")).samples.length;
+  assert.equal(after, before, "error-examples.json is untouched by §8");
+});
+
+test("every delete path has a success or reused failure sample", () => {
+  const successTemplates = new Set(loadExamples("resource-delete-examples.json").samples.map(endpointOf));
+  assert.ok(successTemplates.has(DELETE_ENDPOINT), `no success sample covers ${DELETE_ENDPOINT}`);
+
+  const errorSamples = loadExamples("error-examples.json").samples;
+  const byId = new Map(errorSamples.map((e) => [e.id, e]));
+  for (const id of REUSED_ERROR_IDS) {
+    assert.ok(byId.has(id), `the reused failure sample ${id} must exist`);
+  }
+});
+
+test("contract-r4.md §8 and decisions.md record the delete anchors", () => {
+  function readDoc(relativePath) {
+    return fs.readFileSync(path.join(CONTRACT_ROOT, relativePath), "utf8");
+  }
+
+  const r4 = readDoc("contract-r4.md");
+  assert.ok(r4.includes(DELETE_ENDPOINT), "contract-r4.md must list DELETE /v1/resources/{id}");
+  for (const token of [
+    "resource-delete-examples.json", "deleted", "sessionDigests", "sessionInsights",
+    "transcripts", "summaries", "usage", "error-cross-account-resource",
+    "error-unauthorized-missing-token", "删除即终态", "matched: false", "账目",
+  ]) {
+    assert.ok(r4.includes(token), `contract-r4.md must define ${token}`);
+  }
+
+  const decisions = readDoc("decisions.md");
+  assert.ok(decisions.includes("D23 ·"), "decisions.md must record D23");
+  for (const token of ["usage", "删除即终态", "sessionDigests", "一次"]) {
     assert.ok(decisions.includes(token), `decisions.md must cover ${token}`);
   }
 });

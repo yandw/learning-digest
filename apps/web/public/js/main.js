@@ -18,6 +18,7 @@ import {
   presentSummary,
   presentSummariesList,
   presentUsage,
+  DELETE_CONFIRM_MS,
 } from "./library.js";
 import { createAdminFlow, presentRowStatus, shouldShowAdminEntry } from "./admin.js";
 import { createApiClient } from "./api-client.js";
@@ -99,6 +100,9 @@ const elements = {
   summariesHistory: byId("summariesHistory"),
   summaryContent: byId("summaryContent"),
   summariesEmpty: byId("summariesEmpty"),
+  // library: detail view, delete entry (ticket 5.5, contract-r4 §8)
+  deleteResourceBtn: byId("deleteResourceBtn"),
+  deleteResourceHint: byId("deleteResourceHint"),
   // usage entry (round 3): the account-area toggle + summary panel
   usageBtn: byId("usageBtn"),
   usagePanel: byId("usagePanel"),
@@ -129,8 +133,33 @@ function el(tag, className, text) {
   return node;
 }
 
+/**
+ * Two-step delete wiring (ticket 5.5, contract-r4 §8): the arm/execute
+ * decision lives in the flow (deleteClick's toggle); this binds one
+ * button. A click that ARMS schedules the revert render for when the
+ * confirm window elapses (the flow's own timer clears the state; the page
+ * only needs to re-render the label); a blur disarms — the flow reports
+ * whether anything changed, so idempotent blurs skip the render.
+ */
+function wireDeleteButton(button, run) {
+  button.addEventListener("click", () => {
+    act(async () => {
+      const result = await run();
+      if (result && result.armed) {
+        setTimeout(() => render(), DELETE_CONFIRM_MS + 100);
+      }
+      return result;
+    });
+  });
+  button.addEventListener("blur", () => {
+    if (library.disarmDelete()) {
+      render();
+    }
+  });
+}
+
 /** One learning-list row: open-in-new-tab link + badges + progress. */
-function renderListItem(presented) {
+function renderListItem(presented, armed) {
   const item = el("li", "resource-item");
 
   const link = el("a", "resource-link", presented.title);
@@ -154,6 +183,14 @@ function renderListItem(presented) {
     act(() => library.openDetail(presented.id));
   });
   meta.appendChild(detailBtn);
+  // 删除（ticket 5.5）：与「详情」并列的两步确认按钮；armed 时文案变
+  // 「确认删除」，再点才发 DELETE。
+  const deleteBtn = el("button", "link-btn delete-btn", armed ? "确认删除" : "删除");
+  deleteBtn.type = "button";
+  deleteBtn.dataset.id = presented.id;
+  deleteBtn.classList.toggle("armed", armed);
+  wireDeleteButton(deleteBtn, () => library.deleteClick(presented.id, "list"));
+  meta.appendChild(deleteBtn);
   item.appendChild(meta);
 
   return item;
@@ -421,7 +458,15 @@ function renderSummaryContent(state) {
 
 function renderList(state) {
   elements.resourceList.replaceChildren(
-    ...state.resources.map((item) => renderListItem(presentListItem(item))),
+    ...state.resources.map((item) => {
+      const presented = presentListItem(item);
+      const armed = !!(
+        state.armedDelete &&
+        state.armedDelete.surface === "list" &&
+        state.armedDelete.id === presented.id
+      );
+      return renderListItem(presented, armed);
+    }),
   );
   elements.listEmpty.hidden = state.resources.length > 0;
 }
@@ -463,6 +508,17 @@ function renderDetail(state) {
   // the detail's sessions[]/sources[] for attribution and jump URLs.
   renderSummaryHistory(state);
   renderSummaryContent(state);
+
+  // The delete entry (ticket 5.5, contract-r4 §8): armed flips the label to
+  // 确认删除 and reveals the cascade hint (删除即终态, D23).
+  const deleteArmed = !!(
+    state.armedDelete &&
+    state.armedDelete.surface === "detail" &&
+    state.armedDelete.id === presented.id
+  );
+  elements.deleteResourceBtn.textContent = deleteArmed ? "确认删除" : "删除资料";
+  elements.deleteResourceBtn.classList.toggle("armed", deleteArmed);
+  elements.deleteResourceHint.hidden = !deleteArmed;
 }
 
 // The library loads once per authenticated session: on resume, after a
@@ -592,6 +648,7 @@ function render() {
   // 不假超时——状态只由 201/失败回落。
   elements.generateSummaryBtn.disabled = libraryState.generating || libraryState.busy;
   elements.generateSummaryBtn.textContent = libraryState.generating ? "生成中…" : "生成总结";
+  elements.deleteResourceBtn.disabled = libraryState.busy;
 
   setMessage(elements.libraryNotice, libraryState.notice);
   setMessage(elements.libraryError, libraryState.error);
@@ -737,6 +794,17 @@ elements.titleForm.addEventListener("submit", (event) => {
     }
     return result;
   });
+});
+
+// 删除资料（ticket 5.5, contract-r4 §8, D23）：详情页脚的两步确认入口，
+// 与列表条目按钮同款 wireDeleteButton——arm/execute 判定在 flow（点击当前
+// 详情资源），这里只接线；删除成功后 flow 回学习列表并清空 summaries 缓存。
+wireDeleteButton(elements.deleteResourceBtn, () => {
+  const libraryState = library.getState();
+  if (!libraryState.detail) {
+    return { ok: false };
+  }
+  return library.deleteClick(libraryState.detail.resource.id, "detail");
 });
 
 // --- admin surface bindings (round 4, contract-r4 §3.2/§3.3) -------------------

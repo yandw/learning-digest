@@ -113,6 +113,15 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     });
   }
 
+  // Resource delete (contract-r4 §8, ticket 5.5): the cascade DELETE. A
+  // 404 here is deletion-is-terminal (D23 — repeat/unknown/cross-account
+  // are the same body) — deliberately NOT routed through the 401
+  // interceptor: the credential is fine, the flow presents
+  // 资料已不存在 and drops the row instead.
+  function deleteResource(id) {
+    return request("DELETE", `/v1/resources/${encodeURIComponent(String(id))}`);
+  }
+
   // Session transcript (contract-r2 §3.5): the per-Session second pull the
   // detail page does after GET /v1/resources/{id} — the detail's sessions[]
   // carries only the transcript summary counts, the full TranscriptView is
@@ -161,5 +170,5 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     });
   }
 
-  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, deleteResource, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
 }

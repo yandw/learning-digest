@@ -375,3 +375,69 @@ def retitle_resource(*, store: Any, account_id: str, resource_id: str, body: Any
     resource["title"] = title
     store.set("resources", resource["id"], resource)
     return {"status": 200, "body": {"resource": serialize_resource(resource)}}
+
+
+def delete_resource(*, store: Any, account_id: str, resource_id: str) -> dict:
+    """DELETE /v1/resources/{id} (contract-r4 §8; ticket 5.5, decision
+    D23): the resource and EVERYTHING hanging off it leave the store in
+    one cascade — its Sources, each source's progress row (keyed by
+    sourceId), the account's notes on the resource (keyed by resourceId),
+    the resource's Sessions and their per-Session documents (transcripts /
+    sessionInsights / sessionDigests are all keyed BY sessionId), and the
+    course summaries (keyed by resourceId). The usage ledger is NOT
+    touched — 账目不随删除消失 (D23).
+
+    Reads run with the accountId in the query (D2): unknown and
+    other-account ids are the same 404, and deletion is TERMINAL — a
+    repeat delete is that same 404, there is no idempotent tombstone.
+
+    Atomicity (the one-snapshot rule): every pending key is collected
+    first, then removed through one store.delete_many batch — a FileStore
+    lands the whole cascade as a single snapshot write with no
+    intermediate state on disk."""
+    resource = next(
+        (
+            r
+            for r in store.list("resources")
+            if r["id"] == resource_id and r["accountId"] == account_id
+        ),
+        None,
+    )
+    if not resource:
+        raise not_found_resource()
+
+    source_ids = [
+        s["id"]
+        for s in store.list("sources")
+        if s["accountId"] == account_id and s["resourceId"] == resource_id
+    ]
+    session_ids = [
+        s["id"]
+        for s in store.list("sessions")
+        if s["accountId"] == account_id and s["resourceId"] == resource_id
+    ]
+    pending: dict[str, list[str]] = {
+        "resources": [resource_id],
+        "sources": source_ids,
+        "progress": source_ids,
+        "notes": [
+            n["id"]
+            for n in store.list("notes")
+            if n["accountId"] == account_id and n["resourceId"] == resource_id
+        ],
+        "sessions": session_ids,
+        "summaries": [
+            s["id"]
+            for s in store.list("summaries")
+            if s["accountId"] == account_id and s["resourceId"] == resource_id
+        ],
+    }
+    # Per-Session documents are keyed BY the session id (transcripts,
+    # sessionInsights, sessionDigests): the pending keys are exactly this
+    # resource's session ids, narrowed to the documents that exist.
+    for collection in ("transcripts", "sessionInsights", "sessionDigests"):
+        pending[collection] = [
+            sid for sid in session_ids if store.get(collection, sid) is not None
+        ]
+    store.delete_many(pending)
+    return {"status": 200, "body": {"deleted": True}}

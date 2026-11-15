@@ -79,3 +79,66 @@ def test_file_store_creates_missing_parent_directories(tmp_path):
     store.set("things", "a", {"n": 1})
     with open(file, encoding="utf-8") as fh:
         assert json.load(fh)["things"]["a"] == {"n": 1}
+
+
+# --- batch delete (contract-r4 §8, ticket 5.5, D23): the resource-delete
+# cascade removes six+ collections in one stroke, so the store needs a
+# batch primitive that lands the whole removal as ONE snapshot write —
+# per-key deletes would persist an intermediate state between them.
+
+
+def test_memory_store_delete_many_removes_only_existing_keys_across_collections():
+    store = create_memory_store()
+    store.set("things", "a", {"n": 1})
+    store.set("things", "b", {"n": 2})
+    store.set("other", "x", {"y": 0})
+
+    removed = store.delete_many({"things": ["a", "missing"], "other": ["x"], "empty": ["z"]})
+
+    assert removed == 2
+    assert store.count("things") == 1 and store.get("things", "b") == {"n": 2}
+    assert store.count("other") == 0
+    # An all-missing batch removes nothing.
+    assert store.delete_many({"things": ["missing"]}) == 0
+
+
+def test_file_store_delete_many_lands_one_snapshot_after_all_removals(tmp_path, monkeypatch):
+    file = str(tmp_path / "state.json")
+    store = create_file_store({"file": file})
+    store.set("things", "a", {"n": 1})
+    store.set("things", "b", {"n": 2})
+    store.set("other", "x", {"y": 0})
+
+    snapshots_at_save = []
+    original_save = store._save
+
+    def counting_save():
+        # What this save is about to serialize (the in-memory snapshot _save
+        # dumps) — captured before the write lands.
+        snapshots_at_save.append(
+            {name: dict(entries) for name, entries in store.collections.items()}
+        )
+        original_save()
+
+    monkeypatch.setattr(store, "_save", counting_save)
+
+    removed = store.delete_many({"things": ["a", "b"], "other": ["x", "missing"]})
+
+    assert removed == 3
+    assert len(snapshots_at_save) == 1, "the batch persists exactly once"
+    # The single write already reflects EVERY removal — no intermediate
+    # state (things half-deleted) ever lands on disk.
+    assert snapshots_at_save[0] == {"things": {}, "other": {}}
+    # A reload from the same file agrees.
+    reloaded = create_file_store({"file": file})
+    assert reloaded.count("things") == 0 and reloaded.count("other") == 0
+
+
+def test_file_store_delete_many_skips_the_save_when_nothing_was_removed(tmp_path):
+    file = str(tmp_path / "state.json")
+    store = create_file_store({"file": file})
+    store.set("things", "a", {"n": 1})
+    first_mtime = os.path.getmtime(file)
+
+    assert store.delete_many({"things": ["missing"], "other": ["gone"]}) == 0
+    assert os.path.getmtime(file) == first_mtime, "a no-op batch must not rewrite the file"

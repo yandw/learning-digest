@@ -1,0 +1,21 @@
+{
+  "$contract": "learning-digest-contracts/v1",
+  "description": "学习资料删除（contract-r4.md §8，ticket 5.5，决策 D23）：DELETE /v1/resources/{id} 的成功样例。删除是级联——该 Resource 的 Sources、progress、notes、sessions、transcripts、sessionInsights、sessionDigests、summaries 一并清除；usage 记录保留（账目不随删除消失）。删除即终态：重复删除、未知 id、跨账号 id 都是同一个 404（D2），封套复用 error-examples.json 的 error-cross-account-resource；未登录 401 复用 error-unauthorized-missing-token，不新增错误样例。",
+  "samples": [
+    {
+      "id": "api-resource-delete",
+      "description": "删除学习资料（成功，200）：资源本人发起，携带有效凭据。响应体只有 {deleted: true}——级联清空的各集合不逐项回执；已删除的资源从 GET /v1/resources 列表消失、GET /v1/resources/{id} 详情与各域读端点一律 404（D2 封套），同 URL 重新收藏按新建处理（201 新 Resource + 新 Source）",
+      "auth": "valid",
+      "endpoint": {
+        "method": "DELETE",
+        "path": "/v1/resources/res_01JABC0001"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "deleted": true
+        }
+      }
+    }
+  ]
+}

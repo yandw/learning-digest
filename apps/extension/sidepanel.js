@@ -323,8 +323,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     sendResponse({ success: true });
   }
+  if (message.action === "panelNotice" && message.kind === "unrecognizedPage") {
+    // Ticket 5.4 (#93): the worker opened the panel from a page outside the
+    // learning scope — the neutral banner names what still works (collect)
+    // and what needs a course page. Registered on the top-level listener so
+    // it works in every view, the gate included.
+    showPageScopeNotice();
+    sendResponse({ success: true });
+  }
   return false;
 });
+
+/**
+ * The unrecognized-page banner (ticket 5.4, #93): one-time per open (the
+ * worker sends it on each unrecognized-page click), dismissible in place —
+ * nothing is persisted, so nothing can go stale.
+ */
+function showPageScopeNotice() {
+  const banner = document.getElementById("pageScopeNotice");
+  if (banner) {
+    banner.style.display = "flex";
+  }
+}
 
 // ============================================================
 // EVENT LISTENERS
@@ -372,6 +392,12 @@ function setupEventListeners() {
     showAuthGateWaiting();
     chrome.runtime.sendMessage({ action: "openAuthPage" });
   });
+  // Ticket 5.4 (#93): the guide's settings entry — the learning-service
+  // address lives in the options page, and the gate hides the header's
+  // 设置 button. Direct openOptionsPage call from the panel (no round-trip).
+  document.getElementById("authGateSettingsBtn")?.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage();
+  });
   document.getElementById("authRecheckBtn")?.addEventListener("click", () => {
     void (async () => {
       if (await runStartupGate()) {
@@ -385,6 +411,17 @@ function setupEventListeners() {
     .getElementById("collectPageBtn")
     ?.addEventListener("click", () => {
       void collectCurrentPage();
+    });
+
+  // Unrecognized-page scope notice (ticket 5.4, #93): the × dismisses the
+  // banner in place; the next unrecognized-page click shows it again.
+  document
+    .getElementById("pageScopeNoticeClose")
+    ?.addEventListener("click", () => {
+      const banner = document.getElementById("pageScopeNotice");
+      if (banner) {
+        banner.style.display = "none";
+      }
     });
 
   // Course tab list (P10, #59): 开始学习 opens the Session on the chosen

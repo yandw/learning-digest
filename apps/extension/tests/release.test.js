@@ -98,7 +98,10 @@ test("manifest uses minimized install-time permissions", () => {
   // 0.2.16 (ticket 6.6, issue #91): the panel AI is wired server-side
   // (rolling-summary/overview/digest/explain) and the local AI provider
   // config is retired (settings v5).
-  assert.equal(manifest.version, "0.2.16");
+  // 0.2.17 (ticket 5.4, issue #93): the authorization guide gains a 打开设置
+  // entry, and an unrecognized-page icon click degrades to a neutral panel
+  // notice plus a storage breadcrumb — nothing on the error list.
+  assert.equal(manifest.version, "0.2.17");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

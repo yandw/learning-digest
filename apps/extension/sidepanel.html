@@ -50,6 +50,15 @@
 
     <!-- MAIN CONTENT -->
     <div class="content" id="contentArea">
+      <!-- NEUTRAL PAGE SCOPE NOTICE (ticket 5.4, #93): the toolbar icon was
+           clicked on a page outside the learning scope — the panel still
+           opens (collect included), this one-time banner says so without
+           blaming anyone, and the learner can dismiss it. Sits above every
+           state view, so it works on the welcome and the gate alike. -->
+      <div class="page-scope-notice" id="pageScopeNotice" style="display: none" role="status">
+        <span class="page-scope-notice-text">当前页面不在学习范围：可收藏本页；学习与转写需在支持的课程页开始</span>
+        <button class="page-scope-notice-close" id="pageScopeNoticeClose" type="button" aria-label="关闭提示">×</button>
+      </div>
       <!-- SESSION CAPTURE (xiaoe-tech Source Platform) -->
       <div id="sessionBar" class="session-bar" style="display: none">
         <div class="session-status" id="sessionStatus"></div>
@@ -163,6 +172,16 @@
           <button class="auth-gate-recheck" id="authRecheckBtn" type="button">
             我已完成关联，重新检查
           </button>
+        </div>
+        <!-- Ticket 5.4 (#93): the gate replaces the header's 设置 entry, but
+             a changed learning-service port makes the re-link button above
+             miss — the learner needs settings right here, with the order
+             spelled out (update the address first, then re-link). -->
+        <div class="auth-gate-settings">
+          <button class="link-btn" id="authGateSettingsBtn" type="button">打开设置</button>
+          <div class="auth-gate-settings-hint">
+            学习服务地址变更后，先在设置的『学习服务』里更新 Web 地址，再点关联授权
+          </div>
         </div>
         <div class="auth-gate-waiting" id="authGateWaiting" style="display: none">
           已打开授权页：在网页上确认关联后，这里会自动继续。

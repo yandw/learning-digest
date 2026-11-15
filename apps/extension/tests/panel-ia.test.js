@@ -180,6 +180,7 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
   const createdElements = [];
   const docListeners = {};
   const runtimeMessageListeners = [];
+  const openOptionsCalls = [];
   const alerts = [];
   let selection = null;
   let nextResponse = { success: true };
@@ -248,6 +249,11 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
             typeof nextResponse === "function" ? nextResponse(message) : nextResponse,
           );
         },
+        // Ticket 5.4 (#93): the gate view's settings entry opens the options
+        // page directly from the panel.
+        openOptionsPage: () => {
+          openOptionsCalls.push(true);
+        },
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
       },
       tabs: {
@@ -297,6 +303,7 @@ function loadPanel({ stored = {}, storageGetImpl = null } = {}) {
     sentMessages,
     docListeners,
     runtimeMessageListeners,
+    openOptionsCalls,
     alerts,
     flush,
     setSelection: (value) => {
@@ -1320,6 +1327,99 @@ test("authAuthorized re-runs the gate and unlocks the panel", async () => {
   assert.equal(display("authGateState"), "none", "the gate lifted");
   assert.equal(display("welcomeState"), "flex", "the normal startup took over");
   assert.notEqual(display("settingsBtn"), "none");
+});
+
+// --- Unrecognized-page scope notice (ticket 5.4, #93) ------------------------
+//
+// An icon click on a page outside the learning scope opens the panel with a
+// neutral banner: nothing is wrong, collect still works, learning needs a
+// course page. The worker delivers it as a panelNotice broadcast.
+
+test("the neutral scope notice ships hidden at the top of the content area", () => {
+  const html = read("sidepanel.html");
+  const start = html.indexOf('<div class="page-scope-notice" id="pageScopeNotice"');
+  assert.ok(start !== -1, "the banner exists");
+  assert.match(
+    html.slice(start, start + 400),
+    /style="display: none"/,
+    "hidden until the background says otherwise",
+  );
+  const sessionBar = html.indexOf('id="sessionBar"');
+  assert.ok(sessionBar > start, "the banner sits above every state view");
+  const bannerBlock = html.slice(start, sessionBar);
+  assert.match(
+    bannerBlock,
+    /当前页面不在学习范围：可收藏本页；学习与转写需在支持的课程页开始/,
+  );
+  assert.match(bannerBlock, /id="pageScopeNoticeClose"/, "the notice is dismissible");
+});
+
+test("a panelNotice broadcast shows the scope banner and the close button dismisses it", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  const banner = panel.elementById("pageScopeNotice");
+  assert.notEqual(banner.style.display, "flex", "quiet until the background says otherwise");
+
+  const messageListener = panel.runtimeMessageListeners[0];
+  assert.ok(messageListener, "the panel registered a runtime message listener");
+  const response = messageListener(
+    { action: "panelNotice", kind: "unrecognizedPage" },
+    {},
+    () => {},
+  );
+  await panel.flush();
+
+  assert.equal(banner.style.display, "flex", "the neutral banner is visible");
+  assert.equal(response, false);
+
+  panel.elementById("pageScopeNoticeClose").listeners.click();
+  assert.equal(banner.style.display, "none", "the learner can dismiss it");
+});
+
+// --- The gate view's settings entry (ticket 5.4, #93) ------------------------
+//
+// The guide replaced every surface, including the header's 设置 button — but
+// the learner whose learning-service address changed needs settings right
+// there, next to the re-link button.
+
+test("the authorization guide carries a settings entry with the service-address hint", () => {
+  const html = read("sidepanel.html");
+  const gateBlock = html.match(/<div id="authGateState"[\s\S]*?<div id="loadingState"/)[0];
+  assert.match(gateBlock, /id="authGateSettingsBtn"/, "the guide has its own settings entry");
+  assert.match(gateBlock, /打开设置/);
+  assert.match(
+    gateBlock,
+    /学习服务地址变更后，先在设置的『学习服务』里更新 Web 地址，再点关联授权/,
+    "the hint names the order: update the address first, then re-link",
+  );
+});
+
+test("the guide's settings button opens the options page while gated", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: false, reason: "unconfigured" },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  assert.equal(panel.elementById("authGateState").style.display, "flex", "the guide is up");
+  assert.equal(
+    panel.elementById("settingsBtn").style.display,
+    "none",
+    "the header settings entry stays hidden while gated",
+  );
+
+  panel.elementById("authGateSettingsBtn").listeners.click();
+  await panel.flush();
+
+  assert.equal(panel.openOptionsCalls.length, 1, "chrome.runtime.openOptionsPage ran");
+  assert.ok(
+    !panel.sentMessages.some((message) => message.action === "openOptions"),
+    "no message round-trip: the panel calls openOptionsPage directly",
+  );
 });
 
 // --- Collect current page (P8, #58): the welcome-state entry -----------------

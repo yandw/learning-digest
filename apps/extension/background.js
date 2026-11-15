@@ -2276,9 +2276,17 @@ async function handleActionClicked(tab) {
   }
   const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tab.url);
   if (recognition.kind === "none") {
-    console.error("[Learning Digest] icon click ignored: page not recognized:", tab.url);
-    await recordStartAttempt(`page not recognized: ${tab.url}`);
+    // Ticket 5.4 (#93): an unrecognized page is a normal place to click the
+    // icon, not an extension error — nothing lands on the chrome://extensions
+    // error list. The panel still opens, the verdict stays a plain storage
+    // breadcrumb, and the panel shows the neutral scope notice (collect
+    // remains usable from it).
     await openPanelQuietly(tab);
+    recordAuthBreadcrumb("ytd_last_page_scope", {
+      outcome: "unrecognized",
+      url: tab.url,
+    });
+    await notifyPanel({ action: "panelNotice", kind: "unrecognizedPage" });
     return;
   }
 

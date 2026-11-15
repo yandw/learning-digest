@@ -37,6 +37,9 @@ function loadBackgroundHelpers({
   // Settings ride the real v5 normalize: any blob shape is accepted and the
   // retired AI fields are dropped on read (ticket 6.6).
   settings = {},
+  // The worker's console. Defaults to the runner's real one; tests that pin
+  // error-list behavior (ticket 5.4, #93) pass a recording stub.
+  consoleImpl = console,
   fetchImpl = fetch,
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
@@ -80,7 +83,7 @@ function loadBackgroundHelpers({
   class SandboxDate extends Date {}
   SandboxDate.now = dateNow;
   const sandbox = {
-    console,
+    console: consoleImpl,
     URL,
     TextDecoder,
     TextEncoder,

@@ -293,7 +293,7 @@ test("positions from another tab drop with a one-time diagnostic warning (0.1.58
 
 test("action click on an unrecognized page only opens the panel", async () => {
   let streamRequested = false;
-  const { handleActionClicked, readLastStartFailure } = loadBackgroundHelpers({
+  const { handleActionClicked, readLastStartFailure, readStored } = loadBackgroundHelpers({
     fetchImpl: apiFetch().fetchImpl,
     stored: CREDENTIAL_STORE,
     settings: baseSettings(),
@@ -306,8 +306,13 @@ test("action click on an unrecognized page only opens the panel", async () => {
   await handleActionClicked({ id: 7, url: "https://example.com/", windowId: 1 });
 
   assert.equal(streamRequested, false);
+  // Ticket 5.4 (#93): the unrecognized verdict is a plain storage breadcrumb
+  // now — never a start failure, so nothing lands on the error list.
   const diag = await readLastStartFailure();
-  assert.match(diag.ytd_last_start_failure.error, /not recognized/);
+  assert.equal(diag.ytd_last_start_failure, undefined);
+  const breadcrumb = readStored("ytd_last_page_scope");
+  assert.equal(breadcrumb.outcome, "unrecognized");
+  assert.equal(breadcrumb.url, "https://example.com/");
 });
 
 // Chrome only honors a getMediaStreamId call made while the click's gesture

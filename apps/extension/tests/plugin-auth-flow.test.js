@@ -299,3 +299,79 @@ test("a linked worker still starts capture exactly as before (PoC regression)", 
   const start = sentMessages.find((message) => message.action === "captureStart");
   assert.ok(start, "captureStart reached the offscreen recorder");
 });
+
+// --- the unrecognized-page click (ticket 5.4, #93) ---------------------------
+//
+// Clicking the toolbar icon on a page outside the learning scope is a normal
+// act, not an extension error: nothing lands on the chrome://extensions
+// error list, the verdict stays a storage breadcrumb, the panel still opens
+// and is told to show the neutral scope notice.
+
+const UNRECOGNIZED_URL = "https://example.com/notes/article";
+
+test("an unrecognized page click stays off the error list: breadcrumb + panel notice only", async () => {
+  const consoleErrors = [];
+  const consoleImpl = {
+    log() {},
+    info() {},
+    debug() {},
+    warn() {},
+    error: (...args) => consoleErrors.push(args),
+  };
+  let panelOpens = 0;
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    sentMessages,
+    consoleImpl,
+    sidePanel: {
+      setPanelBehavior() {},
+      setOptions: () => Promise.resolve(),
+      open: () => {
+        panelOpens += 1;
+        return Promise.resolve();
+      },
+    },
+  });
+
+  await helpers.handleActionClicked({ id: 7, url: UNRECOGNIZED_URL, windowId: 1 });
+
+  assert.equal(panelOpens, 1, "the panel still opens on an unrecognized page");
+  assert.deepEqual(consoleErrors, [], "nothing lands on the extension error list");
+  assert.equal(
+    helpers.readStored("ytd_last_start_failure"),
+    undefined,
+    "the unrecognized verdict is not recorded as a start failure",
+  );
+  const breadcrumb = helpers.readStored("ytd_last_page_scope");
+  assert.ok(breadcrumb, "the unrecognized verdict keeps a storage breadcrumb");
+  assert.equal(breadcrumb.outcome, "unrecognized");
+  assert.equal(breadcrumb.url, UNRECOGNIZED_URL);
+  const notice = sentMessages.find((message) => message.action === "panelNotice");
+  assert.ok(notice, "the panel is told to show the neutral scope notice");
+  assert.equal(notice.kind, "unrecognizedPage");
+});
+
+test("a recognized page click emits no scope notice and no page-scope breadcrumb", async () => {
+  const sentMessages = [];
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ apiBaseUrl: "https://api.example.com" }),
+    stored: {
+      ytd_auth_credential: { token: "ext-token", credentialGroupId: "grp_1", email: "l@e.com" },
+    },
+    fetchImpl: archiveFlowFetch(),
+    sentMessages,
+  });
+
+  await helpers.handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+
+  assert.ok(
+    !sentMessages.some((message) => message.action === "panelNotice"),
+    "recognized pages keep the icon-click flow silent about scope",
+  );
+  assert.equal(helpers.readStored("ytd_last_page_scope"), undefined);
+  assert.ok(
+    sentMessages.some((message) => message.action === "captureStart"),
+    "the recognized-page start flow is unchanged",
+  );
+});

@@ -183,6 +183,34 @@ test("a non-collectable active tab fails locally without touching the API", asyn
   assert.deepEqual(seen, [], "no API call for chrome:// pages");
 });
 
+test("an unrecognized http(s) page is still collectable (ticket 5.4, #93)", async () => {
+  const seen = [];
+  const ARTICLE_URL = "https://example.com/notes/article";
+  // Independent scope check: this page matches no Source Platform, i.e. it
+  // is exactly the state the neutral scope notice describes.
+  const YTD_SOURCE_PLATFORMS = require("../source-platforms.js");
+  assert.equal(YTD_SOURCE_PLATFORMS.recognizePage(ARTICLE_URL).kind, "none");
+
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: {
+      ytd_auth_credential: { token: "ext-token" },
+    },
+    tabsQuery: async () => [{ id: 7, url: ARTICLE_URL, title: "一篇网页文章" }],
+    fetchImpl: async (url, init) => {
+      seen.push({ url, init });
+      return { status: 201, json: async () => FAVORITE_BODY };
+    },
+  });
+
+  const result = await helpers.handleCollectCurrentPage();
+  assert.equal(result.ok, true, "collect works from the unrecognized page");
+  assert.equal(result.outcome, "created");
+  assert.equal(seen.length, 1, "exactly one API call");
+  assert.equal(seen[0].url, "https://api.example.com/v1/resources");
+  assert.equal(JSON.parse(seen[0].init.body).url, ARTICLE_URL);
+});
+
 test("a network failure reports a retryable message and stays breadcrumb-traced", async () => {
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),

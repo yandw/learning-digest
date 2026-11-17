@@ -140,6 +140,34 @@ button {
   margin-left: auto;
 }
 
+/* 0.2.34 挂载页面切换：与 .settings-btn 同高的紧凑下拉，长标题截断。
+   optgroup 让「当前挂载 / 其他页面」自带分组，选中项即挂载页。 */
+.mount-page-select {
+  min-height: 32px;
+  max-width: 150px;
+  flex-shrink: 1;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: 600 12px/1.4 var(--font-body);
+  text-overflow: ellipsis;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+}
+
+.mount-page-select:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.mount-page-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
 .settings-btn {
   min-height: 32px;
   flex-shrink: 0;
@@ -157,6 +185,40 @@ button {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-dim);
+}
+
+/* The 重新获取字幕 recheck states (the button carries the verdict):
+   busy — the probe is running; ok — captions found; no — an honest
+   无字幕 with the reader's reason in the tooltip; error — the page or
+   the worker could not answer at all. */
+.settings-btn.recheck-busy,
+.settings-btn.recheck-busy:hover {
+  border-color: var(--border);
+  color: var(--text-secondary);
+  background: var(--surface);
+  cursor: default;
+  opacity: 0.7;
+}
+
+.settings-btn.recheck-ok,
+.settings-btn.recheck-ok:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.settings-btn.recheck-no,
+.settings-btn.recheck-no:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: oklch(52% 0.18 25 / 8%);
+}
+
+.settings-btn.recheck-error,
+.settings-btn.recheck-error:hover {
+  border-color: var(--border);
+  color: var(--danger);
+  background: var(--surface);
 }
 
 /* ============================================================

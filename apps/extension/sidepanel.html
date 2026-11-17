@@ -18,6 +18,14 @@
           <div class="video-channel" id="videoChannel"></div>
         </div>
         <div class="header-actions">
+          <!-- 0.2.34 挂载页面切换：选中的就是插件当前挂载的页面（进行中的
+               学习会话所在标签页）；选择其他页面则跳转或按确认后切换挂载。 -->
+          <select
+            id="mountPageSelect"
+            class="mount-page-select"
+            title="切换插件挂载的页面"
+            aria-label="切换插件挂载的页面"
+          ></select>
           <button
             class="settings-btn"
             id="settingsBtn"
@@ -26,6 +34,15 @@
             aria-label="打开 Learning Digest 设置"
           >
             设置
+          </button>
+          <button
+            class="settings-btn"
+            id="recheckCaptionsBtn"
+            type="button"
+            title="重新检测当前页面是否有字幕"
+            aria-label="重新获取字幕"
+          >
+            重新获取字幕
           </button>
           <button
             class="settings-btn"

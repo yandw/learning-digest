@@ -468,12 +468,12 @@ test("read over a studied interval carries the coverage block (2.7's input)", as
     intervalStartMs: 0,
     intervalEndMs: 10000,
   });
+  // The 1s head pause sits under UNCOVERED_GAP_TOLERANCE_MS (speech
+  // cadence — ASR would render the same silence); only the 7s hole is a
+  // real uncovered range worth the 强制转写 decision.
   assert.deepEqual(gapped.coverage, {
     covered: false,
-    uncovered: [
-      { startMs: 0, endMs: 1000 },
-      { startMs: 3000, endMs: 10000 },
-    ],
+    uncovered: [{ startMs: 3000, endMs: 10000 }],
   });
 
   const noInterval = await reader.read();

@@ -152,6 +152,16 @@ test("manifest uses minimized install-time permissions", () => {
   // worker reads the caption CDN without the watch page's CORS restriction.
   // 0.2.31: signed-in protobuf responses unwrap their data envelope, and the
   // signed body URL is rebuilt with the player's XOR keys before the CDN read.
+  // 0.2.32: the panel's 重新获取字幕 recheck — a side-effect-free captions
+  // probe (probeCaptionsForTab shared with the start flow) behind the header
+  // button, with the verdict carried on the button itself.
+  // 0.2.33: caption coverage treats sub-5s pauses as speech cadence, not
+  // holes — the strict any-gap rule had parked fully-captioned auto-caption
+  // videos in the empty 强制转写 decision (measured: 4 gaps / 2.0s on a 56-min
+  // VOD's 1454 segments).
+  // 0.2.34: the header 挂载页面 dropdown — a passive learning-page list
+  // (the ACTIVE_CAPTURE pointer marks the mount) plus a jump / confirmed
+  // course-switch that reuses the 0.1.57 end-without-report semantics.
   for (const host of [
     "https://api.bilibili.com/*",
     "https://subtitle.bilibili.com/*",
@@ -159,7 +169,7 @@ test("manifest uses minimized install-time permissions", () => {
   ]) {
     assert.ok(manifest.host_permissions.includes(host), `caption transport requires ${host}`);
   }
-  assert.equal(manifest.version, "0.2.31");
+  assert.equal(manifest.version, "0.2.34");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

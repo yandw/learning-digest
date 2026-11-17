@@ -73,6 +73,9 @@ function loadBackgroundHelpers({
   // P10 learning-start seam: chrome.tabs.get(tabId) — the course-tab target
   // handlers read a chosen (possibly background) tab through it.
   tabsGet = null,
+  // 0.2.34 page-switcher seam: chrome.tabs.update(tabId, { active }) — the
+  // mount switch activates the chosen tab; recorded for assertions.
+  tabsUpdate = null,
   // Ticket 5.7 (#96) PO-token retry seam: chrome.scripting.executeScript —
   // the MAIN-world capturePlayerCaptionRequest injection. Null (default)
   // leaves executeScript unset, which the retry reads as "capture
@@ -82,6 +85,7 @@ function loadBackgroundHelpers({
   const listeners = { addListener() {} };
   const createdTabs = [];
   const removedTabIds = [];
+  const activatedTabs = [];
   const localStorage = { ytd_settings: settings, ...stored };
   // A Date subclass with an injectable now(): everything else (parse, UTC,
   // instances) inherits unchanged, so only clock reads are controllable.
@@ -166,6 +170,11 @@ function loadBackgroundHelpers({
         remove: async (tabId) => {
           removedTabIds.push(tabId);
         },
+        update:
+          tabsUpdate ||
+          (async (tabId, info) => {
+            activatedTabs.push({ tabId, ...info });
+          }),
         sendMessage: (tabId, msg, options) => {
           if (tabMessages) {
             tabMessages.push(options ? { tabId, ...msg, options } : { tabId, ...msg });
@@ -234,6 +243,7 @@ function loadBackgroundHelpers({
     // authorization page lifecycle.
     createdTabs,
     removedTabIds,
+    activatedTabs,
   };
 }
 

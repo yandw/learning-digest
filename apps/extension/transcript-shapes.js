@@ -29,10 +29,25 @@ var YTD_TRANSCRIPT_SHAPES = (() => {
   }
 
   /**
+   * A caption-less pause shorter than this is speech cadence, not missing
+   * content — ASR would render the same silence, so forcing the 强制转写
+   * decision over it only blocks the archive without buying any transcript.
+   * Measured on a real 56-minute livestream VOD (2026-11-17): 1454
+   * auto-caption segments with 4 gaps totalling 2.0s fired the strict
+   * any-gap-is-uncovered rule and parked a fully-captioned video in the
+   * pending-coverage decision (empty 逐字稿, learner must choose). Only gaps
+   * at or above the tolerance count as uncovered; covered and the returned
+   * ranges share that semantics, so the 强制转写 input stays honest by
+   * construction, never by caller discipline.
+   */
+  const UNCOVERED_GAP_TOLERANCE_MS = 5000;
+
+  /**
    * Which ranges of [intervalStartMs, intervalEndMs] carry no caption
-   * segment — the coverage block the 强制转写 ticket consumes. Null when
-   * the interval itself is not well-formed (the caller then omits
-   * coverage instead of guessing an interval).
+   * segment for at least UNCOVERED_GAP_TOLERANCE_MS — the coverage block
+   * the 强制转写 ticket consumes. Null when the interval itself is not
+   * well-formed (the caller then omits coverage instead of guessing an
+   * interval).
    */
   function computeCaptionCoverage(segments, intervalStartMs, intervalEndMs) {
     const start = Number(intervalStartMs);
@@ -73,10 +88,15 @@ var YTD_TRANSCRIPT_SHAPES = (() => {
       cursor = Math.max(cursor, to);
     }
     if (cursor < Math.round(end)) uncovered.push({ startMs: cursor, endMs: Math.round(end) });
-    return { covered: uncovered.length === 0, uncovered };
+    // Sub-tolerance pauses are cadence, not holes: they neither block the
+    // covered flag nor appear in the returned ranges.
+    const significant = uncovered.filter(
+      (range) => range.endMs - range.startMs >= UNCOVERED_GAP_TOLERANCE_MS,
+    );
+    return { covered: significant.length === 0, uncovered: significant };
   }
 
-  return { isValidSegment, computeCaptionCoverage };
+  return { isValidSegment, computeCaptionCoverage, UNCOVERED_GAP_TOLERANCE_MS };
 })();
 
 if (typeof module !== "undefined" && module.exports) {

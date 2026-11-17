@@ -386,6 +386,14 @@ function setupEventListeners() {
     })();
   });
 
+  // 重新获取字幕: re-runs the captions probe on the panel's active tab
+  // regardless of the current captions state; the button itself carries the
+  // verdict (检测中… → 有字幕 / 无字幕 / 无法检测), with the detail in the
+  // title tooltip. The verdict stays on the button until the next click.
+  document.getElementById("recheckCaptionsBtn")?.addEventListener("click", () => {
+    void recheckCaptions();
+  });
+
   // Authorization gate (P6): open the Web confirmation page, or re-run the
   // probe after the learner believes the link is done.
   document.getElementById("openAuthPageBtn")?.addEventListener("click", () => {
@@ -978,6 +986,207 @@ function setSettingsButtonVisible(visible) {
   if (logoutBtn) {
     logoutBtn.style.display = visible ? "" : "none";
   }
+  // The 重新获取字幕 probe talks to the worker, which needs no credential
+  // for a pure page read; it still rides the same authorized shell so the
+  // gate view keeps a single re-login entry.
+  const recheckBtn = document.getElementById("recheckCaptionsBtn");
+  if (recheckBtn) {
+    recheckBtn.style.display = visible ? "" : "none";
+  }
+  // The 挂载页面 switcher is shell chrome too: hidden on the gate view
+  // alongside the buttons, shown once the panel is authorized.
+  const mountSelect = document.getElementById("mountPageSelect");
+  if (mountSelect) {
+    mountSelect.style.display = visible ? "" : "none";
+  }
+}
+
+/**
+ * The 重新获取字幕 click: probe the panel's active tab through the worker
+ * and put the verdict on the button (label + state class + tooltip). The
+ * worker's probe is side-effect-free — no Session, no archive — so a
+ * recheck never disturbs an ongoing learning Session. The verdict label
+ * persists until the next click.
+ */
+async function recheckCaptions() {
+  const btn = document.getElementById("recheckCaptionsBtn");
+  if (!btn || btn.disabled) return;
+  const setState = (className, label, tooltip) => {
+    btn.className = `settings-btn ${className}`;
+    btn.textContent = label;
+    btn.title = tooltip;
+  };
+  setState("recheck-busy", "检测中…", "正在检测当前页面的字幕…");
+  btn.disabled = true;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || typeof tab.id !== "number" || !tab.url) {
+      setState("recheck-error", "无法检测", "找不到当前标签页。");
+      return;
+    }
+    const result = await chrome.runtime.sendMessage({
+      action: "recheckCaptions",
+      tabId: tab.id,
+      url: tab.url,
+    });
+    if (!result || result.ok !== true) {
+      setState(
+        "recheck-error",
+        "无法检测",
+        (result && result.message) || "当前页面不支持字幕检测。",
+      );
+      return;
+    }
+    if (result.available) {
+      const language = (result.track && result.track.language) || "?";
+      const kind = result.track?.asr ? "自动字幕" : "字幕";
+      setState(
+        "recheck-ok",
+        "有字幕",
+        `检测到 ${language} ${kind} · ${result.segmentCount} 段`,
+      );
+      return;
+    }
+    // reasonLabel is the worker-side translation (the panel stays free of
+    // the reader's internal codes); the raw reason is the last-resort
+    // fallback so an unmapped code still reads honestly.
+    const reason = result.reasonLabel || result.reason || "未找到字幕";
+    const siteNote =
+      result.captionsEnabledBySite === false ? "（学习服务已关闭该站点字幕功能）" : "";
+    setState("recheck-no", "无字幕", `${reason}${siteNote}`);
+  } catch (_error) {
+    setState("recheck-error", "检测失败", "插件连接失败，请刷新后重试。");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ============================================================
+// HEADER PAGE SWITCHER (0.2.34): 挂载页面下拉
+// ============================================================
+//
+// The header dropdown lists every open supported video page; the selected
+// entry is the page the extension is currently mounted on (the running
+// Session's tab). Choosing another page jumps the browser there; when a
+// Session runs on a DIFFERENT course, the worker asks for a confirm first
+// (the switch ends the current Session without the AI report — the same
+// trade the toolbar-icon course switch makes) and only then re-mounts.
+
+const mountPagesUi = {
+  sessionTabId: null,
+  busy: false,
+};
+
+/** The dropdown's label for one page: the session's mount carries a mark. */
+function mountPageOptionText(page, isSessionTab) {
+  const title = page.title || page.url || "未命名页面";
+  return isSessionTab ? `● ${title}` : title;
+}
+
+function renderMountPageOptions(select, result) {
+  const pages = Array.isArray(result.pages) ? result.pages : [];
+  const session = result.session || null;
+  select.textContent = "";
+  if (pages.length === 0 && !session) {
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "无学习页面";
+    empty.disabled = true;
+    select.append(empty);
+    return;
+  }
+  const sessionTabId = session ? session.tabId : null;
+  mountPagesUi.sessionTabId = sessionTabId;
+
+  const appendOption = (page, isSessionTab) => {
+    const option = document.createElement("option");
+    option.value = String(page.tabId);
+    option.textContent = mountPageOptionText(page, isSessionTab);
+    option.title = page.title || page.url || "";
+    select.append(option);
+    return option;
+  };
+
+  if (sessionTabId !== null) {
+    const group = document.createElement("optgroup");
+    group.label = "当前挂载";
+    select.append(group);
+    const inPages = pages.find((page) => page.tabId === sessionTabId);
+    // The session's tab can be momentarily absent from the pages list (its
+    // title still resolving); the pointer's own copy keeps the entry alive.
+    const entry = appendOption(inPages || session, true);
+    group.append(entry);
+    const rest = pages.filter((page) => page.tabId !== sessionTabId);
+    if (rest.length > 0) {
+      const others = document.createElement("optgroup");
+      others.label = "其他页面";
+      select.append(others);
+      for (const page of rest) others.append(appendOption(page, false));
+    }
+    select.value = String(sessionTabId);
+    return;
+  }
+  for (const page of pages) appendOption(page, false);
+  const active = pages.find((page) => page.active) || pages[0];
+  if (active) select.value = String(active.tabId);
+}
+
+async function refreshMountPages() {
+  const select = document.getElementById("mountPageSelect");
+  if (!select) return;
+  // Re-rendering while the dropdown is open would close it mid-choice.
+  if (document.activeElement === select) return;
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({ action: "getLearningPages" });
+  } catch (_error) {
+    return;
+  }
+  if (!result || !result.ok) return;
+  renderMountPageOptions(select, result);
+}
+
+/**
+ * The dropdown's change: jump, or — when a Session runs on a different
+ * course — confirm then switch. The confirm copy only appears when the
+ * worker says the choice is a real course switch (same-course picks jump
+ * straight away).
+ */
+async function switchMountPage(tabId) {
+  if (mountPagesUi.busy) {
+    await refreshMountPages();
+    return;
+  }
+  mountPagesUi.busy = true;
+  let result = null;
+  try {
+    result = await chrome.runtime.sendMessage({ action: "switchLearningPage", tabId });
+  } catch (_error) {
+    result = null;
+  }
+  if (result && result.ok === false && result.reason === "courseSwitchConfirm") {
+    const confirmed = window.confirm(
+      "切换挂载将结束当前学习（进度已保存，但本次不生成 AI 报告），并在所选页面开始新的学习。\n\n确认切换？",
+    );
+    if (confirmed) {
+      try {
+        result = await chrome.runtime.sendMessage({
+          action: "switchLearningPage",
+          tabId,
+          confirmed: true,
+        });
+      } catch (_error) {
+        result = null;
+      }
+    } else {
+      result = { ok: true, action: "cancelled" };
+    }
+  }
+  mountPagesUi.busy = false;
+  if (!result || !result.ok) {
+    window.alert((result && result.message) || "页面切换失败，请重试。");
+  }
+  await refreshMountPages();
 }
 
 /**
@@ -4039,17 +4248,34 @@ function setupSessionUI() {
     ?.addEventListener("click", clearSessionRecord);
   chrome.tabs.onActivated.addListener(() => {
     if (!sessionUi.active) void refreshSessionUI();
+    void refreshMountPages();
   });
   chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
     if (changeInfo.status === "complete" && !sessionUi.active) void refreshSessionUI();
+    if (changeInfo.status === "complete") void refreshMountPages();
   });
   // The panel can miss sessionUpdate broadcasts (it may still be loading
   // when the Session starts after an icon click), which used to leave a
   // freshly started Session looking idle. Poll cheaply to converge on the
   // true state; rendering is idempotent.
-  setInterval(() => void refreshSessionUI(), 5000);
+  setInterval(() => {
+    void refreshSessionUI();
+    void refreshMountPages();
+  }, 5000);
+  // The 挂载页面 switcher dispatches on choice; the list itself stays fresh
+  // through the 5s poll, the tabs events and every sessionUpdate broadcast (a
+  // focus-triggered re-render would close the just-opened popup mid-choice).
+  const mountSelect = document.getElementById("mountPageSelect");
+  if (mountSelect) {
+    mountSelect.addEventListener("change", () => {
+      const tabId = Number(mountSelect.value);
+      if (Number.isInteger(tabId)) void switchMountPage(tabId);
+    });
+  }
+  void refreshMountPages();
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === "sessionUpdate") {
+      void refreshMountPages();
       return handleSessionUpdateMessage(message, sendResponse);
     }
     if (message.action === "sessionPlaybackPosition") {

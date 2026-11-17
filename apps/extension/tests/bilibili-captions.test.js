@@ -245,6 +245,30 @@ test("coverage over a fully captioned interval is covered:true with no ranges", 
   assert.deepEqual(coverage, { covered: true, uncovered: [] });
 });
 
+test("sub-tolerance caption pauses are cadence, not holes: covered stays true", async () => {
+  // The 2026-11-17 real-world regression: a 56-min livestream VOD's 1454
+  // auto-caption segments carry 4 gaps totalling 2.0s (max 1.3s). The
+  // strict any-gap-is-uncovered rule parked that fully-captioned video in
+  // the pending 强制转写 decision with an empty 逐字稿.
+  const segments = [
+    { startMs: 80, endMs: 3280, text: "一" },
+    { startMs: 3280, endMs: 4600, text: "二" },
+    { startMs: 5900, endMs: 9000, text: "三" },
+  ];
+  const coverage = computeCaptionCoverage(segments, 0, 10000);
+  assert.deepEqual(coverage, { covered: true, uncovered: [] });
+});
+
+test("a gap at the tolerance still counts as uncovered", async () => {
+  const segments = [
+    { startMs: 0, endMs: 3000, text: "一" },
+    { startMs: 8000, endMs: 11000, text: "二" },
+  ];
+  const coverage = computeCaptionCoverage(segments, 0, 11000);
+  assert.equal(coverage.covered, false);
+  assert.deepEqual(coverage.uncovered, [{ startMs: 3000, endMs: 8000 }]);
+});
+
 test("coverage reports the caption-hole ranges without inventing text", async () => {
   // The contract fixture's caption hole: the track itself has none between
   // 181000 and 300000 (api-session-transcript-captions-finished).

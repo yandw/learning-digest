@@ -2894,6 +2894,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // The panel's 重新获取字幕 recheck: a side-effect-free captions probe on
+  // the panel's active tab; the button owns the verdict feedback.
+  if (message.action === "recheckCaptions") {
+    handleRecheckCaptions(message)
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({ ok: false, message: err?.message || "字幕检测失败，请稍后重试。" }),
+      );
+    return true;
+  }
+
+  // --- Header page switcher (0.2.34): the 挂载页面 dropdown ---
+
+  if (message.action === "getLearningPages") {
+    handleGetLearningPages()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, message: err.message }));
+    return true;
+  }
+
+  if (message.action === "switchLearningPage") {
+    handleSwitchLearningPage(message)
+      .then(sendResponse)
+      .catch((err) =>
+        sendResponse({ ok: false, message: err?.message || "页面切换失败，请重试。" }),
+      );
+    return true;
+  }
+
   if (message.action === "endLearning") {
     handleEndLearning()
       .then(sendResponse)
@@ -3162,6 +3191,13 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // settlement of interrupted Segments) — see tests/background-capture.test.js.
   handleStartLearning,
   handleEndLearning,
+  // 重新获取字幕 recheck (panel header button): the side-effect-free
+  // captions probe — see tests/plugin-recheck-captions.test.js.
+  handleRecheckCaptions,
+  // Header 页面切换 dropdown (0.2.34): the passive learning-page list and
+  // the jump / course-switch 挂载 switch — see tests/plugin-page-switcher.test.js.
+  handleGetLearningPages,
+  handleSwitchLearningPage,
   handleForceTranscribe,
   handleArchiveCaptionsNow,
   handleGetSessionState,
@@ -3886,6 +3922,240 @@ async function recordStartAttempt(reason, sessionId = null) {
   }
 }
 
+/**
+ * The captions probe shared by the start flow and the panel's 重新获取字幕
+ * recheck: the live player caption source, the direct bridge read, and (for
+ * youtube) the PO-token authorized re-read when the direct answer is
+ * gate-emptied or timed out. Purely a page-side observation — no Session,
+ * no archive, no favorites side effects; the caller owns what the verdict
+ * starts. The caller passes its own recognition so the probe never
+ * re-recognizes a URL the caller already classified.
+ */
+async function probeCaptionsForTab(tabId, url, recognition) {
+  // Ticket 2.7: the coverage check runs over the studied interval — the
+  // media position the learner resumes into and the video's duration.
+  // Unknown interval (live stream, unloaded player, dead bridge) → no
+  // coverage block → the captions archive exactly as 2.5 shipped.
+  const coverageInterval = await probeCoverageInterval(tabId);
+  const videoIdentity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(url);
+  const captionSource = videoIdentity?.platformVideoId
+    ? recognition.platformId === "bilibili"
+      ? await readBilibiliLiveCaptionSource(tabId, videoIdentity.platformVideoId)
+      : await readYouTubeLiveCaptionSource(tabId, videoIdentity.platformVideoId)
+    : null;
+  let captions =
+    captionSource?.source === "subtitle_web_view" && recognition.platformId === "bilibili"
+      ? await readBilibiliWorkerCaptions(captionSource, coverageInterval)
+      : await readTabCaptions(
+          tabId,
+          recognition.platformId,
+          coverageInterval,
+          null,
+          captionSource,
+        );
+  // Ticket 5.7 (#96): the PO-token retry — a direct read that found
+  // candidates but got gate-emptied bodies, or a multi-track read that hit
+  // its explicit timeout, gets one authorized re-read with the player-issued
+  // request the MAIN-world capture returns. Only youtube (the PO-token
+  // gate is a YouTube mechanism); any other unavailable reason keeps its
+  // direct verdict.
+  if (
+    !captions.available &&
+    recognition.platformId === "youtube" &&
+    (captions.reason === YTD_YOUTUBE_CAPTIONS.GATE_EMPTIED_REASON ||
+      captions.reason === CAPTIONS_READ_TIMEOUT_REASON)
+  ) {
+    captions = await retryYouTubeCaptionsWithPlayerAuthorization(
+      { url, tabId },
+      coverageInterval,
+      captions,
+      captionSource,
+    );
+  }
+  return { captions, captionSource, coverageInterval };
+}
+
+/** The reader verdict reasons translated for the panel's tooltip (the
+ * release pin keeps the panel free of the endpoint/player-internal codes,
+ * so the translation lives worker-side). */
+const CAPTIONS_REASON_LABEL = {
+  no_subtitle_track: "页面没有可用的字幕轨道",
+  timedtext_failed: "字幕接口返回空内容（YouTube 授权闸门拦截）",
+  player_response_unavailable: "读取不到播放器的字幕信息",
+  bridge_unreachable: "无法连接页面脚本，请刷新视频页后重试",
+  bridge_malformed: "页面脚本响应异常",
+  captions_read_timeout: "字幕读取超时",
+  subtitle_fetch_failed: "字幕请求失败",
+};
+
+/**
+ * The header 页面切换 dropdown's data source (0.2.34): every open tab that
+ * is a supported learning video page, plus the ACTIVE_CAPTURE pointer's
+ * tabId/pageTitle so the panel can mark the 当前挂载 entry. The peek is
+ * deliberately passive — it reads the persisted pointer instead of running
+ * ensureCaptureResumed, so merely opening the dropdown never rebuilds
+ * capture state as a side effect.
+ */
+async function handleGetLearningPages() {
+  const tabs = await chrome.tabs.query({});
+  const pages = [];
+  for (const tab of Array.isArray(tabs) ? tabs : []) {
+    const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tab.url || "");
+    if (
+      (recognition.platformId !== "bilibili" && recognition.platformId !== "youtube") ||
+      recognition.kind !== "video"
+    ) {
+      continue;
+    }
+    pages.push({
+      tabId: tab.id,
+      title: bridgeTitleForTab(tab) ?? tab.title ?? tab.url ?? "",
+      url: tab.url,
+      active: !!tab.active,
+    });
+  }
+  const pointer = await readContextPointer();
+  const session =
+    pointer && typeof pointer.tabId === "number"
+      ? {
+          tabId: pointer.tabId,
+          title: pointer.pageTitle || pointer.sourceUrl || "",
+          url: pointer.sourceUrl || null,
+        }
+      : null;
+  return { ok: true, pages, session };
+}
+
+/**
+ * The header dropdown's 切换挂载 (0.2.34). Three honest outcomes:
+ * - jumped: no Session is active, or the chosen tab already IS the
+ *   Session's tab, or another tab holds the SAME course — the browser
+ *   just activates the tab and nothing else moves;
+ * - courseSwitchConfirm: a Session runs on a DIFFERENT course — the panel
+ *   must surface the confirm (ending it skips the AI report, the same
+ *   trade the 0.1.57 toolbar-icon course switch makes) and re-send with
+ *   confirmed:true;
+ * - switched: the old Session ended (course-switch, report:false) and a
+ *   fresh one started on the chosen tab through handleStartLearning's
+ *   full gate stack (auth, site capability, captions-first probe).
+ */
+async function handleSwitchLearningPage({ tabId, confirmed } = {}) {
+  let tab = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (_error) {
+    return { ok: false, reason: "tabNotFound", message: "所选标签页已关闭。" };
+  }
+  const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tab.url || "");
+  if (
+    (recognition.platformId !== "bilibili" && recognition.platformId !== "youtube") ||
+    recognition.kind !== "video"
+  ) {
+    return { ok: false, reason: "notVideoPage", message: "所选页面已不是学习视频页。" };
+  }
+  const existing = await ensureCaptureResumed();
+  if (existing && existing.tabId !== tab.id) {
+    if (isSameCourse(existing, tab.url, tab.id)) {
+      // The same course in a second tab: the Session's bridge lives on its
+      // own tab — jump there instead of pretending to move anything.
+      await activateTabQuietly(existing.tabId);
+      return { ok: true, action: "jumped", tabId: existing.tabId };
+    }
+    if (!confirmed) {
+      return { ok: false, reason: "courseSwitchConfirm" };
+    }
+    console.log(
+      "[Learning Digest] page switch: ending",
+      existing.sessionId,
+      "and starting fresh on",
+      tab.url,
+    );
+    await endActiveSession(existing, { reason: "course-switch", report: false });
+    await activateTabQuietly(tab.id);
+    const started = await handleStartLearning({
+      url: tab.url,
+      tabId: tab.id,
+      title: typeof tab.title === "string" ? tab.title : "",
+    });
+    if (!started.success) {
+      return {
+        ok: false,
+        reason: "startFailed",
+        message: started.error || "新页面开始学习失败，请手动重试。",
+      };
+    }
+    return { ok: true, action: "switched", sessionId: started.sessionId };
+  }
+  await activateTabQuietly(tab.id);
+  return { ok: true, action: "jumped", tabId: tab.id };
+}
+
+/** tab activation best-effort: a tab that died between list and click is
+ * not an error surface — the switch itself already reported honestly. */
+async function activateTabQuietly(tabId) {
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } catch (_error) {
+    // Nothing to surface: the list refresh converges on the closed tab.
+  }
+}
+
+/**
+ * The panel's 重新获取字幕 recheck: re-runs the captions probe on the
+ * panel's active tab and answers the honest verdict — 有字幕 (with the
+ * track and segment count) or 无字幕 (with the reader's reason). No
+ * Session is created and nothing is archived: the button owns the
+ * feedback, this handler owns the observation. The site-capability switch
+ * does not gate the probe (a manual recheck is exactly how a switch-off
+ * site gets diagnosed); the switch state rides the answer for the
+ * tooltip. The verdict also lands in the ytd_last_caption_recheck
+ * breadcrumb so a panel-side mismatch can be traced after the fact.
+ */
+async function handleRecheckCaptions(message) {
+  if (typeof message.tabId !== "number") {
+    return { ok: false, message: "找不到要检测的标签页。" };
+  }
+  let tabUrl = typeof message.url === "string" ? message.url : "";
+  if (!tabUrl) {
+    try {
+      const tab = await chrome.tabs.get(message.tabId);
+      tabUrl = (tab && tab.url) || "";
+    } catch (_error) {
+      tabUrl = "";
+    }
+  }
+  if (!tabUrl) {
+    return { ok: false, message: "找不到要检测的标签页（可能已关闭）。" };
+  }
+  const recognition = YTD_SOURCE_PLATFORMS.recognizePage(tabUrl);
+  if (
+    (recognition.platformId !== "bilibili" && recognition.platformId !== "youtube") ||
+    recognition.kind !== "video"
+  ) {
+    return { ok: false, message: "当前页面不是支持字幕检测的视频页。" };
+  }
+  const { captions } = await probeCaptionsForTab(message.tabId, tabUrl, recognition);
+  recordAuthBreadcrumb("ytd_last_caption_recheck", {
+    url: tabUrl,
+    available: captions.available,
+    reason: captions.available ? null : captions.reason || null,
+  });
+  return {
+    ok: true,
+    available: captions.available,
+    reason: captions.available ? null : captions.reason || null,
+    reasonLabel: captions.available
+      ? null
+      : CAPTIONS_REASON_LABEL[captions.reason] || null,
+    track: captions.available && captions.track ? captions.track : null,
+    segmentCount:
+      captions.available && Array.isArray(captions.segments)
+        ? captions.segments.length
+        : 0,
+    captionsEnabledBySite: siteCaptionsEnabled(recognition.platformId),
+  };
+}
+
 async function handleStartLearning(message) {
   const recognition = YTD_SOURCE_PLATFORMS.recognizePage(message.url);
   if (recognition.kind === "none") {
@@ -3954,48 +4224,14 @@ async function handleStartLearning(message) {
     (recognition.platformId === "bilibili" || recognition.platformId === "youtube") &&
     recognition.kind === "video"
   ) {
-    // Ticket 2.7 (#70): the coverage check runs over the studied interval —
-    // the media position the learner resumes into and the video's duration.
-    // Unknown interval (live stream, unloaded player, dead bridge) → no
-    // coverage block → the captions archive exactly as 2.5 shipped.
-    const coverageInterval = await probeCoverageInterval(message.tabId);
-    const videoIdentity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(message.url);
-    const captionSource = videoIdentity?.platformVideoId
-      ? recognition.platformId === "bilibili"
-        ? await readBilibiliLiveCaptionSource(message.tabId, videoIdentity.platformVideoId)
-        : await readYouTubeLiveCaptionSource(message.tabId, videoIdentity.platformVideoId)
-      : null;
-    let captions = captionSource?.source === "subtitle_web_view" && recognition.platformId === "bilibili"
-      ? await readBilibiliWorkerCaptions(captionSource, coverageInterval)
-      : await readTabCaptions(
-          message.tabId,
-          recognition.platformId,
-          coverageInterval,
-          null,
-          captionSource,
-        );
-    // Ticket 5.7 (#96): the PO-token retry — a direct read that found
-    // candidates but got gate-emptied bodies, or a multi-track read that hit
-    // its explicit timeout, gets one authorized re-read with the player-
-    // issued request the MAIN-world capture returns. Only youtube (the
-    // PO-token gate is a YouTube mechanism); any other unavailable reason
-    // keeps its direct verdict, and the probe phase stays the single mount
-    // point — the retry lands BEFORE the 5.6 fall-through (favorites +
-    // Session create + ASR), so a captured read wins the captions path
-    // exactly like a direct one.
-    if (
-      !captions.available &&
-      recognition.platformId === "youtube" &&
-      (captions.reason === YTD_YOUTUBE_CAPTIONS.GATE_EMPTIED_REASON ||
-        captions.reason === CAPTIONS_READ_TIMEOUT_REASON)
-    ) {
-      captions = await retryYouTubeCaptionsWithPlayerAuthorization(
-        message,
-        coverageInterval,
-        captions,
-        captionSource,
-      );
-    }
+    // The probe itself (coverage interval, live caption source, direct read,
+    // the youtube PO-token retry) lives in probeCaptionsForTab, shared with
+    // the panel's 重新获取字幕 recheck — one observation path, two callers.
+    const { captions } = await probeCaptionsForTab(
+      message.tabId,
+      message.url,
+      recognition,
+    );
     if (captions.available) {
       return startCaptionsSession(message, recognition, captions);
     }

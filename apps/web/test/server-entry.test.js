@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { startUpstream } from "./helpers/upstream.js";
 
 // The production entrypoint: server.js reads PORT and LD_API_UPSTREAM,
-// serves the static bundle from public/ and proxies /v1 to the upstream.
+// serves the built React bundle from dist/ and proxies /v1 to the upstream.
 // Drives the real process over loopback.
 
 const SERVER = path.resolve(
@@ -79,7 +79,10 @@ test("server.js serves the shell and proxies /v1 to LD_API_UPSTREAM", async () =
 
     const shell = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(shell.status, 200);
-    assert.match(await shell.text(), /id="loginView"/);
+    const html = await shell.text();
+    assert.match(html, /id="root"/);
+    assert.match(html, /\/vendor\/platform-video-id\.js/);
+    assert.match(html, /\/assets\/.*\.js/);
 
     const proxied = await fetch(`http://127.0.0.1:${port}/v1/auth/request-code`, {
       method: "POST",

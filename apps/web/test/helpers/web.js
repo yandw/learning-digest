@@ -14,7 +14,7 @@ export function defaultPublicDir() {
   return path.join(
     path.dirname(path.dirname(fileURLToPath(import.meta.url))),
     "..",
-    "public",
+    "dist",
   );
 }
 

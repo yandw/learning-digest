@@ -1,15 +1,39 @@
 {
   "name": "@learning-digest/web",
-  "version": "0.1.8",
+  "version": "0.1.14",
   "private": true,
-  "description": "Learning Digest web learning library, round 1: invited-email code login and the library shell. Zero npm dependencies and zero build step (ESM end to end).",
+  "description": "Learning Digest React and Ant Design learning library with a tested Node static server and API proxy.",
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "prestart": "npm run build",
     "start": "node server.js",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js",
+    "test:ui": "vitest run"
   },
   "engines": {
-    "node": ">=18"
+    "node": "^22.12.0 || ^24.0.0 || >=26.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.12",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.3.4",
+    "antd": "^6.7.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

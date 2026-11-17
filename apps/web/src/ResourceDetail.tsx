@@ -1,0 +1,310 @@
+import { useState } from "react";
+import { Alert, Button, Empty, Input, Space, Spin, Tag, Typography } from "antd";
+import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, LinkOutlined } from "@ant-design/icons";
+import {
+  buildNoteJumpUrl,
+  presentDetail,
+  presentNote,
+  presentSession,
+  presentSummary,
+  presentSummariesList,
+  presentTranscript,
+} from "../public/js/library.js";
+
+type ResourceDetailProps = {
+  state: any;
+  onBack: () => void;
+  onRetitle: (title: string) => Promise<boolean>;
+  onGenerate: () => Promise<void>;
+  onShowSummary: (id: string) => Promise<void>;
+  onDelete: () => void;
+};
+
+function SourceJump({ href, children }: { href: string | null; children: React.ReactNode }) {
+  if (!href) {
+    return <span className="transcript-stamp">{children}</span>;
+  }
+  return (
+    <a
+      className="note-stamp"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title="回到原视频的这个位置"
+    >
+      {children}
+    </a>
+  );
+}
+
+function MarkdownRuns({ runs }: { runs: Array<{ text: string; bold: boolean }> }) {
+  return runs.map((run, index) => run.bold
+    ? <strong key={index}>{run.text}</strong>
+    : <span key={index}>{run.text}</span>);
+}
+
+function SummaryBlocks({ blocks }: { blocks: any[] }) {
+  return blocks.map((block, index) => {
+    if (block.kind === "ul") {
+      return (
+        <ul className="summary-list" key={index}>
+          {block.items.map((runs: any, itemIndex: number) => (
+            <li key={itemIndex}><MarkdownRuns runs={runs} /></li>
+          ))}
+        </ul>
+      );
+    }
+    if (["h1", "h2", "h3"].includes(block.kind)) {
+      const level = { h1: 3, h2: 4, h3: 5 }[block.kind as "h1" | "h2" | "h3"] as 3 | 4 | 5;
+      return <Typography.Title level={level} key={index}><MarkdownRuns runs={block.runs} /></Typography.Title>;
+    }
+    return <p className="summary-paragraph" key={index}><MarkdownRuns runs={block.runs} /></p>;
+  });
+}
+
+export default function ResourceDetail({
+  state,
+  onBack,
+  onRetitle,
+  onGenerate,
+  onShowSummary,
+  onDelete,
+}: ResourceDetailProps) {
+  const detail = state.detail;
+  const presented = presentDetail(detail);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [title, setTitle] = useState(presented.title);
+  const sources = detail.sources || [];
+  const notes = detail.notes || [];
+  const sessions = detail.sessions || [];
+  const summaries = presentSummariesList(state.summaries);
+  const activeSummary = state.activeSummaryId
+    ? state.summaryDetails[state.activeSummaryId]
+    : undefined;
+  const summary = presentSummary(activeSummary, sessions, sources);
+
+  const saveTitle = async () => {
+    if (await onRetitle(title)) {
+      setEditingTitle(false);
+    }
+  };
+
+  return (
+    <div className="detail-workbench">
+      <Button
+        type="link"
+        className="back-button"
+        icon={<ArrowLeftOutlined />}
+        onClick={onBack}
+      >
+        返回学习列表
+      </Button>
+
+      <header className="detail-heading">
+        {editingTitle ? (
+          <div className="title-editor">
+            <Input
+              aria-label="资料标题"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              onPressEnter={() => void saveTitle()}
+              autoFocus
+            />
+            <Button type="primary" loading={state.busy} onClick={() => void saveTitle()}>保存标题</Button>
+            <Button
+              disabled={state.busy}
+              onClick={() => {
+                setTitle(presented.title);
+                setEditingTitle(false);
+              }}
+            >
+              取消
+            </Button>
+          </div>
+        ) : (
+          <div className="detail-title-row">
+            <h1>{presented.title}</h1>
+            <Button
+              aria-label="编辑标题"
+              icon={<EditOutlined />}
+              onClick={() => setEditingTitle(true)}
+            >
+              编辑标题
+            </Button>
+          </div>
+        )}
+        <p>查看原文、学习记录与 AI 总结，回到原平台继续学习。</p>
+      </header>
+
+      {(state.notice || state.error) && (
+        <div className="feedback-stack">
+          {state.notice && <Alert type="success" showIcon title={state.notice} />}
+          {state.error && <Alert type="error" showIcon title={state.error} />}
+        </div>
+      )}
+
+      <section className="detail-panel" aria-labelledby="sourceHeading">
+        <h2 id="sourceHeading">资料来源</h2>
+        <ul className="detail-sources">
+          {presented.sources.map((source: any) => (
+            <li key={source.id}>
+              <a className="source-link" href={source.url} target="_blank" rel="noopener noreferrer">
+                <LinkOutlined /> {source.url}
+              </a>
+              <Space size={8} wrap className="resource-meta">
+                <Tag>{source.kindLabel}</Tag>
+                {source.platformLabel && <Tag color="cyan">{source.platformLabel}</Tag>}
+                {source.progressText && <Typography.Text type="secondary">{source.progressText}</Typography.Text>}
+              </Space>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="detail-panel" aria-labelledby="notesHeading">
+        <div className="detail-section-heading">
+          <h2 id="notesHeading">学习笔记</h2>
+          <span className="list-count">{presented.notesCount} 条</span>
+        </div>
+        {notes.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有学习笔记。" />
+        ) : (
+          <ul className="detail-notes">
+            {notes.map((note: any) => {
+              const item = presentNote(note);
+              return (
+                <li key={item.id}>
+                  <p className="note-text">{item.text}</p>
+                  {item.stamp && (
+                    <SourceJump href={buildNoteJumpUrl(note, sources)}>{item.stamp}</SourceJump>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <section className="detail-panel" aria-labelledby="transcriptHeading">
+        <div className="detail-section-heading">
+          <h2 id="transcriptHeading">逐字稿</h2>
+          <span className="list-count">{sessions.length} 次学习</span>
+        </div>
+        {sessions.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开始学习后，逐字稿会出现在这里。" />
+        ) : (
+          <div className="session-list">
+            {sessions.map((session: any) => {
+              const item = presentSession(session);
+              const view = (detail.transcripts || {})[session.id];
+              const entries = presentTranscript(view, sources);
+              return (
+                <article className="session-block" key={session.id}>
+                  <div className="session-header">
+                    <Typography.Text strong>{item.startedAtText || "未记录开始时间"}</Typography.Text>
+                    <Tag>{item.statusLabel}</Tag>
+                    {item.originLabel && <Tag color="cyan">{item.originLabel}</Tag>}
+                  </div>
+                  <p className="session-summary">{item.summaryText}</p>
+                  {view === null ? (
+                    <Alert type="warning" showIcon title="逐字稿加载失败，请稍后重试" />
+                  ) : entries.length === 0 ? (
+                    <p className="session-hint">本次学习未产生逐字稿</p>
+                  ) : (
+                    <ul className="transcript-entries">
+                      {entries.map((entry: any, index: number) => (
+                        <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
+                          <div className="transcript-line">
+                            {(entry.stamp || entry.jumpUrl) && (
+                              <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
+                            )}
+                            <span className="transcript-text">{entry.text}</span>
+                          </div>
+                          {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="detail-panel" aria-labelledby="summaryHeading">
+        <div className="detail-section-heading summary-heading">
+          <div>
+            <h2 id="summaryHeading">课程总结</h2>
+            <p>总结与原文引用会保留在历次生成记录中。</p>
+          </div>
+          <Button type="primary" loading={state.generating} disabled={state.busy} onClick={() => void onGenerate()}>
+            {state.generating ? "生成中…" : "生成总结"}
+          </Button>
+        </div>
+        {state.summariesError && <Alert type="error" showIcon title={state.summariesError} />}
+        {summaries.length > 0 && (
+          <div className="summary-history" aria-label="历次总结">
+            {summaries.map((item: any) => (
+              <Button
+                key={item.id}
+                size="small"
+                type={item.id === state.activeSummaryId ? "primary" : "default"}
+                aria-pressed={item.id === state.activeSummaryId}
+                onClick={() => void onShowSummary(item.id)}
+              >
+                第 {item.ordinal} 次 · {item.generatedAtText} · {item.citationCount} 条引用
+              </Button>
+            ))}
+          </div>
+        )}
+        {summaries.length === 0 && !state.generating && !state.summariesError && (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有课程总结，生成后会保留历次记录。" />
+        )}
+        {activeSummary === undefined && state.activeSummaryId && (
+          <div className="summary-loading"><Spin /> 总结加载中…</div>
+        )}
+        {activeSummary === null && state.activeSummaryId && (
+          <Alert type="warning" showIcon title="总结加载失败，请稍后重试" />
+        )}
+        {summary && (
+          <article className="summary-content">
+            <p className="summary-meta">生成于 {summary.generatedAtText} · {summary.citationCount} 条引用</p>
+            <SummaryBlocks blocks={summary.blocks} />
+            {summary.citations.length > 0 && (
+              <div className="summary-citations">
+                <h3>原文引用</h3>
+                <ul>
+                  {summary.citations.map((citation: any, index: number) => (
+                    <li key={index}>
+                      <blockquote>「{citation.quote}」</blockquote>
+                      <Space size={8} wrap>
+                        {(citation.stamp || citation.jumpUrl) && (
+                          <SourceJump href={citation.jumpUrl}>{citation.stamp}</SourceJump>
+                        )}
+                        {citation.sessionStartedAtText && (
+                          <Typography.Text type="secondary">来自 {citation.sessionStartedAtText} 的学习</Typography.Text>
+                        )}
+                        {citation.sessionOriginLabel && <Tag>{citation.sessionOriginLabel}</Tag>}
+                      </Space>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </article>
+        )}
+      </section>
+
+      <footer className="detail-delete">
+        <div>
+          <h2>删除资料</h2>
+          <p>将同时删除逐字稿、笔记与课程总结，此操作不可撤销。</p>
+        </div>
+        <Button aria-label="删除资料" danger icon={<DeleteOutlined />} disabled={state.busy} onClick={onDelete}>
+          删除资料
+        </Button>
+      </footer>
+    </div>
+  );
+}

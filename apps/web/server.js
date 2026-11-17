@@ -1,6 +1,6 @@
 /**
- * Production entrypoint for @learning-digest/web 0.1.0. Zero dependencies:
- * node:http plus node builtins only.
+ * Production entrypoint for @learning-digest/web. Serves the Vite bundle
+ * from dist/ using node:http plus node builtins only.
  *
  * Environment:
  *   PORT            listen port (default 8080; 0 = ephemeral)
@@ -19,7 +19,7 @@ function main(env = process.env) {
   const dir = path.dirname(fileURLToPath(import.meta.url));
   const upstream = env.LD_API_UPSTREAM || "http://127.0.0.1:8787";
   const server = createWebApp({
-    publicDir: path.join(dir, "public"),
+    publicDir: path.join(dir, "dist"),
     upstream,
   });
 

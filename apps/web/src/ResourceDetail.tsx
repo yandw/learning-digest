@@ -3,12 +3,13 @@ import { Alert, Button, Empty, Input, Space, Spin, Tag, Typography } from "antd"
 import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, LinkOutlined } from "@ant-design/icons";
 import {
   buildNoteJumpUrl,
+  mergeTranscriptViews,
   presentDetail,
   presentNote,
-  presentSession,
   presentSummary,
   presentSummariesList,
   presentTranscript,
+  sessionOriginLabel,
 } from "../public/js/library.js";
 
 type ResourceDetailProps = {
@@ -82,6 +83,12 @@ export default function ResourceDetail({
     ? state.summaryDetails[state.activeSummaryId]
     : undefined;
   const summary = presentSummary(activeSummary, sessions, sources);
+
+  // 同一视频多段学习的逐字稿合并成一份展示（owner decision 2026-11-17：
+  // 一份资料只有一份逐字稿，重复副本会让课程总结输入重复文本）。
+  const sessionViews = sessions.map((session: any) => (detail.transcripts || {})[session.id]);
+  const mergedView = mergeTranscriptViews(sessionViews);
+  const entries = presentTranscript(mergedView, sources);
 
   const saveTitle = async () => {
     if (await onRetitle(title)) {
@@ -188,47 +195,33 @@ export default function ResourceDetail({
       <section className="detail-panel" aria-labelledby="transcriptHeading">
         <div className="detail-section-heading">
           <h2 id="transcriptHeading">逐字稿</h2>
-          <span className="list-count">{sessions.length} 次学习</span>
+          <span className="list-count">
+            {mergedView.records.length} 段 · 合并 {sessions.length} 次学习
+          </span>
         </div>
         {sessions.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开始学习后，逐字稿会出现在这里。" />
+        ) : sessionViews.every((view: any) => view === null || view === undefined) ? (
+          <Alert type="warning" showIcon title="逐字稿加载失败，请稍后重试" />
+        ) : entries.length === 0 ? (
+          <p className="session-hint">还没有逐字稿</p>
         ) : (
-          <div className="session-list">
-            {sessions.map((session: any) => {
-              const item = presentSession(session);
-              const view = (detail.transcripts || {})[session.id];
-              const entries = presentTranscript(view, sources);
-              return (
-                <article className="session-block" key={session.id}>
-                  <div className="session-header">
-                    <Typography.Text strong>{item.startedAtText || "未记录开始时间"}</Typography.Text>
-                    <Tag>{item.statusLabel}</Tag>
-                    {item.originLabel && <Tag color="cyan">{item.originLabel}</Tag>}
-                  </div>
-                  <p className="session-summary">{item.summaryText}</p>
-                  {view === null ? (
-                    <Alert type="warning" showIcon title="逐字稿加载失败，请稍后重试" />
-                  ) : entries.length === 0 ? (
-                    <p className="session-hint">本次学习未产生逐字稿</p>
-                  ) : (
-                    <ul className="transcript-entries">
-                      {entries.map((entry: any, index: number) => (
-                        <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
-                          <div className="transcript-line">
-                            {(entry.stamp || entry.jumpUrl) && (
-                              <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
-                            )}
-                            <span className="transcript-text">{entry.text}</span>
-                          </div>
-                          {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
-                        </li>
-                      ))}
-                    </ul>
+          <ul className="transcript-entries">
+            {entries.map((entry: any, index: number) => (
+              <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
+                <div className="transcript-line">
+                  {(entry.stamp || entry.jumpUrl) && (
+                    <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
                   )}
-                </article>
-              );
-            })}
-          </div>
+                  <span className="transcript-text">{entry.text}</span>
+                  {entry.kind === "record" && sessionOriginLabel(entry.origin) && (
+                    <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
+                  )}
+                </div>
+                {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 

@@ -278,6 +278,8 @@ export function presentTranscript(view, sources) {
       stamp: formatPosition(record.startMs),
       text: record.text,
       detail: null,
+      origin: record.origin === undefined ? null : record.origin,
+      sessionId: record.sessionId === undefined ? null : record.sessionId,
       jumpUrl: buildNoteJumpUrl(
         { sourceId: view.sourceId, positionMs: record.startMs },
         sources,
@@ -315,6 +317,113 @@ export function presentTranscript(view, sources) {
     (a, b) =>
       a.startMs - b.startMs || TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind],
   );
+}
+
+/**
+ * Merge several sessions' transcript views into ONE resource-level
+ * transcript (owner decision, 2026-11-17: a video learned in multiple
+ * sessions stores/presents a single merged 逐字稿 — duplicate overlapping
+ * copies break the course summary). Sessions stay the internal capture /
+ * metering unit; the merged timeline is the only display and summary
+ * input.
+ *
+ * Dedup rule (kept identical on the API side, summaries.collect_material):
+ * - records: sorted by startMs; overlapping ranges cluster together and
+ *   the cluster keeps the LONGEST text (most complete ASR/caption text),
+ *   earliest input order winning the tie — deterministic regardless of
+ *   session list order. Each survivor keeps its own sessionId + origin.
+ * - gaps: overlapping ranges fold into one (min start, max end); a range
+ *   already covered by a kept record is dropped (the record says more).
+ * - failed: same range dedup as records, first occurrence kept.
+ * - pending: kept as-is (only the active session can have any).
+ *
+ * @param {Array} views transcript views (§2.5 TranscriptView) in any
+ *   session order; a null view (still loading / failed pull) is skipped.
+ * @returns {{ sourceId, sessionStatus, records, gaps, pending, failed }}
+ *   shaped exactly like one transcript view, ready for presentTranscript.
+ */
+export function mergeTranscriptViews(viewsIn) {
+  const views = (Array.isArray(viewsIn) ? viewsIn : []).filter(Boolean);
+  const sourceId = views.length > 0 ? views[0].sourceId : null;
+  const active = views.find((view) => view.sessionStatus === "active");
+  const sessionStatus = active ? "active" : "finished";
+
+  const records = [];
+  const failed = [];
+  const pending = [];
+  for (const view of views) {
+    const origin = view.origin === undefined ? null : view.origin;
+    for (const record of view.records || []) {
+      records.push({ ...record, origin, sessionId: view.sessionId });
+    }
+    for (const segment of view.failed || []) {
+      failed.push({ ...segment, sessionId: view.sessionId });
+    }
+    for (const segment of view.pending || []) {
+      pending.push({ ...segment, sessionId: view.sessionId });
+    }
+  }
+  records.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+
+  const keptRecords = [];
+  let cluster = null;
+  for (const record of records) {
+    if (cluster && record.startMs < cluster.endMs) {
+      // Overlaps the open cluster: compete for the cluster seat.
+      const current = cluster.chosen;
+      if (
+        String(record.text || "").length > String(current.text || "").length
+      ) {
+        cluster.chosen = record;
+      }
+      if (record.endMs > cluster.endMs) cluster.endMs = record.endMs;
+    } else {
+      if (cluster) keptRecords.push(cluster.chosen);
+      cluster = { chosen: record, endMs: record.endMs };
+    }
+  }
+  if (cluster) keptRecords.push(cluster.chosen);
+
+  // Gaps: fold overlaps, then drop any range a kept record already covers.
+  const gaps = [];
+  for (const view of views) {
+    for (const gap of view.gaps || []) {
+      gaps.push({ ...gap, sessionId: view.sessionId });
+    }
+  }
+  gaps.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const foldedGaps = [];
+  for (const gap of gaps) {
+    const last = foldedGaps[foldedGaps.length - 1];
+    if (last && gap.startMs < last.endMs) {
+      if (gap.endMs > last.endMs) last.endMs = gap.endMs;
+    } else {
+      foldedGaps.push({ ...gap });
+    }
+  }
+  const keptGaps = foldedGaps.filter(
+    (gap) => !keptRecords.some((r) => r.startMs < gap.endMs && gap.startMs < r.endMs),
+  );
+
+  // Failed rows: same range dedup, first occurrence kept.
+  failed.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const keptFailed = [];
+  for (const segment of failed) {
+    const last = keptFailed[keptFailed.length - 1];
+    if (last && segment.startMs < last.endMs && last.startMs < segment.endMs) {
+      continue;
+    }
+    keptFailed.push(segment);
+  }
+
+  return {
+    sourceId,
+    sessionStatus,
+    records: keptRecords,
+    gaps: keptGaps,
+    pending,
+    failed: keptFailed,
+  };
 }
 
 /**

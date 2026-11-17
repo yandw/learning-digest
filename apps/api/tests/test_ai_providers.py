@@ -129,6 +129,10 @@ def test_qwen_provider_posts_bailian_chat_completions_and_parses_the_json_payloa
     assert [m["role"] for m in body["messages"]] == ["system", "user"]
     assert body["messages"][0]["content"] == SYSTEM
     assert body["messages"][1]["content"] == USER
+    # qwen3 reasons before answering by default; on a long merged transcript
+    # the reasoning phase outlived the 120s AI timeout and every generation
+    # 502'd — product generations run with thinking disabled.
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert generated == payload
 
 

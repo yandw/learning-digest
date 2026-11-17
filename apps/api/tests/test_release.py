@@ -17,6 +17,11 @@ def test_pyproject_is_the_api_unit_release_metadata():
     pyproject = tomllib.loads((API_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "learning-digest-api"
+    # 0.2.9: qwen3's default thinking phase is disabled on every product
+    # generation (chat_template_kwargs.enable_thinking=false) — reasoning
+    # alone on a long merged transcript exceeded the 120s AI timeout
+    # (218s observed before the first content token), 502-ing every
+    # long-video summary.
     # 0.2.8 fixes the 0.2.7 merge's cluster rule: clustering on ANY overlap
     # collapsed sliding-window caption chunks (~50% pairwise overlap) into
     # one transitive chain, keeping a single record — only near-duplicates
@@ -50,7 +55,7 @@ def test_pyproject_is_the_api_unit_release_metadata():
     # recording. 0.1.6 (round-3 review fixes): per-generate timeout signal
     # + course-summary prompt notes-marker. The contract generation (/v1)
     # is unchanged.
-    assert pyproject["project"]["version"] == "0.2.8"
+    assert pyproject["project"]["version"] == "0.2.9"
     assert pyproject["project"]["requires-python"] == ">=3.12"
 
 

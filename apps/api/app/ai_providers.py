@@ -558,6 +558,14 @@ class QwenProvider:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
+                # qwen3 thinks before answering by default; on a long merged
+                # transcript (a one-hour video ≈ 500 lines) the reasoning
+                # phase alone exceeded 120s and every generation died on the
+                # aiTimeoutMs ceiling (observed 2026-11-17: 218s of reasoning
+                # before the first content token). Product generations are
+                # interactive — a summary that arrives in 40s beats a
+                # marginally better one the user never sees.
+                "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=timeout,
         )

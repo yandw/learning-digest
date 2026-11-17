@@ -27,10 +27,14 @@
 # 0.2.8 fixes that merge's cluster rule: clustering on ANY overlap
 # collapsed sliding-window caption chunks (~50% pairwise overlap) into one
 # transitive chain, keeping a single record — only near-duplicates (one
-# range covering ≥80% of the other's shorter span) may merge now.
+# range covering ≥80% of the other's shorter span) may merge now. 0.2.9
+# disables qwen3's default thinking phase on every product generation:
+# reasoning alone on a long merged transcript exceeded the 120s AI timeout
+# (218s observed before the first content token), turning every long-video
+# summary into a 502.
 [project]
 name = "learning-digest-api"
-version = "0.2.8"
+version = "0.2.9"
 description = "Learning Digest backend API: /v1 auth, resources, progress, notes, sessions, transcripts, summaries, usage domains (Python/FastAPI; the sole service-layer implementation, ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [

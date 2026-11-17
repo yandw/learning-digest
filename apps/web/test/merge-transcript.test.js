@@ -128,6 +128,39 @@ test("mergeTranscriptViews skips null views (still loading) without throwing", (
   assert.equal(merged.records.length, 1);
 });
 
+test("mergeTranscriptViews keeps every sliding-window position (neighbours overlap ~50%)", () => {
+  // YouTube caption chunks advance by roughly half their width, so each
+  // record overlaps its neighbours. Plain-overlap clustering chains the
+  // whole session into ONE record; only near-duplicates (≥80% coverage)
+  // may merge. Regression: the merged 逐字稿 collapsed to a single row.
+  const v1 = view({
+    sessionId: "ses_1",
+    origin: "captions",
+    records: [
+      { startMs: 0, endMs: 4040, text: "短文本甲" },
+      { startMs: 1800, endMs: 6120, text: "中段文本" },
+      { startMs: 4040, endMs: 8200, text: "长" },
+    ],
+  });
+  const v2 = view({
+    sessionId: "ses_2",
+    origin: "captions",
+    records: [
+      { startMs: 0, endMs: 4040, text: "短" },
+      { startMs: 1800, endMs: 6120, text: "中" },
+    ],
+  });
+
+  const merged = mergeTranscriptViews([v1, v2]);
+
+  assert.deepEqual(
+    merged.records.map((r) => r.text),
+    ["短文本甲", "中段文本", "长"],
+    "three distinct positions survive; the exact copy dedups to the longest text",
+  );
+  assert.equal(merged.records[0].sessionId, "ses_1", "the longer original keeps the seat");
+});
+
 test("presentTranscript renders the merged view with per-record origin labels", () => {
   const captions = view({
     sessionId: "ses_c",

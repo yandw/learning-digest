@@ -14,9 +14,13 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.16", () => {
+test("apps/web release metadata is 0.1.17", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
+  // 0.1.17: mergeTranscriptViews clusters only NEAR-duplicates (one range
+  // covering ≥80% of the other's shorter span) — the plain-overlap chain
+  // collapsed sliding-window caption chunks (~50% pairwise overlap) into a
+  // single record, and the merged 逐字稿 showed one row.
   // 0.1.16: 一份资料只有一份逐字稿 — mergeTranscriptViews folds every
   // session's transcript on the shared source timeline (overlapping ranges
   // keep one copy: longest text, captions over asr, smaller sessionId) and
@@ -45,7 +49,7 @@ test("apps/web release metadata is 0.1.16", () => {
   // administrator's 站点管理 surface (isAdmin-driven nav entry, the
   // site-capability table with per-row boolean-subset saves, the D2
   // non-admin denied view) over the round-4 admin API.
-  assert.equal(packageJson.version, "0.1.16");
+  assert.equal(packageJson.version, "0.1.17");
   assert.equal(packageJson.private, true);
 });
 

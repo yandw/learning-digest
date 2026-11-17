@@ -128,12 +128,16 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     Merge/dedup (owner decision 2026-11-17: 一份资料只有一份逐字稿): multiple
     sessions re-watching the same ranges used to land every overlapping copy
     in the summary prompt (duplicated text, confused citations). Records now
-    cluster on overlapping ranges and the cluster keeps the best copy:
-    longest text, then captions over asr (authored beats machine), then the
-    smaller sessionId — deterministic regardless of session list order.
-    Gaps fold their overlaps, then drop any range a kept record already
-    covers. The web library's mergeTranscriptViews implements the SAME rule
-    for display."""
+    cluster on near-duplicate ranges — one range covering ≥80% of the
+    other's shorter span — and the cluster keeps the best copy: longest
+    text, then captions over asr (authored beats machine), then the smaller
+    sessionId — deterministic regardless of session list order. Plain
+    touching overlap is NOT a duplicate: caption/ASR chunks advance in
+    sliding windows (each record overlaps its neighbours ~50%), and a
+    transitive-overlap chain would collapse the whole transcript into one
+    record. Gaps fold their overlaps, then drop any range a kept record
+    already covers. The web library's mergeTranscriptViews implements the
+    SAME rule for display."""
     sessions = [
         s
         for s in store.list("sessions")
@@ -173,19 +177,26 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
             return origin_diff < 0
         return str(challenger["sessionId"]) < str(current["sessionId"])
 
+    def _near_duplicate(a: dict, b: dict) -> bool:
+        """Same range re-captured, not a sliding-window neighbour: the
+        intersection must cover ≥80% of the shorter span. YouTube caption
+        chunks advance by roughly half their width (~50% pairwise overlap),
+        so they never cluster; exact copies across sessions do (100%)."""
+        overlap = min(a["endMs"], b["endMs"]) - max(a["startMs"], b["startMs"])
+        shorter = min(a["endMs"] - a["startMs"], b["endMs"] - b["startMs"])
+        return shorter > 0 and overlap * 5 >= shorter * 4
+
     records.sort(key=_record_sort_key)
     kept_records: list[dict] = []
     cluster: dict | None = None
     for record in records:
-        if cluster is not None and record["startMs"] < cluster["endMs"]:
+        if cluster is not None and _near_duplicate(record, cluster["chosen"]):
             if _beats(record, cluster["chosen"]):
                 cluster["chosen"] = record
-            if record["endMs"] > cluster["endMs"]:
-                cluster["endMs"] = record["endMs"]
         else:
             if cluster is not None:
                 kept_records.append(cluster["chosen"])
-            cluster = {"chosen": record, "endMs": record["endMs"]}
+            cluster = {"chosen": record}
     if cluster is not None:
         kept_records.append(cluster["chosen"])
 

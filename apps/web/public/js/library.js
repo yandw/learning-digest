@@ -328,10 +328,14 @@ export function presentTranscript(view, sources) {
  * input.
  *
  * Dedup rule (kept identical on the API side, summaries.collect_material):
- * - records: sorted by startMs; overlapping ranges cluster together and
- *   the cluster keeps the best copy: longest text first, then captions
- *   over asr (authored beats machine), then the smaller sessionId — fully
- *   deterministic regardless of session list order. The survivor keeps
+ * - records: sorted by startMs; NEAR-DUPLICATE ranges cluster together —
+ *   one range covering ≥80% of the other's shorter span — and the cluster
+ *   keeps the best copy: longest text first, then captions over asr
+ *   (authored beats machine), then the smaller sessionId — fully
+ *   deterministic regardless of session list order. Plain touching
+ *   overlap is NOT a duplicate: caption/ASR chunks advance in sliding
+ *   windows (~50% pairwise overlap), and a transitive-overlap chain would
+ *   collapse the whole transcript into one record. The survivor keeps
  *   its own sessionId + origin.
  * - gaps: overlapping ranges fold into one (min start, max end); a range
  *   already covered by a kept record is dropped (the record says more).
@@ -385,18 +389,27 @@ export function mergeTranscriptViews(viewsIn) {
     return String(challenger.sessionId) < String(current.sessionId);
   }
 
+  // Same range re-captured, not a sliding-window neighbour: the
+  // intersection must cover ≥80% of the shorter span. YouTube caption chunks
+  // advance by roughly half their width (~50% pairwise overlap), so they
+  // never cluster; exact copies across sessions do (100%).
+  function nearDuplicate(a, b) {
+    const overlap = Math.min(a.endMs, b.endMs) - Math.max(a.startMs, b.startMs);
+    const shorter = Math.min(a.endMs - a.startMs, b.endMs - b.startMs);
+    return shorter > 0 && overlap * 5 >= shorter * 4;
+  }
+
   const keptRecords = [];
   let cluster = null;
   for (const record of records) {
-    if (cluster && record.startMs < cluster.endMs) {
-      // Overlaps the open cluster: compete for the cluster seat.
+    if (cluster && nearDuplicate(record, cluster.chosen)) {
+      // Same range re-captured in another session: compete for the seat.
       if (beats(record, cluster.chosen)) {
         cluster.chosen = record;
       }
-      if (record.endMs > cluster.endMs) cluster.endMs = record.endMs;
     } else {
       if (cluster) keptRecords.push(cluster.chosen);
-      cluster = { chosen: record, endMs: record.endMs };
+      cluster = { chosen: record };
     }
   }
   if (cluster) keptRecords.push(cluster.chosen);

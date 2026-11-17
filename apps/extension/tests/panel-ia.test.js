@@ -516,7 +516,7 @@ test("the startup sequence never probes a local AI key (ticket 6.6)", async () =
     false,
     "the checkConfig AI-key gate is retired with the local AI config",
   );
-  assert.equal(panel.elementById("welcomeState").style.display, "flex");
+  assert.equal(panel.elementById("welcomeState").style.display, "grid");
 });
 
 test("a sessionUpdate broadcast carrying the server overview renders the live timeline", () => {
@@ -1231,7 +1231,7 @@ test("an unlinked learner sees only the authorization guide at startup", async (
   await panel.flush();
 
   const display = (id) => panel.elementById(id).style.display;
-  assert.equal(display("authGateState"), "flex", "the guide is the visible view");
+  assert.equal(display("authGateState"), "grid", "the guide is the visible view");
   assert.equal(display("welcomeState"), "none");
   assert.equal(display("resultsState"), "none");
   assert.equal(display("tabsNav"), "none", "no feature tabs before linking");
@@ -1253,7 +1253,7 @@ test("an unreachable learning service says so instead of blaming the link", asyn
   await panel.docListeners.DOMContentLoaded();
   await panel.flush();
 
-  assert.equal(panel.elementById("authGateState").style.display, "flex");
+  assert.equal(panel.elementById("authGateState").style.display, "grid");
   assert.match(
     panel.elementById("authGateStatus").textContent,
     /连不上学习服务/,
@@ -1270,7 +1270,7 @@ test("a linked learner skips the gate and lands on the welcome state", async () 
 
   const display = (id) => panel.elementById(id).style.display;
   assert.equal(display("authGateState"), "none");
-  assert.equal(display("welcomeState"), "flex");
+  assert.equal(display("welcomeState"), "grid");
   assert.notEqual(
     panel.elementById("settingsBtn").style.display,
     "none",
@@ -1301,7 +1301,7 @@ test("authState pushes the panel back into the guide with the failure copy", asy
   );
   await panel.flush();
 
-  assert.equal(panel.elementById("authGateState").style.display, "flex");
+  assert.equal(panel.elementById("authGateState").style.display, "grid");
   assert.match(
     panel.elementById("authGateStatus").textContent,
     /关联码无效或已过期/,
@@ -1315,7 +1315,7 @@ test("authAuthorized re-runs the gate and unlocks the panel", async () => {
   });
   await panel.docListeners.DOMContentLoaded();
   await panel.flush();
-  assert.equal(panel.elementById("authGateState").style.display, "flex");
+  assert.equal(panel.elementById("authGateState").style.display, "grid");
 
   // The link flow finished: from now on the background reports authorized.
   panel.setNextResponse((message) => {
@@ -1328,7 +1328,7 @@ test("authAuthorized re-runs the gate and unlocks the panel", async () => {
 
   const display = (id) => panel.elementById(id).style.display;
   assert.equal(display("authGateState"), "none", "the gate lifted");
-  assert.equal(display("welcomeState"), "flex", "the normal startup took over");
+  assert.equal(display("welcomeState"), "grid", "the normal startup took over");
   assert.notEqual(display("settingsBtn"), "none");
 });
 
@@ -1408,7 +1408,7 @@ test("the guide's settings button opens the options page while gated", async () 
   await panel.docListeners.DOMContentLoaded();
   await panel.flush();
 
-  assert.equal(panel.elementById("authGateState").style.display, "flex", "the guide is up");
+  assert.equal(panel.elementById("authGateState").style.display, "grid", "the guide is up");
   assert.equal(
     panel.elementById("settingsBtn").style.display,
     "none",
@@ -1529,6 +1529,125 @@ test("a failed collect shows the API's envelope message", async () => {
   assert.equal(panel.elementById("collectStatus").textContent, "地址缺失、非法或非 http(s)");
 });
 
+test("a successful collect re-resolves the same tab and enables 开始学习", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: true },
+    collectCurrentPage: {
+      ok: true,
+      outcome: "created",
+      tabId: 7,
+      resource: { id: "res_1", title: "注意力机制详解" },
+      source: { id: "src_1" },
+    },
+    getCourseTabs: { ok: true, chosenTabId: 7, tabs: [] },
+    chooseLearningTarget: {
+      ok: true,
+      startable: true,
+      resolve: {
+        matched: true,
+        resource: { id: "res_1", title: "注意力机制详解" },
+        source: { id: "src_1", progress: null },
+      },
+    },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+  const resolvesBeforeCollect = panel.sentMessages.filter(
+    (message) => message.action === "chooseLearningTarget",
+  ).length;
+
+  panel.elementById("collectPageBtn").listeners.click();
+  await panel.flush();
+  await panel.flush();
+
+  const resolves = panel.sentMessages.filter(
+    (message) => message.action === "chooseLearningTarget" && message.tabId === 7,
+  );
+  assert.equal(resolves.length, resolvesBeforeCollect + 1, "the collected tab is resolved again");
+  assert.equal(panel.course.courseTargetUi.matched, true);
+  assert.equal(panel.elementById("startLearningForTargetBtn").textContent, "开始学习");
+  assert.equal(panel.elementById("startLearningForTargetBtn").disabled, false);
+});
+
+test("a restored chosen tab is resolved instead of staying disabled after a list refresh", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: true },
+    getCourseTabs: { ok: true, chosenTabId: 7, tabs: [] },
+    chooseLearningTarget: {
+      ok: true,
+      startable: true,
+      resolve: {
+        matched: true,
+        resource: { id: "res_1", title: "已在库中的课程" },
+        source: { id: "src_1", progress: null },
+      },
+    },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+  await panel.flush();
+
+  assert.ok(
+    panel.sentMessages.some(
+      (message) => message.action === "chooseLearningTarget" && message.tabId === 7,
+    ),
+    "the restored target is resolved automatically",
+  );
+  assert.equal(panel.elementById("startLearningForTargetBtn").disabled, false);
+  assert.equal(panel.elementById("startLearningForTargetBtn").textContent, "开始学习");
+});
+
+test("an already collected source exposes a credential-free Web detail action", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: {
+      ok: true,
+      matched: true,
+      resource: { id: "res_1", title: "注意力机制详解" },
+      source: { id: "src_1" },
+    },
+    openResourceDetail: { success: true },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+
+  const detailButton = panel.elementById("openCollectedResourceBtn");
+  assert.notEqual(detailButton.style.display, "none", "the detail entry is visible");
+  detailButton.listeners.click();
+  await panel.flush();
+  const openMessage = panel.sentMessages.find(
+    (message) => message.action === "openResourceDetail",
+  );
+  assert.equal(openMessage.resourceId, "res_1");
+  assert.equal(Object.keys(openMessage).length, 2, "only the resource id leaves the panel");
+});
+
+test("a successful learning start keeps the target marked as collected", async () => {
+  const panel = makeAuthPanel({
+    checkAuth: { authorized: true, reason: null },
+    resolveCurrentSource: { ok: true, matched: false, identityPresent: true },
+    getCourseTabs: { ok: true, chosenTabId: 7, tabs: [] },
+    chooseLearningTarget: {
+      ok: true,
+      startable: true,
+      resolve: { matched: false, resource: null, source: null },
+    },
+    startLearningForTarget: { success: true },
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+  await panel.flush();
+  assert.equal(panel.course.courseTargetUi.matched, false);
+
+  panel.elementById("startLearningForTargetBtn").listeners.click();
+  await panel.flush();
+
+  assert.equal(panel.course.courseTargetUi.matched, true);
+  assert.equal(panel.elementById("startLearningForTargetBtn").textContent, "开始学习");
+});
+
 test("unlocking on a recognized video page says when the source is already in the library", async () => {
   const panel = makeAuthPanel({
     checkAuth: { authorized: true, reason: null },
@@ -1634,6 +1753,67 @@ function captionsSessionState(overrides = {}) {
     ...overrides,
   });
 }
+
+test("source-caption rows follow playback highlights without click-to-seek", async () => {
+  const panel = loadPanel({ stored: {} });
+  const state = captionsSessionState();
+  panel.setNextResponse((message) => {
+    if (message.action === "checkAuth") return { authorized: true };
+    if (message.action === "getSessionState") {
+      return {
+        active: true,
+        sessionId: state.sessionId,
+        kind: "video",
+        timestampKind: "video",
+        capturePath: "captions",
+        state,
+      };
+    }
+    return { success: true };
+  });
+  await panel.docListeners.DOMContentLoaded();
+  await panel.flush();
+  panel.session.showSessionMode({
+    active: true,
+    kind: "video",
+    state,
+    timestampKind: "video",
+    capturePath: "captions",
+  });
+
+  const listener = panel.runtimeMessageListeners.at(-1);
+  const transcript = panel.elementById("sessionTranscript");
+  const rows = () =>
+    findDescendants(transcript, "session-record").filter(
+      (row) => !row.classList.contains("session-captions-empty"),
+    );
+  listener(
+    { action: "sessionPlaybackPosition", sessionId: "s_1", position: 160 },
+    {},
+    () => {},
+  );
+
+  assert.equal(rows()[0].classList.contains("session-record-playing"), false);
+  assert.equal(rows()[1].classList.contains("session-record-playing"), true);
+  assert.equal(rows()[1].scrollIntoViewCalls, 1, "the new current row is brought into view");
+  assert.equal(rows()[1].listeners.click, undefined, "highlighting adds no click-to-seek handler");
+
+  listener(
+    { action: "sessionPlaybackPosition", sessionId: "s_1", position: 150 },
+    {},
+    () => {},
+  );
+  assert.equal(rows()[0].classList.contains("session-record-playing"), true);
+  assert.equal(rows()[1].classList.contains("session-record-playing"), false);
+
+  listener(
+    { action: "sessionPlaybackPosition", sessionId: "s_1", position: 182 },
+    {},
+    () => {},
+  );
+  assert.equal(rows()[0].classList.contains("session-record-playing"), false);
+  assert.equal(rows()[1].classList.contains("session-record-playing"), false);
+});
 
 test("a captions Session's status line says 字幕 instead of 转写中", () => {
   const panel = loadPanel({ stored: {} });

@@ -166,9 +166,11 @@ function loadBackgroundHelpers({
         remove: async (tabId) => {
           removedTabIds.push(tabId);
         },
-        sendMessage: (tabId, msg) => {
-          if (tabMessages) tabMessages.push({ tabId, ...msg });
-          if (tabMessageImpl) return Promise.resolve(tabMessageImpl(msg));
+        sendMessage: (tabId, msg, options) => {
+          if (tabMessages) {
+            tabMessages.push(options ? { tabId, ...msg, options } : { tabId, ...msg });
+          }
+          if (tabMessageImpl) return Promise.resolve(tabMessageImpl(msg, options));
           return Promise.resolve({ success: true });
         },
       },

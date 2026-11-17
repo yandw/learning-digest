@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Learning Digest",
-  "version": "0.2.20",
+  "version": "0.2.31",
   "minimum_chrome_version": "116",
   "description": "把课程音频变成学习资料：分段中文转写、话题时间轴和完整的学习纪要。",
   "permissions": ["sidePanel", "storage", "tabCapture", "offscreen", "tabs", "scripting"],
@@ -11,7 +11,10 @@
     "https://openrouter.ai/*",
     "https://dashscope.aliyuncs.com/*",
     "https://www.youtube.com/*",
-    "https://www.bilibili.com/*"
+    "https://www.bilibili.com/*",
+    "https://api.bilibili.com/*",
+    "https://subtitle.bilibili.com/*",
+    "https://aisubtitle.hdslb.com/*"
   ],
   "content_scripts": [
     {

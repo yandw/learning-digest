@@ -67,6 +67,7 @@ test("collecting the active tab POSTs url, title and the extracted identity with
   assert.equal(result.ok, true);
   assert.equal(result.outcome, "created");
   assert.equal(result.resource.id, "res_01JABC0001");
+  assert.equal(result.tabId, 7, "the panel can re-resolve the tab it just collected");
 
   assert.equal(seen.length, 1, "exactly one API call");
   assert.equal(seen[0].url, "https://api.example.com/v1/resources");

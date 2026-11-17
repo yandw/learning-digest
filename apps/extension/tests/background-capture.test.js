@@ -210,6 +210,46 @@ test("action click on the SAME course keeps the active Session (no restart)", as
   );
 });
 
+test("reopening the SAME course restores a bridge invalidated by extension reload", async () => {
+  const sentMessages = [];
+  const injections = [];
+  let bridgeAvailable = true;
+  const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    stored: CREDENTIAL_STORE,
+    settings: baseSettings(),
+    sentMessages,
+    tabMessageImpl: (message) => {
+      if (message.action === "getMediaPosition" && !bridgeAvailable) {
+        throw new Error("Could not establish connection. Receiving end does not exist.");
+      }
+      return { success: true, position: 12 };
+    },
+    executeScriptImpl: async (injection) => {
+      injections.push(injection);
+      bridgeAvailable = true;
+      return [{}];
+    },
+  });
+
+  await bg.handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+  const first = await bg.handleGetSessionState();
+  bridgeAvailable = false; // Chrome invalidates existing content scripts on reload.
+
+  await bg.handleActionClicked({ id: 7, url: REPLAY_URL, windowId: 1 });
+
+  assert.equal((await bg.handleGetSessionState()).sessionId, first.sessionId);
+  assert.equal(injections.length, 1, "the dead bridge is restored without a page refresh");
+  assert.equal(injections[0].target.tabId, 7);
+  assert.equal(injections[0].target.frameIds[0], 0);
+  assert.equal(JSON.stringify(injections[0].files), JSON.stringify([
+    "transcript-shapes.js",
+    "bilibili-captions.js",
+    "youtube-captions.js",
+    "page-bridge.js",
+  ]));
+});
+
 test("a pre-0.1.57 pointer without sourceUrl falls back to tab identity", async () => {
   const state = sessionPipeline.createSession({ sessionId: "s_legacy" });
   const bg = loadBackgroundHelpers({
@@ -249,6 +289,42 @@ test("a pre-0.1.57 pointer without sourceUrl falls back to tab identity", async 
 });
 
 // --- Transcription mode resolution (#45/#49): qwen realtime on any Session kind
+
+test("a source-captions Session forwards its validated playback position to the panel", async () => {
+  const sentMessages = [];
+  const state = sessionPipeline.createSession({
+    sessionId: "s_caption_playback",
+    transcriptOrigin: "captions",
+  });
+  const bg = loadBackgroundHelpers({
+    fetchImpl: apiFetch().fetchImpl,
+    settings: baseSettings(),
+    sentMessages,
+    stored: {
+      ytd_active_capture: {
+        sessionId: "s_caption_playback",
+        tabId: 7,
+        platformId: "xiaoe-tech",
+        kind: "replay",
+        timestampKind: "video",
+        capturePath: "captions",
+        startedAtMs: Date.now() - 30_000,
+        segmentLengthSeconds: 120,
+        sourceUrl: REPLAY_URL,
+      },
+      ytd_session_s_caption_playback: JSON.parse(JSON.stringify(state)),
+    },
+  });
+
+  await bg.handleMediaPosition(mediaPositionMessage(160.25), { tab: { id: 7 } });
+
+  const playbackMessages = sentMessages.filter(
+    (message) => message.action === "sessionPlaybackPosition",
+  );
+  assert.equal(playbackMessages.length, 1);
+  assert.equal(playbackMessages[0].sessionId, "s_caption_playback");
+  assert.equal(playbackMessages[0].position, 160.25);
+});
 
 test("positions from another tab drop with a one-time diagnostic warning (0.1.58)", async () => {
   const warnings = [];

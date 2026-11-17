@@ -133,29 +133,52 @@ test("manifest uses minimized install-time permissions", () => {
   // host access — host_permissions adds www.youtube.com and
   // www.bilibili.com (narrow: the caption-collection sites only), so the
   // timedtext retry chain is reachable in production.
-  assert.equal(manifest.version, "0.2.20");
+  // 0.2.21 (issue #98): automatic-only tracks are fetched in the specified
+  // language order instead of being skipped before the authorized retry.
+  // 0.2.22 (issue #99): collecting re-resolves the same tab, target refreshes
+  // preserve their verdict, and a credential-free Web detail entry is available.
+  // 0.2.23: YouTube tracks follow SPA navigation through the live MAIN-world
+  // player response, and the side panel adopts the Web library visual system.
+  // 0.2.24: the content-script listener forwards Chrome's three-argument
+  // message signature, restoring caption reads and playback-position replies.
+  // 0.2.25: a missing page bridge is restored in the top frame and the
+  // caption read retries once, so an extension reload needs no page refresh.
+  // 0.2.26: archived source captions follow the validated playback-position
+  // stream with a current-row highlight, without adding click-to-seek.
+  // 0.2.27: reopening an active Session restores its invalidated page bridge.
+  // 0.2.28: a distinct caption-read timeout retries with player authorization.
+  // 0.2.29: Bilibili native CC tracks cross the MAIN/isolated-world boundary.
+  // 0.2.30: Bilibili's protobuf web/view supplies signed body URLs, and the
+  // worker reads the caption CDN without the watch page's CORS restriction.
+  // 0.2.31: signed-in protobuf responses unwrap their data envelope, and the
+  // signed body URL is rebuilt with the player's XOR keys before the CDN read.
+  for (const host of [
+    "https://api.bilibili.com/*",
+    "https://subtitle.bilibili.com/*",
+    "https://aisubtitle.hdslb.com/*",
+  ]) {
+    assert.ok(manifest.host_permissions.includes(host), `caption transport requires ${host}`);
+  }
+  assert.equal(manifest.version, "0.2.31");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
 });
 
-test("no legacy YouTube caption-collection code remains", () => {
-  // P10b (#63) re-scoped youtube.com to a round-1 Source Platform; ticket
-  // 2.6 (#69) adds the captions path for it: the worker routes through the
-  // youtube-captions.js reader module (its own release file, tested in
-  // isolation), and the runtime files below still never embed the PoC
-  // caption machinery themselves — no timedtext URLs, no player internals,
-  // no caption-track parsing outside the reader. host_permissions include
-  // only the www.youtube.com watch host for the MAIN-world capture
-  // injection (0.2.20 review fix) — the reader still fetches same-origin
-  // from the content script, and the PoC files stay retired.
-  const runtime = ["background.js", "sidepanel.js", "options.js", "settings.js"]
+test("YouTube caption internals stay in the reader and MAIN-world bridge", () => {
+  // Panel and settings code never parse caption tracks. The worker may route
+  // live player responses and authorized timedtext retries; track selection
+  // and parsing remain in youtube-captions.js, which is tested in isolation.
+  const panelRuntime = ["sidepanel.js", "options.js", "settings.js"]
     .map(read)
     .join("\n");
+  const background = read("background.js");
   const manifest = read("manifest.json");
 
-  assert.doesNotMatch(runtime, /timedtext|movie_player|captionTrack|caption track/i);
-  assert.doesNotMatch(runtime, /youtu\.be/i);
+  assert.doesNotMatch(panelRuntime, /timedtext|movie_player|captionTrack|caption track/i);
+  assert.doesNotMatch(panelRuntime, /youtu\.be/i);
+  assert.match(background, /readYouTubeLiveCaptionSource/);
+  assert.match(background, /readYouTubePlayerCaptionTracks/);
   assert.doesNotMatch(manifest, /timedtext|movie_player|captionTrack|caption track/i);
   for (const removed of ["captions.js", "content.js"]) {
     assert.equal(
@@ -423,6 +446,50 @@ test("notes filters preserve selected contrast and expose pressed state", () => 
   assert.match(js, /applyNotesFilter\(true\)/);
   assert.match(js, /setAttribute\("aria-pressed", String\(!showAll\)\)/);
   assert.match(js, /setAttribute\("aria-pressed", String\(showAll\)\)/);
+});
+
+test("side panel shares the Web library visual tokens", () => {
+  const css = read("sidepanel.css");
+  const webCss = readRepo("apps/web/src/styles.css");
+
+  for (const token of [
+    "--bg: oklch(97.5% 0.008 210)",
+    "--surface: oklch(99% 0.004 210)",
+    "--text: oklch(25% 0.025 210)",
+    "--text-secondary: oklch(48% 0.025 210)",
+    "--accent: oklch(48% 0.085 174)",
+    "--accent-hover: oklch(41% 0.075 174)",
+  ]) {
+    assert.ok(css.includes(token), `side panel is missing ${token}`);
+  }
+  assert.ok(webCss.includes("--ld-accent-600: oklch(48% 0.085 174)"));
+  assert.ok(webCss.includes("--ld-accent-700: oklch(41% 0.075 174)"));
+  assert.match(css, /--r-md:\s*12px;/);
+  assert.doesNotMatch(css, /rgba\(200, 103, 79/);
+});
+
+test("welcome library entries and primary controls use a compact aligned layout", () => {
+  const css = read("sidepanel.css");
+  const js = read("sidepanel.js");
+
+  assert.match(
+    css,
+    /\.welcome-container\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*48px minmax\(0, 1fr\);[^}]*text-align:\s*left;/,
+  );
+  assert.match(
+    css,
+    /\.collect-entry,\s*\.note-entry\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--r-md\);/,
+    "library entries should share the same card treatment",
+  );
+  assert.match(
+    css,
+    /\.course-tabs\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--r-md\);/,
+    "course selection should use the shared card treatment",
+  );
+  assert.match(css, /\.note-input\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;/);
+  assert.match(css, /\.session-btn\s*\{[^}]*min-height:\s*40px;[^}]*border-radius:\s*var\(--r-sm\);/);
+  assert.match(js, /state === "welcome" \? "grid" : "none"/);
+  assert.match(js, /state === "authGate" \? "grid" : "none"/);
 });
 
 test("runtime has no source-file credential dependency or retired model", () => {

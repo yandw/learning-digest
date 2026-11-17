@@ -123,8 +123,21 @@
              in the learner's library. Lives inside the welcome state, so the
              authorization gate hides it until the panel unlocks. -->
         <div class="collect-entry">
+          <div class="entry-heading">
+            <div class="entry-title">收藏当前页</div>
+            <div class="entry-description">保存到学习库，随时在网页端继续学习。</div>
+          </div>
           <button class="session-btn auth-gate-btn" id="collectPageBtn" type="button">
             收藏当前页
+          </button>
+          <button
+            class="link-btn"
+            id="openCollectedResourceBtn"
+            type="button"
+            style="display: none"
+            disabled
+          >
+            查看详情
           </button>
           <div class="collect-status" id="collectStatus" aria-live="polite" style="display: none"></div>
         </div>
@@ -134,6 +147,10 @@
              inside the welcome state like the collect entry above, so the
              authorization gate hides it until the panel unlocks. -->
         <div class="note-entry">
+          <div class="entry-heading">
+            <div class="entry-title">学习笔记</div>
+            <div class="entry-description">记录当前页的重点，视频页会同时保存播放位置。</div>
+          </div>
           <textarea
             id="libraryNoteInput"
             class="note-input"

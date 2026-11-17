@@ -178,6 +178,20 @@ async function handleOpenAuthPage() {
   return { success: true, tabId: tab?.id ?? null };
 }
 
+/** Open a collected Resource in the Web library without exposing credentials. */
+async function handleOpenResourceDetail(message) {
+  const settings = await getSettings();
+  const pageUrl = YTD_AUTH_GATE.buildResourceDetailUrl(
+    settings.webAppBaseUrl,
+    message && message.resourceId,
+  );
+  if (!pageUrl) {
+    return { success: false, error: "资料详情地址无效，请检查 Web 地址和资料标识。" };
+  }
+  const tab = await chrome.tabs.create({ url: pageUrl });
+  return { success: true, tabId: tab?.id ?? null };
+}
+
 /**
  * Deliver one message to the panel with brief retries: the panel may still
  * be loading when the link flow finishes. The first attempt goes out
@@ -529,6 +543,7 @@ async function postResourceFavorite(target) {
     return {
       ok: true,
       outcome: result.outcome,
+      tabId: typeof target.tabId === "number" ? target.tabId : null,
       resource: result.resource,
       source: result.source,
     };
@@ -1211,6 +1226,7 @@ async function handleSeekLearningTarget({ tabId, positionMs } = {}) {
  * flow. A platform with no captions reader never probes at all.
  */
 const CAPTIONS_READ_TIMEOUT_MS = 5_000;
+const CAPTIONS_READ_TIMEOUT_REASON = "captions_read_timeout";
 const CAPTIONS_POLL_INTERVAL_MS = 15_000;
 
 const CAPTIONS_READERS = {
@@ -1254,13 +1270,128 @@ async function probeCoverageInterval(tabId) {
   }
 }
 
-async function readTabCaptions(tabId, platformId, interval = null, playerRequestUrl = null) {
+/** Reads YouTube's live player tracks so SPA navigation cannot leave the
+ * captions reader on the previous video's embedded initial response. A
+ * scripting failure falls back to the original bridge discovery. */
+async function readYouTubeLiveCaptionSource(tabId, expectedVideoId) {
+  try {
+    if (typeof chrome.scripting?.executeScript !== "function") return null;
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: YTD_YOUTUBE_CAPTIONS.readYouTubePlayerCaptionTracks,
+      args: [expectedVideoId],
+    });
+    const source = results?.[0]?.result;
+    return source && source.videoId === expectedVideoId && Array.isArray(source.captionTracks)
+      ? source
+      : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+/** Reads Bilibili's MAIN-world track metadata. Current players keep the old
+ * subtitle_url empty and expose signed body URLs in the protobuf web/view
+ * response instead; hydrate those URLs through the worker's host access. */
+async function readBilibiliLiveCaptionSource(tabId, expectedVideoId) {
+  try {
+    if (typeof chrome.scripting?.executeScript !== "function") return null;
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: YTD_BILIBILI_CAPTIONS.readBilibiliPlayerCaptionSource,
+      args: [expectedVideoId],
+    });
+    const source = results?.[0]?.result;
+    if (!source || source.videoId !== expectedVideoId || !Array.isArray(source.subtitle?.list)) {
+      return null;
+    }
+    if (source.subtitle.list.some((track) => track?.subtitle_url)) return source;
+    if (!source.subtitleViewUrl) return source;
+    try {
+      const viewUrl = new URL(source.subtitleViewUrl);
+      if (viewUrl.origin !== "https://api.bilibili.com" || viewUrl.pathname !== "/x/v2/subtitle/web/view") {
+        return source;
+      }
+      const response = await fetch(viewUrl.href, { credentials: "include" });
+      if (!response.ok) return source;
+      const list = YTD_BILIBILI_CAPTIONS.parseBilibiliSubtitleView(await response.arrayBuffer());
+      return list.length
+        ? { ...source, source: "subtitle_web_view", subtitle: { list } }
+        : source;
+    } catch (_error) {
+      return source;
+    }
+  } catch (_error) {
+    return null;
+  }
+}
+
+/** The subtitle CDN does not grant the watch page CORS access. The extension
+ * worker reads the same signed URL with narrow host permissions instead. */
+async function readBilibiliWorkerCaptions(captionSource, interval) {
+  const reader = YTD_BILIBILI_CAPTIONS.createBilibiliCaptionReader({
+    fetch: (url) => fetch(url, { credentials: "include" }),
+  });
+  return reader.read({ ...(interval || {}), captionSource });
+}
+
+const CAPTION_BRIDGE_FILES = [
+  "transcript-shapes.js",
+  "bilibili-captions.js",
+  "youtube-captions.js",
+  "page-bridge.js",
+];
+
+function isMissingCaptionBridgeError(error) {
+  const message = String(error?.message || error || "");
+  return (
+    message.includes("Could not establish connection") ||
+    message.includes("Receiving end does not exist") ||
+    message.includes("Extension context invalidated")
+  );
+}
+
+/** Reopening an existing Session must also revive its position stream after
+ * an extension reload invalidated the page's old content-script context. */
+async function restorePageBridgeAfterReload(tabId) {
+  try {
+    const response = await chrome.tabs.sendMessage(
+      tabId,
+      { action: "getMediaPosition" },
+      { frameId: 0 },
+    );
+    if (response?.success) return true;
+  } catch (error) {
+    if (!isMissingCaptionBridgeError(error)) return false;
+  }
+  try {
+    if (typeof chrome.scripting?.executeScript !== "function") return false;
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      files: CAPTION_BRIDGE_FILES,
+    });
+    return true;
+  } catch (_injectionError) {
+    return false;
+  }
+}
+
+async function readTabCaptions(
+  tabId,
+  platformId,
+  interval = null,
+  playerRequestUrl = null,
+  captionSource = null,
+) {
   const reader = CAPTIONS_READERS[platformId];
   if (!reader) return { available: false, reason: "captions_not_supported" };
   // Ticket 2.7: the interval rides the command when known — the page-side
   // reader computes the coverage block over it (2.5/2.6 prepared this seam);
   // without one the reader omits coverage instead of guessing an interval.
   const message = { action: reader.command };
+  if (captionSource) message.captionSource = captionSource;
   if (interval) {
     message.intervalStartMs = interval.intervalStartMs;
     message.intervalEndMs = interval.intervalEndMs;
@@ -1273,18 +1404,43 @@ async function readTabCaptions(tabId, platformId, interval = null, playerRequest
     message.action = reader.authorizedCommand;
     message.playerRequestUrl = playerRequestUrl;
   }
-  try {
+  const readOnce = async () => {
     const response = await Promise.race([
-      chrome.tabs.sendMessage(tabId, message),
+      // A MAIN-world live source is read from the watch tab's top frame.
+      // Broadcasting it to every frame lets an unrelated frame answer first
+      // with player_response_unavailable before the owning frame's read.
+      chrome.tabs.sendMessage(tabId, message, captionSource ? { frameId: 0 } : undefined),
       new Promise((resolve) =>
-        setTimeout(() => resolve(null), CAPTIONS_READ_TIMEOUT_MS),
+        setTimeout(
+          () => resolve({ success: true, available: false, reason: CAPTIONS_READ_TIMEOUT_REASON }),
+          CAPTIONS_READ_TIMEOUT_MS,
+        ),
       ),
     ]);
     return reader.parse(response);
-  } catch (_error) {
-    // No answering frame (the bridge is not injected, the page is loading,
-    // or the extension context was invalidated): an honest unavailable.
-    return { available: false, reason: "bridge_unreachable" };
+  };
+  const unavailable = () => ({ available: false, reason: "bridge_unreachable" });
+  try {
+    return await readOnce();
+  } catch (error) {
+    if (!isMissingCaptionBridgeError(error)) return unavailable();
+    // Reloading an extension invalidates content scripts in pages that are
+    // already open. Restore the manifest-ordered bridge in the top frame,
+    // then retry once so the learner need not manually refresh the page.
+    try {
+      if (typeof chrome.scripting?.executeScript !== "function") return unavailable();
+      await chrome.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        files: CAPTION_BRIDGE_FILES,
+      });
+    } catch (_injectionError) {
+      return unavailable();
+    }
+    try {
+      return await readOnce();
+    } catch (_retryError) {
+      return unavailable();
+    }
   }
 }
 
@@ -1311,7 +1467,12 @@ const CAPTIONS_CAPTURE_TIMEOUT_MS = 8000;
  * nothing — returns the direct failure unchanged (reason 保留): the honest
  * 无字幕 record that hands the start to the ASR pipeline.
  */
-async function retryYouTubeCaptionsWithPlayerAuthorization(message, interval, directResult) {
+async function retryYouTubeCaptionsWithPlayerAuthorization(
+  message,
+  interval,
+  directResult,
+  captionSource = null,
+) {
   const identity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(message.url);
   if (!identity || identity.platformId !== "youtube" || !identity.platformVideoId) {
     return directResult;
@@ -1346,7 +1507,13 @@ async function retryYouTubeCaptionsWithPlayerAuthorization(message, interval, di
     return directResult;
   }
   if (!playerRequestUrl) return directResult;
-  const retryResult = await readTabCaptions(message.tabId, "youtube", interval, playerRequestUrl);
+  const retryResult = await readTabCaptions(
+    message.tabId,
+    "youtube",
+    interval,
+    playerRequestUrl,
+    captionSource,
+  );
   return retryResult.available ? retryResult : directResult;
 }
 
@@ -2492,6 +2659,7 @@ async function handleActionClicked(tab) {
   if (existing) {
     if (isSameCourse(existing, tab.url, tab.id)) {
       console.log("[Learning Digest] icon click: a Session is already active");
+      await restorePageBridgeAfterReload(existing.tabId);
       await recordStartAttempt(
         `a Session is already active (${existing.sessionId})`,
       );
@@ -2623,6 +2791,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === "openAuthPage") {
     handleOpenAuthPage()
+      .then(sendResponse)
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === "openResourceDetail") {
+    handleOpenResourceDetail(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -3001,6 +3176,7 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   // the link code exchange — see tests/plugin-auth-flow.test.js.
   checkAuthNow,
   handleOpenAuthPage,
+  handleOpenResourceDetail,
   handleLinkCodeCaptured,
   // Linked logout (P7): the explicit 退出登录, the credentialsInvalidated
   // stop path (P10's progress-write 401s will drive it) and the gate-check
@@ -3783,24 +3959,41 @@ async function handleStartLearning(message) {
     // Unknown interval (live stream, unloaded player, dead bridge) → no
     // coverage block → the captions archive exactly as 2.5 shipped.
     const coverageInterval = await probeCoverageInterval(message.tabId);
-    let captions = await readTabCaptions(message.tabId, recognition.platformId, coverageInterval);
+    const videoIdentity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(message.url);
+    const captionSource = videoIdentity?.platformVideoId
+      ? recognition.platformId === "bilibili"
+        ? await readBilibiliLiveCaptionSource(message.tabId, videoIdentity.platformVideoId)
+        : await readYouTubeLiveCaptionSource(message.tabId, videoIdentity.platformVideoId)
+      : null;
+    let captions = captionSource?.source === "subtitle_web_view" && recognition.platformId === "bilibili"
+      ? await readBilibiliWorkerCaptions(captionSource, coverageInterval)
+      : await readTabCaptions(
+          message.tabId,
+          recognition.platformId,
+          coverageInterval,
+          null,
+          captionSource,
+        );
     // Ticket 5.7 (#96): the PO-token retry — a direct read that found
-    // candidates but got gate-emptied bodies gets one authorized re-read
-    // with the player-issued request the MAIN-world capture returns. Only
-    // youtube (the PO-token gate is a YouTube mechanism); any other
-    // unavailable reason keeps its direct verdict, and the probe phase
-    // stays the single mount point — the retry lands BEFORE the 5.6
-    // fall-through (favorites + Session create + ASR), so a captured read
-    // wins the captions path exactly like a direct one.
+    // candidates but got gate-emptied bodies, or a multi-track read that hit
+    // its explicit timeout, gets one authorized re-read with the player-
+    // issued request the MAIN-world capture returns. Only youtube (the
+    // PO-token gate is a YouTube mechanism); any other unavailable reason
+    // keeps its direct verdict, and the probe phase stays the single mount
+    // point — the retry lands BEFORE the 5.6 fall-through (favorites +
+    // Session create + ASR), so a captured read wins the captions path
+    // exactly like a direct one.
     if (
       !captions.available &&
       recognition.platformId === "youtube" &&
-      captions.reason === YTD_YOUTUBE_CAPTIONS.GATE_EMPTIED_REASON
+      (captions.reason === YTD_YOUTUBE_CAPTIONS.GATE_EMPTIED_REASON ||
+        captions.reason === CAPTIONS_READ_TIMEOUT_REASON)
     ) {
       captions = await retryYouTubeCaptionsWithPlayerAuthorization(
         message,
         coverageInterval,
         captions,
+        captionSource,
       );
     }
     if (captions.available) {
@@ -4030,6 +4223,22 @@ async function handleMediaPosition(message, sender) {
     // reroute it (decision 4). P11: a reported pause is a key event —
     // the exact paused position writes immediately (暂停=立即写当前位置).
     feedLearningPosition(context, position, { paused: message.paused === true });
+    // Archived source captions can follow the same validated, per-second
+    // stream. This is a panel-only projection: it writes no playback command
+    // and never changes the transcript archive.
+    if (context.state?.transcriptOrigin === "captions") {
+      try {
+        chrome.runtime
+          .sendMessage({
+            action: "sessionPlaybackPosition",
+            sessionId: context.sessionId,
+            position,
+          })
+          .catch(() => {});
+      } catch (_error) {
+        // A closed side panel needs no playback projection.
+      }
+    }
   }
   // Ticket 2.5: the captions path rides the position stream for progress
   // and media-end only — no scheduler, no re-listen, no Segment dispatch

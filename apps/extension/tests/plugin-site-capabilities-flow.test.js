@@ -10,9 +10,8 @@
  *   never opens a Session; 收藏 is untouched (任何网页可收藏);
  * - the captions path decision is data-driven: the server switch AND the
  *   adapter's reader declaration — captions=false skips the probe entirely
- *   and hands the start straight to the ASR pipeline (先站点开关，再选轨
- *   策略: the 5.3 only_auto_generated short-circuit lives inside the
- *   reader and stays untouched);
+ *   and hands the start straight to the ASR pipeline (先站点开关，再按
+ *   issue #98 的六级顺序选轨；只有实际读取失败才进入授权重试和 ASR);
  * - a capability fetch failure serves the built-in default table (the
  *   bilibili/youtube captions path keeps working offline);
  * - a 401 on the capability fetch is a definitive dead credential: the P7

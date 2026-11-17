@@ -21,7 +21,43 @@ const {
   createYouTubeCaptionReader,
   parseBridgeCaptionResponse,
   withPlayerCaptionAuthorization,
+  readYouTubePlayerCaptionTracks,
 } = require("../youtube-captions.js");
+
+test("MAIN-world discovery follows the current player after SPA navigation", () => {
+  assert.equal(typeof readYouTubePlayerCaptionTracks, "function");
+  const vm = require("node:vm");
+  const current = {
+    videoDetails: { videoId: "AbCdEfGh123" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [
+          {
+            languageCode: "en",
+            kind: "asr",
+            baseUrl: "https://www.youtube.com/api/timedtext?v=AbCdEfGh123&lang=en&kind=asr",
+          },
+        ],
+      },
+    },
+  };
+  const result = vm.runInNewContext(
+    `(${readYouTubePlayerCaptionTracks.toString()})("AbCdEfGh123")`,
+    {
+      document: {
+        getElementById(id) {
+          return id === "movie_player"
+            ? { getPlayerResponse: () => current }
+            : null;
+        },
+      },
+    },
+  );
+
+  assert.equal(result.videoId, "AbCdEfGh123");
+  assert.equal(result.source, "main_player_response");
+  assert.deepEqual(result.captionTracks, current.captions.playerCaptionsTracklistRenderer.captionTracks);
+});
 
 // --- parsing: timedtext json3 → contract segments -------------------------------
 
@@ -265,11 +301,10 @@ test("read rewrites every candidate URL through the authorizeUrl seam (issue #96
   ]);
 });
 
-test("a page whose only track is auto-generated answers without any timedtext request (issue #85)", async () => {
-  // The 2026-11-15 real-page measurement (watch?v=CzCoOkFtHFw): exactly one
-  // track, `en, kind: asr`, whose timedtext body is PO-token-gated empty.
-  // The 5.3 policy short-circuits before the doomed fetch and hands the
-  // start straight to the ASR pipeline with the explicit reason.
+test("a page whose only track is auto-generated still reads it (issue #98)", async () => {
+  // Auto-generated captions are the last preferred candidates, not a reason
+  // to skip timedtext entirely. Only an actually unusable body may hand the
+  // session to the ASR fallback.
   const fetched = [];
   const reader = createYouTubeCaptionReader(
     stubEnvironment({
@@ -299,11 +334,14 @@ test("a page whose only track is auto-generated answers without any timedtext re
 
   const result = await reader.read();
 
-  assert.deepEqual(result, {
-    available: false,
-    reason: "only_auto_generated_captions",
-  });
-  assert.deepEqual(fetched, [], "the PO-token-gated fetch is never attempted");
+  assert.equal(result.available, true);
+  assert.deepEqual(result.track, { language: "en", asr: true, autoTranslated: false });
+  assert.deepEqual(result.segments, [
+    { startMs: 1000, endMs: 3000, text: "字幕正文" },
+  ]);
+  assert.deepEqual(fetched, [
+    "https://www.youtube.com/api/timedtext?v=CzCoOkFtHFw&lang=en&fmt=json3",
+  ]);
 });
 
 test("a mixed list still tries the CC track before an auto-generated one", async () => {

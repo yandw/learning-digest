@@ -332,14 +332,22 @@ var YTD_PAGE_BRIDGE = (() => {
     function handleCaptionsRequest(message, sendResponse, readerGetter, authorizeUrl = null) {
       const reader = readerGetter();
       if (!reader) return false;
-      let probe;
-      try {
-        probe = reader.probe();
-      } catch (_error) {
-        probe = { present: false, source: null };
-      }
-      if (!probe || !probe.present) return false;
       const options = {};
+      // A MAIN-world live-player source is already owned by the worker's
+      // expected-video check. It supersedes the embedded initial response,
+      // which remains stale after YouTube SPA navigation; without one, keep
+      // the original owning-frame probe for bilibili and the fallback path.
+      if (Object.hasOwn(message, "captionSource")) {
+        options.captionSource = message.captionSource;
+      } else {
+        let probe;
+        try {
+          probe = reader.probe();
+        } catch (_error) {
+          probe = { present: false, source: null };
+        }
+        if (!probe || !probe.present) return false;
+      }
       if (message.intervalStartMs !== undefined) options.intervalStartMs = message.intervalStartMs;
       if (message.intervalEndMs !== undefined) options.intervalEndMs = message.intervalEndMs;
       if (authorizeUrl) options.authorizeUrl = authorizeUrl;
@@ -357,7 +365,11 @@ var YTD_PAGE_BRIDGE = (() => {
     /** The shipped content-script wiring: one message listener, the 1s
      *  position cadence, and the pagehide flushes. */
     function start() {
-      runtime.onMessage.addListener(handleMessage);
+      // Chrome passes (message, sender, sendResponse); handleMessage's
+      // two-argument factory seam expects the response callback second.
+      runtime.onMessage.addListener((message, _sender, sendResponse) =>
+        handleMessage(message, sendResponse),
+      );
       log.debug("[LD bridge] 已注入，开始每秒上报播放位置");
       scheduleInterval(reportPosition, POSITION_INTERVAL_MS);
       win.addEventListener("pagehide", reportPosition);

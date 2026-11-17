@@ -158,6 +158,19 @@ test("openAuthPage collapses a trailing slash on the configured origin", async (
   ]);
 });
 
+test("openResourceDetail opens the configured Web detail deep link without credentials", async () => {
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ webAppBaseUrl: "http://127.0.0.1:8080/" }),
+  });
+
+  const result = await helpers.handleOpenResourceDetail({ resourceId: "res_01 JABC" });
+  assert.equal(result.success, true);
+  assert.deepEqual(helpers.createdTabs, [
+    { id: 90, url: "http://127.0.0.1:8080/?resource=res_01%20JABC" },
+  ]);
+  assert.equal(helpers.createdTabs[0].url.includes("token"), false);
+});
+
 // --- handleLinkCodeCaptured: exchange + store --------------------------------
 
 test("the captured link code is exchanged and the credential stored", async () => {

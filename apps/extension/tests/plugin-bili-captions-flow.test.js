@@ -234,6 +234,169 @@ test("开始学习 on a captions page creates the server Session and archives th
   await helpers.handleEndLearning();
 });
 
+test("the MAIN-world Bilibili track list crosses the isolated bridge and archives native CC captions", async () => {
+  const YTD_BILIBILI_CAPTIONS = require("../bilibili-captions.js");
+  const { createPageBridge } = require("../page-bridge.js");
+  const liveSource = {
+    videoId: "BV1ab411L78c",
+    source: "main_page_state",
+    subtitle: {
+      list: [{
+        id_str: "2151495217046636032",
+        lan: "zh",
+        lan_doc: "中文",
+        ai_type: 0,
+        subtitle_url: "//aisubtitle.hdslb.com/native-cc.json",
+      }],
+    },
+  };
+  const captionBodyRequests = [];
+  // The content script's isolated world has no __INITIAL_STATE__. Only the
+  // worker-supplied MAIN-world source can make the native CC track visible.
+  const bridge = createPageBridge({
+    document: { title: "视频课 P2", querySelectorAll: () => [] },
+    window: { location: { href: BILI_P2 }, addEventListener() {} },
+    chrome: { runtime: { sendMessage() {}, onMessage: { addListener() {} } } },
+    console: { debug() {}, warn() {} },
+    createCaptionReader: YTD_BILIBILI_CAPTIONS.createBilibiliCaptionReader,
+    fetch: async (url) => {
+      captionBodyRequests.push(url);
+      return {
+        ok: true,
+        json: async () => ({
+          body: [{ from: 1, to: 3, content: "原生中文字幕正文" }],
+        }),
+      };
+    },
+  });
+  const scriptCalls = [];
+  const bridgeMessages = [];
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    sessions: [{ status: 201, body: { session: SESSION_CREATE.response.body.session } }],
+    captions: [{ status: 201, body: CAPTIONS_ARCHIVE.response.body }],
+  });
+  const helpers = captionsFlowHelpers({
+    fetchImpl,
+    executeScriptImpl: async (injection) => {
+      scriptCalls.push(injection);
+      return [{ result: liveSource }];
+    },
+    tabMessageImpl: (message, options) =>
+      new Promise((resolve) => {
+        if (message.action === "getBilibiliCaptions" && options?.frameId !== 0) {
+          resolve(undefined);
+          return;
+        }
+        const handled = bridge.handleMessage(message, (response) => {
+          bridgeMessages.push({ message, response });
+          resolve(response);
+        });
+        if (!handled) {
+          bridgeMessages.push({ message, response: undefined });
+          resolve(undefined);
+        }
+      }),
+  });
+
+  const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(
+    started.capturePath,
+    "captions",
+    `native CC crosses the MAIN/isolated boundary: ${JSON.stringify(bridgeMessages)}`,
+  );
+  assert.equal(scriptCalls.length, 1, "one MAIN-world page-state discovery");
+  assert.equal(scriptCalls[0].world, "MAIN");
+  assert.equal(scriptCalls[0].func, YTD_BILIBILI_CAPTIONS.readBilibiliPlayerCaptionSource);
+  assert.deepEqual([...scriptCalls[0].args], ["BV1ab411L78c"]);
+  assert.deepEqual(captionBodyRequests, ["https://aisubtitle.hdslb.com/native-cc.json"]);
+  const captionsCall = v1Calls.find((call) => call.path.endsWith("/captions"));
+  assert.ok(captionsCall, "the native Chinese captions were archived");
+  assert.deepEqual(captionsCall.body.segments, [
+    { startMs: 1000, endMs: 3000, text: "原生中文字幕正文" },
+  ]);
+
+  await helpers.handleEndLearning();
+});
+
+test("the protobuf subtitle view restores and archives native Chinese caption timestamps", async () => {
+  const YTD_BILIBILI_CAPTIONS = require("../bilibili-captions.js");
+  const integer = (value) => {
+    const bytes = [];
+    do {
+      const byte = value & 0x7f;
+      value >>= 7;
+      bytes.push(byte | (value ? 0x80 : 0));
+    } while (value);
+    return bytes;
+  };
+  const field = (number, bytes) => [...integer((number << 3) | 2), ...integer(bytes.length), ...bytes];
+  const text = (number, value) => field(number, [...new TextEncoder().encode(value)]);
+  const nativeUrl = "//subtitle.bilibili.com/S%13%1BP.%1D()X%2CR%5Ej%1F%25w%0E%02H%5EHO4%14%7B4%08K%40%3C%7B%00M%0B%0A%1AM%08%056N6%24%0C0%26%02%1E%01%09%0E%1A2V!E%01%01P%16G%01%03%07Q?auth_key=signed-native";
+  const aiUrl = "//subtitle.bilibili.com/S%13%1BP.%1D()X%2CR%5Ej%1F%25w%0E%02H%5EHO4%14%7B4%08K%40%3C%7B%00M%0B%0A%1AM%08%056N6%24%0C0%26%02%1E%01%09%0E%1A2V.M%5B%02U%1C%07?auth_key=signed-ai";
+  const nativeFetchUrl = "https://aisubtitle.hdslb.com/bfs/ai_subtitle/prod/native.json?auth_key=signed-native";
+  const aiFetchUrl = "https://aisubtitle.hdslb.com/bfs/ai_subtitle/prod/ai.json?auth_key=signed-ai";
+  const viewBytes = Uint8Array.from([
+    ...field(3, [
+      ...text(2, "2151495217046636032"), ...text(3, "zh"), ...text(4, "中文"), ...text(5, nativeUrl),
+    ]),
+    ...field(3, [
+      ...text(2, "2151495341122403840"), ...text(3, "ai-zh"), ...text(4, "中文"), ...text(5, aiUrl),
+    ]),
+  ]).buffer;
+  const viewUrl = "https://api.bilibili.com/x/v2/subtitle/web/view?oid=43588912922&w_rid=signed";
+  const liveSource = {
+    videoId: "BV1ab411L78c",
+    source: "main_page_state",
+    subtitleViewUrl: viewUrl,
+    subtitle: { list: [
+      { id_str: "2151495217046636032", lan: "zh", lan_doc: "中文", ai_type: 0, subtitle_url: "" },
+      { id_str: "2151495341122403840", lan: "ai-zh", lan_doc: "中文", ai_type: 0, subtitle_url: "" },
+    ] },
+  };
+  const { v1Calls, fetchImpl: apiFetch } = v1Fetch({
+    resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],
+    sessions: [{ status: 201, body: { session: SESSION_CREATE.response.body.session } }],
+    captions: [{ status: 201, body: CAPTIONS_ARCHIVE.response.body }],
+  });
+  const captionRequests = [];
+  let bridgeReads = 0;
+  const helpers = captionsFlowHelpers({
+    fetchImpl: async (url, init) => {
+      if (url === viewUrl) return { ok: true, arrayBuffer: async () => viewBytes };
+      if (url === nativeFetchUrl) {
+        captionRequests.push(url);
+        return { ok: true, json: async () => ({ body: [
+          { from: 1.25, to: 3.5, content: "原生中文字幕正文" },
+          { from: 4, to: 6, content: "第二句带时间轴" },
+        ] }) };
+      }
+      if (url === aiFetchUrl) throw new Error("native CC must win; do not fetch AI captions");
+      return apiFetch(url, init);
+    },
+    executeScriptImpl: async () => [{ result: liveSource }],
+    tabMessageImpl: async (message) => {
+      if (message.action === "getBilibiliCaptions") bridgeReads++;
+      return { success: true };
+    },
+  });
+
+  const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "captions");
+  assert.equal(bridgeReads, 0, "the worker reads the CORS-restricted subtitle CDN");
+  assert.deepEqual(captionRequests, [nativeFetchUrl]);
+  const captionsCall = v1Calls.find((call) => call.path.endsWith("/captions"));
+  assert.deepEqual(captionsCall.body.segments, [
+    { startMs: 1250, endMs: 3500, text: "原生中文字幕正文" },
+    { startMs: 4000, endMs: 6000, text: "第二句带时间轴" },
+  ]);
+  await helpers.handleEndLearning();
+});
+
 test("the captions path skips the Speech Provider gate entirely", async () => {
   const { fetchImpl } = v1Fetch({
     resolve: [{ status: 200, body: RESOLVE_MATCHED_BODY }],

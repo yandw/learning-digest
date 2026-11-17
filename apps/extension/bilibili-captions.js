@@ -54,6 +54,86 @@ var YTD_BILIBILI_CAPTIONS = (() => {
     );
   }
 
+  function parseBilibiliSubtitleView(input) {
+    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    function fields(message) {
+      const result = [];
+      let offset = 0;
+      function integer() {
+        let value = 0n;
+        let shift = 0n;
+        for (let count = 0; count < 10; count++) {
+          if (offset >= message.length) throw new Error("truncated varint");
+          const byte = message[offset++];
+          value |= BigInt(byte & 0x7f) << shift;
+          if ((byte & 0x80) === 0) return value;
+          shift += 7n;
+        }
+        throw new Error("oversized varint");
+      }
+      while (offset < message.length) {
+        const tag = Number(integer());
+        const number = tag >> 3;
+        const wire = tag & 7;
+        if (!number) throw new Error("invalid field");
+        if (wire === 0) {
+          integer();
+        } else if (wire === 1) {
+          offset += 8;
+        } else if (wire === 5) {
+          offset += 4;
+        } else if (wire === 2) {
+          const length = Number(integer());
+          if (!Number.isSafeInteger(length) || length < 0 || offset + length > message.length) {
+            throw new Error("truncated bytes");
+          }
+          result.push({ number, bytes: message.subarray(offset, offset + length) });
+          offset += length;
+        } else {
+          throw new Error("unsupported wire type");
+        }
+        if (offset > message.length) throw new Error("truncated fixed field");
+      }
+      return result;
+    }
+    try {
+      const decoder = new TextDecoder();
+      const tracks = [];
+      const topLevel = fields(bytes);
+      const entries = topLevel.flatMap((item) => {
+        if (item.number === 3) return [item];
+        if (item.number !== 1) return [];
+        // Logged-in /x/v2/subtitle/web/view wraps the track list in its data
+        // message (field 1); older responses expose field 3 at the top level.
+        try {
+          return fields(item.bytes).filter((nested) => nested.number === 3);
+        } catch (_error) {
+          return [];
+        }
+      });
+      for (const entry of entries) {
+        const values = fields(entry.bytes);
+        const readText = (number) => {
+          const value = values.find((item) => item.number === number);
+          return value ? decoder.decode(value.bytes) : "";
+        };
+        const lan = readText(3);
+        const url = readText(5);
+        if (!lan || !/^(?:https:)?\/\//.test(url)) continue;
+        tracks.push({
+          id_str: readText(2),
+          lan,
+          lan_doc: readText(4),
+          ai_type: /^ai-/i.test(lan) ? 1 : 0,
+          subtitle_url: url,
+        });
+      }
+      return tracks;
+    } catch (_error) {
+      return [];
+    }
+  }
+
   /**
    * The subtitle body ({body: [{from, to, content}]}, seconds) → contract
    * segments on the source timeline. Empty-text entries are dropped (they
@@ -86,10 +166,49 @@ var YTD_BILIBILI_CAPTIONS = (() => {
   }
 
   /**
+   * New signed-in subtitle responses return an XOR-obfuscated path on
+   * subtitle.bilibili.com. The web player decodes it with its F/U helpers
+   * and fetches the restored path from aisubtitle.hdslb.com. The key pairs
+   * and transform follow dsh-bilibili-summary's lib/subtitle-url.js
+   * (MIT, Copyright (c) 2026 dsh-zcode-plugins contributors).
+   */
+  function rebuildBilibiliSubtitleUrl(rawUrl) {
+    if (typeof rawUrl !== "string" || rawUrl === "") return null;
+    if (/^(?:https:)?\/\/aisubtitle\.hdslb\.com\//.test(rawUrl)) return rawUrl;
+    const match = /\/\/subtitle\.bilibili\.com\/([^?]+)/.exec(rawUrl);
+    if (!match) return null;
+    const keyPairs = [
+      ['nP](wOFRvU.+<fjS{jn-!$D|Dz&",zT`', "=CFxYRn{.y|uVyO$uh&sikph?N.ilF/`"],
+      ['Bn"q~|albg@]Go~ACgyDvKnd+)_D}^&J?', "Cu~L!xs~f^&r@'vh=q]q{eeng*sEg^kp#J"],
+    ];
+    const query = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?") + 1) : "";
+    let path;
+    try {
+      path = decodeURIComponent(match[1]);
+    } catch (_error) {
+      return null;
+    }
+    for (const [prefix, key] of keyPairs) {
+      const saltedKey = `${key}bilibili`;
+      let decoded = "";
+      for (let index = 0; index < path.length; index++) {
+        decoded += String.fromCharCode(
+          path.charCodeAt(index) ^ saltedKey.charCodeAt(index % saltedKey.length),
+        );
+      }
+      if (decoded.startsWith(prefix)) {
+        return `//aisubtitle.hdslb.com${decoded.slice(prefix.length)}?${query}`;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Normalizes one track-list entry to {lan, ai, url} or null. The page API
    * speaks snake_case (ai_type, subtitle_url); a camelCase variant is
-   * accepted defensively. url must look like an http(s) or
-   * protocol-relative URL — anything else is not a readable track.
+   * accepted defensively. Encrypted subtitle.bilibili.com paths must be
+   * restored before the worker fetches them; an undecodable path is not a
+   * readable track and must never be requested directly.
    */
   function normalizeTrack(entry) {
     if (!entry || typeof entry !== "object") return null;
@@ -101,7 +220,9 @@ var YTD_BILIBILI_CAPTIONS = (() => {
       aiType === undefined || aiType === null
         ? /ai/i.test(String(lan || ""))
         : Number(aiType) === 1;
-    return { lan, ai, url: url.startsWith("//") ? `https:${url}` : url };
+    const rebuiltUrl = rebuildBilibiliSubtitleUrl(url);
+    if (!rebuiltUrl) return null;
+    return { lan, ai, url: rebuiltUrl.startsWith("//") ? `https:${rebuiltUrl}` : rebuiltUrl };
   }
 
   /** The subtitle track list from one probe source, or null. */
@@ -110,6 +231,43 @@ var YTD_BILIBILI_CAPTIONS = (() => {
     const subtitle = source.subtitle;
     if (!subtitle || typeof subtitle !== "object") return null;
     return Array.isArray(subtitle.list) ? subtitle.list : null;
+  }
+
+  /** Runs in the watch page's MAIN world. The isolated content script cannot
+   * see __INITIAL_STATE__, so the worker carries this current-video snapshot
+   * back into the normal reader. Only serializable track fields cross. */
+  function readBilibiliPlayerCaptionSource(expectedVideoId) {
+    try {
+      const videoData = window.__INITIAL_STATE__?.videoData;
+      const list = videoData?.subtitle?.list;
+      if (!videoData || videoData.bvid !== expectedVideoId || !Array.isArray(list)) return null;
+      const subtitleViewUrl = performance.getEntriesByType("resource").map((entry) => entry.name).reverse().find((url) => {
+        try {
+          const parsed = new URL(url);
+          return parsed.origin === "https://api.bilibili.com" &&
+            parsed.pathname === "/x/v2/subtitle/web/view" &&
+            parsed.searchParams.get("oid") === String(videoData.cid);
+        } catch (_error) {
+          return false;
+        }
+      }) || null;
+      return {
+        videoId: videoData.bvid,
+        source: "main_page_state",
+        subtitleViewUrl,
+        subtitle: {
+          list: list.filter((track) => track && typeof track === "object").map((track) => ({
+            id_str: track.id_str,
+            lan: track.lan,
+            lan_doc: track.lan_doc,
+            ai_type: track.ai_type,
+            subtitle_url: track.subtitle_url,
+          })),
+        },
+      };
+    } catch (_error) {
+      return null;
+    }
   }
 
   /**
@@ -170,8 +328,16 @@ var YTD_BILIBILI_CAPTIONS = (() => {
       return { present: false, source: null };
     }
 
-    /** The first probe step that sees a track list (probe()'s fuller twin). */
-    function findTrackList() {
+    /** The first probe step that sees a track list (probe()'s fuller twin).
+     * A worker-supplied MAIN-world snapshot is authoritative for this video:
+     * never fall back to a different video's isolated-world state. */
+    function findTrackList(captionSource = null) {
+      if (captionSource !== null) {
+        const list = trackListFrom(captionSource);
+        return list === null
+          ? null
+          : { list, source: captionSource.source || "main_page_state" };
+      }
       const state = win && win.__INITIAL_STATE__;
       const videoData = state && typeof state === "object" ? state.videoData : null;
       const steps = [
@@ -227,7 +393,7 @@ var YTD_BILIBILI_CAPTIONS = (() => {
      *   optional coverage), or available:false with a reason.
      */
     async function read(options = {}) {
-      const found = findTrackList();
+      const found = findTrackList(options.captionSource || null);
       if (!found) return { available: false, reason: "no_subtitle_track" };
 
       // CC first, AI second (ai_type 1): the CC track is the uploader's own
@@ -304,6 +470,9 @@ var YTD_BILIBILI_CAPTIONS = (() => {
 
   return {
     createBilibiliCaptionReader,
+    readBilibiliPlayerCaptionSource,
+    parseBilibiliSubtitleView,
+    rebuildBilibiliSubtitleUrl,
     parseCaptionSegments,
     // Re-exported from transcript-shapes.js: the shared §2.2 Segment check
     // and coverage computation (existing consumers keep importing them

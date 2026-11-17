@@ -431,6 +431,15 @@ function setupEventListeners() {
     ?.addEventListener("click", () => {
       void collectCurrentPage();
     });
+  document
+    .getElementById("openCollectedResourceBtn")
+    ?.addEventListener("click", () => {
+      if (!collectedResourceId) return;
+      void chrome.runtime.sendMessage({
+        action: "openResourceDetail",
+        resourceId: collectedResourceId,
+      });
+    });
 
   // Unrecognized-page scope notice (ticket 5.4, #93): the × dismisses the
   // banner in place; the next unrecognized-page click shows it again.
@@ -909,7 +918,7 @@ function exportTranscript() {
 
 function showState(state) {
   document.getElementById("welcomeState").style.display =
-    state === "welcome" ? "flex" : "none";
+    state === "welcome" ? "grid" : "none";
   document.getElementById("loadingState").style.display =
     state === "loading" ? "block" : "none";
   document.getElementById("errorState").style.display =
@@ -918,7 +927,7 @@ function showState(state) {
   if (uploadEl) uploadEl.style.display = "none"; // Upload state removed — always hidden
   const authGateEl = document.getElementById("authGateState");
   if (authGateEl) {
-    authGateEl.style.display = state === "authGate" ? "flex" : "none";
+    authGateEl.style.display = state === "authGate" ? "grid" : "none";
   }
   document.getElementById("resultsState").style.display =
     state === "results" ? "block" : "none";
@@ -1043,6 +1052,21 @@ function describeResolvedSource(resolution) {
     : COLLECT_STATUS_COPY.inLibrary;
 }
 
+let collectedResourceId = null;
+
+/** Keeps the Web detail entry in lockstep with the current collect verdict. */
+function setCollectedResource(resource) {
+  collectedResourceId =
+    resource && typeof resource.id === "string" && resource.id.trim()
+      ? resource.id
+      : null;
+  const detailButton = document.getElementById("openCollectedResourceBtn");
+  if (detailButton) {
+    detailButton.style.display = collectedResourceId ? "" : "none";
+    detailButton.disabled = !collectedResourceId;
+  }
+}
+
 /**
  * The pre-collect probe, once per panel unlock. The background answers a
  * local miss (no API call) for pages without a confirmable identity, and
@@ -1051,6 +1075,7 @@ function describeResolvedSource(resolution) {
  */
 async function refreshCollectEntry() {
   setCollectStatus("");
+  setCollectedResource(null);
   let resolution = null;
   try {
     resolution = await chrome.runtime.sendMessage({
@@ -1061,6 +1086,7 @@ async function refreshCollectEntry() {
   }
   if (resolution && resolution.ok && resolution.matched) {
     setCollectStatus(describeResolvedSource(resolution));
+    setCollectedResource(resolution.resource);
   }
 }
 
@@ -1073,6 +1099,7 @@ async function refreshCollectEntry() {
 async function collectCurrentPage() {
   const button = document.getElementById("collectPageBtn");
   if (button) button.disabled = true;
+  setCollectedResource(null);
   setCollectStatus(COLLECT_STATUS_COPY.collecting);
   let result = null;
   try {
@@ -1085,6 +1112,10 @@ async function collectCurrentPage() {
   if (button) button.disabled = false;
   if (result && result.ok && COLLECT_STATUS_COPY[result.outcome]) {
     setCollectStatus(COLLECT_STATUS_COPY[result.outcome]);
+    setCollectedResource(result.resource);
+    if (typeof result.tabId === "number") {
+      await chooseCourseTarget(result.tabId);
+    }
     return;
   }
   setCollectStatus((result && result.message) || COLLECT_STATUS_COPY.failed);
@@ -1238,7 +1269,7 @@ function updateStartButtons() {
  * While a Session records the list is locked (the rows come back marked),
  * so the box stays hidden and the bar's 学习目标 line speaks instead.
  */
-async function refreshCourseTabs() {
+async function refreshCourseTabs({ restoreTarget = true } = {}) {
   let result = null;
   try {
     result = await chrome.runtime.sendMessage({ action: "getCourseTabs" });
@@ -1246,15 +1277,26 @@ async function refreshCourseTabs() {
     return;
   }
   if (!result || !result.ok) return;
+  const previousTabId = courseTargetUi.chosenTabId;
+  const nextTabId = result.chosenTabId || null;
+  const targetChanged = previousTabId !== nextTabId;
   courseTargetUi.available = true;
-  courseTargetUi.chosenTabId = result.chosenTabId || null;
-  courseTargetUi.matched = false;
-  courseTargetUi.startable = false;
-  courseTargetUi.resumePositionMs = null;
+  courseTargetUi.chosenTabId = nextTabId;
+  if (targetChanged) {
+    courseTargetUi.matched = false;
+    courseTargetUi.startable = false;
+    courseTargetUi.resumePositionMs = null;
+  }
   renderCourseTabList(result.tabs || []);
-  setCourseTabStatus("");
+  if (targetChanged) setCourseTabStatus("");
   updateStartButtons();
   updateCourseTabsVisibility();
+  // A service-worker restore can return a chosen tab without the panel's
+  // previous resolve verdict. Re-resolve it once; chooseCourseTarget itself
+  // suppresses this branch while refreshing, so there is no recursion.
+  if (restoreTarget && targetChanged && nextTabId) {
+    await chooseCourseTarget(nextTabId);
+  }
 }
 
 function renderCourseTabList(rows) {
@@ -1337,7 +1379,7 @@ async function chooseCourseTarget(tabId) {
   // applied AFTER it (refreshCourseTabs reconciles from getCourseTabs,
   // which carries no resolve data — applying first let the refresh clobber
   // startable/matched and leave 开始学习 disabled).
-  await refreshCourseTabs();
+  await refreshCourseTabs({ restoreTarget: false });
   courseTargetUi.chosenTabId = tabId;
   courseTargetUi.startable = !!result.startable;
   courseTargetUi.matched = !!(result.resolve && result.resolve.matched);
@@ -1406,7 +1448,9 @@ async function startLearningForTarget() {
   }
   setCourseTabBusy(false);
   if (result && result.success) {
+    courseTargetUi.matched = true;
     setCourseTabStatus("");
+    updateStartButtons();
     updateCourseTabsVisibility();
     return;
   }
@@ -2443,6 +2487,10 @@ const sessionUi = {
   // deferred until the learner picks or the Session finishes).
   captionsCoverage: null,
   transcriptStateSessionId: null,
+  // Latest validated source-video position for the archived-captions
+  // playback highlight. It is panel state only, never a seek command.
+  playbackPosition: null,
+  playbackPositionSessionId: null,
   // End-button state machine (0.1.40): 结束学习 click or a report retry sets
   // reportGenerating until any end-time payload arrives; a failed pass keeps
   // reportError so the 开始总结 button doubles as the retry affordance.
@@ -2479,6 +2527,8 @@ function observeTranscriptState(state) {
     sessionUi.transcriptOrigin = null;
     sessionUi.captionsProbe = null;
     sessionUi.captionsCoverage = null;
+    sessionUi.playbackPosition = null;
+    sessionUi.playbackPositionSessionId = state.sessionId;
   }
   if (state.transcriptOrigin === "captions" || state.transcriptOrigin === "asr") {
     sessionUi.transcriptOrigin = state.transcriptOrigin;
@@ -2602,10 +2652,57 @@ function updateSessionRecordRow(row, record) {
     ? "session-record session-record-failed"
     : "session-record";
   row.dataset.seconds = String(recordStartSeconds(record.start));
+  const start = Math.max(0, Number(record.start) || 0);
+  const duration = Number(record.duration);
+  row.dataset.playbackStart = String(start);
+  row.dataset.playbackEnd =
+    Number.isFinite(duration) && duration > 0 ? String(start + duration) : "";
   const stamp = row.children[0];
   const text = row.children[1];
   if (stamp) stamp.textContent = `[${sessionTimestampLabel(record.start)}]`;
   if (text) text.textContent = record.text;
+}
+
+/**
+ * Projects a validated media position onto the archived source-caption rows.
+ * The row owns no click listener: this is playback → transcript only. Records
+ * with a duration highlight only inside their own range, so gaps stay honest;
+ * duration-less records fall back to the next record's start boundary.
+ */
+function syncCaptionPlaybackPosition(position, { scroll = true } = {}) {
+  const current = Number(position);
+  if (!Number.isFinite(current) || current < 0) return false;
+  sessionUi.playbackPosition = current;
+  sessionUi.playbackPositionSessionId = sessionUi.sessionId;
+
+  const rows = Array.from(sessionUi.recordRows.values())
+    .filter((row) => Number.isFinite(Number(row.dataset.playbackStart)))
+    .sort((a, b) => Number(a.dataset.playbackStart) - Number(b.dataset.playbackStart));
+  const previous = rows.find((row) => row.classList.contains("session-record-playing")) || null;
+  let active = null;
+
+  if (sessionUi.transcriptOrigin === "captions") {
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const start = Number(row.dataset.playbackStart);
+      const explicitEnd = Number(row.dataset.playbackEnd);
+      const nextStart = rows[index + 1]
+        ? Number(rows[index + 1].dataset.playbackStart)
+        : Number.POSITIVE_INFINITY;
+      const end = explicitEnd > start ? explicitEnd : nextStart;
+      if (current >= start && current < end) {
+        active = row;
+        break;
+      }
+    }
+  }
+
+  if (previous === active) return true;
+  for (const row of rows) row.classList.toggle("session-record-playing", row === active);
+  if (active && scroll) {
+    active.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  return true;
 }
 
 function renderSessionTranscript(state) {
@@ -2664,7 +2761,17 @@ function renderSessionTranscript(state) {
   sessionUi.renderedRecords = records.length;
   renderPendingSegments(container, state);
   renderCaptionsStateNotice(container, state);
-  container.scrollTop = container.scrollHeight;
+  if (
+    state.transcriptOrigin === "captions" &&
+    sessionUi.playbackPositionSessionId === state.sessionId &&
+    Number.isFinite(sessionUi.playbackPosition)
+  ) {
+    // Re-rendering rows must not reset the learner to the bottom or replay a
+    // smooth scroll; restore the current projection without scrolling.
+    syncCaptionPlaybackPosition(sessionUi.playbackPosition, { scroll: false });
+  } else {
+    container.scrollTop = container.scrollHeight;
+  }
 }
 
 /**
@@ -3671,7 +3778,7 @@ function showSessionMode({
     // not stack on top of it when the startup scan and this idle render race.
     if (welcome) {
       welcome.style.display =
-        reportTabUi.artifact && !currentVideoId ? "none" : "flex";
+        reportTabUi.artifact && !currentVideoId ? "none" : "grid";
     }
     // P10: the Session ended (or the panel idled) — the course tab list is
     // selectable again (决策 4: 结束本次学习后列表恢复可选).
@@ -3944,6 +4051,12 @@ function setupSessionUI() {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === "sessionUpdate") {
       return handleSessionUpdateMessage(message, sendResponse);
+    }
+    if (message.action === "sessionPlaybackPosition") {
+      if (message.sessionId !== sessionUi.sessionId) return false;
+      syncCaptionPlaybackPosition(message.position);
+      sendResponse({ success: true });
+      return false;
     }
     return false;
   });

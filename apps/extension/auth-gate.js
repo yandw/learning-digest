@@ -54,6 +54,15 @@ var YTD_AUTH_GATE = (() => {
     return buildApiUrl(webAppBaseUrl, "/link.html");
   }
 
+  /** A Web library deep link carries only the opaque Resource id. */
+  function buildResourceDetailUrl(webAppBaseUrl, resourceId) {
+    if (typeof resourceId !== "string" || resourceId.trim() === "") return null;
+    const base = buildApiUrl(webAppBaseUrl, "/");
+    return base
+      ? `${base}?resource=${encodeURIComponent(resourceId.trim())}`
+      : null;
+  }
+
   /**
    * Extracts the one-time code from a tab's final URL. Only the link
    * success address (…/link.html?link=<code>) counts; anything else —
@@ -185,6 +194,7 @@ var YTD_AUTH_GATE = (() => {
     parseStoredCredential,
     buildApiUrl,
     buildLinkPageUrl,
+    buildResourceDetailUrl,
     extractLinkCode,
     checkAuthorization,
     exchangeLinkCode,

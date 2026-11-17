@@ -534,9 +534,13 @@ test("start() wires the message listener, the 1s cadence and pagehide", () => {
   assert.equal(intervals[0].ms, POSITION_INTERVAL_MS);
   assert.equal(pagehideListeners.length, 2); // position flush + title, as shipped
 
-  // The wired listener answers through the same dispatcher the tests use.
+  // Chrome supplies the sender between the message and response callback.
   const responses = [];
-  messageListeners[0]({ action: "getMediaPosition" }, (r) => responses.push(r));
+  messageListeners[0](
+    { action: "getMediaPosition" },
+    { id: "learning-digest" },
+    (r) => responses.push(r),
+  );
   assert.equal(responses[0].success, true);
 });
 
@@ -830,4 +834,45 @@ test("getYouTubeCaptionsAuthorized without a player request URL stays silent", (
   assert.equal(handled, false, "no authorization, no authorized read");
   assert.deepEqual(responses, []);
   assert.deepEqual(reader.calls, [], "the reader is never probed");
+});
+
+test("the shipped onMessage listener forwards Chrome's third argument as sendResponse", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const vm = require("node:vm");
+  const video = stubVideo({ currentTime: 83.25 });
+  const listeners = [];
+  const sandbox = {
+    YTD_YOUTUBE_CAPTIONS: {},
+    document: {
+      title: "YouTube 视频课",
+      querySelectorAll: (selector) => (selector === "video" ? [video] : []),
+    },
+    window: { location: {}, addEventListener() {} },
+    chrome: {
+      runtime: {
+        sendMessage() {},
+        onMessage: { addListener: (listener) => listeners.push(listener) },
+      },
+    },
+    setInterval: () => 1,
+    console: { debug() {}, warn() {} },
+  };
+  vm.runInNewContext(
+    fs.readFileSync(path.join(__dirname, "..", "page-bridge.js"), "utf8"),
+    sandbox,
+  );
+  assert.equal(listeners.length, 1);
+  const responses = [];
+
+  const handled = listeners[0](
+    { action: "getMediaPosition" },
+    { id: "learning-digest" },
+    (response) => responses.push(response),
+  );
+
+  assert.equal(handled, false);
+  assert.equal(responses.length, 1);
+  assert.equal(responses[0].success, true);
+  assert.equal(responses[0].position, 83.25);
 });

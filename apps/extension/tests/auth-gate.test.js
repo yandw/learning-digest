@@ -63,6 +63,19 @@ test("buildApiUrl joins the base and /v1 paths, rejecting unusable bases", () =>
   }
 });
 
+test("buildResourceDetailUrl carries only the resource id, never a credential", () => {
+  assert.equal(
+    YTD_AUTH_GATE.buildResourceDetailUrl(`${WEB_BASE}/`, "res_01 JABC"),
+    `${WEB_BASE}/?resource=res_01%20JABC`,
+  );
+  const url = new URL(YTD_AUTH_GATE.buildResourceDetailUrl(WEB_BASE, "res_1"));
+  assert.equal(url.searchParams.get("resource"), "res_1");
+  assert.equal(url.searchParams.has("token"), false);
+  assert.equal(YTD_AUTH_GATE.buildResourceDetailUrl(WEB_BASE, ""), null);
+  assert.equal(YTD_AUTH_GATE.buildResourceDetailUrl(WEB_BASE, null), null);
+  assert.equal(YTD_AUTH_GATE.buildResourceDetailUrl("not a url", "res_1"), null);
+});
+
 // --- link code extraction (the extension's own tab) ---------------------------
 
 test("extractLinkCode reads the code only from the success address", () => {

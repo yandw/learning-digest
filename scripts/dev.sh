@@ -239,9 +239,31 @@ stop() {
   done
 }
 
-listen_port_for() { # pattern: find the listening port of a service process
+process_tree_pids() { # root pid: root + children + grandchildren (uv/npm wrappers)
+  local root_pid="$1" child grandchild
+  printf '%s\n' "$root_pid"
+  for child in $(pgrep -P "$root_pid" 2>/dev/null); do
+    printf '%s\n' "$child"
+    for grandchild in $(pgrep -P "$child" 2>/dev/null); do
+      printf '%s\n' "$grandchild"
+    done
+  done
+}
+
+matching_service_pids() { # marker, cwd_guard: matching root processes plus their wrappers' children
+  local marker="$1" cwd_guard="$2" pid tree_pid
+  for pid in $(pgrep -f "$marker" 2>/dev/null); do
+    if [ -n "$cwd_guard" ] && ! process_cwd_contains "$pid" "$cwd_guard"; then continue; fi
+    for tree_pid in $(process_tree_pids "$pid"); do
+      if [ -n "$cwd_guard" ] && ! process_cwd_contains "$tree_pid" "$cwd_guard"; then continue; fi
+      printf '%s\n' "$tree_pid"
+    done
+  done
+}
+
+listen_port_for() { # marker, cwd_guard: find the listening port in the service process tree
   local pid line
-  for pid in $(pgrep -f "$1" 2>/dev/null); do
+  for pid in $(matching_service_pids "$1" "$2"); do
     line="$(lsof -a -p "$pid" -iTCP -sTCP:LISTEN -P -n 2>/dev/null | awk 'NR>1{print $9; exit}')"
     if [ -n "$line" ]; then
       echo "${line##*:}"
@@ -253,9 +275,13 @@ listen_port_for() { # pattern: find the listening port of a service process
 
 status() {
   local api_port web_port worker_running=false
-  api_port="$(listen_port_for "python -m app.main" 2>/dev/null)" || api_port=""
-  web_port="$(listen_port_for "node server.js" 2>/dev/null)" || web_port=""
-  pgrep -f "python -m worker.main" >/dev/null 2>&1 && worker_running=true
+  api_port="$(listen_port_for "app.main" "$ROOT/apps/api" 2>/dev/null)" || api_port=""
+  web_port="$(listen_port_for "server.js" "$ROOT/apps/web" 2>/dev/null)" || web_port=""
+  local worker_pids
+  worker_pids="$(matching_service_pids "worker.main" "$ROOT/apps/worker" 2>/dev/null)"
+  if [ -n "$worker_pids" ]; then
+    worker_running=true
+  fi
 
   if [ -n "$api_port" ]; then
     echo "api    :$api_port  RUNNING(运行中) http://127.0.0.1:$api_port"

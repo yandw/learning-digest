@@ -429,6 +429,27 @@ a:hover {
   margin-bottom: 20px;
 }
 
+.detail-section-heading.section-collapsed {
+  margin-bottom: 0;
+}
+
+.detail-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detail-section-lead {
+  min-width: 0;
+}
+
+.detail-section-title .section-toggle {
+  flex: none;
+  padding: 0 4px;
+  color: var(--ld-text-secondary);
+}
+
 .detail-section-heading p,
 .detail-delete p {
   margin: 4px 0 0;

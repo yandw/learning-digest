@@ -14,9 +14,13 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.17", () => {
+test("apps/web release metadata is 0.1.18", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
+  // 0.1.18: the resource detail page orders 资料来源 → 学习笔记 → 课程
+  // 总结 → 逐字稿, and every section gets a collapse/expand toggle —
+  // the merged transcript can run to hundreds of rows, so it defaults
+  // collapsed.
   // 0.1.17: mergeTranscriptViews clusters only NEAR-duplicates (one range
   // covering ≥80% of the other's shorter span) — the plain-overlap chain
   // collapsed sliding-window caption chunks (~50% pairwise overlap) into a
@@ -49,7 +53,7 @@ test("apps/web release metadata is 0.1.17", () => {
   // administrator's 站点管理 surface (isAdmin-driven nav entry, the
   // site-capability table with per-row boolean-subset saves, the D2
   // non-admin denied view) over the round-4 admin API.
-  assert.equal(packageJson.version, "0.1.17");
+  assert.equal(packageJson.version, "0.1.18");
   assert.equal(packageJson.private, true);
 });
 

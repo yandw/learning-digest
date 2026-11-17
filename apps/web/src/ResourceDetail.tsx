@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Alert, Button, Empty, Input, Space, Spin, Tag, Typography } from "antd";
-import { ArrowLeftOutlined, DeleteOutlined, EditOutlined, LinkOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, RightOutlined } from "@ant-design/icons";
 import {
   buildNoteJumpUrl,
   mergeTranscriptViews,
@@ -61,6 +61,51 @@ function SummaryBlocks({ blocks }: { blocks: any[] }) {
     }
     return <p className="summary-paragraph" key={index}><MarkdownRuns runs={block.runs} /></p>;
   });
+}
+
+function CollapsibleSection({
+  id,
+  title,
+  count,
+  subtitle,
+  actions,
+  defaultOpen = true,
+  children,
+}: {
+  id: string;
+  title: string;
+  count?: string;
+  subtitle?: string;
+  actions?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="detail-panel" aria-labelledby={`${id}Heading`}>
+      <div className={`detail-section-heading${open ? "" : " section-collapsed"}`}>
+        <div className="detail-section-title">
+          <Button
+            type="text"
+            size="small"
+            className="section-toggle"
+            aria-expanded={open}
+            aria-controls={`${id}Body`}
+            aria-label={open ? `收起${title}` : `展开${title}`}
+            icon={open ? <DownOutlined /> : <RightOutlined />}
+            onClick={() => setOpen((value) => !value)}
+          />
+          <div className="detail-section-lead">
+            <h2 id={`${id}Heading`}>{title}</h2>
+            {subtitle && <p>{subtitle}</p>}
+          </div>
+          {count && <span className="list-count">{count}</span>}
+        </div>
+        {actions}
+      </div>
+      {open && <div id={`${id}Body`}>{children}</div>}
+    </section>
+  );
 }
 
 export default function ResourceDetail({
@@ -150,8 +195,7 @@ export default function ResourceDetail({
         </div>
       )}
 
-      <section className="detail-panel" aria-labelledby="sourceHeading">
-        <h2 id="sourceHeading">资料来源</h2>
+      <CollapsibleSection id="source" title="资料来源">
         <ul className="detail-sources">
           {presented.sources.map((source: any) => (
             <li key={source.id}>
@@ -166,13 +210,13 @@ export default function ResourceDetail({
             </li>
           ))}
         </ul>
-      </section>
+      </CollapsibleSection>
 
-      <section className="detail-panel" aria-labelledby="notesHeading">
-        <div className="detail-section-heading">
-          <h2 id="notesHeading">学习笔记</h2>
-          <span className="list-count">{presented.notesCount} 条</span>
-        </div>
+      <CollapsibleSection
+        id="notes"
+        title="学习笔记"
+        count={`${presented.notesCount} 条`}
+      >
         {notes.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="还没有学习笔记。" />
         ) : (
@@ -190,51 +234,18 @@ export default function ResourceDetail({
             })}
           </ul>
         )}
-      </section>
+      </CollapsibleSection>
 
-      <section className="detail-panel" aria-labelledby="transcriptHeading">
-        <div className="detail-section-heading">
-          <h2 id="transcriptHeading">逐字稿</h2>
-          <span className="list-count">
-            {mergedView.records.length} 段 · 合并 {sessions.length} 次学习
-          </span>
-        </div>
-        {sessions.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开始学习后，逐字稿会出现在这里。" />
-        ) : sessionViews.every((view: any) => view === null || view === undefined) ? (
-          <Alert type="warning" showIcon title="逐字稿加载失败，请稍后重试" />
-        ) : entries.length === 0 ? (
-          <p className="session-hint">还没有逐字稿</p>
-        ) : (
-          <ul className="transcript-entries">
-            {entries.map((entry: any, index: number) => (
-              <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
-                <div className="transcript-line">
-                  {(entry.stamp || entry.jumpUrl) && (
-                    <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
-                  )}
-                  <span className="transcript-text">{entry.text}</span>
-                  {entry.kind === "record" && sessionOriginLabel(entry.origin) && (
-                    <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
-                  )}
-                </div>
-                {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="detail-panel" aria-labelledby="summaryHeading">
-        <div className="detail-section-heading summary-heading">
-          <div>
-            <h2 id="summaryHeading">课程总结</h2>
-            <p>总结与原文引用会保留在历次生成记录中。</p>
-          </div>
+      <CollapsibleSection
+        id="summary"
+        title="课程总结"
+        subtitle="总结与原文引用会保留在历次生成记录中。"
+        actions={(
           <Button type="primary" loading={state.generating} disabled={state.busy} onClick={() => void onGenerate()}>
             {state.generating ? "生成中…" : "生成总结"}
           </Button>
-        </div>
+        )}
+      >
         {state.summariesError && <Alert type="error" showIcon title={state.summariesError} />}
         {summaries.length > 0 && (
           <div className="summary-history" aria-label="历次总结">
@@ -287,7 +298,39 @@ export default function ResourceDetail({
             )}
           </article>
         )}
-      </section>
+      </CollapsibleSection>
+
+      <CollapsibleSection
+        id="transcript"
+        title="逐字稿"
+        count={`${mergedView.records.length} 段 · 合并 ${sessions.length} 次学习`}
+        defaultOpen={false}
+      >
+        {sessions.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开始学习后，逐字稿会出现在这里。" />
+        ) : sessionViews.every((view: any) => view === null || view === undefined) ? (
+          <Alert type="warning" showIcon title="逐字稿加载失败，请稍后重试" />
+        ) : entries.length === 0 ? (
+          <p className="session-hint">还没有逐字稿</p>
+        ) : (
+          <ul className="transcript-entries">
+            {entries.map((entry: any, index: number) => (
+              <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
+                <div className="transcript-line">
+                  {(entry.stamp || entry.jumpUrl) && (
+                    <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
+                  )}
+                  <span className="transcript-text">{entry.text}</span>
+                  {entry.kind === "record" && sessionOriginLabel(entry.origin) && (
+                    <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
+                  )}
+                </div>
+                {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CollapsibleSection>
 
       <footer className="detail-delete">
         <div>

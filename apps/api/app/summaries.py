@@ -123,7 +123,17 @@ def require_account_resource(*, store: Any, account_id: str, resource_id: str) -
 def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     """Aggregate one Resource's archived material (D17): records and gaps
     from ALL of the account's Sessions on the resource (active and finished
-    alike — 未学完可生成), merged on the shared source timeline."""
+    alike — 未学完可生成), merged on the shared source timeline.
+
+    Merge/dedup (owner decision 2026-11-17: 一份资料只有一份逐字稿): multiple
+    sessions re-watching the same ranges used to land every overlapping copy
+    in the summary prompt (duplicated text, confused citations). Records now
+    cluster on overlapping ranges and the cluster keeps the best copy:
+    longest text, then captions over asr (authored beats machine), then the
+    smaller sessionId — deterministic regardless of session list order.
+    Gaps fold their overlaps, then drop any range a kept record already
+    covers. The web library's mergeTranscriptViews implements the SAME rule
+    for display."""
     sessions = [
         s
         for s in store.list("sessions")
@@ -137,6 +147,7 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
             records.append(
                 {
                     "sessionId": session["id"],
+                    "origin": session.get("origin"),
                     "startMs": record["startMs"],
                     "endMs": record["endMs"],
                     "text": record["text"],
@@ -144,9 +155,58 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
             )
         for gap in state["gaps"]:
             gaps.append({"sessionId": session["id"], "startMs": gap["startMs"], "endMs": gap["endMs"]})
-    records.sort(key=lambda r: r["startMs"])
-    gaps.sort(key=lambda g: g["startMs"])
-    return {"sessions": sessions, "records": records, "gaps": gaps}
+
+    def _record_sort_key(r: dict) -> tuple:
+        return (r["startMs"], r["endMs"], str(r["sessionId"]))
+
+    def _beats(challenger: dict, current: dict) -> bool:
+        """Deterministic cluster winner: longest text; tie → captions over
+        asr (authored beats machine); tie → smaller sessionId. Mirrors the
+        web library's mergeTranscriptViews beat-for-beat."""
+        len_diff = len(challenger["text"]) - len(current["text"])
+        if len_diff != 0:
+            return len_diff > 0
+        origin_diff = (0 if challenger["origin"] == "captions" else 1) - (
+            0 if current["origin"] == "captions" else 1
+        )
+        if origin_diff != 0:
+            return origin_diff < 0
+        return str(challenger["sessionId"]) < str(current["sessionId"])
+
+    records.sort(key=_record_sort_key)
+    kept_records: list[dict] = []
+    cluster: dict | None = None
+    for record in records:
+        if cluster is not None and record["startMs"] < cluster["endMs"]:
+            if _beats(record, cluster["chosen"]):
+                cluster["chosen"] = record
+            if record["endMs"] > cluster["endMs"]:
+                cluster["endMs"] = record["endMs"]
+        else:
+            if cluster is not None:
+                kept_records.append(cluster["chosen"])
+            cluster = {"chosen": record, "endMs": record["endMs"]}
+    if cluster is not None:
+        kept_records.append(cluster["chosen"])
+
+    gaps.sort(key=lambda g: (g["startMs"], g["endMs"], str(g["sessionId"])))
+    folded_gaps: list[dict] = []
+    for gap in gaps:
+        last = folded_gaps[-1] if folded_gaps else None
+        if last is not None and gap["startMs"] < last["endMs"]:
+            if gap["endMs"] > last["endMs"]:
+                last["endMs"] = gap["endMs"]
+        else:
+            folded_gaps.append(dict(gap))
+    kept_gaps = [
+        gap
+        for gap in folded_gaps
+        if not any(
+            r["startMs"] < gap["endMs"] and gap["startMs"] < r["endMs"]
+            for r in kept_records
+        )
+    ]
+    return {"sessions": sessions, "records": kept_records, "gaps": kept_gaps}
 
 
 def stamp_line(entry: dict) -> str:

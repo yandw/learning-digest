@@ -329,12 +329,13 @@ export function presentTranscript(view, sources) {
  *
  * Dedup rule (kept identical on the API side, summaries.collect_material):
  * - records: sorted by startMs; overlapping ranges cluster together and
- *   the cluster keeps the LONGEST text (most complete ASR/caption text),
- *   earliest input order winning the tie — deterministic regardless of
- *   session list order. Each survivor keeps its own sessionId + origin.
+ *   the cluster keeps the best copy: longest text first, then captions
+ *   over asr (authored beats machine), then the smaller sessionId — fully
+ *   deterministic regardless of session list order. The survivor keeps
+ *   its own sessionId + origin.
  * - gaps: overlapping ranges fold into one (min start, max end); a range
  *   already covered by a kept record is dropped (the record says more).
- * - failed: same range dedup as records, first occurrence kept.
+ * - failed: same range dedup, smallest (startMs, endMs, sessionId) kept.
  * - pending: kept as-is (only the active session can have any).
  *
  * @param {Array} views transcript views (§2.5 TranscriptView) in any
@@ -363,17 +364,33 @@ export function mergeTranscriptViews(viewsIn) {
       pending.push({ ...segment, sessionId: view.sessionId });
     }
   }
-  records.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  records.sort(
+    (a, b) =>
+      a.startMs - b.startMs ||
+      a.endMs - b.endMs ||
+      String(a.sessionId).localeCompare(String(b.sessionId)),
+  );
+
+  // Deterministic winner for a cluster: longest text; tie → captions over
+  // asr (authored beats machine); tie → lexicographically smaller
+  // sessionId. Session list order must never influence the outcome — the
+  // API side merges the same data with its own store order.
+  const originRank = (origin) => (origin === "captions" ? 0 : 1);
+  function beats(challenger, current) {
+    const lenDiff =
+      String(challenger.text || "").length - String(current.text || "").length;
+    if (lenDiff !== 0) return lenDiff > 0;
+    const originDiff = originRank(challenger.origin) - originRank(current.origin);
+    if (originDiff !== 0) return originDiff < 0;
+    return String(challenger.sessionId) < String(current.sessionId);
+  }
 
   const keptRecords = [];
   let cluster = null;
   for (const record of records) {
     if (cluster && record.startMs < cluster.endMs) {
       // Overlaps the open cluster: compete for the cluster seat.
-      const current = cluster.chosen;
-      if (
-        String(record.text || "").length > String(current.text || "").length
-      ) {
+      if (beats(record, cluster.chosen)) {
         cluster.chosen = record;
       }
       if (record.endMs > cluster.endMs) cluster.endMs = record.endMs;
@@ -391,7 +408,12 @@ export function mergeTranscriptViews(viewsIn) {
       gaps.push({ ...gap, sessionId: view.sessionId });
     }
   }
-  gaps.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  gaps.sort(
+    (a, b) =>
+      a.startMs - b.startMs ||
+      a.endMs - b.endMs ||
+      String(a.sessionId).localeCompare(String(b.sessionId)),
+  );
   const foldedGaps = [];
   for (const gap of gaps) {
     const last = foldedGaps[foldedGaps.length - 1];
@@ -405,8 +427,13 @@ export function mergeTranscriptViews(viewsIn) {
     (gap) => !keptRecords.some((r) => r.startMs < gap.endMs && gap.startMs < r.endMs),
   );
 
-  // Failed rows: same range dedup, first occurrence kept.
-  failed.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  // Failed rows: same range dedup, smallest (startMs, endMs, sessionId) kept.
+  failed.sort(
+    (a, b) =>
+      a.startMs - b.startMs ||
+      a.endMs - b.endMs ||
+      String(a.sessionId).localeCompare(String(b.sessionId)),
+  );
   const keptFailed = [];
   for (const segment of failed) {
     const last = keptFailed[keptFailed.length - 1];

@@ -501,3 +501,72 @@ def test_generate_provider_response_without_usable_content_string_is_502(start_a
         headers=auth_header(a["token"]),
     )
     assert listing.json == {"summaries": []}
+
+
+def test_generate_merges_overlapping_sessions_into_one_transcript(start_app):
+    """Owner decision 2026-11-17: 一份资料只有一份逐字稿。Two sessions
+    re-watching the same ranges contribute every overlapping copy to the
+    summary prompt; collect_material now clusters overlapping ranges and
+    keeps one copy (longest text, then captions over asr, then smaller
+    sessionId), and identical gaps fold into one. The dropped duplicate's
+    text must not appear in the prompt at all."""
+    provider = CapturingProvider()
+    app, a, _b = start_summary_app(start_app, provider)
+    created = app.request(
+        "POST",
+        "/v1/resources",
+        headers=auth_header(a["token"]),
+        body={
+            "url": "https://www.bilibili.com/video/BV1ab411L78c?p=2",
+            "title": "多段学习去重",
+        },
+    )
+    assert created.status == 201, created.json
+    resource, source = created.json["resource"], created.json["source"]
+
+    sessions = []
+    for _ in range(2):
+        response = app.request(
+            "POST",
+            f"/v1/sources/{source['id']}/sessions",
+            headers=auth_header(a["token"]),
+            body={},
+        )
+        assert response.status == 201
+        sessions.append(response.json["session"])
+
+    first_records = [
+        {"startMs": 0, "endMs": 30000, "text": "被丢弃的短文本甲"},
+        {"startMs": 30000, "endMs": 60000, "text": "保留的乙第二段不重叠"},
+    ]
+    second_records = [
+        {"startMs": 0, "endMs": 30000, "text": "保留的更长文本甲更加完整"},
+        {"startMs": 60000, "endMs": 90000, "text": "保留的乙第三段"},
+    ]
+    for session, records in ((sessions[0], first_records), (sessions[1], second_records)):
+        archived = app.request(
+            "POST",
+            f"/v1/sessions/{session['id']}/captions",
+            headers=auth_header(a["token"]),
+            body={"segments": records},
+        )
+        assert archived.status == 201, archived.json
+        finished = app.request(
+            "POST",
+            f"/v1/sessions/{session['id']}/finish",
+            headers=auth_header(a["token"]),
+            body={"gaps": [{"startMs": 100000, "endMs": 160000}]},
+        )
+        assert finished.status == 200
+
+    response = generate(app, a["token"], resource["id"])
+    assert response.status == 201, response.json
+    assert len(provider.captured) == 1
+    user = provider.captured[0]["user"]
+
+    assert "被丢弃的短文本甲" not in user, "the dropped duplicate leaves no copy in the prompt"
+    for kept in ("保留的更长文本甲更加完整", "保留的乙第二段不重叠", "保留的乙第三段"):
+        assert user.count(kept) == 1, f"{kept} appears exactly once"
+    # The two sessions' identical gap folds to a single marker line.
+    gap_lines = [line for line in user.split("\n") if "已跳过，该范围未取得文本" in line]
+    assert len(gap_lines) == 1, gap_lines

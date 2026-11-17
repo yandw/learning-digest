@@ -17,6 +17,11 @@ def test_pyproject_is_the_api_unit_release_metadata():
     pyproject = tomllib.loads((API_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "learning-digest-api"
+    # 0.2.7: 一份资料只有一份逐字稿 — collect_material clusters overlapping
+    # records across a resource's sessions and keeps one copy per range
+    # (longest text, captions over asr, smaller sessionId), folding
+    # duplicate gaps, so the course-summary prompt no longer carries
+    # duplicated transcript text from multi-session re-watching.
     # 0.2.6 hardens the usage ledger against pre-r4 rows (missing newer
     # counters crashed record_*/usage_view with KeyError; with_defaults()
     # backfills on read and the next write upgrades the row).
@@ -41,7 +46,7 @@ def test_pyproject_is_the_api_unit_release_metadata():
     # recording. 0.1.6 (round-3 review fixes): per-generate timeout signal
     # + course-summary prompt notes-marker. The contract generation (/v1)
     # is unchanged.
-    assert pyproject["project"]["version"] == "0.2.6"
+    assert pyproject["project"]["version"] == "0.2.7"
     assert pyproject["project"]["requires-python"] == ">=3.12"
 
 

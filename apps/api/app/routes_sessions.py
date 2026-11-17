@@ -28,6 +28,12 @@ from .transcripts import archive_captions, get_transcript
 from .usage import usage_view
 
 
+# Caption archives contain the whole source timeline as text. Keep the 64 KiB
+# control-plane default for other routes, but allow long-course transcripts
+# through this endpoint without changing the single-submission D15 contract.
+CAPTIONS_BODY_MAX_BYTES = 10 * 1024 * 1024
+
+
 def register_sessions_routes(app, ctx: AppContext) -> None:
     async def ignored_body(request: Request) -> None:
         # Read-and-ignored body as an async dependency: the drain/validation
@@ -81,7 +87,9 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
         # Captions direct archive (contract-r2 §3.3): as-read archive, the
         # first submission locks origin "captions" (D15), a resend replays
         # the stored archive (首存为准).
-        body = await read_json_body(request, ctx.config.max_body_bytes)
+        body = await read_json_body(
+            request, max(ctx.config.max_body_bytes, CAPTIONS_BODY_MAX_BYTES)
+        )
         session = find_account_session(
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )

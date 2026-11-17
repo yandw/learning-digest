@@ -146,6 +146,48 @@ def test_captions_archives_as_read_and_locks_origin(start_app):
     assert me.status == 200
 
 
+def test_captions_accepts_long_video_archive_above_general_body_cap(start_app):
+    """A long caption archive is text, not a small control-plane request."""
+    app = start_app(seed_emails=[LEARNER])
+    token = open_account(app, LEARNER)
+    created = create_fixture_source(app, token)
+    session = open_session(app, token, created["source"]["id"], {"ms": 0})
+    segments = [
+        {"startMs": 0, "endMs": 1000, "text": "长视频字幕" * 20_000},
+    ]
+
+    response = app.request(
+        "POST",
+        f"/v1/sessions/{session['id']}/captions",
+        headers=auth_header(token),
+        body={"segments": segments},
+    )
+
+    assert response.status == 201
+    assert response.json["transcript"]["records"][0]["text"] == segments[0]["text"]
+
+
+def test_captions_accepts_archive_between_four_and_ten_mib(start_app):
+    """The caption route accepts long-course archives up to its 10 MiB cap."""
+    app = start_app(seed_emails=[LEARNER])
+    token = open_account(app, LEARNER)
+    created = create_fixture_source(app, token)
+    session = open_session(app, token, created["source"]["id"], {"ms": 0})
+    segments = [
+        {"startMs": 0, "endMs": 1000, "text": "0123456789" * 500_000},
+    ]
+
+    response = app.request(
+        "POST",
+        f"/v1/sessions/{session['id']}/captions",
+        headers=auth_header(token),
+        body={"segments": segments},
+    )
+
+    assert response.status == 201
+    assert response.json["transcript"]["records"][0]["text"] == segments[0]["text"]
+
+
 def test_captions_resend_answers_200_with_the_stored_archive(start_app):
     archive = session_example("api-session-captions-archive")
     resend = session_example("api-session-captions-resend-idempotent")

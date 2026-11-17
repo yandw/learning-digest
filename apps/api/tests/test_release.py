@@ -17,7 +17,10 @@ def test_pyproject_is_the_api_unit_release_metadata():
     pyproject = tomllib.loads((API_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "learning-digest-api"
-    # 0.2.3 (ticket 5.8, issue #97): the config-file layer — apps/api/
+    # 0.2.5 raises the long-course caption-archive transport cap to 10 MiB.
+    # 0.2.4: long-course caption archives use a route-specific 4 MiB body
+    # cap rather than the 64 KiB control-plane default. 0.2.3 (ticket 5.8,
+    # issue #97): the config-file layer — apps/api/
     # config.json (workerToken/ai*/stateFile/inviteSeed/outboxFile/
     # audioDir; PORT stays script-managed) is the base values layer, env
     # overrides it, built-in defaults fill the rest; invalid JSON fails
@@ -35,7 +38,7 @@ def test_pyproject_is_the_api_unit_release_metadata():
     # recording. 0.1.6 (round-3 review fixes): per-generate timeout signal
     # + course-summary prompt notes-marker. The contract generation (/v1)
     # is unchanged.
-    assert pyproject["project"]["version"] == "0.2.3"
+    assert pyproject["project"]["version"] == "0.2.5"
     assert pyproject["project"]["requires-python"] == ">=3.12"
 
 

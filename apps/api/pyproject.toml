@@ -17,10 +17,14 @@
 # (ticket 5.8, issue #97) adds the config-file layer: apps/api/config.json
 # (base values) < env overrides < built-in defaults. 0.2.4 adds a
 # route-specific 4 MiB transport cap for long-course caption archives. 0.2.5
-# raises that caption-specific cap to 10 MiB.
+# raises that caption-specific cap to 10 MiB. 0.2.6 hardens the usage ledger
+# against pre-r4 rows: rows persisted before the rolling-summary / digest /
+# explain counters shipped lacked those keys and crashed every record_* call
+# (KeyError) — with_defaults() backfills missing fields on read, and the
+# next write upgrades the stored row.
 [project]
 name = "learning-digest-api"
-version = "0.2.5"
+version = "0.2.6"
 description = "Learning Digest backend API: /v1 auth, resources, progress, notes, sessions, transcripts, summaries, usage domains (Python/FastAPI; the sole service-layer implementation, ticket 4.6)."
 requires-python = ">=3.12"
 dependencies = [

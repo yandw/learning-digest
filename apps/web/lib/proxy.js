@@ -18,7 +18,12 @@ const FORWARDED_REQUEST_HEADERS = [
   "referer",
 ];
 
-const UPSTREAM_TIMEOUT_MS = 10_000;
+// Sync generations (summary / digest / rolling summary) call a real AI
+// provider and can legitimately take tens of seconds; the API's own
+// aiTimeoutMs sits at 120_000, so the proxy must outlast it — otherwise a
+// slow-but-successful generation is cut off and the page sees a spurious
+// "学习服务暂时不可用".
+const UPSTREAM_TIMEOUT_MS = 125_000;
 
 async function readRequestBody(req) {
   const chunks = [];

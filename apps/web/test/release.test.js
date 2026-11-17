@@ -14,9 +14,12 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.14", () => {
+test("apps/web release metadata is 0.1.15", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
+  // 0.1.15: the /v1 reverse proxy outlives the upstream AI provider timeout
+  // (10s → 125s vs the API's 120s aiTimeoutMs), so slow-but-successful sync
+  // generations stop surfacing a spurious 学习服务暂时不可用.
   // 0.1.14: align the collect form's labels, inputs and submit button; the
   // prefixed input no longer adds its inner control height to the wrapper.
   // 0.1.13 (issue #103): native React extension linking, account usage and
@@ -37,7 +40,7 @@ test("apps/web release metadata is 0.1.14", () => {
   // administrator's 站点管理 surface (isAdmin-driven nav entry, the
   // site-capability table with per-row boolean-subset saves, the D2
   // non-admin denied view) over the round-4 admin API.
-  assert.equal(packageJson.version, "0.1.14");
+  assert.equal(packageJson.version, "0.1.15");
   assert.equal(packageJson.private, true);
 });
 

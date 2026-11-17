@@ -17,6 +17,9 @@ def test_pyproject_is_the_api_unit_release_metadata():
     pyproject = tomllib.loads((API_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "learning-digest-api"
+    # 0.2.6 hardens the usage ledger against pre-r4 rows (missing newer
+    # counters crashed record_*/usage_view with KeyError; with_defaults()
+    # backfills on read and the next write upgrades the row).
     # 0.2.5 raises the long-course caption-archive transport cap to 10 MiB.
     # 0.2.4: long-course caption archives use a route-specific 4 MiB body
     # cap rather than the 64 KiB control-plane default. 0.2.3 (ticket 5.8,
@@ -38,7 +41,7 @@ def test_pyproject_is_the_api_unit_release_metadata():
     # recording. 0.1.6 (round-3 review fixes): per-generate timeout signal
     # + course-summary prompt notes-marker. The contract generation (/v1)
     # is unchanged.
-    assert pyproject["project"]["version"] == "0.2.5"
+    assert pyproject["project"]["version"] == "0.2.6"
     assert pyproject["project"]["requires-python"] == ">=3.12"
 
 

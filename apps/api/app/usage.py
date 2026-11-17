@@ -68,12 +68,28 @@ def load_usage(store: Any, account_id: str) -> dict | None:
     return store.get("usage", account_id)
 
 
+def with_defaults(row: dict | None, account_id: str) -> dict:
+    """Normalize a loaded row to the current schema.
+
+    Rows persisted before a later contract revision shipped (e.g. the r4
+    rolling-summary / digest / explain counters) lack the newer fields;
+    reading them through the full schema must not blow up. Missing keys
+    fall back to the empty-usage defaults, and recording through this
+    function upgrades the stored row in place on the next write."""
+    normalized = empty_usage(account_id)
+    if row:
+        for key, value in row.items():
+            if key in normalized:
+                normalized[key] = value
+    return normalized
+
+
 def record_audio_seconds(
     *, store: Any, account_id: str, duration_ms: int, now: Callable[[], int]
 ) -> dict:
     """Record audio duration (ms) against the account (D18: the first-done
     gate lives with the caller)."""
-    row = load_usage(store, account_id) or empty_usage(account_id)
+    row = with_defaults(load_usage(store, account_id), account_id)
     row["audioMs"] += duration_ms
     at_ms = now()
     row["updatedAt"] = iso_seconds_from_ms(at_ms)
@@ -88,7 +104,7 @@ def record_summary_generation(
     """Record one successful summary generation (D18: count +1, inputChars
     summed). The caller (app/summaries.py generate_summary) invokes this in
     the same stroke as the summary landing — the 201's same moment."""
-    row = load_usage(store, account_id) or empty_usage(account_id)
+    row = with_defaults(load_usage(store, account_id), account_id)
     row["summaryCount"] += 1
     row["summaryInputChars"] += input_chars
     at_ms = now()
@@ -106,7 +122,7 @@ def record_rolling_summary_generation(
     summed. The caller (app/session_insights.py generate_rolling_summary)
     invokes this in the same stroke as the overview landing; a failed tick
     and an idempotent replay never reach here."""
-    row = load_usage(store, account_id) or empty_usage(account_id)
+    row = with_defaults(load_usage(store, account_id), account_id)
     row["rollingSummaryCount"] += 1
     row["rollingSummaryInputChars"] += input_chars
     at_ms = now()
@@ -125,7 +141,7 @@ def record_digest_generation(
     same stroke as the digest landing; a failed attempt never reaches here.
     Overwrites count again — an overwrite IS an AI call (D22: the digest
     has no idempotent replay)."""
-    row = load_usage(store, account_id) or empty_usage(account_id)
+    row = with_defaults(load_usage(store, account_id), account_id)
     row["digestCount"] += 1
     row["digestInputChars"] += input_chars
     at_ms = now()
@@ -142,7 +158,7 @@ def record_explain_generation(
     explainCount +1, explainInputChars summed. The caller
     (app/explanations.py explain) invokes this in the same stroke as the
     200 answer landing; a failed call never reaches here."""
-    row = load_usage(store, account_id) or empty_usage(account_id)
+    row = with_defaults(load_usage(store, account_id), account_id)
     row["explainCount"] += 1
     row["explainInputChars"] += input_chars
     at_ms = now()
@@ -157,16 +173,16 @@ def usage_view(*, store: Any, account_id: str) -> dict:
     Contract-r4 §6.3 appends the rolling-summary pair to the r3 keys;
     §7 appends the digest and explain pairs (existing keys' semantics
     unchanged)."""
-    row = load_usage(store, account_id)
+    row = with_defaults(load_usage(store, account_id), account_id)
     return {
-        "audioSeconds": row["audioMs"] // 1000 if row else 0,
-        "summaryCount": row["summaryCount"] if row else 0,
-        "summaryInputChars": row["summaryInputChars"] if row else 0,
-        "rollingSummaryCount": row["rollingSummaryCount"] if row else 0,
-        "rollingSummaryInputChars": row["rollingSummaryInputChars"] if row else 0,
-        "digestCount": row["digestCount"] if row else 0,
-        "digestInputChars": row["digestInputChars"] if row else 0,
-        "explainCount": row["explainCount"] if row else 0,
-        "explainInputChars": row["explainInputChars"] if row else 0,
-        "updatedAt": row["updatedAt"] if row else None,
+        "audioSeconds": row["audioMs"] // 1000,
+        "summaryCount": row["summaryCount"],
+        "summaryInputChars": row["summaryInputChars"],
+        "rollingSummaryCount": row["rollingSummaryCount"],
+        "rollingSummaryInputChars": row["rollingSummaryInputChars"],
+        "digestCount": row["digestCount"],
+        "digestInputChars": row["digestInputChars"],
+        "explainCount": row["explainCount"],
+        "explainInputChars": row["explainInputChars"],
+        "updatedAt": row["updatedAt"],
     }

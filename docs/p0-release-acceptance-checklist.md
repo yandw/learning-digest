@@ -20,7 +20,7 @@
 | 1 | 账号、收藏、续学、笔记与隔离 | Kimi | 2026-11-16 | NO-GO | 当前仅账号 A；Web 收藏已填 URL 但未确认提交成功，四站完整学习链路和双账号隔离未完成 |
 | 2 | B 站／YouTube 字幕路径 | Kimi | 2026-11-16 | NO-GO | B 站真实原生字幕轨读取成功（328 条）；完整直归档、Web 回查和零 ASR 尚无本次 Session 证据，YouTube 完整链路未复验 |
 | 3 | 真实 ASR、Worker 停启与强制转写 | Kimi | 2026-11-16／17 | NO-GO | 2026-11-17 真实 Qwen ASR（qwen3-asr-flash）端到端联调通过（直连 3/3、端到端 1/1，详见 6.3）；仍缺 BILI-03／BILI-04／YT-03／XHS-01 样本，Worker 停启未执行 |
-| 4 | 真实 AI 总结、面板 AI 与用量 | Kimi | 2026-11-16／17 | NO-GO | 2026-11-17 真实 AI 总结联调通过（qwen3.8-flash，201／9.32s，引用可回查，详见 6.3）；面板 AI、失败路径和用量对账未执行 |
+| 4 | 真实 AI 总结、面板 AI 与用量 | Kimi | 2026-11-16／17 | NO-GO | 2026-11-17 真实 AI 总结联调通过（qwen3.8-flash，201／9.32s，引用可回查，详见 6.3）；同日修复生成总结 502 三连（旧 usage 行 KeyError、代理 10s 超时、滑窗塌缩、Qwen3 思考超时），长视频真实生成 201／34.65s 通过（详见 6.4）；面板 AI、失败路径和用量对账未执行 |
 | 5 | 管理功能与旧版设置迁移 | Kimi | 2026-11-16 | NO-GO | 匿名管理接口实测 401；管理员／普通账号和 settings v5 样本未准备，其余项未执行 |
 | 6 | 全量回归与发布记录 | Kimi | 2026-11-16 | NO-GO | 自动化 1358 pass／0 fail，发布检查与打包通过；未做干净安装冒烟，阶段 0–5 尚未全部 GO |
 
@@ -690,6 +690,13 @@ Web：182 pass／0 fail
 完成日期：验收执行记录日期 2026-11-16；发布验收尚未完成
 遗留问题及对应 issue：双账号／双 Profile／管理员未准备；多项必填样本缺失；真实 ASR／AI 已启用并联调通过（2026-11-17），但四站完整学习链路、字幕直归档与零 ASR、Worker 停启、管理及迁移未验收，发布包未做干净安装冒烟（dev.sh 误报已修复并验证）。本轮未新建对应 issue。
 2026-11-17 新增（验收中修复，未提交）：多段学习同一视频产生多份逐字稿副本，课程总结输入重复文本。已修复——Web 0.1.16 mergeTranscriptViews 将资源的多次学习合并为一份时间轴展示（重叠区间保留文本最长副本，等长时字幕后于语音转写、再按 sessionId 取小，规则与 API 一致），API 0.2.7 collect_material 对总结输入做同样的合并去重与 gap 折叠。已在真实数据（res_UE0t50YFAUmHPaio，3 次学习）验证：43 段合并连续时间轴，页面显示「43 段 · 合并 3 次学习」。修复前生成的旧总结仍基于重复输入，需重新生成。
+2026-11-17 新增（生成总结 502 三连修复，均已提交推送）：
+1. 双根因 502（commit 5e27f8b，API 0.2.6／Web 0.1.15）：① 插件侧——r4 前持久化的旧 usage 行缺少 rollingSummary/digest/explain 计数字段，生成成功后记账瞬间 KeyError: 'digestCount' 崩溃，整个请求 500（/private/tmp/learning-digest-dev/logs/api.log 4 条同源 traceback）；usage.py 新增 with_defaults() 读取时回填缺失字段、下次写入自动升级行，usage_view 同步容错。② Web 侧——/v1 反向代理超时仅 10s（apps/web/lib/proxy.js），真实生成常超 10s 被掐断显示「学习服务暂时不可用」；13:17 用户那次 Web 生成实际已在服务端 201 落地，仅响应被代理截断。代理超时提升至 125s（盖过上游 AI 的 120s aiTimeoutMs）。验证：GET /v1/usage 对旧行不再 500，重启后真实旧行被自动升级为完整 schema。
+2. 实测暴露滑窗塌缩（commit 4cf38c9，API 0.2.8／Web 0.1.17）：0.2.7 合并规则把「任何重叠」都视作重复，而 YouTube 字幕是滑窗切片（相邻段重叠 ~50%，整链传递），collect_material 与 mergeTranscriptViews 都把整份逐字稿塌成 1 条——res_aGg98HyEdUk6J0w7 的总结素材从 19,034 字符塌到 37 字符，生成的总结只有一段引文。修复：只有近重复（一段覆盖另一段较短者 ≥80%）才合并；跨会话完全相同副本去重、滑窗邻居全部保留。真实数据验证：511 段恢复。两端各新增滑窗回归测试（test_summaries_sliding_window.py／merge-transcript.test.js）。
+3. Qwen3 思考超时（commit 6f625ec，API 0.2.9）：流式探针实测 qwen3.8-flash 在 511 行合并逐字稿（38,437 字符）上 reasoning 218 秒才输出第一个内容 token，超过 aiTimeoutMs=120s，长视频生成一律 502。所有产品生成统一带 chat_template_kwargs.enable_thinking=false；同一 prompt 实测 38.9s 出完整结果。
+最终端到端实测（res_aGg98HyEdUk6J0w7《Pstack: How a Cursor Engineer Ships Code With AI》，4 次学习 3 份完整逐字稿）：POST /v1/resources/{id}/summaries → HTTP 201／34.65s，inputChars 39,244，输出 2,916 字结构化中文总结（六大开发阶段、多模型竞技场、TDD、D-slop 清理等核心内容准确覆盖）。
+测试：扩展 767／API 305／Web 190 全绿（本轮实测值，较 6.1 的 2026-11-16 基线 1358 合计有增量）。
+遗留：① 该资源历史里仍留有 1 段素材生成的劣质总结（sum_yMvMMKE9C9Wgxpry），需删除或重新生成覆盖；② 其他资源上 0.2.7 合并前基于重复输入生成的旧总结同理需重新生成。
 ```
 
 - [ ] 阶段 0–5 全部为 GO。

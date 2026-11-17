@@ -31,7 +31,7 @@
 ### 0.1 固定验收版本
 
 - [x] 当前分支为计划发布的分支，工作区没有未说明的代码改动。
-- [x] 记录本次验收 commit：`c526910a7b67dbcec521c3d8dc11f763f2397d1d`（另含本轮已说明的未提交开发改动）。
+- [x] 记录本次验收 commit：`0e73f73`（2026-11-17 推送至 origin/productization/integration，含 dev.sh 修复 `688552a`、插件 `8328f47`、Web `f5d6526`、API `7135ccc`、验收证据 `0e73f73`）。
 - [x] 插件通过仓库的 `apps/extension` 目录加载，Chrome 卡片显示版本 **0.2.31**。
 - [x] Web 版本为 **0.1.14**。
 - [x] API 版本为 **0.2.5**。
@@ -42,7 +42,7 @@
 
 ```text
 分支：productization/integration（跟踪 origin/productization/integration）
-Commit：c526910a7b67dbcec521c3d8dc11f763f2397d1d + 本轮已说明的工作区改动
+Commit：0e73f73（已推送 origin/productization/integration，2026-11-17）
 Chrome 版本：157.0.8103.51
 Node 版本：v24.22.1
 Python／uv 版本：Python 3.12.16／uv 0.10.2
@@ -674,7 +674,7 @@ Web：182 pass／0 fail
 
 ```text
 最终版本：扩展 0.2.31／Web 0.1.14／API 0.2.5／Worker 0.2.3
-最终 Commit：基准 c526910a7b67dbcec521c3d8dc11f763f2397d1d + 本轮已说明的未提交开发改动；不是可发布的干净固定 Commit
+最终 Commit：0e73f73（已推送 origin/productization/integration，2026-11-17；本轮全部开发改动已提交，无未提交代码）
 发布包：apps/extension/dist/learning-digest-v0.2.31.zip；SHA-256 422456950cab841b70e4e1a75c85d9f59b86abf9963b1fe0b1c05c29abc6f446
 验收执行人：Kimi
 复核人：未复核

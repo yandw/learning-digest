@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { startUpstream } from "./helpers/upstream.js";
 import { startWebApp, makeEmptyPublicDir } from "./helpers/web.js";
 
@@ -55,6 +56,26 @@ test("passes upstream error responses through verbatim (status + envelope)", asy
     });
     assert.equal(response.status, 401);
     assert.deepEqual(response.json, contractEnvelope);
+  } finally {
+    await web.close();
+    await upstream.close();
+  }
+});
+
+test("delivers a generated summary after the Web server's idle timeout", async () => {
+  const summary = { summary: { id: "sum_slow" } };
+  const upstream = await startUpstream({
+    respond: async () => {
+      await delay(200);
+      return { status: 201, body: JSON.stringify(summary) };
+    },
+  });
+  const web = await startWebApp({ upstream: upstream.url, publicDir: makeEmptyPublicDir() });
+  web.app.timeout = 50;
+  try {
+    const response = await web.request("POST", "/v1/resources/res_1/summaries", { body: {} });
+    assert.equal(response.status, 201);
+    assert.deepEqual(response.json, summary);
   } finally {
     await web.close();
     await upstream.close();

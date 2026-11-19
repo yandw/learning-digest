@@ -132,9 +132,14 @@ async function openDetail(runtime: ReturnType<typeof makeRuntime>) {
 describe("React resource learning workbench", () => {
   it("opens sources, notes, transcripts, summary citations and source jumps", async () => {
     const runtime = makeRuntime();
-    await openDetail(runtime);
+    const user = await openDetail(runtime);
 
     expect(await screen.findByText("注意 Q、K、V 的角色。")).toBeInTheDocument();
+    const transcriptToggle = screen.getByRole("button", { name: "展开逐字稿" });
+    expect(transcriptToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("注意力会选择重要的信息", { selector: ".transcript-text" })).not.toBeInTheDocument();
+    await user.click(transcriptToggle);
+    expect(transcriptToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("注意力会选择重要的信息", { selector: ".transcript-text" })).toBeInTheDocument();
     expect(screen.getByText("核心概念")).toBeInTheDocument();
     expect(screen.getByText("注意力", { selector: "strong" })).toBeInTheDocument();
@@ -174,9 +179,10 @@ describe("React resource learning workbench", () => {
 
   it("keeps the detail usable when transcript and summary reads fail", async () => {
     const runtime = makeRuntime({ partialFailure: true });
-    await openDetail(runtime);
+    const user = await openDetail(runtime);
 
     expect(await screen.findByText("注意 Q、K、V 的角色。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "展开逐字稿" }));
     expect(screen.getByText("逐字稿加载失败，请稍后重试")).toBeInTheDocument();
     expect(screen.getByText("总结历史暂不可用")).toBeInTheDocument();
   });

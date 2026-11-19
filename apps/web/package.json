@@ -1,6 +1,6 @@
 {
   "name": "@learning-digest/web",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "private": true,
   "description": "Learning Digest React and Ant Design learning library with a tested Node static server and API proxy.",
   "license": "MIT",

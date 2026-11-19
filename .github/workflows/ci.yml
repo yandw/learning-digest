@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release-check:
-    name: Validate public extension package
+    name: Validate Web UI and public extension package
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -22,6 +22,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+
+      - name: Install Web dependencies
+        run: npm ci --prefix apps/web
+
+      - name: Test Web UI
+        run: npm --prefix apps/web run test:ui
 
       - name: Build allowlisted ZIP
         run: npm run package

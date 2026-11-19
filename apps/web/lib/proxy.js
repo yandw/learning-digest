@@ -59,6 +59,8 @@ export function createProxy({ upstream }) {
 
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const body = hasBody ? await readRequestBody(req) : undefined;
+    // After the request is received, let the proxy return its own timeout response.
+    res.setTimeout(UPSTREAM_TIMEOUT_MS + 1_000);
 
     try {
       const response = await fetch(`${base}${req.url}`, {

@@ -276,6 +276,46 @@ test("chooseLearningTarget reports the disabled site so the panel can disable �
 
 // --- the data-driven captions path decision ----------------------------------------
 
+test("server asr=false blocks start before creating an audio Session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    capabilities: [
+      { status: 200, body: { capabilities: [{ platformId: "bilibili", captions: false, asr: false, enabled: true }] } },
+    ],
+    resolve: [RESOLVE_MATCHED_BODY],
+    sessions: [SESSION_CREATED_BODY],
+  });
+  const helpers = capabilityFlowHelpers({ fetchImpl });
+
+  const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
+
+  assert.equal(started.success, false);
+  assert.match(started.error, /关闭语音转写/);
+  assert.equal(v1Calls.some((call) => call.path.endsWith("/sessions")), false);
+  assert.equal(helpers.readStored("ytd_active_capture"), undefined);
+});
+
+test("disabling ASR after captions start blocks forced transcription without finishing the captions Session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    capabilities: [true, false].map((asr) => ({
+      status: 200,
+      body: { capabilities: [{ platformId: "bilibili", captions: true, asr, enabled: true }] },
+    })),
+    resolve: [RESOLVE_MATCHED_BODY],
+    sessions: [SESSION_CREATED_BODY],
+  });
+  const helpers = capabilityFlowHelpers({ fetchImpl });
+  const started = await helpers.handleStartLearning({ url: BILI_P2, tabId: 2 });
+  assert.equal(started.capturePath, "captions");
+
+  const forced = await helpers.handleForceTranscribe();
+
+  assert.equal(forced.success, false);
+  assert.match(forced.error, /关闭语音转写/);
+  assert.equal(v1Calls.filter((call) => call.path.endsWith("/sessions")).length, 1);
+  assert.equal(helpers.readStored("ytd_active_capture").capturePath, "captions");
+  await helpers.handleEndLearning();
+});
+
 test("server captions=false on bilibili skips the captions probe and hands the start straight to ASR", async () => {
   const { v1Calls, fetchImpl } = v1Fetch({
     capabilities: [

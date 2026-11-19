@@ -4332,6 +4332,9 @@ async function handleStartLearning(message) {
  * re-take the captions path and re-archive the same interval).
  */
 async function startCaptureFlowSession(message, recognition, captionsProbe) {
+  if (!siteCapabilityFor(recognition.platformId).asr) {
+    return { success: false, error: "站点配置已关闭语音转写。" };
+  }
   const settings = await getSettings();
   const credential = await readStoredAuthCredential();
   const collectTarget = collectTargetFromTab({
@@ -5266,6 +5269,21 @@ async function handleForceTranscribe() {
   }
   if (context.capturePath !== "captions") {
     return { success: false, error: "本次学习已在语音转写路径上，无需再切换。" };
+  }
+  // Check before either branch so a denied switch keeps the captions Session.
+  const capabilityVerdict = await refreshSiteCapabilities({ force: true });
+  if (capabilityVerdict.kind === "unauthorized") {
+    return { success: false, error: "授权已失效，请重新关联学习库账号。" };
+  }
+  if (captureContext !== context || context.ended || context.capturePath !== "captions") {
+    return { success: false, error: "当前字幕学习会话已变化，请重试。" };
+  }
+  const capability = siteCapabilityFor(context.platformId);
+  if (!capability.enabled) {
+    return { success: false, error: "站点未开放学习" };
+  }
+  if (!capability.asr) {
+    return { success: false, error: "站点配置已关闭语音转写。" };
   }
   if (context.state.transcriptOrigin === "captions") {
     // The server already holds this Session's captions (首存为准, D15):

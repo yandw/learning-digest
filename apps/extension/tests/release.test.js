@@ -164,6 +164,10 @@ test("manifest uses minimized install-time permissions", () => {
   // course-switch that reuses the 0.1.57 end-without-report semantics.
   // 0.2.38: the course tab list becomes empty-state guidance — hidden whenever
   // loaded content (报告/概览/逐字稿) owns the panel, restored on 清除记录.
+  // 0.2.39: gated flows double-check site capability — capture-flow and force
+  // transcribe refuse platforms with asr disabled, and the YouTube caption
+  // aria-pressed restore waits a microtask behind the click handler's track
+  // fetch (PO-token reread used to re-enable previously-off captions).
   for (const host of [
     "https://api.bilibili.com/*",
     "https://subtitle.bilibili.com/*",
@@ -171,7 +175,7 @@ test("manifest uses minimized install-time permissions", () => {
   ]) {
     assert.ok(manifest.host_permissions.includes(host), `caption transport requires ${host}`);
   }
-  assert.equal(manifest.version, "0.2.38");
+  assert.equal(manifest.version, "0.2.39");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

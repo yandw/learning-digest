@@ -400,6 +400,7 @@ function createCaptureHarness({
   captionsInitiallyOn,
   playerRequestUrls = [CAPTURED_REQUEST],
   viaXhr = false,
+  requestBeforePress = false,
 }) {
   const timers = new Map();
   let nextTimerId = 1;
@@ -423,10 +424,12 @@ function createCaptureHarness({
       return name === "aria-pressed" ? String(this.pressed) : null;
     },
     click() {
-      this.pressed = !this.pressed;
-      if (this.pressed) {
+      const nextPressed = !this.pressed;
+      if (!requestBeforePress) this.pressed = nextPressed;
+      if (nextPressed) {
         for (const url of playerRequestUrls) issuePlayerRequest(url);
       }
+      if (requestBeforePress) this.pressed = nextPressed;
     },
   };
   class XMLHttpRequest {
@@ -499,6 +502,13 @@ test("capturing the player's pot-bearing request restores captions that were ori
   assert.equal(harness.button.pressed, false, "the switch is restored to off");
   assert.equal(harness.window.fetch, harness.originalFetch);
   assert.equal(harness.XMLHttpRequest.prototype.open, harness.originalOpen);
+});
+
+test("restores initially off captions when the player requests the track before updating aria-pressed", async () => {
+  const harness = createCaptureHarness({ captionsInitiallyOn: false, requestBeforePress: true });
+
+  assert.equal(await harness.capture("KvLw1234567"), CAPTURED_REQUEST);
+  assert.equal(harness.button.pressed, false);
 });
 
 test("a capture cut off between the initially-on clicks still leaves captions on", async () => {

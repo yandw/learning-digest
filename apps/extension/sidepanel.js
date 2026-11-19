@@ -1424,11 +1424,32 @@ function hasResumableProgress(progress) {
   );
 }
 
-/** The list shows whenever the panel is unlocked and nothing records. */
+/**
+ * 面板是否已有「加载完成」的内容：已采用的报告／在屏报告产物／逐字稿行／
+ * 概览话题或金句。选课列表是空状态引导——内容在屏时不再占用空间；
+ * 清除记录或内容自然清空后恢复显示。
+ */
+function panelHasLoadedContent() {
+  if (sessionUi.reportShown) return true;
+  if (reportTabUi.artifact) return true;
+  const transcript = document.getElementById("sessionTranscript");
+  if (transcript && transcript.childElementCount > 0) return true;
+  const els = overviewElements();
+  if (els.topics && els.topics.childElementCount > 0) return true;
+  if (els.quotes && els.quotes.childElementCount > 0) return true;
+  return false;
+}
+
+/**
+ * The list shows only in the panel's empty state: unlocked, nothing records,
+ * and no loaded content (report / overview / transcript) on screen.
+ */
 function updateCourseTabsVisibility() {
   const box = document.getElementById("courseTabsBox");
   if (!box) return;
-  box.style.display = courseTargetUi.available && !sessionUi.active ? "" : "none";
+  const show =
+    courseTargetUi.available && !sessionUi.active && !panelHasLoadedContent();
+  box.style.display = show ? "" : "none";
 }
 
 function setCourseTabBusy(busy) {
@@ -2610,6 +2631,14 @@ globalThis.__YTD_COURSE_TESTING__ = {
   describeCourseTargetResolution,
   updateStartButtons,
   courseTargetUi,
+  // 0.2.38: the empty-state visibility rule (panelHasLoadedContent +
+  // updateCourseTabsVisibility). sessionUi rides a getter — it is declared
+  // below this object, so an eager reference would hit the TDZ.
+  updateCourseTabsVisibility,
+  panelHasLoadedContent,
+  get sessionUi() {
+    return sessionUi;
+  },
 };
 
 // Session-mode IA helpers for the repository's Node tests (0.1.37). The
@@ -3284,6 +3313,9 @@ function adoptSessionReport(report, sessionId) {
   sessionUi.reportShown = true;
   renderEndButton();
   void applyReportPayloadToTab(report, sessionId);
+  // The adopted report owns the panel now — the course tab list yields
+  // (empty-state guidance only) until the content is cleared.
+  updateCourseTabsVisibility();
 }
 
 // ============================================================
@@ -3443,6 +3475,7 @@ async function applyReportPayloadToTab(report, sessionId) {
     reportTabUi.artifact = null;
     reportTabUi.skipped = false;
     renderReportTab();
+    updateCourseTabsVisibility();
     return;
   }
   if (report.skipped) {
@@ -3450,6 +3483,7 @@ async function applyReportPayloadToTab(report, sessionId) {
     reportTabUi.error = null;
     reportTabUi.artifact = null;
     renderReportTab();
+    updateCourseTabsVisibility();
     return;
   }
   reportTabUi.error = null;
@@ -3470,6 +3504,8 @@ async function applyReportPayloadToTab(report, sessionId) {
     reportTabUi.artifact = { sessionId: sessionId || null, report, meta: null };
   }
   renderReportTab();
+  // The artifact now owns the panel — the course tab list yields.
+  updateCourseTabsVisibility();
 }
 
 /**
@@ -3504,6 +3540,9 @@ async function adoptLatestStoredReport() {
   // Render even when nothing was found: this is the tab's first paint, and
   // the idle line must be visible before any session activity.
   renderReportTab();
+  // A restored report counts as loaded content — keep the course tab list
+  // hidden on reopen; nothing found leaves the empty-state rule untouched.
+  updateCourseTabsVisibility();
 }
 
 /**
@@ -3981,6 +4020,9 @@ function showSessionMode({
     bar.style.display = "flex";
     renderSessionStatus();
     if (welcome && state === null) welcome.style.display = "none";
+    // The ended Session's rows were cleared above — re-evaluate the course
+    // tab list against the empty-state rule (this branch used to skip it).
+    updateCourseTabsVisibility();
   } else {
     bar.style.display = "none";
     // D7 (#30): a surfaced report owns the panel — the welcome state must
@@ -3990,7 +4032,8 @@ function showSessionMode({
         reportTabUi.artifact && !currentVideoId ? "none" : "grid";
     }
     // P10: the Session ended (or the panel idled) — the course tab list is
-    // selectable again (决策 4: 结束本次学习后列表恢复可选).
+    // re-evaluated. It returns only when the panel is empty again; loaded
+    // content (报告/概览/逐字稿) keeps it hidden (空状态引导).
     updateCourseTabsVisibility();
   }
 }
@@ -4152,6 +4195,9 @@ async function clearSessionRecord() {
   reportTabSetActiveSession(null);
   renderEndButton();
   updateSessionViewVisibility();
+  // The panel is empty again — the course tab list returns as the
+  // empty-state guidance.
+  updateCourseTabsVisibility();
   void refreshSessionUI();
 }
 

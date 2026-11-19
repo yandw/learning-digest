@@ -162,6 +162,8 @@ test("manifest uses minimized install-time permissions", () => {
   // 0.2.34: the header 挂载页面 dropdown — a passive learning-page list
   // (the ACTIVE_CAPTURE pointer marks the mount) plus a jump / confirmed
   // course-switch that reuses the 0.1.57 end-without-report semantics.
+  // 0.2.38: the course tab list becomes empty-state guidance — hidden whenever
+  // loaded content (报告/概览/逐字稿) owns the panel, restored on 清除记录.
   for (const host of [
     "https://api.bilibili.com/*",
     "https://subtitle.bilibili.com/*",
@@ -169,7 +171,7 @@ test("manifest uses minimized install-time permissions", () => {
   ]) {
     assert.ok(manifest.host_permissions.includes(host), `caption transport requires ${host}`);
   }
-  assert.equal(manifest.version, "0.2.36");
+  assert.equal(manifest.version, "0.2.38");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

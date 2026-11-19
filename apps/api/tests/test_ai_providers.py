@@ -132,7 +132,7 @@ def test_qwen_provider_posts_bailian_chat_completions_and_parses_the_json_payloa
     # qwen3 reasons before answering by default; on a long merged transcript
     # the reasoning phase outlived the 120s AI timeout and every generation
     # 502'd — product generations run with thinking disabled.
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["enable_thinking"] is False
     assert generated == payload
 
 

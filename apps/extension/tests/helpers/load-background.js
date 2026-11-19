@@ -81,12 +81,26 @@ function loadBackgroundHelpers({
   // leaves executeScript unset, which the retry reads as "capture
   // unavailable" and keeps the direct captions failure.
   executeScriptImpl = null,
+  // 收尾韧性回归（bug a）：chrome.storage.local 整体替换，用于注入
+  // set/get 失败，验证 endActiveSession 的服务端收尾不被本地步骤阻断。
+  storageImpl = null,
+  // 关联流程回归（pendingLinkTabs 持久化）：chrome.storage.session 的后备
+  // 对象。两次 loadBackgroundHelpers 传同一对象即模拟「worker 重启、
+  // 会话存储仍在」；默认每次调用独立。
+  sessionStored = null,
 } = {}) {
+  // tabs 事件监听器按事件名捕获，测试用 fireTabUpdated/fireTabRemoved
+  // 驱动（worker 顶层 addListener 注册的 link 完成监听器）。
+  const tabListeners = { onUpdated: [], onRemoved: [] };
   const listeners = { addListener() {} };
   const createdTabs = [];
   const removedTabIds = [];
   const activatedTabs = [];
   const localStorage = { ytd_settings: settings, ...stored };
+  const sessionBacking = sessionStored ?? {};
+  // The backing store the (possibly replaced) storage.local implementation
+  // reads/writes, so assertions keep working either way.
+  const storageBacking = localStorage;
   // A Date subclass with an injectable now(): everything else (parse, UTC,
   // instances) inherits unchanged, so only clock reads are controllable.
   class SandboxDate extends Date {}
@@ -113,19 +127,36 @@ function loadBackgroundHelpers({
     importScripts() {},
     chrome: {
       storage: {
-        local: {
+        local: storageImpl || {
           setAccessLevel: () => Promise.resolve(),
           get: async (key) => {
-            if (key === null) return { ...localStorage };
+            if (key === null) return { ...storageBacking };
             if (Array.isArray(key)) {
-              return Object.fromEntries(key.map((item) => [item, localStorage[item]]));
+              return Object.fromEntries(key.map((item) => [item, storageBacking[item]]));
             }
-            return { [key]: localStorage[key] };
+            return { [key]: storageBacking[key] };
           },
-          set: async (values) => Object.assign(localStorage, values),
+          set: async (values) => Object.assign(storageBacking, values),
           remove: async (keys) => {
             for (const key of Array.isArray(keys) ? keys : [keys]) {
-              delete localStorage[key];
+              delete storageBacking[key];
+            }
+          },
+        },
+        // MV3 session storage（chrome 102+）：worker 重启存活、浏览器关闭
+        // 清空。pendingLinkTabs 的持久化镜像走这里。
+        session: {
+          get: async (key) => {
+            if (key === null) return { ...sessionBacking };
+            if (Array.isArray(key)) {
+              return Object.fromEntries(key.map((item) => [item, sessionBacking[item]]));
+            }
+            return { [key]: sessionBacking[key] };
+          },
+          set: async (values) => Object.assign(sessionBacking, values),
+          remove: async (keys) => {
+            for (const key of Array.isArray(keys) ? keys : [keys]) {
+              delete sessionBacking[key];
             }
           },
         },
@@ -154,9 +185,13 @@ function loadBackgroundHelpers({
         },
       },
       tabs: {
-        onUpdated: listeners,
+        onUpdated: {
+          addListener: (fn) => tabListeners.onUpdated.push(fn),
+        },
         onActivated: listeners,
-        onRemoved: listeners,
+        onRemoved: {
+          addListener: (fn) => tabListeners.onRemoved.push(fn),
+        },
         query: tabsQuery,
         // P10 learning-start: read one chosen (possibly background) tab.
         get: tabsGet || (async () => { throw new Error("tab not found"); }),
@@ -239,6 +274,14 @@ function loadBackgroundHelpers({
     ...sandbox.__YTD_TRANSLATION_TESTING__,
     // Direct view of the storage backing, for asserting what was persisted.
     readStored: (key) => localStorage[key],
+    // chrome.storage.session backing（pendingLinkTabs 持久化镜像），供断言
+    // 与跨 worker 重启模拟（两次 load 共用同一对象）。
+    sessionBacking,
+    // tabs 事件驱动：worker 顶层注册的 link 完成监听器从这里触发。
+    fireTabUpdated: (tabId, changeInfo, tab) =>
+      Promise.all(tabListeners.onUpdated.map((fn) => fn(tabId, changeInfo, tab))),
+    fireTabRemoved: (tabId) =>
+      Promise.all(tabListeners.onRemoved.map((fn) => fn(tabId))),
     // P6 link flow seams: tabs the worker opened/closed, for asserting the
     // authorization page lifecycle.
     createdTabs,

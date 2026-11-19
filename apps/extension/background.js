@@ -75,7 +75,44 @@ const AUTH_CACHE_TTL_MS = 60_000;
 
 // Tabs this worker opened for linking: the only tab URLs the gate ever
 // reads, and only for the one-time link code in the success address.
+// The set mirrors into chrome.storage.session: the learner spends minutes
+// on the Web confirmation page (email code round-trip), the MV3 worker is
+// idle-collected inside that window, and an in-memory set dies with it —
+// the success redirect would then be ignored and the learner stranded on
+// the 「关联码已生成」 page (1.1 acceptance finding, 2026-11-19). Session
+// storage survives worker restarts and clears with the browser: exactly
+// the lifetime a pending-tab registration wants.
+const PENDING_LINK_TABS_KEY = "ytd_pending_link_tabs";
 const pendingLinkTabs = new Set();
+let pendingLinkTabsRestored = null;
+
+function persistPendingLinkTabs() {
+  // Best-effort mirror: a failed write only costs the restart resilience —
+  // the in-memory set keeps this worker lifetime correct either way.
+  return chrome.storage.session
+    .set({ [PENDING_LINK_TABS_KEY]: [...pendingLinkTabs] })
+    .catch(() => {});
+}
+
+function restorePendingLinkTabs() {
+  if (!pendingLinkTabsRestored) {
+    pendingLinkTabsRestored = chrome.storage.session
+      .get(PENDING_LINK_TABS_KEY)
+      .then((stored) => {
+        const ids = stored?.[PENDING_LINK_TABS_KEY];
+        if (Array.isArray(ids)) {
+          for (const id of ids) {
+            if (typeof id === "number") pendingLinkTabs.add(id);
+          }
+        }
+      })
+      .catch(() => {})
+      .then(() => undefined);
+  }
+  return pendingLinkTabsRestored;
+}
+
+restorePendingLinkTabs();
 
 function readStoredAuthCredential() {
   return chrome.storage.local
@@ -174,6 +211,7 @@ async function handleOpenAuthPage() {
   const tab = await chrome.tabs.create({ url: pageUrl });
   if (typeof tab?.id === "number") {
     pendingLinkTabs.add(tab.id);
+    await persistPendingLinkTabs();
   }
   return { success: true, tabId: tab?.id ?? null };
 }
@@ -220,6 +258,7 @@ async function notifyPanel(payload) {
  */
 async function handleLinkCodeCaptured(tabId, code) {
   pendingLinkTabs.delete(tabId);
+  await persistPendingLinkTabs();
   chrome.tabs.remove(tabId).catch(() => {});
   const settings = await getSettings();
   const result = await YTD_AUTH_GATE.exchangeLinkCode({
@@ -355,19 +394,26 @@ async function handleCheckAuth() {
 
 // The link completion watcher: only tabs this worker opened for linking are
 // inspected, and only the success address's ?link= parameter is extracted.
+// The success address is applied via history.replaceState (LinkApp), which
+// still fires onUpdated — but the event may be what WAKES a fresh worker,
+// so the session-restore must complete before the ownership check.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (!pendingLinkTabs.has(tabId)) return;
-  const url = changeInfo.url || tab?.url;
-  if (!url) return;
-  const code = YTD_AUTH_GATE.extractLinkCode(url);
-  if (!code) return; // confirmation page still loading, or an unrelated nav
-  void handleLinkCodeCaptured(tabId, code).catch((error) =>
-    console.error("[Learning Digest] link handling failed:", error?.message || error),
-  );
+  void restorePendingLinkTabs().then(() => {
+    if (!pendingLinkTabs.has(tabId)) return;
+    const url = changeInfo.url || tab?.url;
+    if (!url) return;
+    const code = YTD_AUTH_GATE.extractLinkCode(url);
+    if (!code) return; // confirmation page still loading, or an unrelated nav
+    void handleLinkCodeCaptured(tabId, code).catch((error) =>
+      console.error("[Learning Digest] link handling failed:", error?.message || error),
+    );
+  });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  pendingLinkTabs.delete(tabId);
+  if (pendingLinkTabs.delete(tabId)) {
+    void persistPendingLinkTabs();
+  }
 });
 
 // ============================================================
@@ -447,6 +493,10 @@ function siteCaptionsEnabled(platformId) {
  * the bridge reports document.title on every xiaoe page it is injected
  * into, whether or not a Session is running. The collect path prefers
  * this over chrome.tabs' tab title; entries die with their tab.
+ *
+ * bug b（验收 1.3）：每个条目同时记下上报时的页面 URL。bridge 标题只在
+ * URL 仍匹配当前标签页时才胜出 —— 同一标签页内切换分集/硬导航后、bridge
+ * 尚未重新上报前发起的收藏，若沿用旧标题会把别的分集标题记进资料。
  */
 const bridgePageTitles = new Map();
 
@@ -454,18 +504,37 @@ function recordBridgePageTitle(sender, message) {
   const tabId = sender && sender.tab ? sender.tab.id : null;
   const title = message && typeof message.title === "string" ? message.title.trim() : "";
   if (typeof tabId !== "number" || title === "") return;
-  bridgePageTitles.set(tabId, title);
+  const pageUrl = sender.tab && typeof sender.tab.url === "string" ? sender.tab.url : null;
+  bridgePageTitles.set(tabId, { url: pageUrl, title });
 }
 
 /**
  * The bridge's real document title for one tab, or null when it has not
  * reported one (an empty title counts as none). Shared preference rule: the
  * bridge title wins over chrome.tabs' own, on the collect path and the
- * course-tab list alike.
+ * course-tab list alike. The win is conditional on the reported URL still
+ * identifying the same lesson: a stale entry from before an in-page episode
+ * switch or a navigation yields to chrome.tabs' own (fresh) title.
  */
 function bridgeTitleForTab(tab) {
-  const bridgeTitle = bridgePageTitles.get(tab ? tab.id : null);
-  return typeof bridgeTitle === "string" && bridgeTitle !== "" ? bridgeTitle : null;
+  const entry = bridgePageTitles.get(tab ? tab.id : null);
+  if (!entry || typeof entry.title !== "string" || entry.title === "") return null;
+  // 任一侧没有 URL 可校验（旧 bridge 消息无 url 字段 / 调用方没给 url）时
+  // 保持历史行为：bridge 标题胜出。
+  if (entry.url === null || !tab || typeof tab.url !== "string" || tab.url === "") {
+    return entry.title;
+  }
+  const reportedIdentity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(entry.url);
+  const currentIdentity = YTD_PLATFORM_VIDEO_ID.extractVideoIdentity(tab.url);
+  if (reportedIdentity && currentIdentity) {
+    const sameLesson =
+      reportedIdentity.platformId === currentIdentity.platformId &&
+      reportedIdentity.platformVideoId === currentIdentity.platformVideoId &&
+      String(reportedIdentity.episodeId ?? "") === String(currentIdentity.episodeId ?? "") &&
+      String(reportedIdentity.platformScopeId ?? "") === String(currentIdentity.platformScopeId ?? "");
+    return sameLesson ? entry.title : null;
+  }
+  return entry.url === tab.url ? entry.title : null;
 }
 
 /** The collect target: url + best title + identity for the active tab. */
@@ -5011,10 +5080,21 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   if (context.liveTimer) clearInterval(context.liveTimer);
   if (context.summaryTimer) clearInterval(context.summaryTimer);
   if (context.transcriptTimer) clearInterval(context.transcriptTimer);
-  // P10 (decision 4): the final progress write of the latest position (the
-  // flush is bounded — throttle-bypassing cycles never wait on the network),
-  // the writer stops, and the course tab list unlocks.
-  await releaseLearningTarget(context);
+  // 收尾韧性（bug a, 验收 1.3）：上方广播已承诺「已自动结束并保存进度」，
+  // 因此本地收尾的每一步都是 best-effort —— 任何一步抛错都不能阻断
+  // 服务端 finish，也不能让活动指针残留（否则 MV3 worker 重启后会从
+  // 活动快照复活一个本地已结束的会话，服务端 Session 永久泄漏 active）。
+  try {
+    // P10 (decision 4): the final progress write of the latest position (the
+    // flush is bounded — throttle-bypassing cycles never wait on the network),
+    // the writer stops, and the course tab list unlocks.
+    await releaseLearningTarget(context);
+  } catch (error) {
+    console.error(
+      "[Learning Digest] 释放学习目标失败（继续服务端收尾）:",
+      error?.message || error,
+    );
+  }
 
   const finalPosition =
     context.timestampKind === "wallclock"
@@ -5026,11 +5106,18 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   // after finish would meet 409 session_already_finished (§3.4 已结束不再
   // 接收) — and then the finish closes the Session (§3.2) with the
   // seek-skipped ranges as gaps.
-  const tail =
-    context.capturePath === "captions"
-      ? null
-      : context.segmenter.flush(finalPosition);
-  if (tail) await dispatchSegment(context, tail);
+  try {
+    const tail =
+      context.capturePath === "captions"
+        ? null
+        : context.segmenter.flush(finalPosition);
+    if (tail) await dispatchSegment(context, tail);
+  } catch (error) {
+    console.error(
+      "[Learning Digest] 收尾音频段处理失败（继续服务端收尾）:",
+      error?.message || error,
+    );
+  }
 
   // Ticket 2.7 (#70, D15): the pending coverage decision's DEFAULT
   // resolution — the learner never chose, so the captions go out as-read
@@ -5043,16 +5130,31 @@ async function endActiveSession(context, { reason, report = true } = {}) {
     Array.isArray(context.state.captionsCoverage?.segments) &&
     context.state.captionsCoverage.segments.length > 0
   ) {
-    await archiveCaptionsForContext(context, {
-      segments: context.state.captionsCoverage.segments,
-    });
+    try {
+      await archiveCaptionsForContext(context, {
+        segments: context.state.captionsCoverage.segments,
+      });
+    } catch (error) {
+      console.error(
+        "[Learning Digest] 字幕归档失败（继续服务端收尾）:",
+        error?.message || error,
+      );
+    }
   }
 
   // Ticket 2.5 (#68): the captions Session finishes its server Session
   // here (§3.2) — 字幕 Session 结束（P11 触发）→finish. The 409 repeat
   // verdict is absorbed inside (already finished is not a local failure).
   if (context.serverSessionId) {
-    await finishServerSession(context);
+    try {
+      await finishServerSession(context);
+    } catch (error) {
+      console.error(
+        "[Learning Digest] 服务端会话收尾调用异常:",
+        context.serverSessionId,
+        error?.message || error,
+      );
+    }
   }
 
   // Ticket 2.4: the ASR poll keeps draining after the end so the tail
@@ -5069,8 +5171,24 @@ async function endActiveSession(context, { reason, report = true } = {}) {
   if (context.serverSessionId && context.state.serverSessionId !== context.serverSessionId) {
     context.state = { ...context.state, serverSessionId: context.serverSessionId };
   }
-  await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
-  await clearContextPointer();
+  // 收尾韧性（bug a）：快照保存失败不再阻断指针释放 —— 指针残留是更重的
+  // 故障（worker 重启后复活活动会话、重复收尾、目标锁死）。
+  try {
+    await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, context.state);
+  } catch (error) {
+    console.error(
+      "[Learning Digest] 已结束会话快照保存失败（指针仍释放）:",
+      error?.message || error,
+    );
+  }
+  try {
+    await clearContextPointer();
+  } catch (error) {
+    console.error(
+      "[Learning Digest] 活动指针释放失败:",
+      error?.message || error,
+    );
+  }
   // The retry action targets "the most recent ended Session"; remember it
   // for the live-worker fast path (storage scan is the durable fallback).
   lastEndedSessionId = context.state.sessionId;

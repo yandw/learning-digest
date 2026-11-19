@@ -270,6 +270,63 @@ test("the page bridge's real title wins over the tab title", async () => {
   });
 });
 
+test("bug b: a stale bridge title from another episode in the same tab yields to the fresh tab title", async () => {
+  const seen = [];
+  const BILI_P3 = "https://www.bilibili.com/video/BV1ab411L78c?p=3";
+  const BILI_P1 = "https://www.bilibili.com/video/BV1ab411L78c?p=1";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: {
+      ytd_auth_credential: { token: "ext-token" },
+    },
+    // The tab already navigated/soft-switched to P1; chrome.tabs' own
+    // title is the fresh episode-1 one.
+    tabsQuery: async () => [{ id: 7, url: BILI_P1, title: "【00-AE先导课】第1集" }],
+    fetchImpl: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      return { status: 201, json: async () => FAVORITE_BODY };
+    },
+  });
+
+  // The bridge reported P3's title while the tab was still on P3 (or before
+  // it re-reported after the switch). The cache entry carries that URL.
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "【02-AE概念课】第3集" },
+    { tab: { id: 7, url: BILI_P3 } },
+  );
+
+  await helpers.handleCollectCurrentPage();
+  assert.equal(
+    seen[0].title,
+    "【00-AE先导课】第1集",
+    "分集已切换，bridge 的旧标题不得进入收藏",
+  );
+});
+
+test("bug b: the bridge title still wins when its reported URL identifies the same episode", async () => {
+  const seen = [];
+  const BILI_P1 = "https://www.bilibili.com/video/BV1ab411L78c?p=1";
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: {
+      ytd_auth_credential: { token: "ext-token" },
+    },
+    tabsQuery: async () => [{ id: 7, url: BILI_P1, title: "标签页标题" }],
+    fetchImpl: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      return { status: 201, json: async () => FAVORITE_BODY };
+    },
+  });
+
+  await helpers.handlePageTitle(
+    { action: "pageTitle", title: "bridge 同分集标题" },
+    { tab: { id: 7, url: BILI_P1 } },
+  );
+
+  await helpers.handleCollectCurrentPage();
+  assert.equal(seen[0].title, "bridge 同分集标题", "URL 身份一致时 bridge 标题仍优先");
+});
+
 // --- handleResolveCurrentSource: the read-only probe ---------------------------
 
 test("resolve on a page with identity asks /v1/sources/resolve and reports a hit", async () => {

@@ -244,6 +244,101 @@ test("a failed exchange stays unlinked and reports to the panel", async () => {
   assert.equal(breadcrumb.outcome, "exchangeFailed");
 });
 
+// --- pendingLinkTabs 的会话持久化（1.1 验收缺陷候选修复）---------------------
+//
+// 真实流程里学习者在 Web 确认页上花掉数分钟（邮箱验证码往返），MV3 worker
+// 在该窗口内被空闲回收；内存 Set 死掉后，成功跳转 link.html?link= 的
+// onUpdated 事件被新 worker 忽略，关联永不完成。修复：集合镜像进
+// chrome.storage.session，事件先等恢复再判归属。
+
+/** 轮询直到 exchange 落库（监听器是 fire-and-forget 的）。 */
+async function waitFor(predicate, ms = 1000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return false;
+}
+
+test("the pending link tab survives a worker restart and the exchange still fires", async () => {
+  // 第一段 worker 生命周期：注册关联标签页并持久化。
+  const sessionBacking = {};
+  const first = loadBackgroundHelpers({
+    settings: baseSettings({ webAppBaseUrl: "http://127.0.0.1:8080" }),
+    sessionStored: sessionBacking,
+  });
+  const opened = await first.handleOpenAuthPage();
+  assert.equal(opened.success, true);
+  assert.deepEqual([...sessionBacking.ytd_pending_link_tabs], [opened.tabId]);
+
+  // MV3 空闲回收：新 worker 实例——内存为空，只有 session 存储延续。
+  const sentMessages = [];
+  const second = loadBackgroundHelpers({
+    settings: baseSettings({ webAppBaseUrl: "http://127.0.0.1:8080" }),
+    sessionStored: sessionBacking,
+    sentMessages,
+    fetchImpl: async (url, init) => {
+      assert.equal(url, "http://127.0.0.1:8787/v1/auth/link");
+      assert.deepEqual(JSON.parse(init.body), { code: "link_code_restart" });
+      return {
+        status: 201,
+        json: async () => ({
+          account: { id: "acc_1", email: "learner@example.com" },
+          credential: {
+            token: "ext-token",
+            kind: "extension",
+            credentialGroupId: "grp_1",
+          },
+        }),
+      };
+    },
+  });
+
+  // 成功跳转（LinkApp 的 history.replaceState）触发 onUpdated。
+  second.fireTabUpdated(
+    opened.tabId,
+    { url: "http://127.0.0.1:8080/link.html?link=link_code_restart" },
+    { id: opened.tabId, url: "http://127.0.0.1:8080/link.html?link=link_code_restart" },
+  );
+
+  const stored = await waitFor(() => second.readStored("ytd_auth_credential"));
+  assert.ok(stored, "the exchange ran despite the worker restart");
+  assert.equal(second.readStored("ytd_auth_credential").email, "learner@example.com");
+  assert.equal(
+    second.readStored("ytd_last_auth_link").outcome,
+    "linked",
+  );
+  assert.ok(
+    sentMessages.some((message) => message.action === "authAuthorized"),
+    "the panel is told the link finished and returns to the course view",
+  );
+  // 消费后集合清理（内存 + session 镜像），标签页被关闭。
+  assert.deepEqual([...second.sessionBacking.ytd_pending_link_tabs], []);
+  assert.deepEqual(second.removedTabIds, [opened.tabId]);
+});
+
+test("a pending tab removed by the user is dropped from the session mirror", async () => {
+  const sessionBacking = {};
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings({ webAppBaseUrl: "http://127.0.0.1:8080" }),
+    sessionStored: sessionBacking,
+  });
+  const opened = await helpers.handleOpenAuthPage();
+  assert.deepEqual([...sessionBacking.ytd_pending_link_tabs], [opened.tabId]);
+
+  helpers.fireTabRemoved(opened.tabId);
+  assert.ok(await waitFor(() => !sessionBacking.ytd_pending_link_tabs.includes(opened.tabId)));
+  // 内存集合同样不再持有：迟到的成功地址不会触发交换。
+  helpers.fireTabUpdated(
+    opened.tabId,
+    { url: "http://127.0.0.1:8080/link.html?link=late_code" },
+    { id: opened.tabId, url: "http://127.0.0.1:8080/link.html?link=late_code" },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(helpers.readStored("ytd_auth_credential"), undefined);
+});
+
 // --- the capture gate --------------------------------------------------------
 
 test("startLearning is blocked while unlinked, with the guide message", async () => {

@@ -542,6 +542,71 @@ test("a pageUrl switch to another episode finishes the Session, saves the old ep
   assert.equal(progressCalls[1].path, "/v1/sources/src_01JABILIP1/progress");
 });
 
+test("收尾韧性 (bug a): a failing end-time local step never blocks the server finish or leaves the pointer", async () => {
+  const BILI_SOURCE_P1 = {
+    id: "src_01JABILIP1",
+    resourceId: "res_01JABILIR1",
+    kind: "video",
+    url: BILI_P1,
+    platformId: "bilibili",
+    platformVideoId: "BV1ab411L78c",
+    episodeId: "1",
+    platformScopeId: null,
+    progress: { positionMs: 50_000, revision: 1 },
+  };
+  const { v1Calls, fetchImpl } = v1Fetch({
+    resolve: [{ status: 200, body: { matched: true, resource: RESOLVE_MATCHED_BODY.resource, source: BILI_SOURCE_P1 } }],
+    progress: [{ status: 200, body: { positionMs: 100000, revision: 2 } }],
+  });
+  // 注入：保存「已结束」状态的会话快照时 storage.set 拒绝（真实环境观察到的
+  // 收尾中断形态）——学习中段的快照保存保持成功。注入实现持有自己的
+  // backing（settings/credential 预先放入，背景代码全程读写它）。
+  const backing = {
+    ytd_settings: baseSettings(),
+    ytd_auth_credential: CREDENTIAL_STORE.ytd_auth_credential,
+  };
+  const injectedStorage = {
+    setAccessLevel: () => Promise.resolve(),
+    get: async (key) => {
+      if (key === null) return { ...backing };
+      if (Array.isArray(key)) return Object.fromEntries(key.map((k) => [k, backing[k]]));
+      return { [key]: backing[key] };
+    },
+    set: async (values) => {
+      const badKey = Object.keys(values).find(
+        (k) => String(k).startsWith("ytd_session_") && values[k] && values[k].status === "ended",
+      );
+      if (badKey) throw new Error("injected quota error on ended snapshot");
+      Object.assign(backing, values);
+    },
+    remove: async (keys) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete backing[key];
+    },
+  };
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    fetchImpl,
+    sendMessageImpl: cutReply,
+    storageImpl: injectedStorage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: BILI_P1, tabId: 2 });
+  assert.equal(started.success, true);
+
+  await helpers.handleMediaPosition({ position: 100, pageUrl: BILI_P1 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve));
+  await helpers.handleMediaPosition({ position: 150, pageUrl: BILI_P2 }, { tab: { id: 2 } });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const finishCalls = v1Calls.filter((call) => call.path.includes("/finish"));
+  assert.equal(finishCalls.length, 1, "服务端收尾仍发出（通知已承诺自动结束）");
+  // 指针是否释放用被动挂载探针查（注入 storage 与 harness backing 分离，
+  // readStored 看不到指针键）。
+  const pages = await helpers.handleGetLearningPages();
+  assert.equal(pages.session, null, "活动指针仍释放（worker 重启不会复活已结束的会话）");
+});
+
 test("a same-source pageUrl churn (?t= seek) does NOT finish the Session", async () => {
   const BILI_SOURCE_P1 = {
     id: "src_01JABILIP1",

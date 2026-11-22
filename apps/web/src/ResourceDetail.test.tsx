@@ -125,7 +125,7 @@ function makeRuntime({ partialFailure = false } = {}) {
 async function openDetail(runtime: ReturnType<typeof makeRuntime>) {
   const user = userEvent.setup();
   render(<App runtime={runtime} />);
-  await user.click(await screen.findByRole("button", { name: "详情" }));
+  await user.click(await screen.findByRole("link", { name: RESOURCE.title }));
   return user;
 }
 
@@ -144,7 +144,7 @@ describe("React resource learning workbench", () => {
     expect(screen.getByText("核心概念")).toBeInTheDocument();
     expect(screen.getByText("注意力", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByText("「注意力会选择重要的信息」")).toBeInTheDocument();
-    expect(screen.getByText("上次学到 4:10")).toBeInTheDocument();
+    expect(screen.getByText("上次学到 4:10", { selector: ".detail-sources *" })).toBeInTheDocument();
     const jumps = screen.getAllByTitle("回到原视频的这个位置");
     expect(jumps[0]).toHaveAttribute("href", expect.stringContaining("t=65"));
     expect(runtime.openDetail).toHaveBeenCalledWith("res_1");
@@ -195,7 +195,7 @@ describe("React resource learning workbench", () => {
     await user.click(await screen.findByRole("button", { name: "确认删除" }));
 
     await waitFor(() => expect(runtime.calls.delete).toEqual(["res_1"]));
-    expect(await screen.findByRole("heading", { name: "学习列表" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /学习资料/ })).toBeInTheDocument();
     expect(screen.getByText("收藏的网页和课程会出现在这里。")).toBeInTheDocument();
   });
 });

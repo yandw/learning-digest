@@ -38,7 +38,10 @@ export function createLearningRuntime(): LearningRuntime {
   login = createLoginFlow({ api, credentials });
   const identityExtractor =
     (window as any).YTD_PLATFORM_VIDEO_ID || { extractVideoIdentity: () => null };
-  library = createLibraryFlow({ api, identity: identityExtractor });
+  library = createLibraryFlow({
+    api: { ...api, listResources: () => api.listResources(true) },
+    identity: identityExtractor,
+  });
   admin = createAdminFlow({ api });
   const session = createSessionRevalidator({
     api,

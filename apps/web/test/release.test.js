@@ -14,10 +14,13 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.19", () => {
+test("apps/web release metadata is 0.1.23", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
-  // 0.1.19: allow proxied responses to outlive the server's generic idle timeout.
+  // 0.1.23: the login page becomes a fullscreen two-panel layout — the ink
+  // brand panel takes ~2/3 on the left and the account form ~1/3 on the
+  // right, matching the Figma W03 desktop design.
+  // 0.1.21: allow proxied responses to outlive the server's generic idle timeout.
   // 0.1.18: the resource detail page orders 资料来源 → 学习笔记 → 课程
   // 总结 → 逐字稿, and every section gets a collapse/expand toggle —
   // the merged transcript can run to hundreds of rows, so it defaults
@@ -54,7 +57,7 @@ test("apps/web release metadata is 0.1.19", () => {
   // administrator's 站点管理 surface (isAdmin-driven nav entry, the
   // site-capability table with per-row boolean-subset saves, the D2
   // non-admin denied view) over the round-4 admin API.
-  assert.equal(packageJson.version, "0.1.19");
+  assert.equal(packageJson.version, "0.1.23");
   assert.equal(packageJson.private, true);
 });
 

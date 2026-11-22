@@ -4,6 +4,7 @@ import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutl
 import {
   buildNoteJumpUrl,
   mergeTranscriptViews,
+  noteKindLabel,
   presentDetail,
   presentNote,
   presentSummary,
@@ -174,18 +175,18 @@ export default function ResourceDetail({
             </Button>
           </div>
         ) : (
-          <div className="detail-title-row">
+          <>
             <h1>{presented.title}</h1>
-            <Button
-              aria-label="编辑标题"
-              icon={<EditOutlined />}
-              onClick={() => setEditingTitle(true)}
-            >
-              编辑标题
-            </Button>
-          </div>
+            <Space className="detail-title-actions" wrap>
+              {presented.sources[0]?.url && (
+                <Button type="primary" href={presented.sources[0].url} target="_blank" rel="noreferrer">回到原平台</Button>
+              )}
+              <Button aria-label="编辑标题" icon={<EditOutlined aria-hidden="true" />} onClick={() => setEditingTitle(true)}>
+                编辑标题
+              </Button>
+            </Space>
+          </>
         )}
-        <p>查看原文、学习记录与 AI 总结，回到原平台继续学习。</p>
       </header>
 
       {(state.notice || state.error) && (
@@ -225,10 +226,11 @@ export default function ResourceDetail({
               const item = presentNote(note);
               return (
                 <li key={item.id}>
+                  <div className="detail-note-meta">
+                    <span>{noteKindLabel(note)}</span>
+                    {item.stamp && <SourceJump href={buildNoteJumpUrl(note, sources)}>{item.stamp}</SourceJump>}
+                  </div>
                   <p className="note-text">{item.text}</p>
-                  {item.stamp && (
-                    <SourceJump href={buildNoteJumpUrl(note, sources)}>{item.stamp}</SourceJump>
-                  )}
                 </li>
               );
             })}

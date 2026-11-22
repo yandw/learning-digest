@@ -99,8 +99,12 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("POST", "/v1/resources", { body });
   }
 
-  function listResources() {
-    return request("GET", "/v1/resources");
+  function listResources(includeActivity = false) {
+    return request("GET", includeActivity ? "/v1/resources?include_activity=true" : "/v1/resources");
+  }
+
+  function listNotes() {
+    return request("GET", "/v1/notes");
   }
 
   function getResourceDetail(id) {
@@ -170,5 +174,5 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     });
   }
 
-  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, getResourceDetail, updateResourceTitle, deleteResource, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, listNotes, getResourceDetail, updateResourceTitle, deleteResource, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
 }

@@ -156,6 +156,12 @@ export function presentNote(note) {
   };
 }
 
+export function noteKindLabel(note) {
+  if (note.kind === "excerpt") return "逐字稿摘记";
+  if (note.kind === "manual" || note.positionMs == null) return "手写笔记";
+  return "带时间的笔记";
+}
+
 /**
  * "2026-11-10T10:00:00Z" -> "2026-11-10 10:00" in the viewer's local time
  * (the contract's ISO 8601 UTC instants, contract-v1 §1). Unusable inputs
@@ -596,6 +602,10 @@ export function presentUsage(usage) {
   const updatedText = formatDateTime(usage.updatedAt) || "";
   return {
     text: `累计用量：转写 ${audioText} · 总结 ${usage.summaryCount} 次 · 输入 ${usage.summaryInputChars} 字符 · 更新于 ${updatedText}`,
+    audioText,
+    summaryCount: usage.summaryCount,
+    summaryInputChars: usage.summaryInputChars,
+    updatedText,
   };
 }
 

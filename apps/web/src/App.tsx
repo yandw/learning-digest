@@ -4,41 +4,40 @@ import {
   App as AntDesignApp,
   Button,
   ConfigProvider,
-  Empty,
   Form,
+  Grid,
   Input,
   Layout,
-  Menu,
   Modal,
   Popover,
   Space,
   Spin,
-  Tag,
   Typography,
 } from "antd";
 import zhCN from "antd/es/locale/zh_CN";
-import {
-  BookOutlined,
-  DeleteOutlined,
-  LinkOutlined,
-  LogoutOutlined,
-  PlusOutlined,
-  SettingOutlined,
-} from "@ant-design/icons";
-import { DELETE_CONFIRM_MS, presentListItem, presentUsage } from "../public/js/library.js";
+import { EllipsisOutlined, PlusOutlined } from "@ant-design/icons";
+import { presentUsage } from "../public/js/library.js";
 import { shouldShowAdminEntry } from "../public/js/admin.js";
 import { createLearningRuntime, type LearningRuntime } from "./runtime";
 import ResourceDetail from "./ResourceDetail";
 import AdminSurface from "./AdminSurface";
+import AuthLayout, { libraryTheme } from "./AuthLayout";
+import CodeBoxes from "./CodeBoxes";
+import LibraryHome from "./LibraryHome";
 
-const { Header, Content, Sider } = Layout;
+const { Header, Content } = Layout;
 
 function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
+  const compactHeader = Grid.useBreakpoint().xs === true;
   const [ready, setReady] = useState(false);
   const [loginState, setLoginState] = useState(runtime.login.getState());
   const [libraryState, setLibraryState] = useState(runtime.library.getState());
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [collectOpen, setCollectOpen] = useState(false);
+  const [collectError, setCollectError] = useState("");
   const [collectUrl, setCollectUrl] = useState("");
   const [collectTitle, setCollectTitle] = useState("");
   const [surface, setSurface] = useState<"library" | "admin">("library");
@@ -46,12 +45,14 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
   const [adminState, setAdminState] = useState(runtime.admin?.getState() || { view: "idle", rows: [] });
   const [usageOpen, setUsageOpen] = useState(false);
   const [usageLoading, setUsageLoading] = useState(false);
-  const [usageText, setUsageText] = useState("");
+  const [usage, setUsage] = useState<ReturnType<typeof presentUsage> | null>(null);
   const [usageError, setUsageError] = useState("");
   const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<{
     id: string;
     surface: "list" | "detail";
   } | null>(null);
+
+  const listPosition = useRef(0);
 
   const refresh = useCallback(() => {
     setLoginState(runtime.login.getState());
@@ -70,12 +71,14 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
   }, [runtime]);
 
   const openResource = useCallback(async (id: string, updateUrl = true) => {
+    if (updateUrl) listPosition.current = window.scrollY;
     const pending = runtime.openDetail(id);
     setLibraryState(runtime.library.getState());
     await pending;
     refresh();
-    if (updateUrl) {
+    if (updateUrl && runtime.library.getState().detail?.resource.id === id) {
       window.history.pushState({}, "", `/?resource=${encodeURIComponent(id)}`);
+      window.scrollTo(0, 0);
     }
   }, [refresh, runtime]);
 
@@ -103,6 +106,10 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     setAccount(null);
     setSurface("library");
     setUsageOpen(false);
+    setCollectOpen(false);
+    setConfirmDeleteTarget(null);
+    setCollectUrl("");
+    setCollectTitle("");
     refresh();
   }), [refresh, runtime]);
 
@@ -121,10 +128,34 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
   const submitEmail = async () => {
     const pending = runtime.login.submitEmail(email);
     setLoginState(runtime.login.getState());
-    await pending;
-    setCode("");
+    const result = await pending;
+    if (result.ok) {
+      setCode("");
+      setCodeSent(true);
+      setResendCooldown(60);
+    }
     refresh();
   };
+
+  const resendCode = async () => {
+    const target = runtime.login.getState().email || email;
+    if (!target) return;
+    const pending = runtime.login.submitEmail(target);
+    setLoginState(runtime.login.getState());
+    const result = await pending;
+    if (result.ok) {
+      setCode("");
+      setCodeSent(true);
+      setResendCooldown(60);
+    }
+    refresh();
+  };
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => setResendCooldown((s) => s - 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown > 0]);
 
   const submitCode = async () => {
     const pending = runtime.login.submitCode(code);
@@ -133,6 +164,12 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     if (result.ok && runtime.login.getState().state === "authenticated") {
       await Promise.all([runtime.library.load(), loadAccount()]);
     }
+    refresh();
+  };
+
+  const backToEmail = () => {
+    runtime.login.backToEmail();
+    setCode("");
     refresh();
   };
 
@@ -146,6 +183,9 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     setSurface("library");
     setUsageOpen(false);
     setConfirmDeleteTarget(null);
+    setCollectOpen(false);
+    setCollectUrl("");
+    setCollectTitle("");
     refresh();
   };
 
@@ -156,8 +196,16 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     if (result.ok) {
       setCollectUrl("");
       setCollectTitle("");
+      setCollectOpen(false);
+    } else {
+      setCollectError(runtime.library.getState().error);
     }
     refresh();
+  };
+
+  const openCollect = () => {
+    setCollectError("");
+    setCollectOpen(true);
   };
 
   const reloadLibrary = async () => {
@@ -198,7 +246,7 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     setUsageLoading(false);
     if (result.status === 401) return;
     if (result.ok) {
-      setUsageText(presentUsage(result.data).text);
+      setUsage(presentUsage(result.data));
     } else {
       setUsageError(result.data?.error?.message || "用量加载失败，请稍后重试");
     }
@@ -208,6 +256,7 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     runtime.library.backToList();
     window.history.pushState({}, "", "/");
     refresh();
+    window.requestAnimationFrame(() => window.scrollTo(0, listPosition.current));
   };
 
   const retitle = async (title: string) => {
@@ -260,7 +309,7 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
       setLibraryState(runtime.library.getState());
       result = await pending;
     }
-    if (confirmDeleteTarget.surface === "detail") {
+    if (confirmDeleteTarget.surface === "detail" && (result.ok || result.gone)) {
       window.history.pushState({}, "", "/");
     }
     setConfirmDeleteTarget(null);
@@ -268,10 +317,19 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
   };
 
   useEffect(() => {
-    if (!confirmDeleteTarget) return;
-    const timer = window.setTimeout(cancelDelete, DELETE_CONFIRM_MS + 100);
-    return () => window.clearTimeout(timer);
-  }, [cancelDelete, confirmDeleteTarget]);
+    function handleHistory() {
+      if (runtime.login.getState().state !== "authenticated") return;
+      const id = new URLSearchParams(window.location.search).get("resource");
+      setSurface("library");
+      if (id) void openResource(id, false);
+      else {
+        runtime.library.backToList();
+        refresh();
+      }
+    }
+    window.addEventListener("popstate", handleHistory);
+    return () => window.removeEventListener("popstate", handleHistory);
+  }, [openResource, refresh, runtime]);
 
   if (!ready) {
     return (
@@ -283,295 +341,225 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
 
   if (loginState.state !== "authenticated") {
     const codeStep = loginState.state === "code";
-    return (
-      <main className="login-shell">
-        <section className="login-panel" aria-labelledby="loginTitle">
-          <div className="login-brand">
-            <div className="brand" style={{ padding: 0, minHeight: 0 }}>
-              <span className="brand-mark" aria-hidden="true">L</span>
-              <span>Learning Digest</span>
-            </div>
-          </div>
-          <h1 id="loginTitle">登录学习库</h1>
-          <p className="login-lede">使用受邀邮箱接收验证码，继续你的学习记录。</p>
+    if (codeStep) {
+      return (
+        <AuthLayout labelledBy="codeTitle">
+          <h1 id="codeTitle">验证邮箱</h1>
+          <p className="login-lede">
+            验证码已发送至 <strong>{loginState.email}</strong>，10 分钟内有效。
+          </p>
           {loginState.notice && (
             <Alert className="login-notice" type="success" showIcon title={loginState.notice} />
           )}
           {loginState.error && (
             <Alert className="login-notice" type="error" showIcon title={loginState.error} />
           )}
-          {codeStep ? (
-            <Form layout="vertical" onFinish={() => void submitCode()} requiredMark={false}>
-              <Form.Item label="验证码" required>
-                <Input
-                  aria-label="验证码"
-                  value={code}
-                  onChange={(event) => setCode(event.target.value)}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  placeholder="输入 6 位验证码"
-                  size="large"
-                  autoFocus
-                />
-              </Form.Item>
-              <Space orientation="vertical" size={12} style={{ width: "100%" }}>
-                <Button
-                  type="primary"
-                  htmlType="submit"
-                  loading={loginState.busy}
-                  autoInsertSpace={false}
-                  block
-                >
-                  登录
-                </Button>
-                <Button
-                  type="link"
-                  onClick={() => {
-                    runtime.login.backToEmail();
-                    setCode("");
-                    refresh();
-                  }}
-                  disabled={loginState.busy}
-                  block
-                >
-                  更换邮箱
-                </Button>
-              </Space>
-            </Form>
-          ) : (
-            <Form layout="vertical" onFinish={() => void submitEmail()} requiredMark={false}>
-              <Form.Item label="邮箱" required>
-                <Input
-                  aria-label="邮箱"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  type="email"
-                  autoComplete="email"
-                  placeholder="you@example.com"
-                  size="large"
-                  autoFocus
-                />
-              </Form.Item>
-              <Button type="primary" htmlType="submit" loading={loginState.busy} block>
-                获取验证码
-              </Button>
-            </Form>
+          <Form layout="vertical" onFinish={() => void submitCode()} requiredMark={false}>
+            <Form.Item label="验证码">
+              <CodeBoxes value={code} onChange={setCode} />
+            </Form.Item>
+            <Button
+              type="primary"
+              htmlType="submit"
+              block
+              loading={loginState.busy}
+              disabled={code.length !== 6 || loginState.busy}
+              autoInsertSpace={false}
+            >
+              登录学习库
+            </Button>
+          </Form>
+          <div className="login-links">
+            <Button
+              type="link"
+              className={resendCooldown > 0 ? "" : "login-link-accent"}
+              disabled={resendCooldown > 0 || loginState.busy}
+              onClick={() => void resendCode()}
+            >
+              {resendCooldown > 0 ? `重新发送 (${resendCooldown}s)` : "重新发送"}
+            </Button>
+            <Button type="link" disabled={loginState.busy} onClick={backToEmail}>
+              更换邮箱
+            </Button>
+          </div>
+        </AuthLayout>
+      );
+    }
+    return (
+      <AuthLayout labelledBy="loginTitle">
+        <h1 id="loginTitle">登录学习库</h1>
+        <p className="login-lede">使用受邀邮箱接收验证码，无需密码。</p>
+        {loginState.notice && (
+          <Alert className="login-notice" type="success" showIcon title={loginState.notice} />
+        )}
+        {loginState.error && (
+          <Alert className="login-notice" type="error" showIcon title={loginState.error} />
+        )}
+        <Form layout="vertical" onFinish={() => void submitEmail()} requiredMark={false}>
+          <Form.Item label="邮箱" required>
+            <Input
+              aria-label="邮箱"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              type="email"
+              autoComplete="email"
+              placeholder="name@example.com"
+              size="large"
+              autoFocus
+            />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" loading={loginState.busy} block>
+            获取验证码
+          </Button>
+        </Form>
+        <div className="login-links">
+          {codeSent && (
+            <Button
+              type="link"
+              className={resendCooldown > 0 ? "" : "login-link-accent"}
+              disabled={resendCooldown > 0 || loginState.busy}
+              onClick={() => void resendCode()}
+            >
+              {resendCooldown > 0 ? `重新发送 (${resendCooldown}s)` : "重新发送"}
+            </Button>
           )}
-        </section>
-      </main>
+          <Button type="link" disabled={!email} onClick={() => setEmail("")}>
+            更换邮箱
+          </Button>
+        </div>
+      </AuthLayout>
     );
   }
 
   const credential = runtime.credentials.get();
   const resources = libraryState.resources || [];
-  const loading = libraryState.busy && resources.length === 0;
+  const showHome = surface === "library" && libraryState.view !== "detail";
+
+  const accountControls = (
+    <Space className={compactHeader ? "compact-account-actions" : "account-area"} orientation={compactHeader ? "vertical" : "horizontal"} size={8} wrap>
+      {shouldShowAdminEntry(account) && (
+        <Button type="text" onClick={() => void showSurface(surface === "admin" ? "library" : "admin")}>
+          {surface === "admin" ? "返回学习库" : "站点管理"}
+        </Button>
+      )}
+      <Button type="text" aria-label="收藏资料" icon={<PlusOutlined aria-hidden="true" />} onClick={openCollect}>收藏资料</Button>
+      <Typography.Text className="account-email" title={credential?.email || ""}>
+        {credential?.email || ""}
+      </Typography.Text>
+      {runtime.api?.getUsage && (
+        <Popover
+          trigger="click"
+          getPopupContainer={compactHeader ? (trigger) => trigger.parentElement || document.body : undefined}
+          open={usageOpen}
+          onOpenChange={(open) => {
+            setUsageOpen(open);
+            if (open) void loadUsage();
+          }}
+          content={
+            <div className="usage-popover" aria-live="polite">
+              {usageLoading ? <Spin aria-label="用量加载中" /> : usageError ? (
+                <Alert type="error" showIcon title={usageError} />
+              ) : usage?.audioText ? (
+                <dl className="usage-totals">
+                  <dt>累计转写</dt><dd>{usage.audioText}</dd>
+                  <dt>课程总结</dt><dd>{usage.summaryCount} 次</dd>
+                  <dt>总结输入</dt><dd>{usage.summaryInputChars} 字符</dd>
+                  <dt>更新时间</dt><dd>{usage.updatedText}</dd>
+                </dl>
+              ) : <Typography.Text>{usage?.text}</Typography.Text>}
+            </div>
+          }
+        >
+          <Button type="text" aria-label="用量">用量</Button>
+        </Popover>
+      )}
+      <Button
+        aria-label="退出登录"
+        type="text"
+        onClick={() => void logout()}
+        disabled={loginState.busy}
+      >
+        退出登录
+      </Button>
+    </Space>
+  );
 
   return (
     <Layout className="app-shell">
-      <Sider className="app-sider" width={224} breakpoint="lg" collapsedWidth={0} trigger={null}>
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">L</span>
-          <span>Learning Digest</span>
+      <Header className="app-header">
+        <div className="top-navigation">
+          <a className="brand" href="/" onClick={(event) => {
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            if (libraryState.view === "detail") backToList();
+            setSurface("library");
+            void reloadLibrary();
+          }}>Learning Digest</a>
+          <span className="library-nav-label">我的学习库</span>
         </div>
-        <Menu
-          className="app-menu"
-          mode="inline"
-          selectedKeys={[surface]}
-          items={[
-            { key: "library", icon: <BookOutlined aria-hidden="true" />, label: "学习列表" },
-            ...(shouldShowAdminEntry(account)
-              ? [{ key: "admin", icon: <SettingOutlined aria-hidden="true" />, label: "站点管理" }]
-              : []),
-          ]}
-          onClick={({ key }) => {
-            if (key === "library" && surface === "library") void reloadLibrary();
-            else void showSurface(key as "library" | "admin");
-          }}
+        {compactHeader ? (
+          <Popover trigger="click" placement="bottomRight" content={accountControls}>
+            <Button type="text" icon={<EllipsisOutlined />} aria-label="账户与操作" />
+          </Popover>
+        ) : accountControls}
+      </Header>
+      <Content className="app-content">
+        {showHome && libraryState.notice && (
+          <Alert className="content-inner library-notice" type="success" showIcon title={libraryState.notice} />
+        )}
+        <LibraryHome
+          resources={resources}
+          active={showHome}
+          busy={libraryState.busy}
+          error={collectOpen ? null : libraryState.error}
+          listNotes={runtime.api?.listNotes}
+          onReload={() => void reloadLibrary()}
+          onCollect={openCollect}
+          onOpen={(id) => void openResource(id)}
+          onDelete={(id) => void armDelete(id, "list")}
         />
-      </Sider>
-      <Layout>
-        <Header className="app-header">
-          <div className="mobile-brand">Learning Digest</div>
-          <Space className="account-area" size={16}>
-            <Typography.Text className="account-email" title={credential?.email || ""}>
-              {credential?.email || ""}
-            </Typography.Text>
-            {runtime.api?.getUsage && (
-              <Popover
-                trigger="click"
-                open={usageOpen}
-                onOpenChange={(open) => {
-                  setUsageOpen(open);
-                  if (open) void loadUsage();
-                }}
-                content={
-                  <div className="usage-popover" aria-live="polite">
-                    {usageLoading ? <Spin aria-label="用量加载中" /> : usageError ? (
-                      <Alert type="error" showIcon title={usageError} />
-                    ) : <Typography.Text>{usageText}</Typography.Text>}
-                  </div>
-                }
-              >
-                <Button aria-label="用量">用量</Button>
-              </Popover>
-            )}
-            <Button
-              aria-label="退出登录"
-              icon={<LogoutOutlined />}
-              onClick={() => void logout()}
-              disabled={loginState.busy}
-            >
-              退出登录
-            </Button>
-          </Space>
-        </Header>
-        <Content className="app-content">
-          {surface === "admin" ? (
-            <div className="content-inner">
-              <header className="page-heading">
-                <h1>站点管理</h1>
-                <p>按平台控制字幕抓取、语音转写与启用状态。</p>
-              </header>
-              <AdminSurface state={adminState} onToggle={toggleCapability} onSave={saveCapability} />
-            </div>
-          ) : libraryState.view === "detail" && libraryState.detail ? (
-            <div className="content-inner">
-              <ResourceDetail
-                state={libraryState}
-                onBack={backToList}
-                onRetitle={retitle}
-                onGenerate={generateSummary}
-                onShowSummary={showSummary}
-                onDelete={() => void armDelete(libraryState.detail.resource.id, "detail")}
-              />
-            </div>
-          ) : (
+        {surface === "admin" ? (
           <div className="content-inner">
             <header className="page-heading">
-              <h1>学习列表</h1>
-              <p>收藏课程与网页，继续上一次的学习位置。</p>
+              <h1>站点管理</h1>
+              <p>按平台控制字幕抓取、语音转写与启用状态。</p>
             </header>
-
-            <section className="collect-panel" aria-labelledby="collectHeading">
-              <h2 id="collectHeading">收藏新资料</h2>
-              <p className="section-intro">粘贴网页或课程链接，标题可以留空稍后补充。</p>
-              <Form layout="vertical" onFinish={() => void collect()} requiredMark={false}>
-                <div className="collect-grid">
-                  <Form.Item label="网页链接" required>
-                    <Input
-                      aria-label="网页链接"
-                      prefix={<LinkOutlined />}
-                      value={collectUrl}
-                      onChange={(event) => setCollectUrl(event.target.value)}
-                      type="url"
-                      placeholder="https://www.bilibili.com/video/…"
-                      autoComplete="off"
-                    />
-                  </Form.Item>
-                  <Form.Item label="标题（可选）">
-                    <Input
-                      aria-label="标题（可选）"
-                      value={collectTitle}
-                      onChange={(event) => setCollectTitle(event.target.value)}
-                      placeholder="留空则先保存链接"
-                      autoComplete="off"
-                    />
-                  </Form.Item>
-                  <Form.Item className="collect-submit" label=" ">
-                    <Button
-                      type="primary"
-                      htmlType="submit"
-                      aria-label="收藏"
-                      icon={<PlusOutlined />}
-                      loading={libraryState.busy}
-                    >
-                      收藏
-                    </Button>
-                  </Form.Item>
-                </div>
-              </Form>
-            </section>
-
-            {(libraryState.notice || libraryState.error) && (
-              <div className="feedback-stack">
-                {libraryState.notice && <Alert type="success" showIcon title={libraryState.notice} />}
-                {libraryState.error && <Alert type="error" showIcon title={libraryState.error} />}
-              </div>
-            )}
-
-            <section className="list-panel" aria-labelledby="resourceHeading">
-              <div className="list-panel-header">
-                <h2 id="resourceHeading">我的资料</h2>
-                <span className="list-count">{resources.length} 条</span>
-              </div>
-              {loading ? (
-                <div className="list-loading"><Spin /></div>
-              ) : (
-                resources.length === 0 ? (
-                  <Empty
-                    className="resource-empty"
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    description={
-                      <Space orientation="vertical" size={4}>
-                        <span>收藏的网页和课程会出现在这里。</span>
-                        <Typography.Text type="secondary">粘贴一个链接开始收藏。</Typography.Text>
-                      </Space>
-                    }
-                  />
-                ) : (
-                  <ul className="resource-list">
-                    {resources.map((item: any) => {
-                      const presented = presentListItem(item);
-                      return (
-                        <li className="resource-item" key={presented.id}>
-                          <div className="resource-item-main">
-                            {presented.href ? (
-                              <a
-                                className="resource-title"
-                                href={presented.href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                {presented.title}
-                              </a>
-                            ) : (
-                              <span className="resource-title">{presented.title}</span>
-                            )}
-                            <div>
-                              <Space className="resource-meta" size={8} wrap>
-                                <Tag>{presented.kindLabel}</Tag>
-                                {presented.platformLabel && <Tag color="cyan">{presented.platformLabel}</Tag>}
-                                {presented.progressText && (
-                                  <Typography.Text type="secondary">{presented.progressText}</Typography.Text>
-                                )}
-                              </Space>
-                            </div>
-                          </div>
-                          <div className="resource-actions">
-                            <Button type="link" onClick={() => void openResource(presented.id)}>详情</Button>
-                            <Button
-                              type="link"
-                              aria-label="删除"
-                              danger
-                              icon={<DeleteOutlined />}
-                              onClick={() => void armDelete(presented.id, "list")}
-                              disabled={libraryState.busy}
-                            >
-                              删除
-                            </Button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )
-              )}
-            </section>
+            <AdminSurface state={adminState} onToggle={toggleCapability} onSave={saveCapability} />
           </div>
-          )}
-        </Content>
-      </Layout>
+        ) : libraryState.view === "detail" && libraryState.detail ? (
+          <div className="content-inner">
+            <ResourceDetail
+              state={libraryState}
+              onBack={backToList}
+              onRetitle={retitle}
+              onGenerate={generateSummary}
+              onShowSummary={showSummary}
+              onDelete={() => void armDelete(libraryState.detail.resource.id, "detail")}
+            />
+          </div>
+        ) : null}
+      </Content>
+      <Modal
+        title="收藏新资料"
+        open={collectOpen}
+        okText="收藏"
+        cancelText="取消"
+        confirmLoading={libraryState.busy}
+        okButtonProps={{ htmlType: "submit", form: "collect-form", autoInsertSpace: false }}
+        onCancel={() => setCollectOpen(false)}
+      >
+        {collectError && <Alert className="login-notice" type="error" showIcon title={collectError} />}
+        <Form id="collect-form" layout="vertical" onFinish={() => void collect()} requiredMark={false}>
+          <Form.Item label="网页链接" htmlFor="collect-url" required>
+            <Input id="collect-url" value={collectUrl} onChange={(event) => setCollectUrl(event.target.value)}
+              type="url" placeholder="https://…" autoComplete="off" />
+          </Form.Item>
+          <Form.Item label="标题（可选）" htmlFor="collect-title">
+            <Input id="collect-title" value={collectTitle} onChange={(event) => setCollectTitle(event.target.value)}
+              placeholder="留空则先保存链接" autoComplete="off" />
+          </Form.Item>
+        </Form>
+      </Modal>
       <Modal
         title="删除这条资料？"
         open={Boolean(confirmDeleteTarget)}
@@ -596,25 +584,7 @@ export default function App({ runtime: providedRuntime }: { runtime?: LearningRu
   const runtime = providedRuntime || fallbackRuntime.current!;
 
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        token: {
-          colorPrimary: "#0f6b5c",
-          colorInfo: "#0f6b5c",
-          colorText: "#26383d",
-          colorTextSecondary: "#52676d",
-          colorBgLayout: "#f4f7f8",
-          colorBorder: "#cedadd",
-          borderRadius: 8,
-          fontFamily: '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif',
-        },
-        components: {
-          Layout: { siderBg: "#fbfdfd", headerBg: "#fbfdfd" },
-          Menu: { itemSelectedColor: "#0f6b5c", itemSelectedBg: "#e5f2ef" },
-        },
-      }}
-    >
+    <ConfigProvider locale={zhCN} theme={libraryTheme}>
       <AntDesignApp>
         <LearningLibrary runtime={runtime} />
       </AntDesignApp>

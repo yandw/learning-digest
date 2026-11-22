@@ -41,7 +41,8 @@ describe("React extension authorization", () => {
 
     await user.click(await screen.findByRole("button", { name: "确认关联" }));
 
-    expect(await screen.findByText("关联码已生成。请回到浏览器插件，连接会自动完成。")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "浏览器插件已关联" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "打开学习库" })).toBeInTheDocument();
     expect(window.location.search).toBe("?link=one-time-code");
     expect(screen.queryByRole("button", { name: "确认关联" })).not.toBeInTheDocument();
   });
@@ -64,7 +65,7 @@ describe("React extension authorization", () => {
     const runtime = makeRuntime();
     render(<LinkApp runtime={runtime} />);
 
-    expect(await screen.findByRole("heading", { name: "已发起关联" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "浏览器插件已关联" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认关联" })).not.toBeInTheDocument();
   });
 });

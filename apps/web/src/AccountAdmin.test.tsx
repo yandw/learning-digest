@@ -79,7 +79,8 @@ describe("React account and administration", () => {
     render(<App runtime={runtime} />);
 
     await user.click(await screen.findByRole("button", { name: "用量" }));
-    expect(await screen.findByText(/累计用量：转写 2:30 · 总结 3 次/)).toBeInTheDocument();
+    expect(await screen.findByText("2:30")).toBeInTheDocument();
+    expect(screen.getByText("3 次")).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "站点管理" })).not.toBeInTheDocument();
   });
 
@@ -88,7 +89,7 @@ describe("React account and administration", () => {
     const user = userEvent.setup();
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("menuitem", { name: "站点管理" }));
+    await user.click(await screen.findByRole("button", { name: "站点管理" }));
     const captions = await screen.findByRole("switch", { name: "bilibili 字幕" });
     await user.click(captions);
     await user.click(screen.getByRole("button", { name: "保存" }));
@@ -104,7 +105,7 @@ describe("React account and administration", () => {
     const user = userEvent.setup();
     render(<App runtime={runtime} />);
 
-    await user.click(await screen.findByRole("menuitem", { name: "站点管理" }));
+    await user.click(await screen.findByRole("button", { name: "站点管理" }));
     expect(await screen.findByText("接口不存在或无权访问")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "保存" })).not.toBeInTheDocument();
   });

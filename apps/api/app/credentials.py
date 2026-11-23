@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from .config import Config
 from .ids import base64url, generate_id
+from .sessions import sessions_finished_on_logout
 
 
 def hash_token(token: str) -> str:
@@ -114,11 +115,13 @@ def revoke_credential(*, store: Any, token: str, now: Callable[[], int]) -> bool
 
 
 def revoke_credential_group(*, store: Any, group_id: str, now: Callable[[], int]) -> bool:
-    """Revoke a whole credential group — the revocation boundary for
-    decision 3 (Web and extension credentials exit together)."""
+    """Revoke the linked credentials and end their active study sessions together."""
     group = store.get("credentialGroups", group_id)
     if not group or group["revokedAt"] is not None:
         return False
-    group["revokedAt"] = now()
-    store.set("credentialGroups", group["id"], group)
+    at_ms = now()
+    store.set_many({
+        "credentialGroups": {group_id: {**group, "revokedAt": at_ms}},
+        "sessions": sessions_finished_on_logout(store=store, group=group, at_ms=at_ms),
+    })
     return True

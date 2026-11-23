@@ -112,6 +112,7 @@
 
 返回账号内全部资料（第一轮不分页），按 `createdAt` 倒序。每项 `{ resource, sources: [Source…] }`，Source 含最新 `progress`，供学习列表直接展示「打开原地址 + 续播位置」。
 
+- 查询参数 `include_activity=true` 可在有学习记录的来源上额外读取 `lastStudiedAtMs`。收到播放器元数据的来源还可返回 `durationMs` 和 `thumbnailUrl`。
 - 样例：`api-resources-list`、`error-unauthorized-missing-token`。
 
 ### 3.3 GET /v1/resources/{id} — 资料详情
@@ -132,6 +133,7 @@
 按乐观并发写入该来源的续播位置。
 
 - 请求体：`positionMs`（integer ≥ 0）、`expectedRevision`（integer ≥ 0；尚无进度时为 0）。
+- 可选播放器元数据：`durationMs`（正整数；有限时长）和 `thumbnailUrl`（B 站来源的 HTTPS 封面）。缺失字段保留已有值。补充元数据时若位置相同，保留已有 revision 和学习时间。
 - 200：写入成功，返回 `{ positionMs, revision }`，`revision` 自增。
 - 409：`expectedRevision` 过期（其他端已写入），返回 `error.code = "progress_revision_conflict"` 与 `current: { positionMs, revision }`；客户端以 `current` 决定覆盖或提示，重写时带新 revision。样例覆盖同一来源首写、更新与冲突的完整链条：`api-progress-first-write`（→ rev 1）、`api-progress-update`（→ rev 2）、`error-progress-conflict`（409 + current = rev 2）。
 - 对其他账号的来源写入返回 404：`error-cross-account-progress`。

@@ -7,6 +7,8 @@ the server-entry test pins on disk."""
 import json
 import os
 
+import pytest
+
 from app.persistence import create_file_store, create_memory_store
 
 
@@ -36,6 +38,33 @@ def test_file_store_persists_writes_through(tmp_path):
     store.set("invites", "b@example.com", {"email": "b@example.com"})
     with open(file, encoding="utf-8") as fh:
         assert list(json.load(fh)["invites"]) == ["a@example.com", "b@example.com"]
+
+
+def test_file_store_batch_write_keeps_old_state_on_failure(tmp_path, monkeypatch):
+    file = str(tmp_path / "state.json")
+    store = create_file_store({"file": file})
+    store.set("credentialGroups", "group", {"revokedAt": None})
+    store.set("sessions", "session", {"status": "active"})
+    updates = {
+        "credentialGroups": {"group": {"revokedAt": 1000}},
+        "sessions": {"session": {"status": "finished"}},
+    }
+
+    def fail_replace(*_):
+        raise OSError("isolated write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_replace)
+        with pytest.raises(OSError, match="isolated write failure"):
+            store.set_many(updates)
+
+    for unchanged in (store, create_file_store({"file": file})):
+        assert unchanged.get("credentialGroups", "group") == {"revokedAt": None}
+        assert unchanged.get("sessions", "session") == {"status": "active"}
+    store.set_many(updates)
+    saved = create_file_store({"file": file})
+    assert saved.get("credentialGroups", "group") == updates["credentialGroups"]["group"]
+    assert saved.get("sessions", "session") == updates["sessions"]["session"]
 
 
 def test_file_store_delete_only_saves_when_something_was_removed(tmp_path):

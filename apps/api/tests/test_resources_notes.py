@@ -59,6 +59,29 @@ def create_fixture_library(app, token):
     }
 
 
+def test_library_notes_keep_kind_and_stay_scoped_to_the_account(start_app):
+    app = start_app(seed_emails=[LEARNER, OTHER])
+    token = open_account(app, LEARNER)
+    other = open_account(app, OTHER)
+    source = create_fixture_library(app, token)["videoSource"]
+    path = f"/v1/resources/{source['resourceId']}/notes"
+    payload = {
+        "clientRequestId": "test-excerpt",
+        "text": "从侧面照过来",
+        "kind": "excerpt",
+        "sourceId": source["id"],
+        "positionMs": 12000,
+    }
+    saved = app.request("POST", path, headers=auth_header(token), body=payload)
+    assert saved.status == 201
+    assert saved.json["note"]["kind"] == "excerpt"
+    assert app.request("GET", "/v1/notes", headers=auth_header(token)).json == {
+        "notes": [saved.json["note"]],
+    }
+    assert app.request("GET", "/v1/notes", headers=auth_header(other)).json == {"notes": []}
+    assert app.request("GET", "/v1/notes").status == 401
+
+
 def test_timestamped_note_create_matches_the_fixture(start_app):
     example = api_example("api-note-create-timestamped")
     app = start_app(seed_emails=[LEARNER], now=lambda: NOTE_CLOCK_MS)

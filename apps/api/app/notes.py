@@ -41,6 +41,7 @@ def serialize_note(note: dict) -> dict:
         "text": note["text"],
         "clientRequestId": note["clientRequestId"],
         "createdAt": note["createdAt"],
+        **({"kind": note["kind"]} if note.get("kind") else {}),
     }
 
 
@@ -53,6 +54,12 @@ def notes_for_resource(*, store: Any, account_id: str, resource_id: str) -> list
     ]
     notes.sort(key=lambda n: n["createdAtMs"])
     return [serialize_note(n) for n in notes]
+
+
+def list_account_notes(*, store: Any, account_id: str) -> list:
+    notes = [note for note in store.list("notes") if note["accountId"] == account_id]
+    notes.sort(key=lambda note: note["createdAtMs"], reverse=True)
+    return [serialize_note(note) for note in notes]
 
 
 def parse_note_request(body: Any) -> dict:
@@ -81,6 +88,9 @@ def parse_note_request(body: Any) -> dict:
     has_position = body.get("positionMs") is not None
     if has_source != has_position:
         raise validation_failed("sourceId 与 positionMs 必须成对出现")
+    kind = body.get("kind")
+    if kind not in (None, "manual", "excerpt") or (kind == "excerpt" and not has_source):
+        raise validation_failed("笔记类型无效，摘记须带来源位置")
     source_id = None
     position_ms = None
     if has_source:
@@ -95,6 +105,7 @@ def parse_note_request(body: Any) -> dict:
         "text": text,
         "sourceId": source_id,
         "positionMs": position_ms,
+        "kind": kind,
     }
 
 
@@ -158,6 +169,7 @@ def create_note(*, store: Any, account_id: str, resource_id: str, body: Any, now
         "clientRequestId": request["clientRequestId"],
         "createdAt": iso_seconds_from_ms(at_ms),
         "createdAtMs": at_ms,
+        **({"kind": request["kind"]} if request["kind"] else {}),
     }
     store.set("notes", note["id"], note)
     return {"status": 201, "body": {"note": serialize_note(note)}}

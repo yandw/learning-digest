@@ -1,0 +1,8 @@
+{
+  "name": "learning-digest-design-v2",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "node dev-server.js"
+  }
+}

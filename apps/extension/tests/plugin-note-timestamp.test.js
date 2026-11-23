@@ -37,6 +37,7 @@ const RESOLVE_MATCHED_BODY = {
 
 const CREDENTIAL_STORE = {
   ytd_auth_credential: { token: "ext-token", credentialGroupId: "grp_1", email: "l@e.com" },
+  ytd_session_s_course: { sessionId: "s_course", serverSessionId: "ses_course", status: "ended" },
 };
 
 function baseSettings(overrides = {}) {
@@ -58,6 +59,17 @@ function v1Fetch() {
   const v1Calls = [];
   const fetchImpl = async (url, init) => {
     const path = String(url).replace(/^https:\/\/api\.example\.com/, "");
+    if (path === "/v1/sessions/ses_course/transcript") {
+      return {
+        status: 200,
+        json: async () => ({
+          sessionId: "ses_course", sessionStatus: "finished",
+          resourceId: RESOLVE_MATCHED_BODY.resource.id,
+          sourceId: RESOLVE_MATCHED_BODY.source.id,
+          records: [], gaps: [], pending: [], failed: [],
+        }),
+      };
+    }
     if (path === "/v1/sources/resolve") {
       v1Calls.push({ path, body: JSON.parse(init.body) });
       return { status: 200, ok: true, json: async () => RESOLVE_MATCHED_BODY };
@@ -82,6 +94,7 @@ test("a note saved on a bilibili video page carries the bridged media position (
     settings: baseSettings(),
     stored: CREDENTIAL_STORE,
     tabsQuery: async () => [{ id: 5, url: BILI_P2, title: "视频课 P2" }],
+    tabsGet: async () => ({ id: 5, url: BILI_P2 }),
     // The injected bridge answers the one-shot query with the player's
     // position in seconds — the exact response shape page-bridge.js sends.
     tabMessageImpl: (msg) =>
@@ -90,7 +103,7 @@ test("a note saved on a bilibili video page carries the bridged media position (
     fetchImpl,
   });
 
-  const result = await helpers.handleSaveNoteToLibrary({ text: "二分查找的关键边界" });
+  const result = await helpers.handleSaveNoteToLibrary({ sessionId: "s_course", text: "二分查找的关键边界" });
 
   assert.equal(result.ok, true, result.message || "");
   assert.equal(result.note.id, "note_01JNOTE");
@@ -102,6 +115,7 @@ test("a note saved on a bilibili video page carries the bridged media position (
       sourceId: "src_01JBILI0001",
       // 125.25s → the contract's integer milliseconds.
       positionMs: 125250,
+      kind: "manual",
     },
   );
   assert.equal(
@@ -125,11 +139,80 @@ test("without a bridged answer the note stays plain (the P12 fallback itself)", 
     fetchImpl,
   });
 
-  const result = await helpers.handleSaveNoteToLibrary({ text: "先记一笔" });
+  const result = await helpers.handleSaveNoteToLibrary({ sessionId: "s_course", text: "先记一笔" });
 
   assert.equal(result.ok, true, result.message || "");
   const body = v1Calls.find((call) => call.path.startsWith("/v1/resources/")).body;
   assert.equal(body.sourceId, undefined);
   assert.equal(body.positionMs, undefined);
   assert.equal(body.text, "先记一笔");
+});
+
+test("a favorite webpage cannot be used to save a course note without a course session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch();
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsQuery: async () => [{ id: 3, url: "https://example.com/" }],
+    fetchImpl,
+  });
+  const result = await helpers.handleSaveNoteToLibrary({ text: "没有课程的笔记" });
+  assert.equal(result.ok, false);
+  assert.deepEqual(v1Calls, []);
+});
+
+test("selected text on an ended transcript saves to that session's course, with retry deduplication", async () => {
+  const sessionId = "s_previous";
+  const serverSessionId = "ses_previous";
+  const stored = {
+    ...CREDENTIAL_STORE,
+    [`ytd_session_${sessionId}`]: { sessionId, serverSessionId, status: "ended" },
+  };
+  const posts = [];
+  let tabQueries = 0;
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored,
+    tabsQuery: async () => {
+      tabQueries += 1;
+      return [{ id: 12, url: "https://www.youtube.com/watch?v=OtherCourse" }];
+    },
+    fetchImpl: async (url, init) => {
+      if (url.endsWith(`/v1/sessions/${serverSessionId}/transcript`)) {
+        return {
+          status: 200,
+          json: async () => ({
+            sessionId: serverSessionId,
+            sessionStatus: "finished",
+            resourceId: RESOLVE_MATCHED_BODY.resource.id,
+            sourceId: RESOLVE_MATCHED_BODY.source.id,
+            records: [], gaps: [], pending: [], failed: [],
+          }),
+        };
+      }
+      assert.ok(url.endsWith(`/v1/resources/${RESOLVE_MATCHED_BODY.resource.id}/notes`));
+      posts.push(JSON.parse(init.body));
+      if (posts.length === 1) throw new Error("response lost");
+      return {
+        status: 200,
+        json: async () => ({ note: { id: "note_synced", text: posts.at(-1).text } }),
+      };
+    },
+  });
+  const selection = {
+    sessionId, videoId: sessionId, timestamp: 75.25, videoTitle: "分集 2",
+    selectedText: "选中的原文", clientRequestId: "note-selection-1",
+  };
+  assert.equal((await helpers.handleSaveNote(selection)).success, false);
+  assert.equal(helpers.readStored("ytd_notes"), undefined);
+  assert.equal((await helpers.handleSaveNote(selection)).success, true);
+  assert.equal(tabQueries, 0);
+  assert.deepEqual(posts, Array(2).fill({
+    clientRequestId: "note-selection-1",
+    sourceId: RESOLVE_MATCHED_BODY.source.id,
+    positionMs: 75250,
+    text: "选中的原文",
+    kind: "excerpt",
+  }));
+  assert.equal(helpers.readStored("ytd_notes")[0].id, "note_synced");
 });

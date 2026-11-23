@@ -41,6 +41,10 @@ function makeElement(id = "") {
     style: {},
     children: [],
     listeners: {},
+    attributes: {},
+    setAttribute(name, value) {
+      element.attributes[name] = value;
+    },
     textContent: "",
     innerHTML: "",
     disabled: false,
@@ -254,6 +258,7 @@ test("switchTab lights the 纪要 tab and its panel", () => {
     (panel) => panel.dataset.panel === "report",
   );
   assert.equal(reportTab.classList.contains("active"), true);
+  assert.equal(reportTab.attributes["aria-pressed"], "true");
   assert.equal(reportPanel.classList.contains("active"), true);
   const transcriptPanel = selectorResults[".tab-panel"].find(
     (panel) => panel.dataset.panel === "transcript",
@@ -807,7 +812,7 @@ test("the 纪要 tab is wired in sidepanel.html and sidepanel.js", () => {
   const js = read("sidepanel.js");
   const css = read("sidepanel.css");
 
-  assert.match(html, /<button class="tab" data-tab="report">纪要<\/button>/);
+  assert.match(html, /<button class="tab" data-tab="report" aria-pressed="false">纪要<\/button>/);
   assert.match(html, /<div class="tab-panel" data-panel="report">/);
   assert.match(html, /id="reportTabHint"/);
   assert.match(html, /id="reportTabActions"/);

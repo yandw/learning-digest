@@ -39,7 +39,7 @@ test("the selection toolbar preserves selection and contains pointer events", ()
   );
   assert.match(
     source,
-    /action: "saveNote"[\s\S]*?videoId: target\.videoId[\s\S]*?timestamp: selectedTimestamp[\s\S]*?selectedText,/,
+    /action: "saveNote",\s*\.\.\.selectedNote,/,
     "the note save targets the resolved video or session id",
   );
   assert.match(

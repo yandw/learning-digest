@@ -319,14 +319,19 @@ test("the first reported position is a key event: written immediately with expec
     () => response(200, FIRST_WRITE_BODY),
   ]);
   const { writer } = makeWriter({ fetchImpl });
-  writer.reportPosition(125_000.6);
+  writer.reportPosition(125_000.6, { durationMs: 300000, thumbnailUrl: "https://i1.hdslb.com/bfs/archive/cover.jpg" });
   await writer.flush();
 
   assert.equal(calls.length, 1, "the learning-start anchor write happens without waiting for the throttle");
   assert.equal(calls[0].url, "https://api.example.com/v1/sources/src_01JABC0002/progress");
   assert.equal(calls[0].init.method, "PUT");
   assert.equal(calls[0].init.headers.Authorization, "Bearer ext-token");
-  assert.deepEqual(calls[0].body, { positionMs: 125001, expectedRevision: 0 });
+  assert.deepEqual(calls[0].body, {
+    positionMs: 125001,
+    expectedRevision: 0,
+    durationMs: 300000,
+    thumbnailUrl: "https://i1.hdslb.com/bfs/archive/cover.jpg",
+  });
   assert.equal(writer.snapshot().expectedRevision, 1, "the response revision becomes the next expectedRevision");
   writer.stop();
 });

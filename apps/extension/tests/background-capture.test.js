@@ -2230,38 +2230,31 @@ test("a true live stream (infinite duration) stays wallclock after the probe lap
   assert.equal(state.timestampKind, "wallclock");
 });
 
-test("the first bridged position arms the drag baseline instead of marking a gap", async () => {
+test("starting mid-video waits for real playback before cutting consecutive audio segments", async () => {
+  const sentMessages = [];
   const helpers = loadBackgroundHelpers({
     stored: CREDENTIAL_STORE,
-    settings: pinnedSettings(),
+    settings: pinnedSettings({ segmentLengthSeconds: 5 }),
     fetchImpl: apiFetch().fetchImpl,
     sendMessageImpl: cutReply(),
+    sentMessages,
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  // The learner opens the lesson mid-video: the very first report is 1:00.
-  // It arms the drag-detection baseline (never itself a drag): no false gap
-  // marker for the head. The head's coverage stays the pre-existing
-  // simplification (the segmenter starts at 0), unchanged by this rule.
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await helpers.handleMediaPosition(mediaPositionMessage(30.2), { tab: { id: 7 } });
   await drain();
-  // Stop short of the second 60s boundary: exactly one Segment exists.
-  await playTo(helpers.handleMediaPosition, 60, 110);
-  await helpers.pollTranscriptForTest();
+  const cuts = () => sentMessages.filter(({ action }) => action === "captureCut");
+  assert.equal(cuts().length, 0);
+  assert.equal(helpers.readStored("ytd_active_capture").cursorSeconds, 30);
 
+  await playTo(helpers.handleMediaPosition, 30, 45);
+  assert.equal(cuts().length, 3);
   const snapshot = helpers.readStored(`ytd_session_${started.sessionId}`);
   assert.deepEqual(
-    snapshot.transcriptRecords.map((record) => ({
-      text: record.text,
-      start: record.start,
-    })),
-    [{ text: "转写内容", start: 0 }],
+    snapshot.segments.map(({ start, duration, status }) => ({ start, duration, status })),
+    [30, 35, 40].map((start) => ({ start, duration: 5, status: "done" })),
   );
-  assert.equal(
-    snapshot.transcriptRecords.filter((record) => record.failed === true).length,
-    0,
-    "no gap marker for the Session's opening position",
-  );
+  assert.deepEqual(snapshot.transcriptRecords, []);
 });
 
 test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skipped gap", async () => {
@@ -2278,7 +2271,7 @@ test("seek-forward cuts the pre-seek tail, jumps the cursor and marks the skippe
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
 
   // One minute played, then the learner drags the bar to 10:00.
-  await playTo(helpers.handleMediaPosition, 0, 60);
+  await playTo(helpers.handleMediaPosition, -1, 60);
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
   await helpers.pollTranscriptForTest();
@@ -2341,7 +2334,7 @@ test("a forward-drag landing snaps up to the Segment grid before resuming (0.1.6
   // One minute played, then the learner drags the bar to 10:47 — NOT on the
   // 60s grid. The landing snaps UP to 11:00: the marker covers up to 11:00,
   // the cursor jumps there, and transcription resumes on the boundary.
-  await playTo(helpers.handleMediaPosition, 0, 60);
+  await playTo(helpers.handleMediaPosition, -1, 60);
   await helpers.handleMediaPosition(mediaPositionMessage(647), { tab: { id: 7 } });
   await drain();
   await helpers.pollTranscriptForTest();
@@ -2392,7 +2385,7 @@ test("a forward drag discards the in-flight partial Segment (0.1.62)", async () 
   // 45s played with a 60s grid: NOTHING has been submitted yet — the first
   // Segment is still in flight. Dragging to 5:00 must NOT transcribe those
   // 45 seconds: they fold into the skipped marker as one hole [0:00, 5:00].
-  await playTo(helpers.handleMediaPosition, 0, 45);
+  await playTo(helpers.handleMediaPosition, -1, 45);
   await helpers.handleMediaPosition(mediaPositionMessage(300), { tab: { id: 7 } });
   await drain();
 
@@ -2632,7 +2625,7 @@ test("re-watching into a hole from its middle fills it and leaves the remaining 
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
   // One minute played, then the drag to 10:00 marks the hole [1:00, 10:00].
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await playTo(helpers.handleMediaPosition, -1, 60);
   await drain();
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
@@ -2704,7 +2697,7 @@ test("seeking out of a hole mid-fill stops filling and re-entering the unfilled 
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await playTo(helpers.handleMediaPosition, -1, 60);
   await drain();
   await helpers.handleMediaPosition(mediaPositionMessage(600), { tab: { id: 7 } });
   await drain();
@@ -2825,7 +2818,7 @@ test("a drag deep through a hole skips the unwatched window's fill and resumes a
   });
 
   const started = await helpers.handleStartLearning({ url: REPLAY_URL, tabId: 7 });
-  await helpers.handleMediaPosition(mediaPositionMessage(60), { tab: { id: 7 } });
+  await playTo(helpers.handleMediaPosition, -1, 60);
   await drain();
   await helpers.handleMediaPosition(mediaPositionMessage(720), { tab: { id: 7 } });
   await drain();

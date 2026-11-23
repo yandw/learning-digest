@@ -185,6 +185,11 @@ var YTD_PAGE_BRIDGE = (() => {
           // (bilibili ?p=N) changes it without a document reload.
           pageUrl: String(win.location && win.location.href) || "",
         };
+        if (/(^|\.)bilibili\.com$/.test(win.location?.hostname || "")) {
+          const thumbnail = doc.querySelector?.('meta[property="og:image"]')?.content;
+          const url = thumbnail?.startsWith("//") ? `https:${thumbnail}` : thumbnail;
+          if (/^https:\/\/i[012]\.hdslb\.com\//.test(url || "")) message.thumbnailUrl = url;
+        }
       } catch (_error) {
         // A detached or mid-navigation element must never break the bridge.
         return;

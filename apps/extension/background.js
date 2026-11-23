@@ -721,16 +721,47 @@ async function handleCollectCurrentPage() {
 }
 
 /**
- * Read-only resolve probe for the active tab (contract §3.4). Only pages
- * with a confirmable identity (extractVideoIdentity non-null, the four
- * round-1 stations) reach the API; everything else is a local miss so an
- * ordinary panel open never calls the service. A 401 routes the panel
- * back through the authorization guide, like collect.
+ * Resolve the active page. For ordinary pages, compare locally with the
+ * account's saved sources so opening the panel never sends the current URL.
  */
 async function handleResolveCurrentSource() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   const target = collectTargetFromTab(tab);
-  return resolveSourceForTab({ tabId: tab?.id ?? null, target });
+  if (!target || !YTD_COLLECT.isCollectableUrl(target.url)) {
+    return resolveSourceForTab({ target });
+  }
+  const resolution = target.identity
+    ? await resolveSourceForTab({ target })
+    : await findCollectedPage(target.url);
+  const domain = new URL(target.url).hostname;
+  return { ...resolution, page: { title: target.title || domain, domain, isCourse: isStartablePageUrl(target.url) } };
+}
+
+async function findCollectedPage(url) {
+  const miss = { ok: true, matched: false, identityPresent: false, resource: null, source: null };
+  const settings = await getSettings();
+  const credential = await readStoredAuthCredential();
+  const apiUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_COLLECT.RESOURCES_PATH);
+  if (!credential || !apiUrl) return miss;
+  const normalized = YTD_PLATFORM_VIDEO_ID.normalizeUrl(url);
+  try {
+    const response = await fetch(apiUrl, { headers: { Authorization: `Bearer ${credential.token}` } });
+    if (response.status === 401) await handleCredentialsInvalidated("unauthorized");
+    if (response.status !== 200) return { ...miss, ok: false };
+    const data = await response.json();
+    if (!Array.isArray(data?.resources)) return { ...miss, ok: false };
+    for (const item of data.resources) {
+      const source = item.sources?.find((source) =>
+        YTD_PLATFORM_VIDEO_ID.normalizeUrl(source.url) === normalized,
+      );
+      if (source && item.resource?.id) {
+        return { ...miss, matched: true, resource: item.resource, source };
+      }
+    }
+    return miss;
+  } catch (_error) {
+    return { ...miss, ok: false };
+  }
 }
 
 /**
@@ -783,9 +814,7 @@ async function postResolveRequest(target) {
  * matched source and the tab's media position from one consistent page).
  * Same read-only semantics as handleResolveCurrentSource.
  *
- * The P8 announcement keeps its quiet local miss for pages without a
- * confirmable identity (an ordinary panel open never calls the service);
- * a deliberate note save passes requireIdentity:false so a favorited
+ * A deliberate note save passes requireIdentity:false so a favorited
  * PLAIN WEBPAGE still resolves by its normalized address (contract §3.4
  * matches those server-side) and can take notes.
  */
@@ -868,67 +897,31 @@ async function readTabMediaPosition(tabId) {
  * itself is poison; the learner rewrites the note). A 401 keeps it for the
  * re-linked session.
  */
-async function handleSaveNoteToLibrary({ text } = {}) {
-  const auth = await gateForPanelAction();
-  if (!auth.authorized) {
-    return {
-      ok: false,
-      message: "学习库账号未关联或授权已失效：请先在侧边栏完成账号关联，再保存笔记。",
-    };
-  }
-
-  // A retry (the panel pre-fills the draft text) resends the stored draft
-  // verbatim instead of building a new request: same clientRequestId, same
-  // source/position, so the idempotent resend collapses into one note.
+async function handleSaveNoteToLibrary({ sessionId, text } = {}) {
   const trimmedText = typeof text === "string" ? text.trim() : "";
-  const draft = await YTD_NOTES.readDraft(chrome.storage.local);
-  const retrying = Boolean(draft) && draft.text === trimmedText;
+  if (!trimmedText) return { ok: false, message: "先写点笔记内容，再保存。" };
 
-  let resourceId;
-  let sourceId = null;
-  let positionMs = null;
-  let clientRequestId;
+  const course = await resolveCourseNoteSession(sessionId);
+  if (!course.ok) return course;
+  const { resourceId, sourceId: courseSourceId } = course.view;
+  const draft = await YTD_NOTES.readDraft(chrome.storage.local, resourceId);
+  const retry = draft?.text === trimmedText ? draft : null;
 
-  if (retrying) {
-    resourceId = draft.resourceId;
-    sourceId = draft.sourceId;
-    positionMs = draft.positionMs;
-    clientRequestId = draft.clientRequestId;
-  } else {
-    // The note must attach to a Resource: resolve the current page the way
-    // collect does (read-only). requireIdentity:false — a favorited plain
-    // webpage resolves by its normalized address too. A miss sends the
-    // learner to 收藏当前页 first — there is nothing to attach a note to.
+  let positionMs = retry?.positionMs ?? null;
+  if (!retry) {
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const target = collectTargetFromTab(tab);
-    const resolution = await resolveSourceForTab({ target, requireIdentity: false });
-    if (!resolution.ok) {
-      return { ok: false, message: resolution.message || YTD_NOTES.GENERIC_NOTE_ERROR };
-    }
-    if (!resolution.matched) {
-      recordAuthBreadcrumb("ytd_last_note", {
-        outcome: "unresolved",
-        url: target ? target.url : null,
-      });
-      return {
-        ok: false,
-        message: "当前网页还没有进入学习库：先点「收藏当前页」，再保存笔记。",
-      };
-    }
-    resourceId = resolution.resource.id;
-    // A resolved Source rides with the tab's media position when one is
-    // readable; anything else (plain webpage, no bridged media yet) is a
-    // note without a timestamp.
-    if (resolution.source && resolution.source.id) {
-      const seconds = await readTabMediaPosition(tab?.id ?? null);
-      const mapped = YTD_NOTES.positionMsFromSeconds(seconds);
-      if (mapped !== null) {
-        sourceId = resolution.source.id;
-        positionMs = mapped;
+    if (target?.identity) {
+      const resolved = await resolveSourceForTab({ target });
+      if (resolved.ok && resolved.source?.id === courseSourceId) {
+        const position = await readTabMediaPosition(tab.id);
+        const current = await chrome.tabs.get(tab.id).catch(() => null);
+        if (current?.url === tab.url) positionMs = YTD_NOTES.positionMsFromSeconds(position);
       }
     }
-    clientRequestId = YTD_NOTES.createClientRequestId();
   }
+  const sourceId = positionMs === null ? null : retry?.sourceId ?? courseSourceId;
+  const clientRequestId = retry?.clientRequestId ?? YTD_NOTES.createClientRequestId();
 
   const requestBody = YTD_NOTES.buildNoteRequest({
     clientRequestId,
@@ -949,10 +942,9 @@ async function handleSaveNoteToLibrary({ text } = {}) {
     clientRequestId: requestBody.clientRequestId,
     savedAt: Date.now(),
   });
-  await YTD_NOTES.writeDraft(chrome.storage.local, draftRecord);
+  await YTD_NOTES.writeDraft(chrome.storage.local, draftRecord, resourceId);
 
-  const settings = await getSettings();
-  const credential = await readStoredAuthCredential();
+  const { settings, credential } = course;
   const apiUrl = YTD_AUTH_GATE.buildApiUrl(
     settings.apiBaseUrl,
     YTD_NOTES.buildNotesPath(resourceId),
@@ -966,17 +958,8 @@ async function handleSaveNoteToLibrary({ text } = {}) {
     };
   }
 
-  let response;
-  try {
-    response = await fetch(apiUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-  } catch (_error) {
+  const result = await postLibraryNote(apiUrl, credential, { ...requestBody, kind: "manual" });
+  if (!result) {
     recordAuthBreadcrumb("ytd_last_note", {
       outcome: "unreachable",
       resourceId,
@@ -988,16 +971,9 @@ async function handleSaveNoteToLibrary({ text } = {}) {
       message: "无法连接学习服务：笔记已保留为草稿，稍后点「保存笔记」即可重试。",
     };
   }
-  let data = null;
-  try {
-    data = await response.json();
-  } catch (_error) {
-    data = null;
-  }
-  const result = YTD_NOTES.parseNoteResponse({ status: response.status, data });
   if (result.ok) {
     // 201 created or 200 idempotent resend: the note is in the library.
-    await YTD_NOTES.clearDraft(chrome.storage.local);
+    await YTD_NOTES.clearDraft(chrome.storage.local, resourceId, clientRequestId);
     recordAuthBreadcrumb("ytd_last_note", {
       outcome: result.outcome,
       resourceId,
@@ -1005,12 +981,17 @@ async function handleSaveNoteToLibrary({ text } = {}) {
       sourceId,
       positionMs,
     });
-    return { ok: true, outcome: result.outcome, note: result.note };
+    await cacheSavedLibraryNote(result.note, credential, {
+      videoId: sessionId,
+      videoTitle: course.title,
+      positionMs,
+    });
+    return { ok: true, outcome: result.outcome, note: result.note, title: course.title };
   }
   recordAuthBreadcrumb("ytd_last_note", {
     outcome: "failed",
     resourceId,
-    status: response.status,
+    status: result.status,
     detail: result.message,
   });
   if (result.unauthorized) {
@@ -1025,19 +1006,84 @@ async function handleSaveNoteToLibrary({ text } = {}) {
   }
   // A 4xx/5xx verdict on the request itself: the draft is poison, drop it
   // so a retry cannot hammer the same rejected request.
-  await YTD_NOTES.clearDraft(chrome.storage.local);
+  await YTD_NOTES.clearDraft(chrome.storage.local, resourceId, clientRequestId);
   return { ok: false, draftKept: false, message: result.message };
 }
 
-/** The panel's draft status line: what a retry would resend, if any. */
-async function handleGetNoteDraft() {
-  const draft = await YTD_NOTES.readDraft(chrome.storage.local);
-  return { ok: true, draft };
+async function postLibraryNote(url, credential, body) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => null);
+    return YTD_NOTES.parseNoteResponse({ status: response.status, data });
+  } catch (_error) {
+    return null;
+  }
 }
 
-/** The learner's explicit discard: the draft is gone for good. */
-async function handleDiscardNoteDraft() {
-  await YTD_NOTES.clearDraft(chrome.storage.local);
+async function resolveCourseNoteSession(sessionId, connection) {
+  const missing = { ok: false, message: "请先打开一门已收藏的课程，再写笔记。" };
+  if (typeof sessionId !== "string" || !sessionId) return missing;
+  const snapshot = await YTD_SESSION_PERSISTENCE.loadSessionSnapshot(chrome.storage.local, sessionId);
+  if (!snapshot?.serverSessionId) return missing;
+  const { settings, credential } = connection ?? {
+    settings: await getSettings(),
+    credential: await readStoredAuthCredential(),
+  };
+  const url = YTD_AUTH_GATE.buildApiUrl(
+    settings.apiBaseUrl,
+    YTD_SESSION_ARCHIVE.transcriptPath(snapshot.serverSessionId),
+  );
+  if (!url || !credential) return { ok: false, message: "请先关联学习库账号，再保存笔记。" };
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${credential.token}` },
+    });
+  } catch (_error) {
+    return { ok: false, message: "暂时连不上学习库，请稍后重试。" };
+  }
+  const data = await response.json().catch(() => null);
+  const result = YTD_SESSION_ARCHIVE.parseTranscriptResponse({ status: response.status, data });
+  if (!result.ok) {
+    if (result.kind === "unauthorized") await handleCredentialsInvalidated("unauthorized");
+    return { ok: false, message: result.message };
+  }
+  const { view } = result;
+  if (view.sessionId !== snapshot.serverSessionId || !view.resourceId || !view.sourceId) return missing;
+  let title = snapshot.resourceTitle || snapshot.title;
+  if (!title) {
+    // Older snapshots may predate the bridge's title event.
+    const detailUrl = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, `/v1/resources/${encodeURIComponent(view.resourceId)}`);
+    try {
+      const detail = await fetch(detailUrl, { headers: { Authorization: `Bearer ${credential.token}` } });
+      if (detail.status === 200) title = (await detail.json()).resource?.title;
+    } catch (_error) {
+      // The transcript already verified the association, so keep note saving available.
+    }
+  }
+  return { ok: true, view, settings, credential, title };
+}
+
+async function handleGetNoteDraft({ sessionId } = {}) {
+  const course = await resolveCourseNoteSession(sessionId);
+  if (!course.ok) return course;
+  const draft = await YTD_NOTES.readDraft(chrome.storage.local, course.view.resourceId);
+  return { ok: true, draft, title: course.title };
+}
+
+async function handleDiscardNoteDraft({ sessionId } = {}) {
+  const course = await resolveCourseNoteSession(sessionId);
+  if (!course.ok) return course;
+  await YTD_NOTES.clearDraft(chrome.storage.local, course.view.resourceId);
   return { ok: true };
 }
 
@@ -1944,7 +1990,8 @@ async function startCaptionsSession(message, recognition, captions) {
   });
   // Ticket 6.6: the server Session id rides the local state (the ended
   // snapshot's digest retry reads it from there).
-  const stampedState = { ...state, serverSessionId: created.session.id };
+  const resourceTitle = resolution.resource?.title || collectTarget.title || null;
+  const stampedState = { ...state, serverSessionId: created.session.id, resourceTitle };
   const context = createCaptureContext({
     sessionId: stampedState.sessionId,
     tabId: message.tabId,
@@ -2092,7 +2139,7 @@ async function beginProgressTracking(context) {
   const target = {
     tabId: context.tabId,
     url: typeof context.sourceUrl === "string" ? context.sourceUrl : "",
-    title: typeof context.pageTitle === "string" ? context.pageTitle : "",
+    title: context.state.resourceTitle || context.pageTitle || "",
   };
   let sourceId = null;
   let expectedRevision = 0;
@@ -2175,18 +2222,22 @@ function stopProgressTicker() {
  * switches never reroute this: the stream is sender-checked by
  * handleMediaPosition, and the writer only knows its source.
  */
-function feedLearningPosition(context, positionSeconds, { paused = false } = {}) {
+function feedLearningPosition(context, positionSeconds, { paused = false, duration, thumbnailUrl } = {}) {
   if (!learningProgressWriter || !context || context.ended) return;
   if (context.timestampKind !== "video") return;
   const positionMs = Math.round(Number(positionSeconds) * 1000);
   if (!Number.isFinite(positionMs) || positionMs < 0) return;
+  const media = {
+    durationMs: Math.round(duration * 1000),
+    thumbnailUrl: context.platformId === "bilibili" ? thumbnailUrl : null,
+  };
   if (paused) {
     // P11 (decision 4): 暂停 is a key event — the exact paused position
     // writes immediately; the writer (and the Session) stays live, and
     // resuming playback keeps recording into the same one.
-    learningProgressWriter.reportPause(positionMs);
+    learningProgressWriter.reportPause(positionMs, media);
   } else {
-    learningProgressWriter.reportPosition(positionMs);
+    learningProgressWriter.reportPosition(positionMs, media);
   }
 }
 
@@ -2803,14 +2854,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "saveNote") {
-    // Save exact selected transcript text as a timestamped note.
-    handleSaveNote(
-      message.videoId,
-      message.timestamp,
-      message.videoTitle,
-      message.channelName,
-      message.selectedText,
-    )
+    handleSaveNote(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -2911,14 +2955,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "getNoteDraft") {
-    handleGetNoteDraft()
+    handleGetNoteDraft(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, draft: null, message: err.message }));
     return true;
   }
 
   if (message.action === "discardNoteDraft") {
-    handleDiscardNoteDraft()
+    handleDiscardNoteDraft(message)
       .then(sendResponse)
       .catch((err) => sendResponse({ ok: false, message: err.message }));
     return true;
@@ -3146,53 +3190,81 @@ async function handleExplainSelection(selectedText, transcriptContext) {
  * selected transcript text, which is stored directly without an AI cleanup
  * request.
  */
-async function handleSaveNote(
-  videoId,
-  timestamp,
-  videoTitle,
-  channelName,
-  selectedText,
-) {
+async function handleSaveNote({
+  sessionId, videoUrl, videoId, timestamp, videoTitle, channelName, selectedText, clientRequestId,
+}) {
   try {
-    const safeTimestamp = Math.max(0, Math.floor(Number(timestamp) || 0));
-    const exactSelectedText =
-      typeof selectedText === "string"
-        ? selectedText.replace(/\s+/g, " ").trim().slice(0, 3000)
-        : "";
-
-    // A selected transcript note is already the exact text the user wants.
-    // Save it directly without asking the AI to rewrite the text.
-    if (!exactSelectedText) {
-      return {
-        success: false,
-        error: "NO_SELECTED_TEXT",
-        message: "Select transcript text in the side panel to save a note.",
-      };
+    const text = typeof selectedText === "string" ? selectedText.trim() : "";
+    const positionMs = YTD_NOTES.positionMsFromSeconds(timestamp);
+    if (!text || positionMs === null) {
+      return { success: false, error: "无法读取选文或时间戳，请重新选择。" };
+    }
+    const auth = await gateForPanelAction();
+    const credential = await readStoredAuthCredential();
+    if (!auth.authorized || !credential) {
+      return { success: false, error: "请先关联学习库账号，再保存笔记。" };
+    }
+    const settings = await getSettings();
+    let resourceId;
+    let sourceId;
+    if (typeof sessionId === "string" && sessionId) {
+      const course = await resolveCourseNoteSession(sessionId, { settings, credential });
+      if (!course.ok) return { success: false, error: course.message };
+      ({ resourceId, sourceId } = course.view);
+      videoTitle = course.title || videoTitle;
+    } else if (videoUrl) {
+      const target = collectTargetFromTab({ url: videoUrl, title: videoTitle });
+      const result = await resolveSourceForTab({ target });
+      if (!result.ok) return { success: false, error: result.message };
+      if (result.matched) {
+        resourceId = result.resource?.id;
+        sourceId = result.source?.id;
+      }
+    }
+    if (!resourceId || !sourceId) {
+      return { success: false, error: "找不到该逐字稿对应的学习库课程，请确认课程已收藏。" };
+    }
+    const requestBody = YTD_NOTES.buildNoteRequest({ clientRequestId, text, sourceId, positionMs });
+    if (!requestBody) return { success: false, error: "笔记内容不完整，请重新选择。" };
+    const url = YTD_AUTH_GATE.buildApiUrl(settings.apiBaseUrl, YTD_NOTES.buildNotesPath(resourceId));
+    const result = await postLibraryNote(url, credential, { ...requestBody, kind: "excerpt" });
+    if (!result) return { success: false, error: "无法确认学习库已保存，请重试。" };
+    if (!result.ok) {
+      if (result.unauthorized) await handleCredentialsInvalidated("unauthorized");
+      return { success: false, error: result.message };
     }
 
-    const note = {
-      id: `note_${Date.now()}`,
-      videoId,
-      videoTitle:
-        typeof videoTitle === "string"
-          ? videoTitle.slice(0, 500)
-          : "Untitled Session",
-      channelName:
-        typeof channelName === "string" ? channelName.slice(0, 300) : "",
-      timestamp: YTD_SPEECH_TRANSCRIPTION.formatTimestamp(safeTimestamp),
-      timestampSeconds: safeTimestamp,
-      text: exactSelectedText,
-      rawText: exactSelectedText,
-      createdAt: Date.now(),
-    };
-
-    await saveNoteToStorage(note);
-    chrome.runtime.sendMessage({ action: "noteSaved", note }).catch(() => {});
+    const note = await cacheSavedLibraryNote(result.note, credential, {
+      videoId, videoTitle, channelName, positionMs,
+    });
     return { success: true, note };
   } catch (error) {
-    console.error("[Learning Digest] Save note error:", error);
-    return { success: false, error: error.message };
+    console.error("[Learning Digest] Save note error:", error?.message || error);
+    return { success: false, error: "无法连接学习服务，请稍后重试。" };
   }
+}
+
+async function cacheSavedLibraryNote(saved, credential, { videoId, videoTitle, channelName, positionMs }) {
+  const timestampSeconds = positionMs === null ? null : positionMs / 1000;
+  const note = {
+    id: saved.id,
+    libraryAccount: credential.accountId || credential.email,
+    videoId,
+    videoTitle: typeof videoTitle === "string" ? videoTitle.slice(0, 500) : "未命名课程",
+    channelName: typeof channelName === "string" ? channelName.slice(0, 300) : "",
+    timestamp: timestampSeconds === null ? "" : YTD_SPEECH_TRANSCRIPTION.formatTimestamp(timestampSeconds),
+    timestampSeconds,
+    text: saved.text,
+    rawText: saved.text,
+    createdAt: Date.now(),
+  };
+  if (note.libraryAccount) {
+    await saveNoteToStorage(note).catch((error) => {
+      console.warn("[Learning Digest] 无法刷新侧栏笔记缓存:", error?.message || error);
+    });
+  }
+  chrome.runtime.sendMessage({ action: "noteSaved", note }).catch(() => {});
+  return note;
 }
 
 /**
@@ -3200,7 +3272,7 @@ async function handleSaveNote(
  */
 async function saveNoteToStorage(note) {
   const result = await chrome.storage.local.get("ytd_notes");
-  const notes = result.ytd_notes || [];
+  const notes = (result.ytd_notes || []).filter((entry) => entry.id !== note.id);
   notes.unshift(note); // Add to beginning (newest first)
 
   // Keep only last 100 notes to prevent storage bloat
@@ -3217,7 +3289,9 @@ async function saveNoteToStorage(note) {
 async function handleGetNotes(videoId) {
   try {
     const result = await chrome.storage.local.get("ytd_notes");
-    let notes = result.ytd_notes || [];
+    const credential = await readStoredAuthCredential();
+    const account = credential?.accountId || credential?.email;
+    let notes = (result.ytd_notes || []).filter((note) => !note.libraryAccount || note.libraryAccount === account);
 
     if (videoId) {
       notes = notes.filter((n) => n.videoId === videoId);
@@ -3236,7 +3310,7 @@ async function handleDeleteNote(noteId) {
   try {
     const result = await chrome.storage.local.get("ytd_notes");
     let notes = result.ytd_notes || [];
-    notes = notes.filter((n) => n.id !== noteId);
+    notes = notes.filter((n) => n.id !== noteId || n.libraryAccount);
     await chrome.storage.local.set({ ytd_notes: notes });
     return { success: true };
   } catch (error) {
@@ -4370,7 +4444,8 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
   });
   // Ticket 6.6: the server Session id rides the local state (the ended
   // snapshot's digest retry reads it from there).
-  const withServerSession = { ...state, serverSessionId: created.session.id };
+  const resourceTitle = resolution.resource?.title || collectTarget.title || null;
+  const withServerSession = { ...state, serverSessionId: created.session.id, resourceTitle };
   // Ticket 2.5: the 无字幕 probe result is durable Session state (the
   // panel's honest empty-state across resume), not a forgotten side effect.
   const seededState = captionsProbe
@@ -4394,6 +4469,7 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
     }),
     serverSessionId: created.session.id,
   });
+  if (context.timestampKind === "video") context.videoCaptureStart = "starting";
   captureContext = context;
   await YTD_SESSION_PERSISTENCE.saveSessionSnapshot(chrome.storage.local, seededState);
   await persistContextPointer(context);
@@ -4420,6 +4496,9 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
       buildCaptureStartMessage(context, streamId),
     );
     if (!started?.success) throw new Error(started?.error || "capture start failed");
+    if (context.videoCaptureStart === "starting") {
+      context.videoCaptureStart = "awaitingPosition";
+    }
   } catch (error) {
     captureContext = null;
     await clearContextPointer();
@@ -4439,7 +4518,7 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
       return {
         success: false,
         error:
-          "Chrome 要求在采集前先调用一次扩展：请在小鹅通课程标签页上点击工具栏中的 Learning Digest 图标（点击即打开侧边栏并算作一次调用），然后再点「开始学习」。如果刚刷新或跳转过课程页面，需要重新点一次图标。",
+          "Chrome 要求在采集前先调用一次扩展：请在当前课程标签页点击工具栏中的 Learning Digest 图标，然后再点「开始学习」。如果刚刷新或跳转过课程页面，请重新点击图标。",
       };
     }
     return {
@@ -4530,7 +4609,11 @@ async function handleMediaPosition(message, sender) {
     // source — bound to this Session's tab, so focus/tab switches cannot
     // reroute it (decision 4). P11: a reported pause is a key event —
     // the exact paused position writes immediately (暂停=立即写当前位置).
-    feedLearningPosition(context, position, { paused: message.paused === true });
+    feedLearningPosition(context, position, {
+      paused: message.paused === true,
+      duration: message.duration,
+      thumbnailUrl: message.thumbnailUrl,
+    });
     // Archived source captions can follow the same validated, per-second
     // stream. This is a panel-only projection: it writes no playback command
     // and never changes the transcript archive.
@@ -4574,14 +4657,20 @@ async function handleMediaPosition(message, sender) {
       if (context.timestampKind !== "video") return;
     }
   }
-  if (!Number.isFinite(position)) return;
-  // #48 seek-awareness, in order: a forward seek cuts at the seek point and
-  // jumps the cursor; re-listening below the cursor cuts at the range
-  // boundaries (failed-Segment retries, Plan A); only then does the
-  // scheduler see the position.
-  await handleSeekForward(context, position);
-  await updateRelisten(context, position);
-  feedPosition(context, position);
+  if (!Number.isFinite(position) || position < 0 || context.videoCaptureStart === "starting") return;
+  if (context.videoCaptureStart === "awaitingPosition") {
+    // Playback before recording began cannot be covered by audio segments.
+    context.videoCaptureStart = null;
+    context.segmenter.jumpTo(position);
+    context.lastPosition = position;
+    context.seekBaselineArmed = true;
+    await persistContextPointer(context);
+  } else {
+    // Cut at seek and re-listen boundaries before feeding the scheduler.
+    await handleSeekForward(context, position);
+    await updateRelisten(context, position);
+    feedPosition(context, position);
+  }
   // Media end auto-ends replay/course/video Sessions ("video" = the P10b
   // stations' playback pages, #63); live ends only via the explicit end
   // action.
@@ -5217,7 +5306,7 @@ async function endActiveSession(context, { reason, report = true } = {}) {
       kind: context.kind,
       platformId: context.platformId,
     };
-    const reportTitle = context.pageTitle || context.state.title;
+    const reportTitle = context.pageTitle || context.state.title || context.state.resourceTitle;
     if (reportTitle) reportMeta.title = reportTitle;
     reportPayload = (
       await produceSessionDigest({

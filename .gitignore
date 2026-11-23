@@ -36,6 +36,8 @@ dist/
 
 # Environment
 .env
+# Feishu group-bot webhook secret (example file is committed, real one never is).
+/scripts/feishu-notify.env
 .env.*
 .env.test
 *.pem

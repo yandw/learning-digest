@@ -38,13 +38,8 @@ function loadReportPage({ search = "", stored = {} } = {}) {
   const createdElements = [];
   const printCalls = [];
   const timers = [];
-  const body = {
-    children: [],
-    appendChild(child) {
-      body.children.push(child);
-      return child;
-    },
-  };
+  const headerChildren = [];
+  const header = { appendChild: (child) => headerChildren.push(child) };
   const sandbox = {
     console,
     URLSearchParams,
@@ -57,6 +52,7 @@ function loadReportPage({ search = "", stored = {} } = {}) {
         written.push(String(html));
       },
       close() {},
+      querySelector: (selector) => selector === ".report-header" ? header : null,
       createElement(tag) {
         const element = {
           tagName: tag,
@@ -71,7 +67,6 @@ function loadReportPage({ search = "", stored = {} } = {}) {
         createdElements.push(element);
         return element;
       },
-      body,
     },
     window: {
       print: () => printCalls.push(true),
@@ -96,6 +91,7 @@ function loadReportPage({ search = "", stored = {} } = {}) {
     openPersistedReport: sandbox.__YTD_REPORT_PAGE_TESTING__.openPersistedReport,
     lastDocument: () => written.filter((entry) => typeof entry === "string").at(-1) || "",
     createdElements,
+    headerChildren,
     printCalls,
     timers,
   };
@@ -167,7 +163,7 @@ test("the missing-report dead end styles itself from the report's brand tokens",
 
   // Source of truth: the palette the full report inlines via REPORT_STYLE.
   const fullReport = require("../report-render.js").renderReportHtml(REPORT, META);
-  const brandPalette = ["#f2f6fc", "#ffffff", "#dce5f0", "#1f2733", "#5b6b80"];
+  const brandPalette = ["#fff", "#e4e6e0", "#222422", "#62665f"];
   for (const token of brandPalette) {
     assert.ok(fullReport.includes(token), `the report style carries ${token}`);
     assert.ok(deadEnd.includes(token), `the dead end reuses ${token}`);
@@ -223,6 +219,7 @@ test("the rendered report page carries a print toolbar outside the artifact", as
   // The live page gains the toolbar as a DOM element wired to window.print().
   const button = page.createdElements.find((el) => el.className === "report-print-btn");
   assert.ok(button, "the print toolbar button is injected");
+  assert.ok(page.headerChildren.includes(button), "the live print button appears below the report heading");
   assert.equal(button.textContent, "打印 / 存为 PDF");
   assert.equal(page.printCalls.length, 0, "no dialog before the click");
   button.listeners.click();
@@ -290,6 +287,5 @@ test("the report stylesheet carries the print / PDF rules", () => {
   assert.match(html, /break-inside:\s*avoid/);
   assert.match(html, /print-color-adjust:\s*exact/);
   // The injected toolbar hides itself in print output.
-  assert.match(html, /\.report-print-btn\s*\{[^}]*position:\s*fixed/);
   assert.match(html, /@media print\s*\{[\s\S]*\.report-print-btn\s*\{[^}]*display:\s*none/);
 });

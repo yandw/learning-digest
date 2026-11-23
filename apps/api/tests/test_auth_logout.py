@@ -5,6 +5,13 @@ so the Web session and the extension credential die together (contract §1:
 401 = expired OR linked-revoked). Error bodies follow the contract
 fixtures. Ported intent: apps/api/test/auth-logout.test.js. Seam: HTTP."""
 
+import asyncio
+
+import httpx
+import pytest
+
+from helpers import auth_header, create_fixture_source, create_session_for
+
 MISSING_TOKEN_BODY = {"error": {"code": "unauthorized", "message": "未登录或凭据缺失"}}
 EXPIRED_TOKEN_BODY = {"error": {"code": "unauthorized", "message": "凭据已失效，请重新登录并关联"}}
 
@@ -95,6 +102,84 @@ def test_logout_from_the_extension_kills_the_web_session_too(start_app):
     assert web_gone.status == 401, "the web session dies with the group"
     extension_gone = app.request("GET", "/v1/me", headers={"Authorization": f"Bearer {extension_token}"})
     assert extension_gone.status == 401
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_web_logout_finishes_linked_study_and_preserves_transcript(start_app, legacy):
+    clock = {"ms": 1_700_000_000_000}
+    other_email = "other@example.com"
+    app = start_app(seed_emails=[LEARNER, other_email], now=lambda: clock["ms"])
+    web = login(app)
+    extension = link_extension(app, web)
+    session = create_session_for(app, extension)["session"]
+    other = login(app, other_email)
+    other_session = create_session_for(app, other)["session"]
+    path = f"/v1/sessions/{session['id']}"
+    if legacy:
+        # Sessions written by 0.2.11 had no group marker.
+        row = dict(app.store.get("sessions", session["id"]))
+        row.pop("credentialGroupId", None)
+        app.store.set("sessions", row["id"], row)
+    archived = app.request(
+        "POST", f"{path}/captions", headers=auth_header(extension),
+        body={"segments": [{"startMs": 0, "endMs": 1000, "text": "已归档的逐字稿"}]},
+    )
+    assert archived.status == 201
+    clock["ms"] += 61_000
+    logout = app.request("POST", "/v1/auth/logout", headers=auth_header(web))
+    assert logout.status == 200
+    ended = app.store.get("sessions", session["id"])
+    assert ended["status"] == "finished"
+    assert ended["finishedAtMs"] == clock["ms"]
+    assert app.request("POST", f"{path}/finish", body={}, headers=auth_header(extension)).status == 401
+
+    fresh_web = login(app)
+    restored = app.request("GET", f"{path}/transcript", headers=auth_header(fresh_web))
+    assert restored.status == 200
+    assert restored.json == {**archived.json["transcript"], "sessionStatus": "finished"}
+
+    fresh = app.request(
+        "POST", f"/v1/sources/{session['sourceId']}/sessions",
+        body={}, headers=auth_header(fresh_web),
+    )
+    assert fresh.status == 201
+    repeat = app.request("POST", "/v1/auth/logout", headers=auth_header(web))
+    assert repeat.status == 200
+    for untouched in (other_session, fresh.json["session"]):
+        assert app.store.get("sessions", untouched["id"])["status"] == "active"
+
+
+def test_logout_while_session_request_reads_body_prevents_creation(start_app):
+    app = start_app(seed_emails=[LEARNER])
+    web = login(app)
+    extension = link_extension(app, web)
+    source = create_fixture_source(app, extension)["source"]
+
+    async def race():
+        reading_body = asyncio.Event()
+        logged_out = asyncio.Event()
+
+        async def paused_body():
+            reading_body.set()
+            await logged_out.wait()
+            yield b"{}"
+
+        transport = httpx.ASGITransport(app=app.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            start = asyncio.create_task(client.post(
+                f"/v1/sources/{source['id']}/sessions", content=paused_body(),
+                headers={**auth_header(extension), "Content-Type": "application/json"},
+            ))
+            await reading_body.wait()
+            logout = await client.post("/v1/auth/logout", headers=auth_header(web))
+            assert logout.status_code == 200
+            logged_out.set()
+            response = await start
+            assert response.status_code == 401
+            assert response.json() == EXPIRED_TOKEN_BODY
+
+    asyncio.run(asyncio.wait_for(race(), timeout=5))
+    assert app.store.count("sessions") == 0
 
 
 def test_repeated_logout_with_an_already_revoked_credential_stays_200_idempotent(start_app):

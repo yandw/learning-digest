@@ -157,10 +157,16 @@ var YTD_NOTES = (() => {
   }
 
   /** Reads the stored draft; a malformed record behaves like "no draft". */
-  async function readDraft(storage) {
+  function draftKey(resourceId) {
+    return resourceId ? `${DRAFT_STORAGE_KEY}:${resourceId}` : DRAFT_STORAGE_KEY;
+  }
+
+  async function readDraft(storage, resourceId) {
     try {
-      const result = await storage.get(DRAFT_STORAGE_KEY);
-      const raw = result && result[DRAFT_STORAGE_KEY];
+      const key = draftKey(resourceId);
+      const result = await storage.get([key, DRAFT_STORAGE_KEY]);
+      const legacy = result?.[DRAFT_STORAGE_KEY];
+      const raw = result?.[key] ?? (legacy?.resourceId === resourceId ? legacy : null);
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
       if (typeof raw.text !== "string" || raw.text === "") return null;
       if (typeof raw.clientRequestId !== "string" || raw.clientRequestId === "") return null;
@@ -171,13 +177,22 @@ var YTD_NOTES = (() => {
     }
   }
 
-  async function writeDraft(storage, draft) {
-    await storage.set({ [DRAFT_STORAGE_KEY]: draft });
+  async function writeDraft(storage, draft, resourceId) {
+    await storage.set({ [draftKey(resourceId)]: draft });
   }
 
   /** Success (201/200) or an explicit discard: the draft is done. */
-  async function clearDraft(storage) {
-    await storage.remove(DRAFT_STORAGE_KEY);
+  async function clearDraft(storage, resourceId, clientRequestId) {
+    const key = draftKey(resourceId);
+    const result = await storage.get([key, DRAFT_STORAGE_KEY]);
+    if (!clientRequestId || result?.[key]?.clientRequestId === clientRequestId) {
+      await storage.remove(key);
+    }
+    const legacy = result?.[DRAFT_STORAGE_KEY];
+    if (resourceId && legacy?.resourceId === resourceId &&
+      (!clientRequestId || legacy.clientRequestId === clientRequestId)) {
+      await storage.remove(DRAFT_STORAGE_KEY);
+    }
   }
 
   return {

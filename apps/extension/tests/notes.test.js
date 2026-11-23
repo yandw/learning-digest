@@ -195,6 +195,7 @@ function fakeStorage() {
   const map = new Map();
   return {
     async get(key) {
+      if (Array.isArray(key)) return Object.fromEntries(key.map((k) => [k, map.get(k)]));
       return map.has(key) ? { [key]: map.get(key) } : {};
     },
     async set(entries) {
@@ -226,6 +227,18 @@ test("a malformed stored draft reads as null instead of breaking the panel", asy
   await storage.set({ [YTD_NOTES.DRAFT_STORAGE_KEY]: { text: 42 } });
   assert.equal(await YTD_NOTES.readDraft(storage), null);
   assert.equal(await YTD_NOTES.readDraft(fakeStorage()), null);
+});
+
+test("a saved or discarded course draft leaves other courses alone", async () => {
+  const storage = fakeStorage();
+  const legacy = YTD_NOTES.buildDraft({ resourceId: "course_a", text: "旧草稿", clientRequestId: "first" });
+  const other = YTD_NOTES.buildDraft({ resourceId: "course_b", text: "另一门课", clientRequestId: "second" });
+  await YTD_NOTES.writeDraft(storage, legacy);
+  await YTD_NOTES.writeDraft(storage, other, "course_b");
+  assert.deepEqual(await YTD_NOTES.readDraft(storage, "course_a"), legacy);
+  await YTD_NOTES.clearDraft(storage, "course_a", "first");
+  assert.equal(await YTD_NOTES.readDraft(storage, "course_a"), null);
+  assert.deepEqual(await YTD_NOTES.readDraft(storage, "course_b"), other);
 });
 
 test("a successful send clears the draft; a failed one keeps it", async () => {

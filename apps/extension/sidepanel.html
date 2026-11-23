@@ -8,60 +8,68 @@
   </head>
   <body>
     <!-- HEADER -->
-    <!-- Note: the panel's own "Learning Digest" title is shown by Chrome's side-panel
-         title bar, so we don't repeat a logo here. -->
     <div class="header">
-      <div class="header-top">
-        <!-- Video info -->
-        <div class="video-info" id="videoInfo" style="display: none">
-          <div class="video-title" id="videoTitle"></div>
-          <div class="video-channel" id="videoChannel"></div>
-        </div>
-        <div class="header-actions">
-          <!-- 0.2.34 挂载页面切换：选中的就是插件当前挂载的页面（进行中的
-               学习会话所在标签页）；选择其他页面则跳转或按确认后切换挂载。 -->
-          <select
-            id="mountPageSelect"
-            class="mount-page-select"
-            title="切换插件挂载的页面"
-            aria-label="切换插件挂载的页面"
-          ></select>
-          <button
-            class="settings-btn"
-            id="settingsBtn"
-            type="button"
-            title="打开 Learning Digest 设置"
-            aria-label="打开 Learning Digest 设置"
-          >
-            设置
-          </button>
-          <button
-            class="settings-btn"
-            id="recheckCaptionsBtn"
-            type="button"
-            title="重新检测当前页面是否有字幕"
-            aria-label="重新获取字幕"
-          >
-            重新获取字幕
-          </button>
-          <button
-            class="settings-btn"
-            id="logoutBtn"
-            type="button"
-            title="退出登录：学习库账号在网页和插件上同时退出"
-            aria-label="退出登录"
-          >
-            退出登录
-          </button>
-        </div>
+      <div class="panel-topline">
+        <div class="panel-brand">Learning Digest</div>
+        <details id="panelControls" class="panel-controls" hidden>
+          <summary aria-label="更多操作" title="更多操作">⋯</summary>
+          <div class="header-actions">
+            <!-- 0.2.34 挂载页面切换：选中的就是插件当前挂载的页面（进行中的
+                 学习会话所在标签页）；选择其他页面则跳转或按确认后切换挂载。 -->
+            <select
+              id="mountPageSelect"
+              class="mount-page-select"
+              title="切换插件挂载的页面"
+              aria-label="切换插件挂载的页面"
+            ></select>
+            <button
+              class="settings-btn"
+              id="settingsBtn"
+              type="button"
+              title="打开 Learning Digest 设置"
+              aria-label="打开 Learning Digest 设置"
+            >
+              设置
+            </button>
+            <button
+              class="settings-btn"
+              id="recheckCaptionsBtn"
+              type="button"
+              title="重新检测当前页面是否有字幕"
+              aria-label="重新获取字幕"
+            >
+              重新获取字幕
+            </button>
+            <button
+              class="settings-btn"
+              id="logoutBtn"
+              type="button"
+              title="退出登录：学习库账号在网页和插件上同时退出"
+              aria-label="退出登录"
+            >
+              退出登录
+            </button>
+            <div id="sessionActionMenu"></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="session-course-card" id="sessionCourseCard" hidden>
+        <div class="session-course-state" id="sessionCourseState"></div>
+        <h2 id="learningTargetLabel"></h2>
+      </div>
+
+      <div class="video-info" id="videoInfo" style="display: none">
+        <div class="video-title" id="videoTitle"></div>
+        <div class="video-channel" id="videoChannel"></div>
       </div>
 
       <!-- Tab navigation -->
       <div class="tabs" id="tabsNav" style="display: none">
-        <button class="tab active" data-tab="transcript">逐字稿</button>
-        <button class="tab" data-tab="overview">概览</button>
-        <button class="tab" data-tab="report">纪要</button>
-        <button class="tab" data-tab="notes">笔记</button>
+        <button class="tab active" data-tab="transcript" aria-pressed="true">逐字稿</button>
+        <button class="tab" data-tab="overview" aria-pressed="false">概览</button>
+        <button class="tab" data-tab="report" aria-pressed="false">纪要</button>
+        <button class="tab" data-tab="notes" aria-pressed="false">笔记</button>
       </div>
     </div>
 
@@ -79,9 +87,6 @@
       <!-- SESSION CAPTURE (xiaoe-tech Source Platform) -->
       <div id="sessionBar" class="session-bar" style="display: none">
         <div class="session-status" id="sessionStatus"></div>
-        <!-- Learning target (P10, #59): the recorded target while a Session
-             runs — focus and tab switches cannot change it. -->
-        <div class="learning-target" id="learningTargetLabel" style="display: none"></div>
         <div class="session-start-hint" id="startLearningHint" style="display: none">
           <span class="session-start-hint-dot" aria-hidden="true"></span>
           <span>点击<strong>浏览器工具栏</strong>的 Learning Digest 图标，开始转写本节课</span>
@@ -130,22 +135,17 @@
 
       <!-- WELCOME STATE -->
       <div id="welcomeState" class="welcome-container">
-        <div class="welcome-icon" aria-hidden="true"></div>
-        <div class="welcome-title">Learning Digest</div>
-        <div class="welcome-desc">
-          在支持的课程平台（首批适配 xiaoe-tech.com）打开一节课，
-          点击<strong>浏览器工具栏上的 Learning Digest 图标</strong>：学习会话会自动开始，
-          扩展会分段转写课程内容，整理出带时间范围的话题时间轴，并在课程结束时输出完整的学习纪要。
+        <div class="current-page" id="currentPage" hidden>
+          <div class="current-page-label">当前页面</div>
+          <h1 id="currentPageTitle"></h1>
+          <div id="currentPageDomain"></div>
         </div>
         <!-- Collect current page (P8, #58): the active tab becomes a favorite
              in the learner's library. Lives inside the welcome state, so the
              authorization gate hides it until the panel unlocks. -->
         <div class="collect-entry">
-          <div class="entry-heading">
-            <div class="entry-title">收藏当前页</div>
-            <div class="entry-description">保存到学习库，随时在网页端继续学习。</div>
-          </div>
-          <button class="session-btn auth-gate-btn" id="collectPageBtn" type="button">
+          <div class="collect-status" id="collectStatus" aria-live="polite" style="display: none"></div>
+          <button class="session-btn" id="collectPageBtn" type="button">
             收藏当前页
           </button>
           <button
@@ -155,48 +155,15 @@
             style="display: none"
             disabled
           >
-            查看详情
+            打开学习库
           </button>
-          <div class="collect-status" id="collectStatus" aria-live="polite" style="display: none"></div>
         </div>
-        <!-- Library note entry (P12, #61): a plain-text note about the
-             current page, saved to that library resource (a recognized
-             video page also carries the current playback position). Lives
-             inside the welcome state like the collect entry above, so the
-             authorization gate hides it until the panel unlocks. -->
-        <div class="note-entry">
-          <div class="entry-heading">
-            <div class="entry-title">学习笔记</div>
-            <div class="entry-description">记录当前页的重点，视频页会同时保存播放位置。</div>
-          </div>
-          <textarea
-            id="libraryNoteInput"
-            class="note-input"
-            rows="3"
-            placeholder="写一条学习笔记，保存到这条资料的笔记区；视频页会自动带上当前播放位置"
-            aria-label="学习笔记内容"
-          ></textarea>
-          <div class="note-entry-actions">
-            <button class="session-btn auth-gate-btn" id="saveNoteBtn" type="button">
-              保存笔记
-            </button>
-            <button
-              class="link-btn"
-              id="discardNoteDraftBtn"
-              type="button"
-              style="display: none"
-            >
-              放弃未发送的草稿
-            </button>
-          </div>
-          <div class="note-entry-status" id="noteStatus" aria-live="polite" style="display: none"></div>
-        </div>
+        <p class="welcome-desc page-learning-hint" id="pageLearningHint">在支持的课程页面可以开始学习。</p>
       </div>
 
       <!-- AUTHORIZATION GATE (P6)：未关联时唯一的可见界面 -->
       <div id="authGateState" class="welcome-container" style="display: none">
-        <div class="welcome-icon" aria-hidden="true"></div>
-        <div class="welcome-title">先关联学习库账号</div>
+        <h1 class="welcome-title">关联学习库</h1>
         <div class="welcome-desc" id="authGateStatus">
           把 Learning Digest 插件关联到你的学习库账号后才能开始使用。
         </div>
@@ -342,6 +309,30 @@
 
         <!-- TAB: Notes -->
         <div class="tab-panel" data-panel="notes">
+          <div class="note-entry" id="courseNoteEntry" style="display: none">
+            <h2 class="entry-title" id="courseNoteTitle">学习笔记</h2>
+            <label for="libraryNoteInput">写一条当前课程的笔记</label>
+            <textarea
+              id="libraryNoteInput"
+              class="note-input"
+              rows="3"
+              aria-label="学习笔记内容"
+            ></textarea>
+            <div class="note-entry-actions">
+              <button class="session-btn auth-gate-btn" id="saveNoteBtn" type="button">
+                保存笔记
+              </button>
+              <button
+                class="link-btn"
+                id="discardNoteDraftBtn"
+                type="button"
+                style="display: none"
+              >
+                放弃未发送的草稿
+              </button>
+            </div>
+            <div class="note-entry-status" id="noteStatus" aria-live="polite" style="display: none"></div>
+          </div>
           <div class="section">
             <div class="section-header">
               <div class="section-title">已保存的笔记</div>

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from threading import Lock
 from typing import Any
 
 _MISSING = object()
@@ -33,6 +34,16 @@ class MemoryStore:
 
     def set(self, collection: str, key: str, value: Any) -> None:
         self.collections.setdefault(collection, {})[key] = value
+
+    def _merged_collections(self, records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        return {
+            name: {**self.collections.get(name, {}), **entries}
+            for name, entries in records.items()
+            if entries
+        }
+
+    def set_many(self, records: dict[str, dict[str, Any]]) -> None:
+        self.collections.update(self._merged_collections(records))
 
     def delete(self, collection: str, key: str) -> bool:
         entries = self.collections.get(collection, {})
@@ -63,6 +74,7 @@ class FileStore(MemoryStore):
     def __init__(self, *, file: str) -> None:
         super().__init__()
         self.file = file
+        self._write_lock = Lock()
         self._load()
 
     def _load(self) -> None:
@@ -73,10 +85,10 @@ class FileStore(MemoryStore):
         for name, entries in raw.items():
             self.collections[name] = dict(entries)
 
-    def _save(self) -> None:
-        snapshot = {
-            name: dict(entries) for name, entries in self.collections.items()
-        }
+    def _save(self, replacements: dict[str, dict[str, Any]] | None = None) -> None:
+        snapshot = {name: dict(entries) for name, entries in self.collections.items()}
+        if replacements:
+            snapshot.update(replacements)
         directory = os.path.dirname(self.file)
         if directory:
             os.makedirs(directory, exist_ok=True)
@@ -86,22 +98,32 @@ class FileStore(MemoryStore):
         os.replace(tmp, self.file)
 
     def set(self, collection: str, key: str, value: Any) -> None:
-        super().set(collection, key, value)
-        self._save()
+        with self._write_lock:
+            super().set(collection, key, value)
+            self._save()
+
+    def set_many(self, records: dict[str, dict[str, Any]]) -> None:
+        with self._write_lock:
+            replacements = self._merged_collections(records)
+            if replacements:
+                self._save(replacements)
+                self.collections.update(replacements)
 
     def delete(self, collection: str, key: str) -> bool:
-        existed = super().delete(collection, key)
-        if existed:
-            self._save()
-        return existed
+        with self._write_lock:
+            existed = super().delete(collection, key)
+            if existed:
+                self._save()
+            return existed
 
     def delete_many(self, keys: dict[str, list[str]]) -> int:
         """Batch delete persists ONCE, after every removal — never an
         intermediate snapshot between the collections of one cascade."""
-        removed = super().delete_many(keys)
-        if removed:
-            self._save()
-        return removed
+        with self._write_lock:
+            removed = super().delete_many(keys)
+            if removed:
+                self._save()
+            return removed
 
 
 def create_memory_store() -> MemoryStore:

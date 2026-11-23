@@ -12,6 +12,11 @@ Issues live in GitHub at `yandw/learning-digest`. See `docs/agents/issue-tracker
 
 Single-context layout: one `GLOSSARY.md` at repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
 
+## Agent notifications
+
+- After completing a substantive task — a delivered file/report/build, a merged change, or any multi-step job — send one Feishu notification: `scripts/notify-feishu.sh "<task title>" "<one-line summary with the key output path>" [link text] [link URL]` (or the Kimi-managed canonical copy at `~/.kimi/daimon/skills/feishu-notify/scripts/notify-feishu.sh`). The script is best-effort (`|| true`); a notification failure must never fail or block the main task.
+- Do not notify for pure Q&A, trivial exchanges, or follow-up tweaks in an already-notified thread.
+
 ## Project conventions
 
 - **All four units live under `apps/` (extension, web, api, worker); the repo root carries no plugin files.** The Chrome extension loads unpacked from `apps/extension`; its release checks and packaging scripts live in `apps/extension/scripts/`. The root `package.json` is only the suite-running entry (`npm test`, `npm run check`, `npm run package`); it carries no release version.

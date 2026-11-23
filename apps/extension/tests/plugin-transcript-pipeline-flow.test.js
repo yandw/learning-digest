@@ -228,8 +228,14 @@ const asrFlowHelpers = ({ fetchImpl, timers, ...rest } = {}) =>
     ...rest,
   });
 
+async function playFirstSegment(helpers) {
+  for (let position = 0; position <= 30; position += 1) {
+    await helpers.handleMediaPosition({ position }, { tab: { id: 2 } });
+  }
+}
+
 /** Starts an ASR Session on the xiaoe lesson and waits for the start beat. */
-async function startAsrSession(helpers, fetchSeams) {
+async function startAsrSession(helpers) {
   const started = await helpers.handleStartLearning({ url: XIAOE_LESSON, tabId: 2 });
   assert.equal(started.success, true, started.error || "");
   return started;
@@ -303,7 +309,7 @@ test("开始学习 on a no-captions platform creates the server Session, uploads
   assert.equal(timers[0].delay, 4000);
 
   // 30s of playback: the Segment uploads as the D11 contract body.
-  await helpers.handleMediaPosition({ position: 30 }, { tab: { id: 2 } });
+  await playFirstSegment(helpers);
   const segmentCalls = await until(
     () => v1Calls.filter((call) => call.path.endsWith("/audio-segments")),
     (calls) => calls.length === 1,
@@ -380,7 +386,7 @@ test("a transient upload failure replays the same body byte-for-byte and the sto
   const helpers = asrFlowHelpers({ fetchImpl, timers });
 
   await startAsrSession(helpers);
-  await helpers.handleMediaPosition({ position: 30 }, { tab: { id: 2 } });
+  await playFirstSegment(helpers);
 
   const calls = await until(
     () => v1Calls.filter((call) => call.path.endsWith("/audio-segments")),
@@ -420,7 +426,7 @@ test("a 409 transcript_origin_conflict from the upload surfaces verbatim and sto
   const helpers = asrFlowHelpers({ fetchImpl, timers, sentMessages });
 
   await startAsrSession(helpers);
-  await helpers.handleMediaPosition({ position: 30 }, { tab: { id: 2 } });
+  await playFirstSegment(helpers);
 
   const calls = await until(
     () => v1Calls.filter((call) => call.path.endsWith("/audio-segments")),
@@ -477,7 +483,7 @@ test("a 401 upload routes the P7 credentials-invalidated handoff", async () => {
   const helpers = asrFlowHelpers({ fetchImpl, timers, sentMessages });
 
   await startAsrSession(helpers);
-  await helpers.handleMediaPosition({ position: 30 }, { tab: { id: 2 } });
+  await playFirstSegment(helpers);
 
   // P7: the capture stops (the pointer clears, the local Session ends) and
   // the panel is pushed back to the guide. until resolves undefined when
@@ -537,7 +543,7 @@ async function driveToEnd(trigger) {
   // 30s watched → Segment 0 uploads. Then a drag to 3:30 marks the
   // seek-skipped range, and playback crawls (never a >3s hop) to 3:45 —
   // inside the uncompleted Segment, so only the end flush can cut it.
-  await helpers.handleMediaPosition({ position: 30 }, { tab: { id: 2 } });
+  await playFirstSegment(helpers);
   await until(
     () => v1Calls.filter((call) => call.path.endsWith("/audio-segments")),
     (calls) => calls.length === 1,

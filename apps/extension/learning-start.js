@@ -466,6 +466,7 @@ var YTD_LEARNING_START = (() => {
         ? expectedRevision
         : 0;
     let pendingPositionMs = null;
+    const mediaMetadata = {};
     let lastReportedMs = null;
     let lastWriteStartAt = null;
     let stopped = url === null;
@@ -523,7 +524,7 @@ var YTD_LEARNING_START = (() => {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, ...mediaMetadata }),
       });
       let data = null;
       try {
@@ -606,16 +607,22 @@ var YTD_LEARNING_START = (() => {
       cancelTimer();
     }
 
+    function updateMediaMetadata({ durationMs, thumbnailUrl } = {}) {
+      if (Number.isSafeInteger(durationMs) && durationMs > 0) mediaMetadata.durationMs = durationMs;
+      if (typeof thumbnailUrl === "string" && thumbnailUrl) mediaMetadata.thumbnailUrl = thumbnailUrl;
+    }
+
     return {
       /**
        * Records the last actually-played position (ms). Key events — the
        * first position after start and a backward drag (回拖) — write
        * immediately; other positions coalesce on the throttle schedule.
        */
-      reportPosition(positionMs) {
+      reportPosition(positionMs, media) {
         if (stopped) return;
         const position = Number(positionMs);
         if (!Number.isFinite(position) || position < 0) return;
+        updateMediaMetadata(media);
         pendingPositionMs = Math.round(position);
         const immediate =
           lastReportedMs === null ||
@@ -635,10 +642,11 @@ var YTD_LEARNING_START = (() => {
        * the throttle — while the writer (and the Session behind it) stays
        * live: resuming playback keeps reporting into the same Session.
        */
-      reportPause(positionMs) {
+      reportPause(positionMs, media) {
         if (stopped) return;
         const position = Number(positionMs);
         if (!Number.isFinite(position) || position < 0) return;
+        updateMediaMetadata(media);
         pendingPositionMs = Math.round(position);
         cancelTimer();
         enqueue(true);

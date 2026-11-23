@@ -48,7 +48,8 @@ function injectPrintToolbar() {
   button.className = "report-print-btn";
   button.textContent = "打印 / 存为 PDF";
   button.addEventListener("click", () => window.print());
-  document.body.appendChild(button);
+  const header = document.querySelector(".report-header");
+  (header || document.body).appendChild(button);
 }
 
 /** Opens the print dialog once the rendered DOM has had a frame to paint. */
@@ -58,16 +59,16 @@ function scheduleAutoPrint() {
   setTimeout(() => window.print(), 300);
 }
 
-// The Brand Blue tokens the dead end styles itself with — the same values
+// The report tokens the dead end styles itself with — the same values
 // REPORT_STYLE inlines for every rendered report (see report-render.js), so
 // the failure page reads like the report it could not open. Declared once
 // here; renderMissingReport references them instead of re-inlining literals.
 const MISSING_REPORT_TOKENS = {
-  bg: "#f2f6fc",
-  surface: "#ffffff",
-  border: "#dce5f0",
-  text: "#1f2733",
-  textSecondary: "#5b6b80",
+  bg: "#fff",
+  surface: "#fff",
+  border: "#e4e6e0",
+  text: "#222422",
+  textSecondary: "#62665f",
 };
 
 /**

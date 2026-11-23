@@ -108,6 +108,34 @@ def test_list_returns_the_accounts_favorites_newest_first_with_per_source_progre
     assert generic_item["resource"]["createdAt"] == fixture_generic["resource"]["createdAt"]
 
 
+def test_library_activity_keeps_the_timestamp_of_the_latest_real_progress_write(start_app):
+    clock = {"ms": 0}
+    app = start_app(seed_emails=[LEARNER], now=lambda: clock["ms"])
+    token = open_account(app, LEARNER)
+    source = replay_create_samples(app, token, clock)["bilibili"]["source"]
+    path = f"/v1/sources/{source['id']}/progress"
+    headers = auth_header(token)
+    progress_time = clock["ms"] + 2000
+    clock["ms"] = progress_time
+    written = app.request("PUT", path, headers=headers, body={"positionMs": 12000, "expectedRevision": 0})
+    assert written.json == {"positionMs": 12000, "revision": 1}
+
+    clock["ms"] += 2000
+    thumbnail = "https://i0.hdslb.com/bfs/archive/example.jpg"
+    resent = app.request("PUT", path, headers=headers, body={
+        "positionMs": 12000,
+        "expectedRevision": 1,
+        "durationMs": 240000,
+        "thumbnailUrl": thumbnail,
+    })
+    assert resent.json == written.json
+    items = app.request("GET", "/v1/resources?include_activity=true", headers=headers).json["resources"]
+    progress_view = items[1]["sources"][0]
+    assert progress_view["lastStudiedAtMs"] == progress_time
+    assert progress_view["durationMs"] == 240000
+    assert progress_view["thumbnailUrl"] == thumbnail
+
+
 def test_detail_returns_resource_sources_with_progress_and_notes(start_app):
     example = api_example("api-resources-detail-with-notes")
     clock = {"ms": 0}

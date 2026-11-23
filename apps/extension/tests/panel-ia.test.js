@@ -180,6 +180,9 @@ function loadPanel({ stored = {}, storageGetImpl = null, openOptionsPageImpl = n
   const createdElements = [];
   const docListeners = {};
   const runtimeMessageListeners = [];
+  const tabUpdatedListeners = [];
+  const tabActivatedListeners = [];
+  let activeTab = { id: 7, url: "https://example.com/course" };
   const openOptionsCalls = [];
   const alerts = [];
   let selection = null;
@@ -187,6 +190,7 @@ function loadPanel({ stored = {}, storageGetImpl = null, openOptionsPageImpl = n
 
   const sandbox = {
     console,
+    crypto: require("node:crypto").webcrypto,
     Blob,
     TextDecoder,
     TextEncoder,
@@ -260,9 +264,9 @@ function loadPanel({ stored = {}, storageGetImpl = null, openOptionsPageImpl = n
       },
       tabs: {
         create: () => Promise.resolve({ id: 9 }),
-        query: async () => [{ id: 7, url: "https://example.com/course" }],
-        onUpdated: { addListener() {} },
-        onActivated: { addListener() {} },
+        query: async () => [activeTab],
+        onUpdated: { addListener: (handler) => tabUpdatedListeners.push(handler) },
+        onActivated: { addListener: (handler) => tabActivatedListeners.push(handler) },
       },
       storage: {
         local: {
@@ -305,6 +309,11 @@ function loadPanel({ stored = {}, storageGetImpl = null, openOptionsPageImpl = n
     sentMessages,
     docListeners,
     runtimeMessageListeners,
+    setActiveTab(tab) {
+      activeTab = tab;
+    },
+    tabUpdatedListeners,
+    tabActivatedListeners,
     openOptionsCalls,
     alerts,
     stored,
@@ -317,6 +326,59 @@ function loadPanel({ stored = {}, storageGetImpl = null, openOptionsPageImpl = n
     },
   };
 }
+
+test("the caption recheck verdict follows the active video across navigation", async () => {
+  const panel = loadPanel();
+  const first = { id: 7, windowId: 1, url: "https://www.youtube.com/watch?v=YM-6-QhGHgI" };
+  const second = { ...first, url: "https://www.youtube.com/watch?v=MzklWMQ87Yw" };
+  const track = { language: "zh-TW" };
+  let probeResult = { ok: true, available: true, track, segmentCount: 679 };
+  panel.setActiveTab(first);
+  panel.setNextResponse(({ action }) => {
+    if (action === "checkAuth") return { authorized: true };
+    if (action === "recheckCaptions") return probeResult;
+    return { success: true };
+  });
+  await panel.docListeners.DOMContentLoaded();
+  const button = panel.elementById("recheckCaptionsBtn");
+  button.listeners.click();
+  await panel.flush();
+  assert.match(button.title, /679 段/);
+
+  panel.setActiveTab(second);
+  for (const listener of panel.tabUpdatedListeners) {
+    listener(second.id, { url: second.url }, { ...second, active: true });
+  }
+  assert.equal(button.textContent, "重新获取字幕");
+  assert.equal(button.title, "重新检测当前页面是否有字幕");
+
+  let resolveLateProbe;
+  probeResult = new Promise((resolve) => { resolveLateProbe = resolve; });
+  button.listeners.click();
+  await panel.flush();
+  assert.equal(button.disabled, true);
+  panel.setActiveTab(first);
+  for (const listener of panel.tabUpdatedListeners) {
+    listener(first.id, { url: first.url }, { ...first, active: true });
+  }
+  assert.equal(button.disabled, false);
+
+  probeResult = { ok: true, available: true, track, segmentCount: 680 };
+  button.listeners.click();
+  await panel.flush();
+  resolveLateProbe({ ok: true, available: true, track, segmentCount: 392 });
+  await panel.flush();
+  assert.match(button.title, /680 段/);
+
+  for (const listener of panel.tabActivatedListeners) {
+    listener({ tabId: 9, windowId: 2 });
+  }
+  assert.match(button.title, /680 段/);
+  for (const listener of panel.tabActivatedListeners) {
+    listener({ tabId: 9, windowId: first.windowId });
+  }
+  assert.equal(button.textContent, "重新获取字幕");
+});
 
 function activeSessionState(overrides = {}) {
   return {
@@ -333,6 +395,41 @@ function activeSessionState(overrides = {}) {
 function showSession(panel, state, overview = null) {
   panel.report.showSessionMode({ active: true, kind: "replay", state, overview });
 }
+
+test("the note composer is course-only and keeps unsaved text with its original session", async () => {
+  const html = read("sidepanel.html");
+  assert.ok(html.indexOf('data-panel="notes"') < html.indexOf('id="libraryNoteInput"'));
+  const panel = loadPanel();
+  panel.setNextResponse(({ action, sessionId }) => (
+    action === "checkAuth"
+      ? { authorized: true }
+      : { ok: true, title: sessionId }
+  ));
+  await panel.docListeners.DOMContentLoaded();
+  panel.transcript.switchTab("notes");
+  await panel.flush();
+  assert.ok(!panel.sentMessages.some((m) => m.action === "getNoteDraft"));
+
+  showSession(panel, activeSessionState());
+  await panel.flush();
+  assert.equal(panel.elementById("courseNoteEntry").style.display, "");
+  const input = panel.elementById("libraryNoteInput");
+  input.value = "只属于第一门课";
+
+  showSession(panel, activeSessionState({ sessionId: "s_2" }));
+  await panel.flush();
+  assert.equal(input.value, "");
+  input.value = "第二门课的笔记";
+  panel.elementById("saveNoteBtn").listeners.click();
+  await panel.flush();
+  const save = panel.sentMessages.find((m) => m.action === "saveNoteToLibrary");
+  assert.equal(save.sessionId, "s_2");
+  assert.equal(save.text, "第二门课的笔记");
+
+  showSession(panel, activeSessionState());
+  await panel.flush();
+  assert.equal(input.value, "只属于第一门课");
+});
 
 // --- 逐字稿 purity -----------------------------------------------------------
 
@@ -615,13 +712,15 @@ test("selecting session transcript text saves a note under the session id", asyn
   });
 
   const save = panel.sentMessages.find((message) => message.action === "saveNote");
+  assert.equal(save.sessionId, "s_1");
+  assert.match(save.clientRequestId, /^[\da-f-]{36}$/);
   assert.equal(save.videoId, "s_1", "session notes save under the Session id");
   assert.equal(save.videoTitle, "混合动力入门", "the course title rides along");
   assert.equal(save.timestamp, 75);
   assert.equal(save.selectedText, "其中某句话");
   const refresh = panel.sentMessages.find((message) => message.action === "getNotes");
   assert.equal(refresh.videoId, "s_1", "the list refreshes scoped to the session");
-  assert.equal(noteBtn.textContent, "已保存");
+  assert.equal(noteBtn.textContent, "已存入学习库");
 });
 
 test("session notes render a jumpable stamp; legacy notes stay plain", () => {

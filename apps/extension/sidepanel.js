@@ -281,9 +281,6 @@ function unlockAfterAuth() {
   void refreshCollectEntry();
   // P10 (#59): the course tab list — pick a target, 开始学习 records it.
   void refreshCourseTabs();
-  // P12 (#61): surface an unsent note draft, if any — the input is
-  // pre-filled so clicking 保存笔记 resends it (same clientRequestId).
-  void refreshNoteDraftEntry();
 }
 
 // Listen for messages from the background script.
@@ -389,7 +386,7 @@ function setupEventListeners() {
   // 重新获取字幕: re-runs the captions probe on the panel's active tab
   // regardless of the current captions state; the button itself carries the
   // verdict (检测中… → 有字幕 / 无字幕 / 无法检测), with the detail in the
-  // title tooltip. The verdict stays on the button until the next click.
+  // title tooltip. The verdict belongs to the page that was checked.
   document.getElementById("recheckCaptionsBtn")?.addEventListener("click", () => {
     void recheckCaptions();
   });
@@ -937,6 +934,12 @@ function showState(state) {
   if (authGateEl) {
     authGateEl.style.display = state === "authGate" ? "grid" : "none";
   }
+  if (state === "authGate") {
+    courseNoteEdits.clear();
+    setCourseNoteSession(null);
+    const card = document.getElementById("sessionCourseCard");
+    if (card) card.hidden = true;
+  }
   document.getElementById("resultsState").style.display =
     state === "results" ? "block" : "none";
 
@@ -976,6 +979,11 @@ const AUTH_GATE_COPY = {
 };
 
 function setSettingsButtonVisible(visible) {
+  const controls = document.getElementById("panelControls");
+  if (controls) {
+    controls.hidden = !visible;
+    if (!visible) controls.open = false;
+  }
   const settingsBtn = document.getElementById("settingsBtn");
   if (settingsBtn) {
     settingsBtn.style.display = visible ? "" : "none";
@@ -1001,16 +1009,29 @@ function setSettingsButtonVisible(visible) {
   }
 }
 
+let captionsRecheck = null;
+
+function resetCaptionsRecheck() {
+  captionsRecheck = null;
+  const button = document.getElementById("recheckCaptionsBtn");
+  if (!button) return;
+  button.className = "settings-btn";
+  button.textContent = "重新获取字幕";
+  button.title = "重新检测当前页面是否有字幕";
+  button.disabled = false;
+}
+
 /**
  * The 重新获取字幕 click: probe the panel's active tab through the worker
  * and put the verdict on the button (label + state class + tooltip). The
  * worker's probe is side-effect-free — no Session, no archive — so a
- * recheck never disturbs an ongoing learning Session. The verdict label
- * persists until the next click.
+ * recheck never disturbs an ongoing learning Session.
  */
 async function recheckCaptions() {
   const btn = document.getElementById("recheckCaptionsBtn");
   if (!btn || btn.disabled) return;
+  const check = { tab: null };
+  captionsRecheck = check;
   const setState = (className, label, tooltip) => {
     btn.className = `settings-btn ${className}`;
     btn.textContent = label;
@@ -1020,15 +1041,18 @@ async function recheckCaptions() {
   btn.disabled = true;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (captionsRecheck !== check) return;
     if (!tab || typeof tab.id !== "number" || !tab.url) {
       setState("recheck-error", "无法检测", "找不到当前标签页。");
       return;
     }
+    check.tab = tab;
     const result = await chrome.runtime.sendMessage({
       action: "recheckCaptions",
       tabId: tab.id,
       url: tab.url,
     });
+    if (captionsRecheck !== check) return;
     if (!result || result.ok !== true) {
       setState(
         "recheck-error",
@@ -1055,9 +1079,11 @@ async function recheckCaptions() {
       result.captionsEnabledBySite === false ? "（学习服务已关闭该站点字幕功能）" : "";
     setState("recheck-no", "无字幕", `${reason}${siteNote}`);
   } catch (_error) {
-    setState("recheck-error", "检测失败", "插件连接失败，请刷新后重试。");
+    if (captionsRecheck === check) {
+      setState("recheck-error", "检测失败", "插件连接失败，请刷新后重试。");
+    }
   } finally {
-    btn.disabled = false;
+    if (captionsRecheck === check) btn.disabled = false;
   }
 }
 
@@ -1262,6 +1288,7 @@ function describeResolvedSource(resolution) {
 }
 
 let collectedResourceId = null;
+let currentPageIsCourse = null;
 
 /** Keeps the Web detail entry in lockstep with the current collect verdict. */
 function setCollectedResource(resource) {
@@ -1274,15 +1301,19 @@ function setCollectedResource(resource) {
     detailButton.style.display = collectedResourceId ? "" : "none";
     detailButton.disabled = !collectedResourceId;
   }
+  const collectButton = document.getElementById("collectPageBtn");
+  if (collectButton) collectButton.hidden = Boolean(collectedResourceId);
+  const hint = document.getElementById("pageLearningHint");
+  if (hint) hint.hidden = Boolean(collectedResourceId) || currentPageIsCourse === true;
 }
 
-/**
- * The pre-collect probe, once per panel unlock. The background answers a
- * local miss (no API call) for pages without a confirmable identity, and
- * any transport failure here is silent — the probe is a convenience, not
- * a surface the learner depends on.
- */
+let collectEntryRequest = 0;
+
 async function refreshCollectEntry() {
+  if (document.getElementById("panelControls")?.hidden === true) return;
+  const request = ++collectEntryRequest;
+  const currentPage = document.getElementById("currentPage");
+  if (currentPage) currentPage.hidden = true;
   setCollectStatus("");
   setCollectedResource(null);
   let resolution = null;
@@ -1293,9 +1324,19 @@ async function refreshCollectEntry() {
   } catch (_error) {
     return;
   }
+  if (request !== collectEntryRequest) return;
+  currentPageIsCourse = resolution?.page?.isCourse ?? null;
+  updateCourseTabsVisibility();
+  if (currentPage && resolution?.page) {
+    document.getElementById("currentPageTitle").textContent = resolution.page.title;
+    document.getElementById("currentPageDomain").textContent = resolution.page.domain;
+    currentPage.hidden = false;
+  }
   if (resolution && resolution.ok && resolution.matched) {
-    setCollectStatus(describeResolvedSource(resolution));
+    setCollectStatus(currentPageIsCourse === false ? "已收藏到学习库。" : describeResolvedSource(resolution));
     setCollectedResource(resolution.resource);
+  } else {
+    setCollectedResource(null);
   }
 }
 
@@ -1306,6 +1347,7 @@ async function refreshCollectEntry() {
  * the authorization guide on its own.
  */
 async function collectCurrentPage() {
+  const request = ++collectEntryRequest;
   const button = document.getElementById("collectPageBtn");
   if (button) button.disabled = true;
   setCollectedResource(null);
@@ -1319,10 +1361,11 @@ async function collectCurrentPage() {
     result = null;
   }
   if (button) button.disabled = false;
+  if (request !== collectEntryRequest) return;
   if (result && result.ok && COLLECT_STATUS_COPY[result.outcome]) {
-    setCollectStatus(COLLECT_STATUS_COPY[result.outcome]);
+    setCollectStatus(currentPageIsCourse === false ? "已收藏到学习库。" : COLLECT_STATUS_COPY[result.outcome]);
     setCollectedResource(result.resource);
-    if (typeof result.tabId === "number") {
+    if (currentPageIsCourse !== false && typeof result.tabId === "number") {
       await chooseCourseTarget(result.tabId);
     }
     return;
@@ -1448,6 +1491,7 @@ function updateCourseTabsVisibility() {
   const box = document.getElementById("courseTabsBox");
   if (!box) return;
   const show =
+    currentPageIsCourse !== false &&
     courseTargetUi.available && !sessionUi.active && !panelHasLoadedContent();
   box.style.display = show ? "" : "none";
 }
@@ -1517,7 +1561,7 @@ async function refreshCourseTabs({ restoreTarget = true } = {}) {
     courseTargetUi.startable = false;
     courseTargetUi.resumePositionMs = null;
   }
-  renderCourseTabList(result.tabs || []);
+  renderCourseTabList((result.tabs || []).filter((row) => row.video));
   if (targetChanged) setCourseTabStatus("");
   updateStartButtons();
   updateCourseTabsVisibility();
@@ -1687,16 +1731,23 @@ async function startLearningForTarget() {
   setCourseTabStatus((result && result.error) || COURSE_TAB_COPY.failed);
 }
 
-/** The bar's 学习目标 line: the recorded target while a Session runs. */
+let learningTarget = null;
+
 function renderLearningTargetLabel(target) {
+  learningTarget = target;
+  renderSessionCourseCard();
+}
+
+function renderSessionCourseCard() {
+  const card = document.getElementById("sessionCourseCard");
   const label = document.getElementById("learningTargetLabel");
-  if (!label) return;
-  if (target) {
-    label.textContent = `学习目标：${target.title || target.url}`;
-    label.style.display = "";
-  } else {
-    label.style.display = "none";
-  }
+  const status = document.getElementById("sessionCourseState");
+  if (!card || !label || !status) return;
+  const title = sessionUi.title || learningTarget?.title || "当前课程";
+  card.hidden = document.getElementById("panelControls")?.hidden === true ||
+    (!sessionUi.active && !sessionUi.lastSessionId);
+  status.textContent = sessionUi.active ? "当前课程 · 学习中" : "本次学习 · 已结束";
+  label.textContent = title;
 }
 
 
@@ -1719,12 +1770,32 @@ const NOTE_STATUS_COPY = {
   idempotent: "笔记已在学习库中（未重复保存）",
   draftKept: "网络没有通：笔记已保留为草稿，稍后点「保存笔记」重试。",
 };
+let courseNoteSessionId = null;
+const courseNoteEdits = new Map();
 
-function setNoteStatus(text) {
+function setCourseNoteSession(sessionId) {
+  if (sessionId === courseNoteSessionId) return;
+  const input = document.getElementById("libraryNoteInput");
+  if (input) {
+    if (sessionId && courseNoteSessionId) courseNoteEdits.set(courseNoteSessionId, input.value);
+    input.value = courseNoteEdits.get(sessionId) ?? "";
+    input.disabled = false;
+  }
+  courseNoteSessionId = sessionId;
+  const entry = document.getElementById("courseNoteEntry");
+  if (entry) entry.style.display = "none";
+  const button = document.getElementById("saveNoteBtn");
+  if (button) button.disabled = false;
+  setNoteStatus("");
+  setDiscardDraftButtonVisible(false);
+}
+
+function setNoteStatus(text, saved = false) {
   const statusEl = document.getElementById("noteStatus");
   if (!statusEl) return;
   statusEl.textContent = text || "";
   statusEl.style.display = text ? "block" : "none";
+  statusEl.classList.toggle("note-status-saved", saved);
 }
 
 function setDiscardDraftButtonVisible(visible) {
@@ -1735,20 +1806,24 @@ function setDiscardDraftButtonVisible(visible) {
 }
 
 /**
- * The unsent-draft surface on panel unlock: pre-fill the input with the
- * draft's text so a retry needs no retyping, and say so. Silent on any
- * transport failure — the entry stays usable for a fresh note.
+ * Only a Session verified by the library can expose the composer.
  */
 async function refreshNoteDraftEntry() {
-  setNoteStatus("");
-  setDiscardDraftButtonVisible(false);
+  const sessionId = currentSessionContextId();
+  setCourseNoteSession(sessionId);
+  if (!sessionId) return;
   let result = null;
   try {
-    result = await chrome.runtime.sendMessage({ action: "getNoteDraft" });
+    result = await chrome.runtime.sendMessage({ action: "getNoteDraft", sessionId });
   } catch (_error) {
     return;
   }
-  if (result && result.ok && result.draft) {
+  if (sessionId !== courseNoteSessionId || sessionId !== currentSessionContextId() || !result?.ok) {
+    return;
+  }
+  const entry = document.getElementById("courseNoteEntry");
+  if (entry) entry.style.display = "";
+  if (result.draft) {
     const input = document.getElementById("libraryNoteInput");
     if (input && !input.value.trim()) {
       input.value = result.draft.text;
@@ -1766,23 +1841,31 @@ async function refreshNoteDraftEntry() {
 async function saveLibraryNote() {
   const input = document.getElementById("libraryNoteInput");
   const button = document.getElementById("saveNoteBtn");
+  const sessionId = courseNoteSessionId;
+  if (!sessionId || sessionId !== currentSessionContextId() || button?.disabled) return;
   const text = input ? input.value : "";
   if (button) button.disabled = true;
+  if (input) input.disabled = true;
   setNoteStatus(NOTE_STATUS_COPY.saving);
   let result = null;
   try {
     result = await chrome.runtime.sendMessage({
       action: "saveNoteToLibrary",
+      sessionId,
       text,
     });
   } catch (_error) {
     result = { ok: false, draftKept: true, message: NOTE_STATUS_COPY.draftKept };
   }
+  if (result?.ok) courseNoteEdits.delete(sessionId);
+  if (sessionId !== courseNoteSessionId || sessionId !== currentSessionContextId()) return;
   if (button) button.disabled = false;
+  if (input) input.disabled = false;
   if (result && result.ok) {
     if (input) input.value = "";
     setDiscardDraftButtonVisible(false);
-    setNoteStatus(NOTE_STATUS_COPY[result.outcome] || NOTE_STATUS_COPY.created);
+    setNoteStatus(result.title ? `已保存到《${result.title}》` : NOTE_STATUS_COPY[result.outcome] || NOTE_STATUS_COPY.created, true);
+    void loadNotes(currentNotesScopeId());
     return;
   }
   const draftKept = Boolean(result && result.draftKept);
@@ -1794,12 +1877,20 @@ async function saveLibraryNote() {
 
 /** The explicit 放弃草稿 click: the draft is gone; the input clears too. */
 async function discardNoteDraft() {
+  const sessionId = courseNoteSessionId;
+  if (!sessionId || sessionId !== currentSessionContextId()) return;
   try {
-    await chrome.runtime.sendMessage({ action: "discardNoteDraft" });
+    const result = await chrome.runtime.sendMessage({ action: "discardNoteDraft", sessionId });
+    if (!result?.ok) {
+      if (sessionId === courseNoteSessionId) setNoteStatus(result?.message || "暂时无法放弃草稿，请重试。");
+      return;
+    }
   } catch (_error) {
-    // The worker may be gone; clear the surface anyway — the draft dies
-    // with the next successful save attempt either way.
+    if (sessionId === courseNoteSessionId) setNoteStatus("暂时无法放弃草稿，请重试。");
+    return;
   }
+  courseNoteEdits.delete(sessionId);
+  if (sessionId !== courseNoteSessionId || sessionId !== currentSessionContextId()) return;
   const input = document.getElementById("libraryNoteInput");
   if (input) input.value = "";
   setDiscardDraftButtonVisible(false);
@@ -1811,6 +1902,16 @@ async function discardNoteDraft() {
 // ============================================================
 
 function switchTab(tabName) {
+  const sessionBar = document.getElementById("sessionBar");
+  const actionMenu = document.getElementById("sessionActionMenu");
+  const sessionView = document.getElementById("sessionView");
+  if (sessionBar?.parentNode && actionMenu && sessionView?.parentNode) {
+    if (tabName === "notes") {
+      actionMenu.appendChild(sessionBar);
+    } else {
+      sessionView.parentNode.insertBefore(sessionBar, sessionView);
+    }
+  }
   // Capture the transcript position before another tab reuses the same scroll
   // area. Scrolling Overview or Notes must not replace this value.
   if (tabName !== "transcript" && transcriptTabIsActive()) {
@@ -1819,7 +1920,9 @@ function switchTab(tabName) {
   }
 
   document.querySelectorAll(".tab").forEach((tab) => {
-    tab.classList.toggle("active", tab.dataset.tab === tabName);
+    const active = tab.dataset.tab === tabName;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-pressed", String(active));
   });
 
   document.querySelectorAll(".tab-panel").forEach((panel) => {
@@ -1843,6 +1946,7 @@ function switchTab(tabName) {
   // Saved notes are stored newest first. Open Notes at the top so the note the
   // user just created is the first item they see.
   if (tabName === "notes") {
+    void refreshNoteDraftEntry();
     requestAnimationFrame(() => {
       const contentArea = document.getElementById("contentArea");
       const notesPanelIsActive = document.querySelector(
@@ -1974,7 +2078,7 @@ function setupExplainFeature() {
   );
 
   let selectedText = "";
-  let selectedTimestamp = 0;
+  let selectedNote = null;
 
   // Interacting with either action must preserve the transcript selection and
   // stay isolated from document and row click behavior.
@@ -2019,8 +2123,16 @@ function setupExplainFeature() {
         const selectedRow = startElement?.closest(
           ".transcript-entry, .session-record",
         );
-        const rowSeconds = Number(selectedRow?.dataset.seconds);
-        selectedTimestamp = Number.isFinite(rowSeconds) ? rowSeconds : 0;
+        const timestamp = Number(selectedRow?.dataset.seconds);
+        const target = noteSaveTarget(sessionTranscript?.contains(range.startContainer));
+        selectedNote = target && Number.isFinite(timestamp)
+          ? { ...target, timestamp, selectedText: text }
+          : null;
+        noteButton.hidden = selectedNote === null;
+        if (!noteButton.disabled) {
+          noteButton.textContent = "笔记";
+          noteButton.title = "";
+        }
 
         // Set the final coordinates while the toolbar is still hidden. If it
         // becomes visible first, Chrome paints it at its default left edge for
@@ -2062,42 +2174,35 @@ function setupExplainFeature() {
   noteButton.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    const target = noteSaveTarget();
-    if (!selectedText || !target) return;
-
     const button = event.currentTarget;
-    const originalText = button.textContent;
+    if (!selectedNote || button.disabled) return;
+    selectedNote.clientRequestId ||= crypto.randomUUID();
     button.textContent = "保存中…";
+    button.title = "";
     button.disabled = true;
 
     try {
       const result = await chrome.runtime.sendMessage({
         action: "saveNote",
-        videoId: target.videoId,
-        timestamp: selectedTimestamp,
-        videoTitle: target.videoTitle,
-        channelName: target.channelName,
-        selectedText,
+        ...selectedNote,
       });
 
       if (!result?.success) {
-        throw new Error(result?.error || "Could not save note");
+        throw new Error(result?.error || "无法确认学习库已保存，请重试。");
       }
 
-      button.textContent = "已保存";
+      button.textContent = result.note?.videoTitle ? `已保存到《${result.note.videoTitle}》` : "已存入学习库";
       loadNotes(currentNotesScopeId());
       setTimeout(() => {
         tooltip.style.display = "none";
-        button.textContent = originalText;
+        button.textContent = "笔记";
         button.disabled = false;
       }, 900);
     } catch (error) {
       console.error("[Learning Digest] Save selected note error:", error);
-      button.textContent = "出错";
-      setTimeout(() => {
-        button.textContent = originalText;
-        button.disabled = false;
-      }, 1500);
+      button.textContent = "未保存 · 重试";
+      button.title = error.message;
+      button.disabled = false;
     }
   });
 }
@@ -2109,10 +2214,12 @@ function setupExplainFeature() {
  * reported (falling back to the id). With no target there is nothing to
  * attach the note to.
  */
-function noteSaveTarget() {
-  if (currentVideoId) {
+function noteSaveTarget(fromSessionTranscript) {
+  if (!fromSessionTranscript) {
+    if (!currentVideoId || !currentVideoUrl) return null;
     return {
       videoId: currentVideoId,
+      videoUrl: currentVideoUrl,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
     };
@@ -2120,6 +2227,7 @@ function noteSaveTarget() {
   const sessionId = currentSessionContextId();
   if (!sessionId) return null;
   return {
+    sessionId,
     videoId: sessionId,
     videoTitle: sessionUi.title || sessionId,
     channelName: "",
@@ -2372,7 +2480,7 @@ function renderNotes(notes, filteredVideoId) {
     noteEl.className = "note-item";
     noteEl.innerHTML = `
       <div class="note-header">
-        <span class="${stampClasses}" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>
+        ${note.timestamp ? `<span class="${stampClasses}" data-seconds="${Number(note.timestampSeconds) || 0}">${escapeHtml(note.timestamp)}</span>` : ""}
         ${!filteredVideoId ? `<span class="note-video-title">${escapeHtml(note.videoTitle)}</span>` : ""}
       </div>
       <div class="note-text">${escapeHtml(note.text)}</div>
@@ -2391,13 +2499,16 @@ function renderNotes(notes, filteredVideoId) {
     `;
 
     // Delete button
-    noteEl
-      .querySelector(".note-delete")
-      .addEventListener("click", async (e) => {
+    const deleteButton = noteEl.querySelector(".note-delete");
+    if (note.libraryAccount) {
+      deleteButton.remove();
+    } else {
+      deleteButton.addEventListener("click", async (e) => {
         e.stopPropagation();
         await deleteNote(note.id);
         loadNotes(filteredVideoId);
       });
+    }
 
     // Copy text button — copies just the note's text
     noteEl
@@ -2746,8 +2857,9 @@ function observeSessionTitle(state) {
     sessionUi.titleSessionId = state.sessionId;
     sessionUi.title = null;
   }
-  if (typeof state.title === "string" && state.title) {
-    sessionUi.title = state.title;
+  const title = state.resourceTitle || state.title;
+  if (typeof title === "string" && title) {
+    sessionUi.title = title;
   }
 }
 
@@ -2808,6 +2920,7 @@ function recordStartSeconds(startSeconds) {
 }
 
 function renderSessionStatus() {
+  renderSessionCourseCard();
   const status = document.getElementById("sessionStatus");
   if (!status) return;
   const kindLabel = SESSION_KIND_LABELS[sessionUi.kind] || sessionUi.kind || "";
@@ -3444,6 +3557,7 @@ function reportTabSetActiveSession(sessionId) {
   reportTabUi.skipped = false;
   reportTabUi.regenerating = false;
   renderReportTab();
+  if (resultTabIsActive("notes")) void refreshNoteDraftEntry();
 }
 
 /**
@@ -4036,6 +4150,7 @@ function showSessionMode({
     // content (报告/概览/逐字稿) keeps it hidden (空状态引导).
     updateCourseTabsVisibility();
   }
+  renderSessionCourseCard();
 }
 
 async function refreshSessionUI() {
@@ -4186,6 +4301,8 @@ async function clearSessionRecord() {
   sessionUi.renderedRecords = 0;
   sessionUi.sessionId = null;
   sessionUi.lastSessionId = null;
+  sessionUi.title = null;
+  renderSessionCourseCard();
   sessionUi.reportShown = false;
   sessionUi.reportGenerating = false;
   sessionUi.reportError = null;
@@ -4292,12 +4409,30 @@ function setupSessionUI() {
   document
     .getElementById("clearSessionBtn")
     ?.addEventListener("click", clearSessionRecord);
-  chrome.tabs.onActivated.addListener(() => {
-    if (!sessionUi.active) void refreshSessionUI();
+  chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+    const checkedTab = captionsRecheck?.tab;
+    if (captionsRecheck && (!checkedTab || (
+      checkedTab.windowId === windowId && checkedTab.id !== tabId
+    ))) {
+      resetCaptionsRecheck();
+    }
+    if (!sessionUi.active) {
+      void refreshSessionUI();
+      void refreshCollectEntry();
+    }
     void refreshMountPages();
   });
-  chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
-    if (changeInfo.status === "complete" && !sessionUi.active) void refreshSessionUI();
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    const checkedTab = captionsRecheck?.tab;
+    if (captionsRecheck && changeInfo.url && (
+      checkedTab ? checkedTab.id === tabId && checkedTab.url !== changeInfo.url : tab?.active
+    )) {
+      resetCaptionsRecheck();
+    }
+    if (changeInfo.status === "complete" && !sessionUi.active) {
+      void refreshSessionUI();
+      if (tab?.active) void refreshCollectEntry();
+    }
     if (changeInfo.status === "complete") void refreshMountPages();
   });
   // The panel can miss sessionUpdate broadcasts (it may still be loading

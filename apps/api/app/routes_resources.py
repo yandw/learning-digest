@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .ctx import AppContext
 from .http import read_json_body
-from .notes import create_note
+from .notes import create_note, list_account_notes
 from .progress import save_progress
 from .resources import (
     create_favorite,
@@ -47,10 +47,19 @@ def register_resources_routes(app, ctx: AppContext) -> None:
         )
 
     @app.get("/v1/resources")
-    async def get_resources(credential: CredentialDep, ctx: CtxDep) -> JSONResponse:
+    async def get_resources(
+        credential: CredentialDep, ctx: CtxDep, include_activity: bool = False
+    ) -> JSONResponse:
         # The account's list, newest first (contract §3.2).
-        result = list_resources(store=ctx.store, account_id=credential["accountId"])
+        result = list_resources(
+            store=ctx.store, account_id=credential["accountId"], include_activity=include_activity
+        )
         return JSONResponse(status_code=result["status"], content=result["body"])
+
+    @app.get("/v1/notes")
+    async def get_notes(credential: CredentialDep, ctx: CtxDep) -> JSONResponse:
+        notes = list_account_notes(store=ctx.store, account_id=credential["accountId"])
+        return JSONResponse(content={"notes": notes})
 
     @app.get("/v1/resources/{resource_id}")
     async def get_resource(
@@ -142,5 +151,6 @@ def register_resources_routes(app, ctx: AppContext) -> None:
             account_id=credential["accountId"],
             source_id=source_id,
             body=body,
+            now_ms=ctx.now(),
         )
         return JSONResponse(status_code=result["status"], content=result["body"])

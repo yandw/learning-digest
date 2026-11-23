@@ -59,6 +59,7 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
         result = create_session(
             store=ctx.store,
             account_id=credential["accountId"],
+            credential_group_id=credential["credentialGroupId"],
             source_id=source_id,
             now=ctx.now,
         )

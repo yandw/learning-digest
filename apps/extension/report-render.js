@@ -298,34 +298,27 @@ var YTD_REPORT_RENDER = (() => {
 
   // --- full document ---------------------------------------------------------
 
-  // The report page styles itself with the extension's Brand Blue tokens
-  // (see sidepanel.css :root), inlined here so the archived document is
-  // standalone. Flat colored-card design: solid tints and borders only — no
-  // gradients, minimal shadows. The topic list reads as a timeline (numbered
-  // step chips on a vertical line, one flat card per Topic) and the category
-  // grid cycles a fixed four-color palette declared as custom properties.
-  // The compact fragment in sidepanel.css mirrors --accent-deep and the
-  // --cat-* palette for the narrow panel column.
+  // Inlined so saved HTML and the browser report share a self-contained layout.
   const REPORT_STYLE = `
     :root {
-      --bg: #f2f6fc;
+      --bg: #fff;
       --surface: #ffffff;
-      --border: #dce5f0;
-      --text: #1f2733;
-      --text-secondary: #5b6b80;
-      --text-muted: #93a1b3;
-      --accent: #1b72e8;
-      --accent-dim: rgba(27, 114, 232, 0.1);
-      --accent-deep: #16406b;
-      --sage: #4f7fa8;
-      --cat-blue-bg: #e8f1fc;
-      --cat-blue-border: #1b72e8;
-      --cat-green-bg: #e9f5ef;
-      --cat-green-border: #3e8e6d;
-      --cat-amber-bg: #fdf3e3;
-      --cat-amber-border: #d9a441;
-      --cat-purple-bg: #f1edf9;
-      --cat-purple-border: #7a5fb8;
+      --border: #e4e6e0;
+      --text: #222422;
+      --text-secondary: #62665f;
+      --text-muted: #62665f;
+      --accent: #405b49;
+      --accent-dim: #f4f5ef;
+      --accent-deep: #f4f5ef;
+      --sage: #405b49;
+      --cat-blue-bg: #f4f5ef;
+      --cat-blue-border: #405b49;
+      --cat-green-bg: #f4f5ef;
+      --cat-green-border: #405b49;
+      --cat-amber-bg: #f4f5ef;
+      --cat-amber-border: #405b49;
+      --cat-purple-bg: #f4f5ef;
+      --cat-purple-border: #405b49;
     }
     * { box-sizing: border-box; }
     body {
@@ -336,21 +329,24 @@ var YTD_REPORT_RENDER = (() => {
       line-height: 1.7;
     }
     .report {
-      max-width: 760px;
+      max-width: 998px;
       margin: 0 auto;
-      padding: 40px 24px 64px;
+      padding: 28px 24px 64px;
+    }
+    .report-brand {
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+      font: 700 25px/1.2 "Lora", Georgia, serif;
     }
     .report-header {
       background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 26px 30px;
+      border-bottom: 1px solid var(--border);
+      padding: 20px 0;
       margin-bottom: 20px;
     }
     .report-title {
       margin: 0 0 8px;
-      font-size: 26px;
-      line-height: 1.35;
+      font: 700 32px/1.35 "Noto Serif SC", "Songti SC", SimSun, Georgia, serif;
     }
     .report-meta {
       color: var(--text-secondary);
@@ -363,7 +359,6 @@ var YTD_REPORT_RENDER = (() => {
     .report-overview, .report-topics, .report-categories, .report-quotes, .report-todos {
       margin-bottom: 20px;
     }
-    /* 核心要点: one deep-blue solid card with light text. */
     .overview-card {
       margin: 0;
       padding: 18px 22px;
@@ -372,7 +367,7 @@ var YTD_REPORT_RENDER = (() => {
       flex-direction: column;
       gap: 8px;
       background: var(--accent-deep);
-      color: #eef5ff;
+      color: #222422;
       border-radius: 14px;
       font-size: 15px;
     }
@@ -385,7 +380,7 @@ var YTD_REPORT_RENDER = (() => {
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: #7db4f5;
+      background: #405b49;
     }
     /* 话题时间轴: one numbered step chip per Topic on a vertical line, each
        Topic rendered as a flat card with an accent left border. */
@@ -573,12 +568,9 @@ var YTD_REPORT_RENDER = (() => {
     /* The print toolbar lives only on the live report page (report.js injects
        it); an archived or downloaded report renders without it. */
     .report-print-btn {
-      position: fixed;
-      right: 20px;
-      bottom: 20px;
-      z-index: 10;
-      background: var(--accent);
-      color: #ffffff;
+      margin-top: 16px;
+      background: var(--accent-dim);
+      color: var(--text);
       border: none;
       border-radius: 999px;
       padding: 10px 18px;
@@ -630,6 +622,7 @@ var YTD_REPORT_RENDER = (() => {
       "</head>",
       "<body>",
       '  <main class="report">',
+      '    <div class="report-brand">Learning Digest</div>',
       '    <header class="report-header">',
       `      <h1 class="report-title">${escapeHtml(title)}</h1>`,
       metaLine,

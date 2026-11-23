@@ -279,23 +279,37 @@ def sources_for_resource(*, store: Any, account_id: str, resource_id: str) -> li
     ]
 
 
-def list_resources(*, store: Any, account_id: str) -> dict:
+def list_resources(*, store: Any, account_id: str, include_activity: bool = False) -> dict:
     """Contract §3.2: the account's resources, newest first, each with its
     sources carrying the latest progress."""
     resources = [r for r in store.list("resources") if r["accountId"] == account_id]
     # JS sort((a, b) => b.createdAtMs - a.createdAtMs): descending, stable
     # (ties keep insertion order) — sorted(reverse=True) is stable too.
     resources.sort(key=lambda r: r["createdAtMs"], reverse=True)
+    session_activity: dict[str, int] = {}
+    if include_activity:
+        for session in store.list("sessions"):
+            if session["accountId"] == account_id:
+                source_id = session["sourceId"]
+                timestamp = session["finishedAtMs"] or session["startedAtMs"]
+                session_activity[source_id] = max(session_activity.get(source_id, 0), timestamp)
+
+    sources_by_resource: dict[str, list] = {}
+    for source in store.list("sources"):
+        if source["accountId"] != account_id:
+            continue
+        view = serialize_source(store=store, source=source)
+        if include_activity and view["progress"]:
+            progress = store.get("progress", source["id"])
+            view["lastStudiedAtMs"] = max(
+                progress.get("updatedAtMs", 0), session_activity.get(source["id"], 0)
+            )
+            for key in ("durationMs", "thumbnailUrl"):
+                if key in progress:
+                    view[key] = progress[key]
+        sources_by_resource.setdefault(source["resourceId"], []).append(view)
     items = [
-        {
-            "resource": serialize_resource(resource),
-            "sources": [
-                serialize_source(store=store, source=s)
-                for s in sources_for_resource(
-                    store=store, account_id=account_id, resource_id=resource["id"]
-                )
-            ],
-        }
+        {"resource": serialize_resource(resource), "sources": sources_by_resource.get(resource["id"], [])}
         for resource in resources
     ]
     return {"status": 200, "body": {"resources": items}}

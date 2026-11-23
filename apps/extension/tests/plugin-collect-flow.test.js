@@ -360,7 +360,7 @@ test("resolve on a page with identity asks /v1/sources/resolve and reports a hit
   assert.equal(breadcrumb.matched, true);
 });
 
-test("resolve on a plain webpage answers a local miss without calling the API", async () => {
+test("resolve matches a saved ordinary page without sending the current URL", async () => {
   const seen = [];
   const helpers = loadBackgroundHelpers({
     settings: baseSettings(),
@@ -368,19 +368,29 @@ test("resolve on a plain webpage answers a local miss without calling the API", 
       ytd_auth_credential: { token: "ext-token" },
     },
     tabsQuery: async () => [
-      { id: 7, url: "https://www.example.com/articles/habit", title: "文章" },
+      { id: 7, url: "https://www.example.com/articles/habit#latest", title: "文章" },
     ],
-    fetchImpl: async (url) => {
-      seen.push(url);
-      return { status: 200, json: async () => ({ matched: false }) };
+    fetchImpl: async (url, init) => {
+      seen.push({ url, body: init.body });
+      return {
+        status: 200,
+        json: async () => ({ resources: [{
+          resource: { id: "res_page", title: "文章" },
+          sources: [{ id: "src_page", url: "https://www.example.com/articles/habit" }],
+        }] }),
+      };
     },
   });
 
   const result = await helpers.handleResolveCurrentSource();
   assert.equal(result.ok, true);
-  assert.equal(result.matched, false);
+  assert.equal(result.matched, true);
+  assert.equal(result.resource.id, "res_page");
   assert.equal(result.identityPresent, false, "no confirmable identity on a plain page");
-  assert.deepEqual(seen, [], "no API call without identity: panel opens stay quiet");
+  assert.equal(result.page.title, "文章");
+  assert.equal(result.page.domain, "www.example.com");
+  assert.equal(result.page.isCourse, false);
+  assert.deepEqual(seen, [{ url: "https://api.example.com/v1/resources", body: undefined }]);
 });
 
 test("resolve with an unconfirmed identity present still skips the API when nothing is linked", async () => {

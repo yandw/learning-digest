@@ -1,36 +1,37 @@
 /*
- * SIDE PANEL STYLES — Learning Digest (Light Mode)
+ * SIDE PANEL STYLES — Learning Digest (UI v2 · warm paper + ink + ultramarine)
  *
- * Shares the Web library's cool-neutral surfaces and teal accent. System
+ * Shares the Web library's v2 token palette (design/v2 board B0). System
  * fonts keep the extension self-contained; no third-party font requests.
  */
 
 /* ============================================================
-   CSS VARIABLES (shared with apps/web/src/styles.css)
+   CSS VARIABLES (UI v2 · aligned with apps/web/src/styles.css)
    ============================================================ */
 :root {
-  --bg: oklch(97.5% 0.008 210);
-  --surface: oklch(99% 0.004 210);
-  --surface-raised: oklch(96% 0.01 210);
-  --border: oklch(85% 0.018 210);
-  --border-heavy: oklch(75% 0.022 210);
-  --text: oklch(25% 0.025 210);
-  --text-secondary: oklch(48% 0.025 210);
-  --text-muted: oklch(60% 0.02 210);
+  --bg: #faf8f3;
+  --surface: #fff;
+  --surface-raised: #f3f0e8;
+  --border: #e8e3d7;
+  --border-heavy: #d9d2c0;
+  --text: #1b1812;
+  --text-secondary: #5d574a;
+  --text-muted: #9a937f;
 
-  --accent: oklch(48% 0.085 174);
-  --accent-hover: oklch(41% 0.075 174);
-  --accent-dim: oklch(48% 0.085 174 / 10%);
-  --accent-deep: oklch(32% 0.06 174);
-  --sage: oklch(48% 0.085 174);
-  --sage-dim: oklch(48% 0.085 174 / 12%);
-  --success: oklch(48% 0.085 174);
-  --highlight: oklch(72% 0.13 85);
-  --danger: oklch(52% 0.18 25);
+  --accent: #3d53e7;
+  --accent-hover: #2c3ec4;
+  --accent-dim: #ecf0fe;
+  --accent-deep: #2c3ec4;
+  --sage: #2f9e68;
+  --sage-dim: #f3f0e8;
+  --success: #2f9e68;
+  --highlight: #e39b2d;
+  --highlight-dim: #fbf2de;
+  --danger: #d24a3e;
 
-  --shadow-sm: 0 1px 2px oklch(25% 0.025 210 / 5%);
-  --shadow-md: 0 5px 16px oklch(25% 0.025 210 / 8%);
-  --shadow-lg: 0 16px 48px oklch(25% 0.025 210 / 18%);
+  --shadow-sm: 0 1px 2px rgba(27, 24, 18, 0.05), 0 1px 6px rgba(27, 24, 18, 0.05);
+  --shadow-md: 0 2px 6px rgba(27, 24, 18, 0.06), 0 12px 28px -8px rgba(27, 24, 18, 0.14);
+  --shadow-lg: 0 4px 12px rgba(27, 24, 18, 0.08), 0 24px 56px -12px rgba(27, 24, 18, 0.22);
 
   --r-sm: 8px;
   --r-md: 12px;
@@ -38,11 +39,10 @@
   --r-xl: 20px;
   --r-pill: 999px;
 
-  --font-display: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+  --font-display: Georgia, "Songti SC", "Noto Serif SC", serif;
+  --font-body: -apple-system, "Segoe UI", "Hiragino Sans GB", "Microsoft YaHei",
     "Noto Sans CJK SC", system-ui, sans-serif;
-  --font-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-    "Noto Sans CJK SC", system-ui, sans-serif;
-  --font-reading: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+  --font-reading: -apple-system, "Segoe UI", "Hiragino Sans GB", "Microsoft YaHei",
     "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Menlo", "Consolas", monospace;
 }
@@ -86,7 +86,7 @@ button {
 }
 
 :focus-visible {
-  outline: 3px solid oklch(70% 0.12 174 / 55%);
+  outline: 3px solid oklch(62% 0.14 264 / 45%);
   outline-offset: 2px;
 }
 
@@ -113,31 +113,105 @@ button {
    ============================================================ */
 .header {
   flex-shrink: 0;
-  padding: 12px 16px 0;
-  background: var(--surface);
+  margin-inline: clamp(16px, 6vw, 24px);
+  background: transparent;
   border-bottom: 1px solid var(--border);
 }
 
-.header-top {
-  display: flex;
+.panel-brand {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 32px;
+  gap: 8px;
+  font: 600 17px/1.2 var(--font-display);
+  letter-spacing: -0.01em;
 }
 
-.header-top .video-info {
+.panel-brand::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 2.5px;
+  background: var(--highlight);
+  transform: rotate(45deg);
+  content: "";
+}
+
+.panel-topline {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.header:has(.session-course-card:not([hidden])) .panel-topline {
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-controls {
+  position: relative;
+  z-index: 2;
+}
+
+.panel-controls summary {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  list-style: none;
+  border-radius: var(--r-pill);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 22px;
+}
+
+.panel-controls summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-controls summary:hover,
+.panel-controls[open] summary {
+  background: var(--surface-raised);
+}
+
+.session-course-card,
+.header .video-info {
   min-width: 0;
-  flex: 1;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.session-course-card h2 {
+  color: var(--text);
+  font-size: 19px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.session-course-state {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.header:has(.session-course-card:not([hidden])) .video-info {
+  display: none !important;
 }
 
 .header-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
+  position: absolute;
+  inset: 40px 0 auto auto;
+  display: grid;
+  min-width: 172px;
   gap: 8px;
-  margin-left: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
 }
 
 /* 0.2.34 挂载页面切换：与 .settings-btn 同高的紧凑下拉，长标题截断。
@@ -226,47 +300,31 @@ button {
    ============================================================ */
 .tabs {
   display: flex;
-  gap: 3px;
-  margin-top: 12px;
-  margin-bottom: 12px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-raised);
+  gap: clamp(14px, 5vw, 24px);
+  margin-top: 8px;
 }
 
 .tab {
-  flex: 1;
-  min-width: 0;
-  min-height: 32px;
-  padding: 6px 2px;
-  text-align: center;
-  font-family: var(--font-body);
-  font-weight: 600;
-  font-size: 12.5px;
-  color: var(--text-muted);
+  min-height: 44px;
+  padding: 8px 0 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
   background: transparent;
-  border: none;
-  border-radius: 7px;
+  color: var(--text-secondary);
+  font: 500 14px var(--font-body);
   cursor: pointer;
   white-space: nowrap;
-  transition: color 0.18s ease, background 0.18s ease;
 }
 
-.tab:hover {
+.tab:hover,
+.tab.active {
   color: var(--text);
-  background: var(--surface);
 }
 
 .tab.active {
-  color: #fff;
-  background: var(--accent);
-  box-shadow: var(--shadow-sm);
-}
-
-.tab.active:hover {
-  color: #fff;
-  background: var(--accent-hover);
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 700;
 }
 
 /* ============================================================
@@ -275,7 +333,7 @@ button {
 .content {
   flex: 1;
   min-height: 0;
-  padding: 16px 16px 24px;
+  padding: 18px clamp(16px, 6vw, 24px) 24px;
   overflow-y: auto;
 }
 
@@ -766,7 +824,7 @@ button {
 .transcript-search-highlight {
   padding: 1px 0;
   border-radius: 3px;
-  background: #bcd7f7;
+  background: var(--highlight-dim);
   color: inherit;
 }
 
@@ -1001,12 +1059,12 @@ button {
   width: 44px;
   height: 44px;
   place-items: center;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--danger);
   border-radius: 50%;
   font-family: var(--font-display);
   font-size: 24px;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--danger);
   line-height: 1;
 }
 
@@ -1031,15 +1089,15 @@ button {
   font-weight: 600;
   font-size: 13px;
   letter-spacing: 0.2px;
-  padding: 12px 28px;
+  padding: 11px 28px;
   background: var(--accent);
   color: white;
   border: none;
-  border-radius: var(--r-pill);
+  border-radius: var(--r-sm);
   cursor: pointer;
   transition: all 0.18s ease;
   margin-top: 8px;
-  box-shadow: 0 4px 14px oklch(48% 0.085 174 / 22%);
+  box-shadow: 0 1px 2px rgba(44, 62, 196, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
 .error-btn:hover {
@@ -1052,67 +1110,51 @@ button {
    ============================================================ */
 .welcome-container {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  align-items: center;
-  gap: 12px 14px;
-  min-height: 0;
-  padding: 8px 0 24px;
-  text-align: left;
+  padding: 5px 0 24px;
 }
 
-.welcome-icon {
-  display: flex;
-  width: 48px;
-  height: 48px;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  border-radius: var(--r-md);
-  background: var(--accent);
-  box-shadow: var(--shadow-sm);
-}
-
-.welcome-icon::after {
-  content: "";
-  margin-left: 3px;
-  border-style: solid;
-  border-width: 9px 0 9px 15px;
-  border-color: transparent transparent transparent #fff;
-}
-
-.welcome-title {
-  align-self: center;
+.welcome-title,
+.current-page h1 {
+  margin: 8px 0;
   color: var(--text);
-  font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 650;
-  letter-spacing: -0.025em;
-  line-height: 1.3;
+  font-size: 24px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
-.welcome-desc {
-  grid-column: 1 / -1;
-  max-width: none;
+.welcome-desc,
+.current-page {
   color: var(--text-secondary);
-  font-family: var(--font-reading);
-  font-size: 13px;
-  line-height: 1.75;
+  font-size: 14px;
 }
 
-/* ============================================================
-   AUTHORIZATION GATE (P6): the pre-link view replaces every
-   functional surface, so its buttons follow the welcome scale.
-   ============================================================ */
+.current-page {
+  padding: 0 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.current-page h1 {
+  margin: 16px 0;
+}
+
+.welcome-desc.page-learning-hint {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  color: var(--sage);
+  background: var(--sage-dim);
+}
+
 .auth-gate-actions {
   display: flex;
-  grid-column: 1 / -1;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 10px;
+  margin-top: 16px;
 }
 
 .auth-gate-btn {
-  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -1153,7 +1195,6 @@ button {
 
 .auth-gate-settings,
 .auth-gate-waiting {
-  grid-column: 1 / -1;
   max-width: none;
 }
 
@@ -1215,37 +1256,42 @@ button {
 /* ============================================================
    LIBRARY ENTRIES
    ============================================================ */
-.collect-entry,
 .note-entry {
   display: flex;
-  grid-column: 1 / -1;
   width: 100%;
   flex-direction: column;
   align-items: stretch;
   gap: 12px;
-  margin-top: 4px;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  margin: 4px 0 18px;
 }
 
 .entry-title {
   color: var(--text);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
   line-height: 1.4;
 }
 
-.entry-description {
-  margin-top: 2px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
+.note-entry label {
+  font-weight: 600;
 }
 
-.collect-status,
+.collect-entry {
+  margin-top: 18px;
+}
+
+.collect-entry:has(#collectPageBtn[hidden]) .collect-status,
+.note-status-saved {
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  background: var(--sage-dim);
+  color: var(--sage);
+}
+
+.collect-entry #openCollectedResourceBtn {
+  margin-top: 12px;
+}
+
 .note-entry-status {
   max-width: none;
   color: var(--text-secondary);
@@ -1253,6 +1299,11 @@ button {
   font-size: 12.5px;
   line-height: 1.6;
   text-align: left;
+}
+
+.note-entry-status.note-status-saved {
+  color: var(--sage);
+  font-size: 14px;
 }
 
 .note-input {
@@ -1406,16 +1457,6 @@ button {
   flex: 1 1 112px;
 }
 
-.learning-target {
-  font-family: var(--font-reading);
-  font-size: 12px;
-  color: var(--sage);
-  margin-top: 2px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* ============================================================
    SHARE / ACTIONS BAR
    ============================================================ */
@@ -1457,8 +1498,8 @@ button {
 
 .video-title {
   font-family: var(--font-reading);
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 650;
   color: var(--text);
   line-height: 1.45;
   margin-bottom: 4px;
@@ -1480,6 +1521,7 @@ button {
 .explain-tooltip {
   position: absolute;
   z-index: 1000;
+  max-width: min(300px, calc(100vw - 24px));
   gap: 0;
   padding: 0;
   overflow: hidden;
@@ -1537,6 +1579,7 @@ button {
 
 .selection-note-btn {
   border-left: 1px solid var(--border);
+  overflow-wrap: anywhere;
 }
 
 .explain-btn:disabled,
@@ -1836,19 +1879,27 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   margin: 0 0 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
 
 .session-status {
   color: var(--text-secondary);
   font-size: 12px;
+  flex-basis: 100%;
+}
+
+.header-actions .session-bar {
+  gap: 6px;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
 }
 
 .session-btn {
-  min-height: 40px;
+  min-height: 38px;
   padding: 8px 16px;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
@@ -1858,6 +1909,7 @@ button {
   font-size: 13px;
   font-weight: 600;
   line-height: 1.4;
+  box-shadow: 0 1px 2px rgba(44, 62, 196, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.16);
   transition: background 0.18s ease, border-color 0.18s ease;
 }
 
@@ -1871,11 +1923,12 @@ button {
 }
 
 .session-btn-end {
-  background: var(--danger);
+  background: var(--surface-raised);
+  color: var(--text);
 }
 
 .session-btn-end:hover:not(:disabled) {
-  background: oklch(45% 0.17 25);
+  background: var(--border);
 }
 
 .session-btn-clear {
@@ -2008,14 +2061,14 @@ button {
   /* Schema v2 (0.1.38): the compact fragment cycles the full report's flat
      category palette (see REPORT_STYLE in report-render.js); the tokens are
      duplicated here so the panel stylesheet stays self-contained. */
-  --cat-blue-bg: #e8f1fc;
-  --cat-blue-border: #1b72e8;
-  --cat-green-bg: #e9f5ef;
-  --cat-green-border: #3e8e6d;
-  --cat-amber-bg: #fdf3e3;
-  --cat-amber-border: #d9a441;
-  --cat-purple-bg: #f1edf9;
-  --cat-purple-border: #7a5fb8;
+  --cat-blue-bg: #ecf0fe;
+  --cat-blue-border: #3d53e7;
+  --cat-green-bg: #e5f3eb;
+  --cat-green-border: #2f9e68;
+  --cat-amber-bg: #fbf2de;
+  --cat-amber-border: #e39b2d;
+  --cat-purple-bg: #f1eafe;
+  --cat-purple-border: #7a4fe0;
 }
 
 .report-compact .report-header {
@@ -2131,9 +2184,9 @@ button {
 }
 
 .report-compact .overview-card {
-  background: var(--accent-deep);
+  background: var(--sage-dim);
   border-radius: 10px;
-  color: #eef5ff;
+  color: var(--text);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2148,7 +2201,7 @@ button {
 }
 
 .report-compact .overview-card li::before {
-  background: #7db4f5;
+  background: var(--accent);
   border-radius: 50%;
   content: "";
   height: 6px;

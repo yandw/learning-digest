@@ -128,12 +128,15 @@ function stubEnvironment({
 
 // --- position stream ----------------------------------------------------------
 
-test("reportPosition sends the primary media's position with the page URL", () => {
+test("reportPosition sends the primary media's position and available Bilibili cover", () => {
   const video = stubVideo({ currentTime: 83.25, duration: 721, paused: false, ended: false });
-  const { bridge, sent } = stubEnvironment({
+  const { bridge, sent, documentStub } = stubEnvironment({
     videos: [video],
-    location: { href: "https://www.bilibili.com/video/BV1ab411L78c?p=2" },
+    location: { hostname: "www.bilibili.com", href: "https://www.bilibili.com/video/BV1ab411L78c?p=2" },
   });
+  documentStub.querySelector = (selector) => selector === 'meta[property="og:image"]'
+    ? { content: "//i1.hdslb.com/bfs/archive/cover.jpg" }
+    : null;
 
   bridge.reportPosition();
 
@@ -147,6 +150,7 @@ test("reportPosition sends the primary media's position with the page URL", () =
   // P10b: the page URL rides every stream report, so a bilibili episode
   // switch (?p=N) or any in-page navigation is detectable by the consumer.
   assert.equal(message.pageUrl, "https://www.bilibili.com/video/BV1ab411L78c?p=2");
+  assert.equal(message.thumbnailUrl, "https://i1.hdslb.com/bfs/archive/cover.jpg");
 });
 
 test("the largest visible video is the primary media", () => {

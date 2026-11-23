@@ -175,7 +175,7 @@ test("manifest uses minimized install-time permissions", () => {
   ]) {
     assert.ok(manifest.host_permissions.includes(host), `caption transport requires ${host}`);
   }
-  assert.equal(manifest.version, "0.2.39");
+  assert.equal(manifest.version, "0.2.46");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);
@@ -468,18 +468,16 @@ test("side panel shares the Web library visual tokens", () => {
   const css = read("sidepanel.css");
   const webCss = readRepo("apps/web/src/styles.css");
 
-  for (const token of [
-    "--bg: oklch(97.5% 0.008 210)",
-    "--surface: oklch(99% 0.004 210)",
-    "--text: oklch(25% 0.025 210)",
-    "--text-secondary: oklch(48% 0.025 210)",
-    "--accent: oklch(48% 0.085 174)",
-    "--accent-hover: oklch(41% 0.075 174)",
+  for (const [panelToken, webToken, value] of [
+    ["bg", "page-bg", "#faf8f3"],
+    ["text", "text", "#1b1812"],
+    ["text-secondary", "text-secondary", "#5d574a"],
+    ["sage-dim", "neutral-50", "#f3f0e8"],
+    ["border", "border", "#e8e3d7"],
   ]) {
-    assert.ok(css.includes(token), `side panel is missing ${token}`);
+    assert.ok(css.includes(`--${panelToken}: ${value};`));
+    assert.ok(webCss.includes(`--ld-${webToken}: ${value};`));
   }
-  assert.ok(webCss.includes("--ld-accent-600: oklch(48% 0.085 174)"));
-  assert.ok(webCss.includes("--ld-accent-700: oklch(41% 0.075 174)"));
   assert.match(css, /--r-md:\s*12px;/);
   assert.doesNotMatch(css, /rgba\(200, 103, 79/);
 });
@@ -490,12 +488,12 @@ test("welcome library entries and primary controls use a compact aligned layout"
 
   assert.match(
     css,
-    /\.welcome-container\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*48px minmax\(0, 1fr\);[^}]*text-align:\s*left;/,
+    /\.welcome-container\s*\{[^}]*display:\s*grid;/,
   );
   assert.match(
     css,
-    /\.collect-entry,\s*\.note-entry\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--r-md\);/,
-    "library entries should share the same card treatment",
+    /\.session-course-card[^{]*\{[^}]*border-radius:\s*var\(--r-md\);[^}]*background:\s*var\(--surface\);/,
+    "the active course is grouped in a dedicated card",
   );
   assert.match(
     css,
@@ -503,7 +501,7 @@ test("welcome library entries and primary controls use a compact aligned layout"
     "course selection should use the shared card treatment",
   );
   assert.match(css, /\.note-input\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;/);
-  assert.match(css, /\.session-btn\s*\{[^}]*min-height:\s*40px;[^}]*border-radius:\s*var\(--r-sm\);/);
+  assert.match(css, /\.session-btn\s*\{[^}]*min-height:\s*38px;[^}]*border-radius:\s*var\(--r-sm\);/);
   assert.match(js, /state === "welcome" \? "grid" : "none"/);
   assert.match(js, /state === "authGate" \? "grid" : "none"/);
 });

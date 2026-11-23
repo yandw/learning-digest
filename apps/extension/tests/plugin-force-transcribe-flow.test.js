@@ -604,7 +604,9 @@ test("已归档字幕的强制转写：按契约开新 Session 重走（旧 Sess
   const pointer = helpers.readStored("ytd_active_capture");
   assert.equal(pointer.capturePath, "asr");
   assert.equal(pointer.serverSessionId, SECOND_SESSION.id);
-  await helpers.handleMediaPosition({ position: 160 }, { tab: { id: 2 } });
+  for (let position = 100; position <= 160; position += 1) {
+    await helpers.handleMediaPosition({ position }, { tab: { id: 2 } });
+  }
   const segmentCalls = await until(
     () => v1Calls.filter((call) => call.path.endsWith("/audio-segments")),
     (calls) => calls.some((call) => call.path.includes(SECOND_SESSION.id)),

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .errors import not_found_session, not_found_source, session_already_finished
+from .errors import not_found_session, not_found_source, session_already_finished, unauthorized_expired
 from .ids import generate_id
 from .timeutil import iso_seconds_from_ms
 from .transcripts import load_state, parse_gaps, report_gaps, transcript_summary
@@ -53,11 +53,18 @@ def find_account_session(*, store: Any, account_id: str, session_id: str) -> dic
     )
 
 
-def create_session(*, store: Any, account_id: str, source_id: str, now: Callable[[], int]) -> dict:
+def create_session(
+    *, store: Any, account_id: str, credential_group_id: str, source_id: str, now: Callable[[], int]
+) -> dict:
     """Start one study session on the account's Source (contract §3.1): 201
     with the active Session, `origin` still null. The request body is an
     empty object — identity comes from the credential, the target from the
     path — so there is nothing to validate beyond auth + isolation."""
+    # The route reads the body after authentication, so logout may have run in between.
+    group = store.get("credentialGroups", credential_group_id)
+    if not group or group["revokedAt"] is not None:
+        raise unauthorized_expired()
+
     # D2: other accounts' sources and unknown ids are the same 404.
     source = next(
         (
@@ -74,6 +81,7 @@ def create_session(*, store: Any, account_id: str, source_id: str, now: Callable
     session = {
         "id": generate_id("ses"),
         "accountId": account_id,
+        "credentialGroupId": credential_group_id,
         "sourceId": source["id"],
         "resourceId": source["resourceId"],
         "status": "active",
@@ -85,6 +93,29 @@ def create_session(*, store: Any, account_id: str, source_id: str, now: Callable
     }
     store.set("sessions", session["id"], session)
     return {"status": 201, "body": {"session": serialize_session(session)}}
+
+
+def _finished_session(session: dict, at_ms: int) -> dict:
+    return {
+        **session,
+        "status": "finished",
+        "finishedAt": iso_seconds_from_ms(at_ms),
+        "finishedAtMs": at_ms,
+    }
+
+
+def sessions_finished_on_logout(*, store: Any, group: dict, at_ms: int) -> dict:
+    finished = {}
+    for session in store.list("sessions"):
+        if session["accountId"] != group["accountId"] or session["status"] != "active":
+            continue
+        session_group = session.get("credentialGroupId")
+        # Older rows predate the link. An account has one active credential group at a time.
+        if session_group == group["id"] or (
+            session_group is None and group["createdAt"] <= session["startedAtMs"] <= at_ms
+        ):
+            finished[session["id"]] = _finished_session(session, at_ms)
+    return finished
 
 
 def finish_session(
@@ -111,10 +142,7 @@ def finish_session(
     if session["status"] == "finished":
         raise session_already_finished()
 
-    at_ms = now()
-    session["status"] = "finished"
-    session["finishedAt"] = iso_seconds_from_ms(at_ms)
-    session["finishedAtMs"] = at_ms
+    session = _finished_session(session, now())
     store.set("sessions", session["id"], session)
     report_gaps(store=store, session_id=session["id"], gaps=gaps)
     return {"status": 200, "body": {"session": serialize_session(session)}}

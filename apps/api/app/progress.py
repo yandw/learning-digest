@@ -27,6 +27,9 @@ from typing import Any
 from .errors import ApiError, not_found_source, validation_failed
 from .jsnum import coerce_js_integer, is_js_integer
 from .fields import require_int_field
+from .platform_video_id import safe_parse_url
+
+BILIBILI_THUMBNAIL_HOSTS = {"i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com"}
 
 
 def progress_conflict(current: dict) -> ApiError:
@@ -52,7 +55,7 @@ def require_non_negative_integer(body: Any, field: str) -> int:
     )
 
 
-def save_progress(*, store: Any, account_id: str, source_id: str, body: Any) -> dict:
+def save_progress(*, store: Any, account_id: str, source_id: str, body: Any, now_ms: int) -> dict:
     """Save one progress write (contract §3.5). Returns the 200 result;
     raises the contract errors on validation (400), isolation (404, D2)
     and concurrency (409) failures."""
@@ -86,10 +89,27 @@ def save_progress(*, store: Any, account_id: str, source_id: str, body: Any) -> 
             }
         )
 
+    metadata = {
+        key: progress[key]
+        for key in ("durationMs", "thumbnailUrl")
+        if progress and key in progress
+    }
+    if body.get("durationMs") is not None:
+        duration_ms = require_non_negative_integer(body, "durationMs")
+        if duration_ms > 0:
+            metadata["durationMs"] = duration_ms
+    thumbnail = body.get("thumbnailUrl")
+    if source["platformId"] == "bilibili" and isinstance(thumbnail, str) and len(thumbnail) <= 2048:
+        parsed = safe_parse_url(thumbnail)
+        if parsed and parsed.scheme == "https" and parsed.netloc in BILIBILI_THUMBNAIL_HOSTS:
+            metadata["thumbnailUrl"] = thumbnail
+
     # Idempotent resend (ticket #54): the exact duplicate of the last
     # acknowledged write answers with the stored values and does not bump,
     # so retries after a network drop keep the result consistent.
     if progress and progress["positionMs"] == position_ms:
+        if any(progress.get(key) != value for key, value in metadata.items()):
+            store.set("progress", source_id, {**progress, **metadata})
         return {
             "status": 200,
             "body": {
@@ -99,5 +119,5 @@ def save_progress(*, store: Any, account_id: str, source_id: str, body: Any) -> 
         }
 
     write = {"positionMs": position_ms, "revision": current_revision + 1}
-    store.set("progress", source_id, write)
+    store.set("progress", source_id, {**write, **metadata, "updatedAtMs": now_ms})
     return {"status": 200, "body": write}

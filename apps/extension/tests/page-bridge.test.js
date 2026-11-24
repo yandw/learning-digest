@@ -956,6 +956,17 @@ test("opening a Xiaoyuzhou resume link waits for lazy audio metadata and never s
   assert.equal(sent.at(-1).position, 125.125);
   assert.equal(audio.playCalls, 0);
   assert.equal(preview.playCalls, 0);
+
+  // The site can initialize playback at 0 after loadedmetadata and before playing.
+  audio.currentTime = 0;
+  audio.paused = false;
+  documentStub.fire("playing", audio);
+  assert.equal(audio.currentTime, 125.125);
+  assert.equal(sent.at(-1).position, 125.125);
+
+  audio.currentTime = 180;
+  bridge.reportPosition();
+  assert.equal(audio.currentTime, 180);
 });
 
 test("Xiaoyuzhou's panel can read and seek the original audio player's position", () => {

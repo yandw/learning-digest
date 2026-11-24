@@ -112,14 +112,14 @@ var YTD_PAGE_BRIDGE = (() => {
       return selected || null;
     }
 
-    function seekPodcast(seconds, media) {
+    function seekPodcast(seconds, media, retain = false) {
       if (!media || media.readyState < 1) {
         pendingPodcastSeek = { seconds };
         return { success: true, pending: true };
       }
       const position = Number.isFinite(media.duration) ? Math.min(seconds, media.duration) : seconds;
       if (media.currentTime !== position) media.currentTime = position;
-      pendingPodcastSeek = null;
+      if (!retain) pendingPodcastSeek = null;
       return { success: true, position };
     }
 
@@ -245,7 +245,17 @@ var YTD_PAGE_BRIDGE = (() => {
         if (isPodcast && media.readyState < 1) return;
         const mediaChanged = !!bridgedMedia && bridgedMedia !== media;
         attachMediaListeners(media);
-        if (pending) seekPodcast(pending.seconds, media);
+        if (pending) {
+          const started = event?.type === "playing" && event.target === media;
+          // The site's first play can reset a seek made before playback starts.
+          const waiting = pending.preferFull && !started &&
+            (pending.appliedMedia !== undefined || media.paused ||
+              event?.type === "loadedmetadata" || event?.type === "play");
+          if (!waiting || pending.appliedMedia !== media) {
+            seekPodcast(pending.seconds, media, waiting);
+            if (waiting) pending.appliedMedia = media;
+          }
+        }
         message = {
           action: "mediaPosition",
           position: Number(media.currentTime) || 0,

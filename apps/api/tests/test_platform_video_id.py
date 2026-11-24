@@ -223,6 +223,7 @@ def test_platform_video_id_formats_exports_the_formats_as_contract_data():
         "bilibili",
         "xiaoe-tech",
         "xiaohongshu",
+        "xiaoyuzhou",
         "youtube",
     ]
     assert PLATFORM_VIDEO_ID_FORMATS["bilibili"].fullmatch("BV1ab411L78c")

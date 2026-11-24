@@ -20,8 +20,10 @@ from .resources import (
     parse_source_request,
     present_favorite,
     retitle_resource,
+    upgrade_episode_favorite,
 )
 from .routes_auth import CtxDep, CredentialDep
+from .xiaoyuzhou import read_episode_metadata
 
 
 def register_resources_routes(app, ctx: AppContext) -> None:
@@ -31,16 +33,27 @@ def register_resources_routes(app, ctx: AppContext) -> None:
     ) -> JSONResponse:
         # Favorite (contract §3.1): identity hit first, else the normalized
         # address; 201 creates, 200 returns the existing Resource + Source
-        # with the original first-favorited URL (D3).
+        # with its saved URL (D3).
         body = await read_json_body(request, ctx.config.max_body_bytes)
         parsed = parse_source_request(body)
-        existing = match_source(store=ctx.store, account_id=credential["accountId"], request=parsed)
+        account_id = credential["accountId"]
+        existing = match_source(store=ctx.store, account_id=account_id, request=parsed)
+        identity = parsed["identity"]
+        episode = {}
+        if identity and identity["platformId"] == "xiaoyuzhou" and (
+            not existing or existing["source"]["platformId"] is None
+        ):
+            episode = await read_episode_metadata(identity["platformVideoId"])
+            # Another favorite may have been saved while the request was in flight.
+            existing = match_source(store=ctx.store, account_id=account_id, request=parsed)
+            if existing and existing["source"]["platformId"] is None:
+                existing = upgrade_episode_favorite(store=ctx.store, **existing, request=parsed, episode=episode)
         if existing:
             return JSONResponse(
                 status_code=200, content=present_favorite(store=ctx.store, **existing)
             )
         created = create_favorite(
-            store=ctx.store, account_id=credential["accountId"], request=parsed, now=ctx.now
+            store=ctx.store, account_id=account_id, request=parsed, now=ctx.now, episode=episode
         )
         return JSONResponse(
             status_code=201, content=present_favorite(store=ctx.store, **created)

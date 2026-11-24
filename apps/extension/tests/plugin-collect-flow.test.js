@@ -409,3 +409,24 @@ test("resolve with an unconfirmed identity present still skips the API when noth
   assert.equal(result.matched, false);
   assert.deepEqual(seen, [], "no credential, no probe");
 });
+
+test("collecting a Xiaoyuzhou share tab sends the single episode identity", async () => {
+  const episode = "6afde79ea4a79edf137b6820";
+  const share = `https://www.xiaoyuzhoufm.com/episode/${episode}?s=share`;
+  const calls = [];
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: { ytd_auth_credential: { token: "ext-token" } },
+    tabsQuery: async () => [{ id: 7, url: share, title: "测试单集" }],
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return { status: 200, json: async () => FAVORITE_BODY };
+    },
+  });
+  assert.equal((await helpers.handleCollectCurrentPage()).outcome, "existing");
+  assert.deepEqual(calls[0], {
+    url: share,
+    title: "测试单集",
+    identity: { platformId: "xiaoyuzhou", platformVideoId: episode, episodeId: null, platformScopeId: null },
+  });
+});

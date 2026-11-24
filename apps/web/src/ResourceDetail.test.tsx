@@ -34,7 +34,7 @@ const SUMMARY = {
   ],
 };
 
-function makeRuntime({ partialFailure = false } = {}) {
+function makeRuntime({ partialFailure = false, sources = SOURCES } = {}) {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -43,10 +43,10 @@ function makeRuntime({ partialFailure = false } = {}) {
   };
   const credentials = createCredentialStore({ storage });
   credentials.set({ token: "web-token", email: "learner@example.com" });
-  const resources = [{ resource: { ...RESOURCE }, sources: structuredClone(SOURCES) }];
+  const resources = [{ resource: { ...RESOURCE }, sources: structuredClone(sources) }];
   const detail = {
     resource: { ...RESOURCE },
-    sources: structuredClone(SOURCES),
+    sources: structuredClone(sources),
     notes: [
       {
         id: "note_1",
@@ -130,6 +130,32 @@ async function openDetail(runtime: ReturnType<typeof makeRuntime>) {
 }
 
 describe("React resource learning workbench", () => {
+  it("shows episode information and opens the original Xiaoyuzhou page", async () => {
+    const url = "https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820";
+    const showNotes = "Guest <img src=x onerror=alert(1)> joins the discussion.";
+    const source = {
+      ...SOURCES[0],
+      kind: "audio",
+      platformId: "xiaoyuzhou",
+      url,
+      podcastTitle: "Research Notes",
+      durationMs: 3661000,
+      showNotes,
+    };
+    const runtime = makeRuntime({ sources: [source] });
+    const user = userEvent.setup();
+    render(<App runtime={runtime} />);
+    expect(await screen.findByText("小宇宙 · Research Notes · 1:01:01")).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("link", { name: RESOURCE.title }));
+    expect(await screen.findByRole("link", { name: "回到原平台" })).toHaveAttribute("href", url);
+    expect(screen.getByText("Research Notes")).toBeInTheDocument();
+    expect(screen.getByText("1:01:01")).toBeInTheDocument();
+    const notes = screen.getByText(showNotes);
+    expect(notes).toBeInTheDocument();
+    expect(notes.querySelector("img")).toBeNull();
+  });
+
   it("opens sources, notes, transcripts, summary citations and source jumps", async () => {
     const runtime = makeRuntime();
     const user = await openDetail(runtime);

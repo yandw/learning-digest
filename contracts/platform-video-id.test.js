@@ -236,6 +236,7 @@ test("platformVideoIdFormats exports the §1 formats as contract data", () => {
     "bilibili",
     "xiaoe-tech",
     "xiaohongshu",
+    "xiaoyuzhou",
     "youtube",
   ]);
   assert.ok(platformVideoIdFormats["bilibili"].test("BV1ab411L78c"));
@@ -365,4 +366,25 @@ test("normalization and extraction are total: garbage in, null out, never throw"
     extractVideoIdentity("https://例え.テスト/视频?v=abc");
     normalizeUrl("https://例え.テスト/视频?v=abc");
   });
+});
+
+test("Xiaoyuzhou episode share URLs have one identity and canonical address", () => {
+  const id = "6afde79ea4a79edf137b6820";
+  const url = `https://www.xiaoyuzhoufm.com/episode/${id}`;
+  const share = `https://xiaoyuzhoufm.com:443/episode/${id.toUpperCase()}/?s=share#notes`;
+  const identity = { platformId: "xiaoyuzhou", platformVideoId: id, episodeId: null, platformScopeId: null };
+  assert.deepEqual(extractVideoIdentity(url), identity);
+  assert.deepEqual(extractVideoIdentity(share), identity);
+  assert.equal(normalizeUrl(share), url);
+  for (const unsupported of [
+    url.replace("https", "http"),
+    url.replace("/episode/", "/podcast/"),
+    url.replace(".com", ".com:444"),
+    url.replace(".com", ".com.example"),
+    url.replace("www.", "other."),
+    url.replace("www.", "@www."),
+    `${url}/other`,
+  ]) {
+    assert.equal(extractVideoIdentity(unsupported), null, unsupported);
+  }
 });

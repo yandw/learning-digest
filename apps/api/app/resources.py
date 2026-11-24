@@ -9,7 +9,8 @@ Matching (platform-video-id-rules.md §2):
    (platformId, platformScopeId, platformVideoId, episodeId);
 2. with no identity confirmable, the §0 normalized address matches.
 A declared identity that misses does NOT fall back to the address —
-unresolvable share links stay separate Sources (D8).
+unresolvable share links stay separate Sources (D8). Legacy Xiaoyuzhou
+webpage favorites also match a confirmed episode identity by URL.
 
 The shared extractor (app/platform_video_id.py, the port of
 contracts/platform-video-id.js) is the single source of identity
@@ -101,7 +102,7 @@ def parse_identity(value: Any) -> dict | None:
         raise validation_failed("identity.platformScopeId 仅小鹅通支持")
     return {
         "platformId": platform_id,
-        "platformVideoId": platform_video_id,
+        "platformVideoId": platform_video_id.lower() if platform_id == "xiaoyuzhou" else platform_video_id,
         "episodeId": episode_id,
         "platformScopeId": platform_scope_id,
     }
@@ -110,8 +111,8 @@ def parse_identity(value: Any) -> dict | None:
 def parse_source_request(body: Any) -> dict:
     """Validate a favorite/resolve request body (contract §3.1/§3.4: url
     required http(s), title optional, identity optional). The raw address
-    is kept verbatim for storage; normalization happens through the shared
-    module only for matching."""
+    is normally kept verbatim for storage. New Xiaoyuzhou favorites use the
+    canonical public episode URL."""
     if not isinstance(body, dict):
         raise validation_failed("缺少必填字段 url")
     url = body.get("url")
@@ -128,12 +129,22 @@ def parse_source_request(body: Any) -> dict:
         if not isinstance(raw_title, str):
             raise validation_failed("title 必须是字符串")
         title = None if raw_title.strip() == "" else raw_title
+    identity = parse_identity(body.get("identity"))
+    extracted = extract_video_identity(url)
+    normalized = normalize_url(url)
+    if extracted and extracted["platformId"] == "xiaoyuzhou":
+        if identity and identity != extracted:
+            raise validation_failed("identity 与小宇宙单集链接不符")
+        identity = extracted
+        url = normalized
+    elif identity and identity["platformId"] == "xiaoyuzhou":
+        raise validation_failed("identity 须对应有效的小宇宙单集链接")
     return {
         "url": url,
         "pathname": parsed.path,
         "title": title,
-        "identity": parse_identity(body.get("identity")),
-        "normalized": normalize_url(url),
+        "identity": identity or extracted,
+        "normalized": normalized,
     }
 
 
@@ -141,10 +152,12 @@ def derive_source_kind(identity: dict | None, pathname: str) -> str:
     """Source.kind from the identity (platform-video-id-rules.md §3): xiaoe
     tokens map v_→video, a_→audio, l_→live (explicit replay paths → replay,
     matching source-platforms.js precedence), i_/p_ containers → webpage;
-    the other three stations are playable video pages; no identity →
-    webpage."""
+    Xiaoyuzhou defaults to audio when no public metadata is available;
+    the remaining platforms map to video. No identity maps to webpage."""
     if not identity:
         return "webpage"
+    if identity["platformId"] == "xiaoyuzhou":
+        return "audio"
     if identity["platformId"] == "xiaoe-tech":
         token = identity["platformVideoId"].lower()
         if token.startswith("v_"):
@@ -183,13 +196,24 @@ def match_source(*, store: Any, account_id: str, request: dict) -> dict | None:
     """Find the account's existing Source for this request, or None. A
     declared or server-extracted identity matches on the identity tuple;
     otherwise the §0 normalized address decides (rules §2)."""
-    identity = request["identity"] or extract_video_identity(request["url"])
+    identity = request["identity"]
     sources = store.list("sources")
     source = (
         match_by_identity(sources, account_id, identity)
         if identity
         else match_by_normalized_url(sources, account_id, request["normalized"])
     )
+    if not source and identity and identity["platformId"] == "xiaoyuzhou":
+        # Before episode recognition these links were saved as generic Sources,
+        # so their normalized URL can still carry share parameters.
+        source = next(
+            (
+                s for s in sources
+                if s["accountId"] == account_id and s["platformId"] is None
+                and normalize_url(s["url"]) == request["normalized"]
+            ),
+            None,
+        )
     if not source:
         return None
     resource = store.get("resources", source["resourceId"])
@@ -198,18 +222,17 @@ def match_source(*, store: Any, account_id: str, request: dict) -> dict | None:
     return None
 
 
-def create_favorite(*, store: Any, account_id: str, request: dict, now) -> dict:
+def create_favorite(*, store: Any, account_id: str, request: dict, now, episode: dict) -> dict:
     """Create one Resource + one Source for the request (D5). The Source
-    keeps the raw first-favorited address (§2.2); normalizedUrl is
-    internal."""
+    stores the address supplied by parse_source_request (§2.2)."""
     at_ms = now()
-    identity = request["identity"] or extract_video_identity(request["url"]) or None
-    source_kind = derive_source_kind(identity, request["pathname"])
+    identity = request["identity"]
+    source_kind = episode.get("kind") or derive_source_kind(identity, request["pathname"])
     resource = {
         "id": generate_id("res"),
         "accountId": account_id,
         # Display title only (never matches); the address is the fallback.
-        "title": request["title"] or request["url"],
+        "title": episode.get("title") or request["title"] or request["url"],
         "kind": "video" if source_kind == "replay" else source_kind,
         # Contract §1: ISO 8601 UTC at the fixture sample's second precision;
         # ms stay internal for list ordering.
@@ -227,9 +250,30 @@ def create_favorite(*, store: Any, account_id: str, request: dict, now) -> dict:
         "episodeId": identity["episodeId"] if identity else None,
         "platformScopeId": identity["platformScopeId"] if identity else None,
         "normalizedUrl": request["normalized"],
+        **_episode_source_fields(episode),
     }
-    store.set("resources", resource["id"], resource)
-    store.set("sources", source["id"], source)
+    store.set_many({"resources": {resource["id"]: resource}, "sources": {source["id"]: source}})
+    return {"resource": resource, "source": source}
+
+
+def _episode_source_fields(episode: dict) -> dict:
+    return {key: episode[key] for key in ("podcastTitle", "durationMs", "showNotes") if episode.get(key) is not None}
+
+
+def upgrade_episode_favorite(*, store: Any, resource: dict, source: dict, request: dict, episode: dict) -> dict:
+    """Classify a legacy favorite in place, preserving its IDs and original URL."""
+    kind = episode.get("kind") or "audio"
+    resource = {**resource, "kind": kind}
+    if episode.get("title") and resource["title"] == source["url"]:
+        resource["title"] = episode["title"]
+    source = {
+        **source,
+        **request["identity"],
+        "kind": kind,
+        "normalizedUrl": request["normalized"],
+        **_episode_source_fields(episode),
+    }
+    store.set_many({"resources": {resource["id"]: resource}, "sources": {source["id"]: source}})
     return {"resource": resource, "source": source}
 
 
@@ -255,6 +299,7 @@ def serialize_source(*, store: Any, source: dict) -> dict:
         "platformVideoId": source["platformVideoId"],
         "episodeId": source["episodeId"],
         "platformScopeId": source["platformScopeId"],
+        **_episode_source_fields(source),
         "progress": (
             {"positionMs": progress["positionMs"], "revision": progress["revision"]}
             if progress
@@ -299,6 +344,7 @@ def list_resources(*, store: Any, account_id: str, include_activity: bool = Fals
         if source["accountId"] != account_id:
             continue
         view = serialize_source(store=store, source=source)
+        view.pop("showNotes", None)
         if include_activity and view["progress"]:
             progress = store.get("progress", source["id"])
             view["lastStudiedAtMs"] = max(

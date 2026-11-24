@@ -45,12 +45,15 @@
 | `id` | string | 服务端生成 | 来源标识，账号内唯一 |
 | `resourceId` | string | 是 | 所属 Resource 的 `id` |
 | `kind` | enum | 是 | `webpage` `video` `audio` `live` `replay` |
-| `url` | string | 是 | **原始网页地址**：保留首次收藏时的完整地址，供用户重新打开原平台；后续等价地址收藏不覆盖它 |
-| `platformId` | string \| null | 是 | 识别出的 Source Platform：`xiaoe-tech` / `bilibili` / `youtube` / `xiaohongshu`，未识别为 `null` |
+| `url` | string | 是 | 供用户重新打开原平台。新收藏的小宇宙单集存规范地址，其他来源保留首次收藏时的完整地址。后续等价地址收藏保留已存地址 |
+| `platformId` | string \| null | 是 | 识别出的 Source Platform：`xiaoe-tech` / `bilibili` / `youtube` / `xiaohongshu` / `xiaoyuzhou`，未识别为 `null` |
 | `platformVideoId` | string \| null | 是 | 平台视频标识，提取规则见 [platform-video-id-rules.md](platform-video-id-rules.md)；未识别为 `null` |
 | `episodeId` | string \| null | 是 | 分集标识（如 B 站 `p` 值）；无分集概念的平台为 `null` |
 | `platformScopeId` | string \| null | 是 | 平台内作用域（仅小鹅通使用：商店子域）；其他平台为 `null` |
 | `progress` | Progress \| null | 否 | 当前账号在该来源的进度；随 Source 一起返回，无进度时为 `null` |
+| `podcastTitle` | string | 否 | 小宇宙单集的节目名，从公开页面取得时返回 |
+| `durationMs` | integer | 否 | 单集时长（毫秒），可用于展示 |
+| `showNotes` | string | 否 | 小宇宙单集的节目简介，以纯文本返回，列表响应省略此字段 |
 
 `platformId` 与 `platformVideoId` 要么同时为 `null` 要么同时有值。`timestampKind`（媒体时间轴 vs 墙钟）由 `kind` 推导（`live` → 墙钟，其余 → 媒体位置），随第二轮逐字稿契约显式化。
 
@@ -92,7 +95,7 @@
 
 - 字段语义与 Source 的同名一致；`platformScopeId` 仅小鹅通需要。
 - 无法识别平台身份时省略整个对象（或不传 `identity`），服务端回退按归一化地址匹配。
-- `title` 为可选展示标题；服务端不访问第三方网页，不抓取标题。
+- `title` 为可选展示标题。收藏受支持的小宇宙单集时，服务端尝试从固定站点读取公开标题和资料。无法取得标题时，依次使用提交的标题或规范地址。
 
 ## 3. `/v1` 端点
 
@@ -104,7 +107,7 @@
 
 - 请求体：`url`（必填，http(s)）、`title`（可选）、`identity`（可选，见 2.5）。
 - 201：账号内无匹配来源，新建 Resource + Source。
-- 200：命中账号内已有来源，返回同一条 Resource + Source（重复收藏返回同一条资料，决策 D3）；`url` 保留首次收藏的原始地址。
+- 200：命中账号内已有来源，返回同一条 Resource + Source（重复收藏返回同一条资料，决策 D3）；`url` 保留已存地址。
 - 匹配顺序：identity 命中（platform + platformVideoId + episodeId [+ platformScopeId]）优先；否则按归一化地址。
 - 样例：`api-resources-create-bilibili-p2`、`api-resources-duplicate-bilibili-p2`（分享短链重复收藏）、`api-resources-create-generic-webpage`、`error-invalid-url`、`error-validation-failed-missing-url`。
 

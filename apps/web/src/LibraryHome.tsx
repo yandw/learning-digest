@@ -11,6 +11,7 @@ type Source = {
   url: string;
   platformId?: string | null;
   platformVideoId?: string | null;
+  podcastTitle?: string;
   lastStudiedAtMs?: number;
   durationMs?: number;
   thumbnailUrl?: string;
@@ -189,6 +190,9 @@ export default function LibraryHome({
                 const source = item.sources[0];
                 const isWeb = item.resource.kind === "webpage";
                 const sourceName = presented.platformLabel || [presented.kindLabel, sourceDomain(source)].filter(Boolean).join(" · ");
+                const sourceSummary = source?.platformId === "xiaoyuzhou"
+                  ? [sourceName, source.podcastTitle, formatPosition(source.durationMs)].filter(Boolean).join(" · ")
+                  : sourceName;
                 return (
                   <li className="resource-item" key={presented.id}>
                     <Cover source={source} kind={presented.kindLabel} />
@@ -199,7 +203,7 @@ export default function LibraryHome({
                         onOpen(presented.id);
                       }}>{presented.title}</a>
                       <div className="resource-meta">
-                        <img src={isWeb ? webIcon : videoIcon} alt="" /> {sourceName}
+                        <img src={isWeb ? webIcon : videoIcon} alt="" /> {sourceSummary}
                       </div>
                     </div>
                     <Dropdown trigger={["click"]} menu={{

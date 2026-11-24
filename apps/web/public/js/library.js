@@ -40,6 +40,7 @@ const PLATFORM_LABELS = {
   "bilibili": "B站",
   "youtube": "YouTube",
   "xiaohongshu": "小红书",
+  "xiaoyuzhou": "小宇宙",
 };
 
 const KIND_LABELS = {
@@ -131,6 +132,9 @@ export function presentDetail(detail) {
       kindLabel: kindLabel(source.kind),
       platformLabel: platformLabel(source.platformId),
       progressText: progressLabel(source),
+      podcastTitle: source.podcastTitle,
+      durationText: source.platformId === "xiaoyuzhou" ? formatPosition(source.durationMs) : null,
+      showNotes: source.showNotes,
     })),
     notes,
     notesCount: notes.length,

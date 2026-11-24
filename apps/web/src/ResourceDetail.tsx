@@ -206,8 +206,16 @@ export default function ResourceDetail({
               <Space size={8} wrap className="resource-meta">
                 <Tag>{source.kindLabel}</Tag>
                 {source.platformLabel && <Tag color="cyan">{source.platformLabel}</Tag>}
+                {source.podcastTitle && <Typography.Text>{source.podcastTitle}</Typography.Text>}
+                {source.durationText && <Typography.Text type="secondary">{source.durationText}</Typography.Text>}
                 {source.progressText && <Typography.Text type="secondary">{source.progressText}</Typography.Text>}
               </Space>
+              {source.showNotes && (
+                <div className="episode-show-notes">
+                  <Typography.Text strong>节目简介</Typography.Text>
+                  <p>{source.showNotes}</p>
+                </div>
+              )}
             </li>
           ))}
         </ul>

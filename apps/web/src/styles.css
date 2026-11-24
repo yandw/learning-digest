@@ -945,6 +945,16 @@ a:hover {
   margin-top: 16px;
 }
 
+.episode-show-notes {
+  margin-top: 12px;
+}
+
+.episode-show-notes p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .source-link {
   display: inline-flex;
   max-width: 100%;

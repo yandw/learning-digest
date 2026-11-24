@@ -1,8 +1,7 @@
 /**
  * Platform Video ID extraction + URL normalization (contract v1, round 1).
  *
- * Implements contracts/platform-video-id-rules.md for the four round-1
- * Source Platforms (xiaoe-tech, bilibili, youtube, xiaohongshu):
+ * Implements contracts/platform-video-id-rules.md for Source Platforms:
  * - extractVideoIdentity(url): the platform identity a URL carries, or
  *   null when the URL alone cannot confirm one. Per decision 1 the client
  *   submits this identity on POST /v1/resources and /v1/sources/resolve;
@@ -11,7 +10,7 @@
  * - normalizeUrl(url): the §0 normalized address used for url-exact
  *   matching — scheme + lowercase host + path + query, fragment dropped,
  *   the platform's share/tracking params and all utm_* dropped, remaining
- *   query params name-sorted. Storage keeps the raw first-favorited URL.
+ *   query params name-sorted. Xiaoyuzhou episode links use the canonical public URL.
  * - platformVideoIdFormats: the §1 per-platform platformVideoId regexes
  *   (the same ones the extractors pin), the single format-judgment source
  *   for consumers that validate declared identities.
@@ -39,6 +38,8 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
   // Hex digits are otherwise lowercase in the wild; the rules table pins
   // "24 位十六进制" without a case qualifier.
   const XHS_NOTE_RE = /^[0-9a-f]{24}$/i;
+  const XIAOYUZHOU_EPISODE_ID_RE = /^[0-9a-f]{24}$/i;
+  const XIAOYUZHOU_EPISODE_RE = /^https:\/\/(?:www\.)?xiaoyuzhoufm\.com(?::443)?(\/episode\/)([0-9a-f]{24})\/?(?=[?#]|$)/i;
 
   // Share/tracking params each platform's ignore list drops (rules §1).
   // All platforms additionally drop every utm_* param.
@@ -88,6 +89,11 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
     return null;
   }
 
+  function xiaoyuzhouEpisodeId(url) {
+    const match = typeof url === "string" && XIAOYUZHOU_EPISODE_RE.exec(url.trim());
+    return match && match[1] === "/episode/" ? match[2].toLowerCase() : null;
+  }
+
   /**
    * §0 normalized address for url-exact matching. Returns null for
    * garbage or non-http(s) input; never throws.
@@ -96,6 +102,10 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
     const parsed = safeParseUrl(url);
     if (!parsed) {
       return null;
+    }
+    const episodeId = xiaoyuzhouEpisodeId(url);
+    if (episodeId) {
+      return `https://www.xiaoyuzhoufm.com/episode/${episodeId}`;
     }
     const platformId = platformIdForHost(parsed.hostname);
     const ignored = new Set(IGNORE_PARAMS[platformId] || []);
@@ -242,6 +252,7 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
     "bilibili": BV_RE,
     "youtube": YT_ID_RE,
     "xiaohongshu": XHS_NOTE_RE,
+    "xiaoyuzhou": XIAOYUZHOU_EPISODE_ID_RE,
   });
 
   /**
@@ -253,6 +264,15 @@ var YTD_PLATFORM_VIDEO_ID = (() => {
     const parsed = safeParseUrl(url);
     if (!parsed) {
       return null;
+    }
+    const episodeId = xiaoyuzhouEpisodeId(url);
+    if (episodeId) {
+      return {
+        platformId: "xiaoyuzhou",
+        platformVideoId: episodeId,
+        episodeId: null,
+        platformScopeId: null,
+      };
     }
     const platformId = platformIdForHost(parsed.hostname);
     if (!platformId) {

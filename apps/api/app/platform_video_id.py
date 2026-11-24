@@ -1,8 +1,7 @@
 """Platform Video ID extraction + URL normalization (contract v1, round 1).
 
-Python port of contracts/platform-video-id.js — the server-side authority
-for the four round-1 Source Platforms (xiaoe-tech, bilibili, youtube,
-xiaohongshu). Implements contracts/platform-video-id-rules.md:
+Python port of contracts/platform-video-id.js. Implements
+contracts/platform-video-id-rules.md:
 
 - extract_video_identity(url): the platform identity a URL carries, or
   None when the URL alone cannot confirm one. Per decision 1 the client
@@ -12,7 +11,7 @@ xiaohongshu). Implements contracts/platform-video-id-rules.md:
 - normalize_url(url): the §0 normalized address used for url-exact
   matching — scheme + lowercase host + path + query, fragment dropped,
   the platform's share/tracking params and all utm_* dropped, remaining
-  query params name-sorted. Storage keeps the raw first-favorited URL.
+  query params name-sorted. Xiaoyuzhou episode links use the canonical public URL.
 - PLATFORM_VIDEO_ID_FORMATS: the §1 per-platform platformVideoId regexes
   (the same ones the extractors pin), the single format-judgment source
   for consumers that validate declared identities.
@@ -36,6 +35,13 @@ from __future__ import annotations
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse
+
+XIAOYUZHOU_ORIGIN = "https://www.xiaoyuzhoufm.com"
+XIAOYUZHOU_EPISODE_ID_RE = re.compile(r"[0-9a-f]{24}", re.IGNORECASE | re.ASCII)
+_XIAOYUZHOU_EPISODE_RE = re.compile(
+    r"(?i:https://(?:www\.)?xiaoyuzhoufm\.com)(?::443)?/episode/([0-9a-fA-F]{24})/?(?=[?#]|$)",
+    re.ASCII,
+)
 
 XIAOE_SUFFIX = ".xiaoe-tech.com"
 # Resource tokens: p_ column/product, v_ video, a_ audio, i_ image-text,
@@ -119,12 +125,20 @@ def _url_host(parsed) -> str | None:
     return f"{hostname}:{port}"
 
 
+def _xiaoyuzhou_episode_id(url: Any) -> str | None:
+    match = _XIAOYUZHOU_EPISODE_RE.match(url.strip()) if isinstance(url, str) else None
+    return match.group(1).lower() if match else None
+
+
 def normalize_url(url: Any) -> str | None:
     """§0 normalized address for url-exact matching. Returns None for
     garbage or non-http(s) input; never throws."""
     parsed = safe_parse_url(url)
     if parsed is None:
         return None
+    episode_id = _xiaoyuzhou_episode_id(url)
+    if episode_id:
+        return f"{XIAOYUZHOU_ORIGIN}/episode/{episode_id}"
     host = _url_host(parsed)
     if host is None:
         return None
@@ -266,6 +280,14 @@ def extract_video_identity(url: Any) -> dict | None:
     parsed = safe_parse_url(url)
     if parsed is None:
         return None
+    episode_id = _xiaoyuzhou_episode_id(url)
+    if episode_id:
+        return {
+            "platformId": "xiaoyuzhou",
+            "platformVideoId": episode_id,
+            "episodeId": None,
+            "platformScopeId": None,
+        }
     platform_id = _platform_id_for_host(parsed.hostname or "")
     if platform_id is None:
         return None
@@ -284,4 +306,5 @@ PLATFORM_VIDEO_ID_FORMATS: dict[str, re.Pattern] = {
     "bilibili": BV_RE,
     "youtube": YT_ID_RE,
     "xiaohongshu": XHS_NOTE_RE,
+    "xiaoyuzhou": XIAOYUZHOU_EPISODE_ID_RE,
 }

@@ -1321,6 +1321,7 @@ async function handleSeekLearningTarget({ tabId, positionMs } = {}) {
       action: "seekMedia",
       positionMs: Math.round(position),
     });
+    if (result?.pending) return { success: true, pending: true };
     if (result?.success) return { success: true, position: result.position };
     return {
       success: false,
@@ -1453,6 +1454,7 @@ async function readBilibiliWorkerCaptions(captionSource, interval) {
 }
 
 const CAPTION_BRIDGE_FILES = [
+  "contracts/platform-video-id.js",
   "transcript-shapes.js",
   "bilibili-captions.js",
   "youtube-captions.js",
@@ -3678,6 +3680,7 @@ function buildCaptureStartMessage(context, streamId) {
     streamId,
     segmentLengthSeconds: context.segmentLengthSeconds,
     mode: context.timestampKind === "wallclock" ? "wallclock" : "video",
+    ...(context.platformId === "xiaoyuzhou" ? { startPaused: true } : {}),
   };
 }
 
@@ -4575,6 +4578,16 @@ async function handleMediaPosition(message, sender) {
     }
     return;
   }
+  if (context.platformId !== "xiaoyuzhou") return applyMediaPosition(context, message);
+  const pending = (context.podcastPositionQueue ?? Promise.resolve()).then(() =>
+    applyMediaPosition(context, message),
+  );
+  context.podcastPositionQueue = pending.catch(() => {});
+  return pending;
+}
+
+async function applyMediaPosition(context, message) {
+  if (context.ended) return;
   // P11 (decision 4): the SAME tab navigating to a different video/episode
   // (the bilibili ?p=N soft switch rides the P10b pageUrl field; hard
   // navigations surface here too once the bridge reinjects) finishes the
@@ -4600,6 +4613,18 @@ async function handleMediaPosition(message, sender) {
     await endActiveSession(context, { reason: "sourceSwitched", report: false });
     return;
   }
+  const podcastAsr = context.platformId === "xiaoyuzhou" && context.capturePath !== "captions";
+  if (podcastAsr && context.videoCaptureStart === "starting") return;
+  const discontinuity = podcastAsr && !message.seeking &&
+    (context.podcastSeeking || message.seeked === true || message.mediaChanged === true);
+  const paused = message.paused === true || message.ended === true;
+  if (podcastAsr) {
+    context.podcastSeeking = message.seeking === true;
+    if (paused || context.podcastSeeking || discontinuity) {
+      await setPodcastRecorderPaused(context, true);
+    }
+    if (context.podcastSeeking) return;
+  }
   const position = Number(message.position);
   // The video position every consumer below reads; the segment-mode
   // seek/anchor logic follows the same stream as before.
@@ -4611,7 +4636,7 @@ async function handleMediaPosition(message, sender) {
     // the exact paused position writes immediately (暂停=立即写当前位置).
     feedLearningPosition(context, position, {
       paused: message.paused === true,
-      duration: message.duration,
+      duration: podcastAsr ? message.episodeDuration : message.duration,
       thumbnailUrl: message.thumbnailUrl,
     });
     // Archived source captions can follow the same validated, per-second
@@ -4667,9 +4692,12 @@ async function handleMediaPosition(message, sender) {
     await persistContextPointer(context);
   } else {
     // Cut at seek and re-listen boundaries before feeding the scheduler.
-    await handleSeekForward(context, position);
+    await handleSeekForward(context, position, discontinuity);
     await updateRelisten(context, position);
     feedPosition(context, position);
+  }
+  if (podcastAsr && !paused && !message.seeking) {
+    await setPodcastRecorderPaused(context, false);
   }
   // Media end auto-ends replay/course/video Sessions ("video" = the P10b
   // stations' playback pages, #63); live ends only via the explicit end
@@ -4680,6 +4708,12 @@ async function handleMediaPosition(message, sender) {
   ) {
     await endActiveSession(context, { reason: "mediaEnded" });
   }
+}
+
+async function setPodcastRecorderPaused(context, paused) {
+  if (context.podcastRecorderPaused === paused) return;
+  const result = await sendOffscreen({ action: "capturePlayback", paused });
+  if (result?.success) context.podcastRecorderPaused = paused;
 }
 
 /**
@@ -4802,11 +4836,11 @@ function snapToSegmentGrid(context, position) {
  * not-yet-full tail is never transcribed — the gap marker owns its range),
  * jumps the scheduler cursor emitting nothing for the skipped range, and
  * appends one visible gap marker so the Digest is honest about the hole.
- * The landing point snaps UP to the next Segment-length boundary (0.1.60),
- * so every transcribed Segment is a full grid cell. Backward moves and
- * small advances return without touching anything.
+ * Existing players snap to the next Segment-length boundary on large
+ * forward jumps. Explicit player discontinuities use the landing point as
+ * the new boundary, or enter the existing re-listen path below the cursor.
  */
-async function handleSeekForward(context, position) {
+async function handleSeekForward(context, position, discontinuity = false) {
   if (!context.seekBaselineArmed) {
     // The first bridged position arms the drag-detection baseline; it is
     // never itself a drag (a Session can open at any video position).
@@ -4814,8 +4848,8 @@ async function handleSeekForward(context, position) {
     return;
   }
   const previous = context.lastPosition;
-  if (!Number.isFinite(previous) || position <= previous) return;
-  if (position - previous <= FORWARD_DRAG_THRESHOLD_SECONDS) {
+  if (!discontinuity &&
+    (!Number.isFinite(previous) || position - previous <= FORWARD_DRAG_THRESHOLD_SECONDS)) {
     return;
   }
   // A seek invalidates any in-progress re-listen pass: the buffered audio
@@ -4835,9 +4869,9 @@ async function handleSeekForward(context, position) {
   // (the discarded partial included) emits nothing. The pointer is
   // persisted BEFORE the gap marker lands: a worker death mid-seek must
   // never resume below the jumped cursor and backfill the skipped range.
-  const aligned = snapToSegmentGrid(context, position);
+  const aligned = discontinuity ? Math.max(gapStart, position) : snapToSegmentGrid(context, position);
   context.segmenter.jumpTo(aligned);
-  context.lastPosition = Math.max(context.lastPosition, aligned);
+  context.lastPosition = aligned;
   await persistContextPointer(context);
   // (c) One visible gap marker over the whole uncovered range — from the
   // last completed boundary (not the raw drag position) to the snapped

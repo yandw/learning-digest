@@ -20,9 +20,9 @@ COLLECTION = "siteCapabilities"
 CAPABILITY_FIELDS = ("captions", "asr", "enabled")
 
 # Known platforms and their seed defaults. bilibili/youtube serve usable
-# captions; xiaoe/xiaohongshu are audio-first (ASR only). Everything else
+# captions; xiaoe/xiaohongshu/xiaoyuzhou are audio-first (ASR only). Everything else
 # would open as the ASR-only fallback (no captions before proven).
-KNOWN_PLATFORMS = ("bilibili", "youtube", "xiaoe", "xiaohongshu")
+KNOWN_PLATFORMS = ("bilibili", "youtube", "xiaoe", "xiaohongshu", "xiaoyuzhou")
 _PLATFORM_DEFAULTS = {
     "bilibili": {"captions": True, "asr": True, "enabled": True},
     "youtube": {"captions": True, "asr": True, "enabled": True},

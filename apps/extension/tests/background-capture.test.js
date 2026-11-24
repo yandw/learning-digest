@@ -243,6 +243,7 @@ test("reopening the SAME course restores a bridge invalidated by extension reloa
   assert.equal(injections[0].target.tabId, 7);
   assert.equal(injections[0].target.frameIds[0], 0);
   assert.equal(JSON.stringify(injections[0].files), JSON.stringify([
+    "contracts/platform-video-id.js",
     "transcript-shapes.js",
     "bilibili-captions.js",
     "youtube-captions.js",

@@ -407,3 +407,61 @@ test("a 401 on the capability fetch routes P7: the panel re-gates and the start 
   );
   assert.ok(authState, "the P7 re-gate reached the panel");
 });
+
+const PODCAST_URL = "https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820";
+
+test("Xiaoyuzhou starts ASR, tracks pauses and cuts the recorder at a short player seek", async () => {
+  const sentMessages = [];
+  const tabMessages = [];
+  const source = {
+    ...RESOLVED_SOURCE,
+    platformId: "xiaoyuzhou",
+    platformVideoId: "6afde79ea4a79edf137b6820",
+    episodeId: null,
+    url: PODCAST_URL,
+  };
+  const { v1Calls, fetchImpl } = v1Fetch({
+    capabilities: [{ status: 200, body: {
+      capabilities: [{ platformId: "xiaoyuzhou", captions: true, asr: true, enabled: true }],
+    } }],
+    resolve: [{ ...RESOLVE_MATCHED_BODY, source }],
+    sessions: [SESSION_CREATED_BODY],
+  });
+  const helpers = capabilityFlowHelpers({
+    fetchImpl, sentMessages, tabMessages,
+    tabsGet: async (id) => ({ id, url: PODCAST_URL, title: "播客单集" }),
+  });
+  const started = await helpers.handleStartLearning({ url: PODCAST_URL, tabId: 15 });
+  assert.equal(started.success, true);
+  assert.deepEqual(tabMessages.filter(({ action }) => /Captions/.test(action)), []);
+  assert.ok(!v1Calls.some(({ path }) => path.endsWith("/captions")));
+  assert.ok(sentMessages.some((message) => message.action === "captureStart" && message.startPaused));
+
+  const report = (position, extra = {}) => helpers.handleMediaPosition({
+    pageUrl: PODCAST_URL, position, duration: 2544.2, ...extra,
+  }, { tab: { id: 15 } });
+  await report(125);
+  await report(126, { paused: true });
+  await report(126, { paused: true });
+  await report(128, { paused: true, seeking: true });
+  await report(128, { paused: true, seeked: true });
+  await report(128);
+  assert.deepEqual(sentMessages.filter(({ action }) =>
+    action === "capturePlayback" || action === "captureCut").map(({ action, paused }) =>
+    action === "captureCut" ? "cut" : paused), [false, true, "cut", false]);
+  await helpers.handleEndLearning();
+});
+
+test("a disabled Xiaoyuzhou episode does not create a learning Session", async () => {
+  const { v1Calls, fetchImpl } = v1Fetch({
+    capabilities: [{ status: 200, body: {
+      capabilities: [{ platformId: "xiaoyuzhou", captions: false, asr: true, enabled: false }],
+    } }],
+  });
+  const helpers = capabilityFlowHelpers({
+    fetchImpl, tabsGet: async (id) => ({ id, url: PODCAST_URL, title: "播客单集" }),
+  });
+  const started = await helpers.handleStartLearning({ url: PODCAST_URL, tabId: 15 });
+  assert.equal(started.siteDisabled, true);
+  assert.ok(!v1Calls.some(({ path }) => path.endsWith("/sessions")));
+});

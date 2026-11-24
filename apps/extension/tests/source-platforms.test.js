@@ -236,6 +236,26 @@ test("non-note xiaohongshu pages and malformed ids resolve to none", () => {
   }
 });
 
+test("the registry recognizes only supported Xiaoyuzhou episode addresses", () => {
+  const id = "6afde79ea4a79edf137b6820";
+  for (const url of [
+    `https://www.xiaoyuzhoufm.com/episode/${id}?s=share`,
+    `https://xiaoyuzhoufm.com/episode/${id}#ld-position-ms=125125`,
+  ]) {
+    assert.deepEqual(recognizePage(url), {
+      platformId: "xiaoyuzhou", kind: "video", timestampKind: "video",
+    });
+  }
+  for (const url of [
+    `http://www.xiaoyuzhoufm.com/episode/${id}`,
+    `https://m.xiaoyuzhoufm.com/episode/${id}`,
+    `https://www.xiaoyuzhoufm.com/podcast/${id}`,
+    `https://www.xiaoyuzhoufm.com/episode/${id}/comments`,
+  ]) {
+    assert.equal(recognizePage(url).kind, "none");
+  }
+});
+
 test("the first registered platform whose recognition is not none wins", () => {
   registerSourcePlatform({
     id: "fake-always",

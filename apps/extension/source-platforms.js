@@ -296,6 +296,19 @@ var YTD_SOURCE_PLATFORM_XIAOHONGSHU = (() => {
 
 YTD_SOURCE_PLATFORMS.registerSourcePlatform(YTD_SOURCE_PLATFORM_XIAOHONGSHU);
 
+YTD_SOURCE_PLATFORMS.registerSourcePlatform({
+  id: "xiaoyuzhou",
+  recognizePage(url) {
+    const identity = typeof YTD_PLATFORM_VIDEO_ID !== "undefined"
+      ? YTD_PLATFORM_VIDEO_ID
+      : require("./contracts/platform-video-id.js");
+    return identity.extractVideoIdentity(url)?.platformId === "xiaoyuzhou"
+      ? { platformId: "xiaoyuzhou", kind: "video", timestampKind: "video" }
+      : null;
+  },
+  capabilities: { captionsReader: false },
+});
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = YTD_SOURCE_PLATFORMS;
 }

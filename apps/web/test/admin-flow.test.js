@@ -75,13 +75,13 @@ test("load() fills the table from the admin GET; every row starts unchanged", as
   const state = flow.getState();
   assert.equal(result.ok, true);
   assert.equal(state.view, "table");
-  assert.equal(state.rows.length, 4);
+  assert.equal(state.rows.length, 5);
   assert.deepEqual(
     state.rows.map((row) => row.platformId),
-    ["bilibili", "youtube", "xiaoe", "xiaohongshu"],
+    ["bilibili", "youtube", "xiaoe", "xiaohongshu", "xiaoyuzhou"],
   );
-  // The fixture pins the seed defaults: bilibili/youtube all-on, the other
-  // two without captions capture.
+  // The fixture pins the seed defaults: bilibili/youtube all-on, the others
+  // without captions capture.
   assert.deepEqual(rowByPlatform(state.rows, "bilibili"), {
     platformId: "bilibili",
     captions: true,

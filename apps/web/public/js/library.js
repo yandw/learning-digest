@@ -479,7 +479,8 @@ export function mergeTranscriptViews(viewsIn) {
 /**
  * Best-effort jump-back to the note's position on the original platform
  * (ticket #61: 回原平台对应位置按平台能力尽力实现). Only platforms with a
- * documented seek parameter get a URL — bilibili appends `t=<seconds>` to
+ * supported seek mechanism get a URL — the extension handles Xiaoyuzhou
+ * through a fragment, bilibili appends `t=<seconds>` to
  * the source address (keeping its `p=` episode param), youtube appends
  * `t=<seconds>s`. xiaoe-tech has no documented seek parameter and plain
  * webpages have nothing to seek: both return null, and the page then
@@ -509,11 +510,13 @@ export function buildNoteJumpUrl(note, sources) {
     return null;
   }
   const buildParams = SEEK_PARAM_BUILDERS[source.platformId];
-  if (!buildParams) {
-    return null;
-  }
+  if (!buildParams && source.platformId !== "xiaoyuzhou") return null;
   try {
     const url = new URL(source.url);
+    if (source.platformId === "xiaoyuzhou") {
+      url.hash = `ld-position-ms=${Math.round(note.positionMs)}`;
+      return url.toString();
+    }
     const params = buildParams(Math.floor(note.positionMs / 1000));
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value);

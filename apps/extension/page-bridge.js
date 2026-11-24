@@ -1,6 +1,6 @@
 /**
- * Page bridge (content script; injected on xiaoe-tech, bilibili, youtube and
- * xiaohongshu playback pages — P10b, #63).
+ * Page bridge (content script on xiaoe-tech, bilibili, youtube,
+ * xiaohongshu and Xiaoyuzhou playback pages).
  *
  * The Source Platform registry decides page kinds purely from the URL, but
  * replay and video pages need VIDEO-position timestamps and media-end
@@ -14,11 +14,8 @@
  * on pagehide (#32) — so the Session knows the page's title for the report
  * header; the background keeps only the first report.
  *
- * All four stations play through a standard HTMLVideoElement (bilibili,
- * xiaohongshu and youtube each expose one to the DOM), so position reading
- * and playback control stay element-generic: the per-station differences
- * live in the manifest's match patterns and the Source Platform adapters,
- * not here.
+ * Xiaoyuzhou can mount a video preview beside the full audio player.
+ * Keep following whichever is playing, including its paused position.
  *
  * P10b additions (#63):
  * - every mediaPosition report carries pageUrl (the bridge's location.href).
@@ -67,10 +64,37 @@ var YTD_PAGE_BRIDGE = (() => {
     const runtime = env.chrome.runtime;
     const scheduleInterval = env.setInterval || ((fn, ms) => setInterval(fn, ms));
     const log = env.console || console;
+    const identity = typeof YTD_PLATFORM_VIDEO_ID !== "undefined"
+      ? YTD_PLATFORM_VIDEO_ID
+      : require("./contracts/platform-video-id.js");
+    const isPodcast = identity.extractVideoIdentity(win.location?.href)?.platformId === "xiaoyuzhou";
+    let pendingPodcastSeek = null;
+    let lastPodcastHash = null;
+
+    function findPodcastMedia(positionSeconds = null) {
+      const media = [...doc.querySelectorAll("audio, video")];
+      const audio = media.find((element) => element.tagName === "AUDIO");
+      const active = media.find((element) => !element.paused && !element.ended);
+      const selected = active || (media.includes(bridgedMedia) && bridgedMedia) || audio || media[0];
+      if (audio && positionSeconds !== null && positionSeconds > selected.duration) return audio;
+      return selected || null;
+    }
+
+    function seekPodcast(seconds, media) {
+      if (media.readyState < 1) {
+        pendingPodcastSeek = seconds;
+        return { success: true, pending: true };
+      }
+      const position = Number.isFinite(media.duration) ? Math.min(seconds, media.duration) : seconds;
+      if (media.currentTime !== position) media.currentTime = position;
+      pendingPodcastSeek = null;
+      return { success: true, position };
+    }
 
     /** The "primary" media: these pages can mount several video elements
      *  (previews, ads); the largest visible one is the one being watched. */
     function findPrimaryMedia() {
+      if (isPodcast) return findPodcastMedia();
       const candidates = [...doc.querySelectorAll("video")].filter(
         (video) => video.readyState >= 1 && video.videoWidth > 0,
       );
@@ -150,7 +174,7 @@ var YTD_PAGE_BRIDGE = (() => {
         if (!attachMediaListeners.logged) {
           attachMediaListeners.logged = true;
           log.debug(
-            `[LD bridge] 已绑定视频元素 ${media.videoWidth}x${media.videoHeight}`,
+            `[LD bridge] 已绑定媒体元素 ${media.tagName || "VIDEO"}`,
           );
         }
       }
@@ -158,21 +182,32 @@ var YTD_PAGE_BRIDGE = (() => {
 
     let loggedNoMedia = false;
 
-    function reportPosition() {
-      const media = findPrimaryMedia();
+    function reportPosition(event) {
+      if (isPodcast && win.location.hash !== lastPodcastHash) {
+        lastPodcastHash = win.location.hash;
+        const match = /^#ld-position-ms=(\d+)$/.exec(lastPodcastHash);
+        const positionMs = match && Number(match[1]);
+        pendingPodcastSeek = Number.isSafeInteger(positionMs) ? positionMs / 1000 : null;
+      }
+      const media = isPodcast && pendingPodcastSeek !== null
+        ? findPodcastMedia(pendingPodcastSeek)
+        : findPrimaryMedia();
       if (!media) {
         if (!loggedNoMedia) {
           loggedNoMedia = true;
           log.debug(
-            "[LD bridge] 未找到可上报的视频元素（readyState/videoWidth 过滤），位置流暂停",
+            "[LD bridge] 未找到可上报的媒体元素，位置流暂停",
           );
         }
         return;
       }
       loggedNoMedia = false;
-      attachMediaListeners(media);
       let message;
       try {
+        if (isPodcast && media.readyState < 1) return;
+        const mediaChanged = !!bridgedMedia && bridgedMedia !== media;
+        attachMediaListeners(media);
+        if (isPodcast && pendingPodcastSeek !== null) seekPodcast(pendingPodcastSeek, media);
         message = {
           action: "mediaPosition",
           position: Number(media.currentTime) || 0,
@@ -185,6 +220,14 @@ var YTD_PAGE_BRIDGE = (() => {
           // (bilibili ?p=N) changes it without a document reload.
           pageUrl: String(win.location && win.location.href) || "",
         };
+        if (isPodcast) {
+          const audio = doc.querySelector("audio");
+          const episodeDuration = audio ? audio.duration : media.duration;
+          message.episodeDuration = Number.isFinite(episodeDuration) ? episodeDuration : null;
+          message.mediaChanged = mediaChanged;
+          message.seeking = media.seeking === true;
+          message.seeked = event?.type === "seeked";
+        }
         if (/(^|\.)bilibili\.com$/.test(win.location?.hostname || "")) {
           const thumbnail = doc.querySelector?.('meta[property="og:image"]')?.content;
           const url = thumbnail?.startsWith("//") ? `https:${thumbnail}` : thumbnail;
@@ -273,8 +316,24 @@ var YTD_PAGE_BRIDGE = (() => {
       if (!isSeek && message?.action !== "restartFromBeginning" && message?.action !== "getMediaPosition") {
         return false;
       }
+      if (isPodcast && message.action !== "getMediaPosition") {
+        const seconds = isSeek ? Number(message.positionMs) / 1000 : 0;
+        if (!Number.isFinite(seconds) || seconds < 0) {
+          sendResponse({ success: false, error: "invalid positionMs" });
+          return false;
+        }
+        const media = findPodcastMedia(seconds);
+        if (media) {
+          try {
+            sendResponse(seekPodcast(seconds, media));
+          } catch (error) {
+            sendResponse({ success: false, error: error?.message || String(error) });
+          }
+        }
+        return false;
+      }
       const media = findPrimaryMedia();
-      if (!media) {
+      if (!media || (isPodcast && media.readyState < 1)) {
         // Silent no-response: only the frame holding the player should answer.
         return false;
       }
@@ -376,6 +435,12 @@ var YTD_PAGE_BRIDGE = (() => {
         handleMessage(message, sendResponse),
       );
       log.debug("[LD bridge] 已注入，开始每秒上报播放位置");
+      if (isPodcast) {
+        for (const eventName of ["loadstart", "loadedmetadata", "playing", "play", "pause", "ended"]) {
+          doc.addEventListener(eventName, reportPosition, true);
+        }
+        reportPosition();
+      }
       scheduleInterval(reportPosition, POSITION_INTERVAL_MS);
       win.addEventListener("pagehide", reportPosition);
       win.addEventListener("pagehide", reportPageTitle);

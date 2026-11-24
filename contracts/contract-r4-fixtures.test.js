@@ -35,6 +35,7 @@ const SEEDED_DEFAULTS = {
   youtube: { captions: true, asr: true, enabled: true },
   xiaoe: { captions: false, asr: true, enabled: true },
   xiaohongshu: { captions: false, asr: true, enabled: true },
+  xiaoyuzhou: { captions: false, asr: true, enabled: true },
 };
 
 function loadFixture(name) {
@@ -294,7 +295,7 @@ test("contract-r4.md and decisions.md list the round-4 anchors", () => {
     "SiteCapability", "platformId", "captions", "asr", "enabled", "isAdmin",
     "validation_failed", "not_found", "unauthorized",
     "任意布尔子集", "未知 platformId", "不透露端点存在性", "只补缺失行",
-    "bilibili", "youtube", "xiaoe", "xiaohongshu",
+    "bilibili", "youtube", "xiaoe", "xiaohongshu", "xiaoyuzhou",
   ]) {
     assert.ok(r4.includes(token), `contract-r4.md must define ${token}`);
   }

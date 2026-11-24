@@ -35,6 +35,7 @@ SEEDED_TABLE = [
     {"platformId": "youtube", "captions": True, "asr": True, "enabled": True},
     {"platformId": "xiaoe", "captions": False, "asr": True, "enabled": True},
     {"platformId": "xiaohongshu", "captions": False, "asr": True, "enabled": True},
+    {"platformId": "xiaoyuzhou", "captions": False, "asr": True, "enabled": True},
 ]
 
 
@@ -81,7 +82,7 @@ def test_startup_never_overwrites_previously_edited_rows(tmp_path, start_app):
     assert response.status == 200
     rows = {row["platformId"]: row for row in response.json["capabilities"]}
     assert rows["bilibili"]["captions"] is False
-    assert set(rows) == {"bilibili", "youtube", "xiaoe", "xiaohongshu"}
+    assert set(rows) == {"bilibili", "youtube", "xiaoe", "xiaohongshu", "xiaoyuzhou"}
 
 
 # --- the admin surface (Bearer + isAdmin; D2 404 for non-admins) ----------
@@ -140,13 +141,13 @@ def test_admin_put_unmentioned_fields_keep_their_values(start_app, tmp_path):
     app = admin_app(start_app, tmp_path)
     response = app.request(
         "PUT",
-        "/v1/admin/site-capabilities/xiaohongshu",
+        "/v1/admin/site-capabilities/xiaoyuzhou",
         headers=auth_header(admin_token(app)),
         body={"enabled": False},
     )
     assert response.status == 200
     assert response.json["capability"] == {
-        "platformId": "xiaohongshu",
+        "platformId": "xiaoyuzhou",
         "captions": False,
         "asr": True,
         "enabled": False,

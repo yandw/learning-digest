@@ -32,6 +32,7 @@ function stubVideo({
   const listeners = {};
   const video = {
     readyState,
+    tagName: width === 0 && height === 0 ? "AUDIO" : "VIDEO",
     videoWidth: width,
     videoHeight: height,
     duration,
@@ -50,7 +51,7 @@ function stubVideo({
       listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
     },
     fire(type) {
-      for (const fn of listeners[type] || []) fn();
+      for (const fn of listeners[type] || []) fn({ type, target: video });
     },
   };
   Object.defineProperty(video, "currentTime", {
@@ -68,6 +69,7 @@ function stubVideo({
 
 function stubEnvironment({
   videos = [],
+  audios = [],
   location = {},
   title = "测试课程",
   createCaptionReader = undefined,
@@ -99,10 +101,22 @@ function stubEnvironment({
       if (type === "pagehide") pagehideListeners.push(fn);
     },
   };
+  const documentListeners = {};
   const documentStub = {
     title,
+    addEventListener(type, fn) {
+      documentListeners[type] = fn;
+    },
+    fire(type, target) {
+      documentListeners[type]?.({ type, target });
+    },
+    querySelector(selector) {
+      if (selector === "audio") return audios[0] || null;
+      return null;
+    },
     querySelectorAll(selector) {
       if (selector === "video") return videos;
+      if (selector === "audio, video") return [...audios, ...videos];
       if (selector === "script") return scripts;
       return [];
     },
@@ -847,6 +861,7 @@ test("the shipped onMessage listener forwards Chrome's third argument as sendRes
   const video = stubVideo({ currentTime: 83.25 });
   const listeners = [];
   const sandbox = {
+    YTD_PLATFORM_VIDEO_ID: require("../contracts/platform-video-id.js"),
     YTD_YOUTUBE_CAPTIONS: {},
     document: {
       title: "YouTube 视频课",
@@ -879,4 +894,74 @@ test("the shipped onMessage listener forwards Chrome's third argument as sendRes
   assert.equal(responses.length, 1);
   assert.equal(responses[0].success, true);
   assert.equal(responses[0].position, 83.25);
+});
+
+const PODCAST_URL = "https://www.xiaoyuzhoufm.com/episode/6ad2412d0e4e410a05be01a7";
+
+test("Xiaoyuzhou follows the media in use, including pauses, seeks and player switches", () => {
+  const audio = stubVideo({ width: 0, height: 0, currentTime: 97, duration: 3068.9, paused: true });
+  const preview = stubVideo({ currentTime: 23, duration: 60, paused: true });
+  const { bridge, sent, documentStub } = stubEnvironment({
+    videos: [preview], audios: [audio], location: new URL(PODCAST_URL),
+  });
+  bridge.start();
+  bridge.reportPosition();
+  assert.equal(sent.at(-1).position, 97);
+
+  preview.paused = false;
+  documentStub.fire("play", preview);
+  assert.equal(sent.at(-1).position, 23);
+  assert.equal(sent.at(-1).duration, 60);
+  assert.equal(sent.at(-1).episodeDuration, 3068.9);
+  assert.equal(sent.at(-1).mediaChanged, true);
+
+  preview.paused = true;
+  documentStub.fire("pause", preview);
+  assert.equal(sent.at(-1).position, 23);
+  assert.equal(sent.at(-1).paused, true);
+
+  audio.paused = false;
+  documentStub.fire("play", audio);
+  assert.equal(sent.at(-1).duration, 3068.9);
+  audio.seeking = true;
+  audio.currentTime = 98;
+  audio.fire("seeking");
+  assert.equal(sent.at(-1).seeking, true);
+  audio.seeking = false;
+  audio.fire("seeked");
+  assert.equal(sent.at(-1).seeked, true);
+  assert.equal(sent.at(-1).position, 98);
+});
+
+test("opening a Xiaoyuzhou resume link waits for lazy audio metadata and never starts playback", () => {
+  const audio = stubVideo({ width: 0, height: 0, duration: NaN, currentTime: 0, paused: true, readyState: 0 });
+  const preview = stubVideo({ duration: 60, paused: true });
+  const { bridge, sent, documentStub } = stubEnvironment({
+    videos: [preview], audios: [audio], location: new URL(PODCAST_URL + "#ld-position-ms=125125"),
+  });
+  bridge.start();
+  bridge.reportPosition();
+  assert.equal(audio.currentTime, 0);
+  assert.equal(preview.currentTimeWrites, undefined);
+
+  audio.readyState = 4;
+  audio.duration = 3068.9;
+  documentStub.fire("loadedmetadata", audio);
+
+  assert.equal(audio.currentTime, 125.125);
+  assert.equal(sent.at(-1).position, 125.125);
+  assert.equal(audio.playCalls, 0);
+  assert.equal(preview.playCalls, 0);
+});
+
+test("Xiaoyuzhou's panel can read and seek the original audio player's position", () => {
+  const audio = stubVideo({ width: 0, height: 0, duration: 2544.2, currentTime: 180.5, paused: true });
+  const { bridge } = stubEnvironment({ audios: [audio], location: new URL(PODCAST_URL) });
+  const replies = [];
+  bridge.handleMessage({ action: "getMediaPosition" }, (reply) => replies.push(reply));
+  bridge.handleMessage({ action: "seekMedia", positionMs: 420125 }, (reply) => replies.push(reply));
+  assert.equal(replies[0].position, 180.5);
+  assert.deepEqual(replies[1], { success: true, position: 420.125 });
+  assert.equal(audio.currentTime, 420.125);
+  assert.equal(audio.playCalls, 0);
 });

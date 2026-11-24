@@ -22,6 +22,7 @@
  * - captureCadence {mode}: re-arms (or disarms) the regular wall-clock cut
  *   mid-Session; the worker sends it when a wallclock Session anchors to
  *   the video timeline (#48) and position-driven cuts take over.
+ * - capturePlayback {paused}: pauses or resumes the recorder with the player.
  * - captureStop {}: stops recording and releases the stream.
  *
  * Chunks travel as base64 data URLs because chrome.runtime messages are
@@ -46,6 +47,7 @@
 (() => {
   let stream = null;
   let recorder = null;
+  let capturePaused = false;
   let playbackContext = null;
   let chunkStartedAtMs = 0;
   let backstopTimer = null;
@@ -167,7 +169,17 @@
     recorder = new MediaRecorder(stream, options);
     recorder.start();
     chunkStartedAtMs = Date.now();
-    armBackstop();
+    applyCapturePlayback();
+  }
+
+  function applyCapturePlayback() {
+    if (capturePaused) {
+      clearTimeout(backstopTimer);
+      if (recorder?.state === "recording") recorder.pause();
+    } else {
+      if (recorder?.state === "paused") recorder.resume();
+      armBackstop();
+    }
   }
 
   function stopRecorder() {
@@ -211,6 +223,7 @@
         60_000,
         Math.max(5_000, (Number(message.segmentLengthSeconds) || 30) * 1000),
       );
+      capturePaused = message.startPaused === true;
       startPlaybackLoop();
       startRecorder();
       armRegularCut(message.mode);
@@ -246,6 +259,12 @@
         },
       );
       return true;
+    }
+    if (message.action === "capturePlayback") {
+      capturePaused = message.paused === true;
+      applyCapturePlayback();
+      sendResponse({ success: true });
+      return false;
     }
     if (message.action === "captureCadence") {
       // #48 timeline anchoring: re-arm (or disarm) the regular wall-clock

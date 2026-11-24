@@ -440,7 +440,7 @@ test("getAdminSiteCapabilities() GETs /v1/admin/site-capabilities with the store
   assert.equal(fetcher.calls[0].init.method, "GET");
   assert.equal(fetcher.calls[0].init.headers.Authorization, "Bearer tok-1");
   assert.equal(result.ok, true);
-  assert.equal(result.data.capabilities.length, 4);
+  assert.equal(result.data.capabilities.length, 5);
   assert.deepEqual(result.data.capabilities[0], {
     platformId: "bilibili",
     captions: true,

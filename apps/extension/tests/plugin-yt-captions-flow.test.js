@@ -614,6 +614,7 @@ test("a missing page bridge is injected once and the caption read is retried", a
   assert.equal(captionAttempts, 2, "one failed read and one post-injection retry");
   assert.equal(bridgeInjections.length, 1);
   assert.deepEqual([...bridgeInjections[0].files], [
+    "contracts/platform-video-id.js",
     "transcript-shapes.js",
     "bilibili-captions.js",
     "youtube-captions.js",

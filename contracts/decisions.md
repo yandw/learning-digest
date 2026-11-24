@@ -232,7 +232,7 @@
 
 ## D20 · 站点能力注册表：服务端唯一写入方，种子只补缺失行，注册表不由 API 扩张
 
-**决策**：站点能力是服务端数据，存于 store 的 `siteCapabilities` 集合，按 platformId 一行 `{platformId, captions, asr, enabled}`（全布尔）。启动时对种子平台（bilibili/youtube：captions true；xiaoe/xiaohongshu：captions false；asr/enabled 全 true）**只补缺失行**——已有行（含管理员修改）永不被启动覆写。普通用户 GET /v1/site-capabilities 读全表（插件据此决定字幕/ASR/禁用行为）；管理员经 `/v1/admin/site-capabilities` 读全表、PUT 单行（请求体是 `{captions?, asr?, enabled?}` 的任意布尔子集，未提及字段保持原值）。种子外的 platformId 无行且不可经 PUT 创建（404）——**注册表的生长只发生在服务端代码/种子里**，API 只翻转布尔位，不创建平台。
+**决策**：站点能力是服务端数据，存于 store 的 `siteCapabilities` 集合，按 platformId 一行 `{platformId, captions, asr, enabled}`（全布尔）。启动时对种子平台（bilibili/youtube：captions true；xiaoe/xiaohongshu/xiaoyuzhou：captions false；asr/enabled 全 true）**只补缺失行**——已有行（含管理员修改）永不被启动覆写。普通用户 GET /v1/site-capabilities 读全表（插件据此决定字幕/ASR/禁用行为）；管理员经 `/v1/admin/site-capabilities` 读全表、PUT 单行（请求体是 `{captions?, asr?, enabled?}` 的任意布尔子集，未提及字段保持原值）。种子外的 platformId 无行且不可经 PUT 创建（404）——**注册表的生长只发生在服务端代码/种子里**，API 只翻转布尔位，不创建平台。
 
 **理由**：插件内置能力假设会随平台改版腐化，服务端化让「这个平台现在怎么采」成为一次部署可纠正的运营参数（本轮的地基，后续面板轮次消费）；「只补缺失行」让管理员修改在重启后存活，种子更新只对新增平台生效；PUT 子集语义让运营只说「改什么」，不说「整行是什么」。
 

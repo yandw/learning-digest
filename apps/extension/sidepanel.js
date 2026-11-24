@@ -1693,7 +1693,9 @@ async function seekChosenTarget(positionMs) {
     // player at the start whether it came from 从头开始 or a stored
     // 0-position 继续学习, so "已定位到开头" stays the honest copy there.
     setCourseTabStatus(
-      positionMs > 0
+      result.pending
+        ? "已准备定位，播放单集后会跳到指定位置。"
+        : positionMs > 0
         ? COURSE_TAB_COPY.locatedResume(formatResumePosition(positionMs))
         : COURSE_TAB_COPY.locatedFromStart,
     );

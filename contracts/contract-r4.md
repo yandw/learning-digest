@@ -29,7 +29,7 @@
 
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
-| `platformId` | string | 是 | 平台标识（bilibili / youtube / xiaoe / xiaohongshu 等，非枚举约束的不透明字符串） |
+| `platformId` | string | 是 | 平台标识（bilibili / youtube / xiaoe / xiaohongshu / xiaoyuzhou 等，非枚举约束的不透明字符串） |
 | `captions` | boolean | 是 | 该平台能否取到可用字幕（字幕优先路径是否可用） |
 | `asr` | boolean | 是 | 该平台是否允许 ASR 转写 |
 | `enabled` | boolean | 是 | 该平台是否启用站点能力（false 即整体禁用，插件不发起该平台的材料采集） |
@@ -44,6 +44,7 @@
 | `youtube` | true | true | true |
 | `xiaoe` | false | true | true |
 | `xiaohongshu` | false | true | true |
+| `xiaoyuzhou` | false | true | true |
 | 其他（未种子平台） | false | true | true |
 
 种子外的 platformId 不存在行，也不可经管理面创建（未知平台 404）——注册表的生长只发生在服务端代码/种子里，不由 API 调用方扩张。

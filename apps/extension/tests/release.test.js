@@ -70,6 +70,8 @@ test("manifest uses minimized install-time permissions", () => {
       // their redirects land on the matched playback pages.
       matches: [
         "https://*.xiaoe-tech.com/*",
+        "https://www.xiaoyuzhoufm.com/episode/*",
+        "https://xiaoyuzhoufm.com/episode/*",
         "https://www.bilibili.com/video/*",
         "https://m.bilibili.com/video/*",
         "https://www.youtube.com/watch*",
@@ -84,6 +86,7 @@ test("manifest uses minimized install-time permissions", () => {
       // loads before both readers — they destructure its shared §2.2
       // Segment check and coverage helper.
       js: [
+        "contracts/platform-video-id.js",
         "transcript-shapes.js",
         "bilibili-captions.js",
         "youtube-captions.js",

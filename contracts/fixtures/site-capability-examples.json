@@ -14,7 +14,8 @@
             { "platformId": "bilibili", "captions": true, "asr": true, "enabled": true },
             { "platformId": "youtube", "captions": true, "asr": true, "enabled": true },
             { "platformId": "xiaoe", "captions": false, "asr": true, "enabled": true },
-            { "platformId": "xiaohongshu", "captions": false, "asr": true, "enabled": true }
+            { "platformId": "xiaohongshu", "captions": false, "asr": true, "enabled": true },
+            { "platformId": "xiaoyuzhou", "captions": false, "asr": true, "enabled": true }
           ]
         }
       }
@@ -31,7 +32,8 @@
             { "platformId": "bilibili", "captions": true, "asr": true, "enabled": true },
             { "platformId": "youtube", "captions": true, "asr": true, "enabled": true },
             { "platformId": "xiaoe", "captions": false, "asr": true, "enabled": true },
-            { "platformId": "xiaohongshu", "captions": false, "asr": true, "enabled": true }
+            { "platformId": "xiaohongshu", "captions": false, "asr": true, "enabled": true },
+            { "platformId": "xiaoyuzhou", "captions": false, "asr": true, "enabled": true }
           ]
         }
       }

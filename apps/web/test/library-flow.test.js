@@ -1202,3 +1202,13 @@ test("a delete failure presents the envelope verbatim and changes nothing", asyn
   assert.equal(api.calls.list, 0, "a failed delete does not reload the list");
   assert.equal(flow.getState().armedDelete, null);
 });
+
+test("buildNoteJumpUrl sends a Xiaoyuzhou timestamp to the extension bridge", () => {
+  const url = "https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820";
+  const sources = [{ id: "source-xyz", platformId: "xiaoyuzhou", url }];
+  assert.equal(
+    buildNoteJumpUrl({ sourceId: "source-xyz", positionMs: 125125 }, sources),
+    url + "#ld-position-ms=125125",
+  );
+  assert.equal(sources[0].url, url);
+});

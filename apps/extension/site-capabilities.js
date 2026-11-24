@@ -63,7 +63,8 @@ var YTD_SITE_CAPABILITIES = (() => {
     bilibili: Object.freeze({ captions: true, asr: true, enabled: true }),
     youtube: Object.freeze({ captions: true, asr: true, enabled: true }),
     "xiaoe-tech": Object.freeze({ captions: false, asr: true, enabled: true }),
-    xiaohongshu: Object.freeze({ captions: false, asr: true, enabled: true }),
+    xiaohongshu: DEFAULT_ROW,
+    xiaoyuzhou: DEFAULT_ROW,
   });
 
   function buildSiteCapabilitiesApiUrl(apiBaseUrl) {

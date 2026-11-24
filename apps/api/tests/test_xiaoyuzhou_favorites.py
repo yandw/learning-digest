@@ -70,6 +70,7 @@ def test_existing_generic_favorite_is_reused_by_resolve_and_save(start_app, vend
     resolved = app.request("POST", "/v1/sources/resolve", headers=headers, body={"url": EPISODE_URL})
     assert resolved.json["matched"] is True
     assert resolved.json["source"]["id"] == source_id
+    assert resolved.json["source"]["platformId"] is None
     assert resolved.json["source"]["progress"]["positionMs"] == 24000
     assert vendor[0] == []
 
@@ -84,7 +85,11 @@ def test_existing_generic_favorite_is_reused_by_resolve_and_save(start_app, vend
     assert detail.json["sources"][0]["progress"]["positionMs"] == 24000
 
 
-def test_public_metadata_is_shown_in_library_and_detail(start_app, vendor):
+@pytest.mark.parametrize(("title", "expected_title"), [
+    (None, "How to read a paper"),
+    ("My custom title", "My custom title"),
+])
+def test_public_metadata_is_shown_in_library_and_detail(start_app, vendor, title, expected_title):
     episode = {
         "eid": EPISODE_ID,
         "title": "How to read a paper",
@@ -101,15 +106,16 @@ def test_public_metadata_is_shown_in_library_and_detail(start_app, vendor):
     vendor[1][0] = httpx.Response(200, stream=httpx.ByteStream(html.encode()))
     app = start_app(seed_emails=[LEARNER])
     headers = auth_header(open_account(app, LEARNER))
-    saved = app.request(
-        "POST", "/v1/resources", headers=headers, body={"url": EPISODE_URL, "title": "Browser tab title"}
-    )
+    body = {"url": EPISODE_URL}
+    if title is not None:
+        body["title"] = title
+    saved = app.request("POST", "/v1/resources", headers=headers, body=body)
     assert saved.status == 201
     resource = saved.json["resource"]
-    assert (resource["title"], resource["kind"]) == ("How to read a paper", "video")
+    assert (resource["title"], resource["kind"]) == (expected_title, "video")
     library = app.request("GET", "/v1/resources", headers=headers).json["resources"][0]
     detail = app.request("GET", f"/v1/resources/{resource['id']}", headers=headers).json
-    assert library["resource"]["title"] == "How to read a paper"
+    assert library["resource"]["title"] == expected_title
     assert library["sources"][0]["podcastTitle"] == "Research Notes"
     source = detail["sources"][0]
     assert source["url"] == EPISODE_URL

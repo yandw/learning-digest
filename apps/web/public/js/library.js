@@ -989,5 +989,14 @@ export function createLibraryFlow({ api, identity, deleteConfirmMs = DELETE_CONF
     return { ok: true };
   }
 
-  return { getState, load, collect, openDetail, backToList, retitle, deleteClick, disarmDelete, generateSummary, showSummary, reset };
+  async function readSessionDigest(id) {
+    const result = await api.getSessionDigest(id);
+    if (result.ok && result.data?.digest) return { digest: result.data.digest, error: null };
+    if (result.status === 404 && result.data?.error?.code === "digest_not_generated") {
+      return { digest: null, error: null };
+    }
+    return { digest: null, error: "纪要加载失败，请稍后重试" };
+  }
+
+  return { getState, load, collect, openDetail, backToList, retitle, deleteClick, disarmDelete, generateSummary, showSummary, readSessionDigest, reset };
 }

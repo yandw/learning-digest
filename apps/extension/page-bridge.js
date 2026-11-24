@@ -38,6 +38,7 @@
  */
 var YTD_PAGE_BRIDGE = (() => {
   const POSITION_INTERVAL_MS = 1000;
+  const PODCAST_DURATION_TOLERANCE_SECONDS = 2;
 
   // The pure PO-token merge (Ticket 5.7, #96): the getYouTubeCaptionsAuthorized
   // command rewrites candidate URLs with the player-issued authorization. In
@@ -70,19 +71,50 @@ var YTD_PAGE_BRIDGE = (() => {
     const isPodcast = identity.extractVideoIdentity(win.location?.href)?.platformId === "xiaoyuzhou";
     let pendingPodcastSeek = null;
     let lastPodcastHash = null;
+    let publishedEpisodeDuration;
 
-    function findPodcastMedia(positionSeconds = null) {
+    function podcastEpisodeDuration(audio, media) {
+      if (Number.isFinite(audio?.duration) && audio.duration > 0) return audio.duration;
+      if (publishedEpisodeDuration === undefined) {
+        const data = doc.querySelector("script#__NEXT_DATA__");
+        if (data) {
+          try {
+            const duration = JSON.parse(data.textContent)?.props?.pageProps?.episode?.duration;
+            publishedEpisodeDuration = Number.isFinite(duration) && duration > 0 ? duration : null;
+          } catch (_error) {
+            publishedEpisodeDuration = null;
+          }
+        }
+      }
+      return publishedEpisodeDuration ?? (audio ? null : media?.duration ?? null);
+    }
+
+    function isPodcastPreview(media, duration) {
+      return media?.tagName === "VIDEO" && Number.isFinite(media.duration)
+        && Number.isFinite(duration) && duration - media.duration > PODCAST_DURATION_TOLERANCE_SECONDS;
+    }
+
+    function findPodcastMedia(seconds = null, preferFull = false) {
       const media = [...doc.querySelectorAll("audio, video")];
       const audio = media.find((element) => element.tagName === "AUDIO");
       const active = media.find((element) => !element.paused && !element.ended);
-      const selected = active || (media.includes(bridgedMedia) && bridgedMedia) || audio || media[0];
-      if (audio && positionSeconds !== null && positionSeconds > selected.duration) return audio;
+      const duration = podcastEpisodeDuration(audio);
+      const fullVideo = media.find((element) => element.tagName === "VIDEO"
+        && Number.isFinite(element.duration) && Number.isFinite(duration)
+        && Math.abs(element.duration - duration) <= PODCAST_DURATION_TOLERANCE_SECONDS);
+      const previous = media.includes(bridgedMedia) ? bridgedMedia : null;
+      // shortcut: fresh links use the full episode timeline, extend links if full players need distinct positions.
+      const fullEpisode = fullVideo || audio;
+      const selected = (preferFull ? fullEpisode : active || previous || fullEpisode) || media[0];
+      if (seconds !== null && isPodcastPreview(selected, duration) &&
+        (preferFull || seconds >= selected.duration)) return audio || null;
+      if (audio && seconds !== null && seconds > selected.duration) return audio;
       return selected || null;
     }
 
     function seekPodcast(seconds, media) {
-      if (media.readyState < 1) {
-        pendingPodcastSeek = seconds;
+      if (!media || media.readyState < 1) {
+        pendingPodcastSeek = { seconds };
         return { success: true, pending: true };
       }
       const position = Number.isFinite(media.duration) ? Math.min(seconds, media.duration) : seconds;
@@ -187,11 +219,17 @@ var YTD_PAGE_BRIDGE = (() => {
         lastPodcastHash = win.location.hash;
         const match = /^#ld-position-ms=(\d+)$/.exec(lastPodcastHash);
         const positionMs = match && Number(match[1]);
-        pendingPodcastSeek = Number.isSafeInteger(positionMs) ? positionMs / 1000 : null;
+        pendingPodcastSeek = Number.isSafeInteger(positionMs)
+          ? { seconds: positionMs / 1000, preferFull: true }
+          : null;
       }
-      const media = isPodcast && pendingPodcastSeek !== null
-        ? findPodcastMedia(pendingPodcastSeek)
-        : findPrimaryMedia();
+      if (pendingPodcastSeek?.afterPreview && event?.type === "play" && event.target?.tagName === "VIDEO") {
+        pendingPodcastSeek = null;
+      }
+      const pending = pendingPodcastSeek;
+      const media = pending?.afterPreview
+        ? doc.querySelector("audio")
+        : pending ? findPodcastMedia(pending.seconds, pending.preferFull) : findPrimaryMedia();
       if (!media) {
         if (!loggedNoMedia) {
           loggedNoMedia = true;
@@ -207,7 +245,7 @@ var YTD_PAGE_BRIDGE = (() => {
         if (isPodcast && media.readyState < 1) return;
         const mediaChanged = !!bridgedMedia && bridgedMedia !== media;
         attachMediaListeners(media);
-        if (isPodcast && pendingPodcastSeek !== null) seekPodcast(pendingPodcastSeek, media);
+        if (pending) seekPodcast(pending.seconds, media);
         message = {
           action: "mediaPosition",
           position: Number(media.currentTime) || 0,
@@ -222,8 +260,13 @@ var YTD_PAGE_BRIDGE = (() => {
         };
         if (isPodcast) {
           const audio = doc.querySelector("audio");
-          const episodeDuration = audio ? audio.duration : media.duration;
+          const episodeDuration = podcastEpisodeDuration(audio, media);
           message.episodeDuration = Number.isFinite(episodeDuration) ? episodeDuration : null;
+          if (message.ended && isPodcastPreview(media, episodeDuration)) {
+            message.ended = false;
+            message.paused = true;
+            pendingPodcastSeek = { seconds: message.position, afterPreview: true };
+          }
           message.mediaChanged = mediaChanged;
           message.seeking = media.seeking === true;
           message.seeked = event?.type === "seeked";
@@ -281,8 +324,8 @@ var YTD_PAGE_BRIDGE = (() => {
      *   request URL merged onto every candidate (authorizeUrl).
      *
      * With all_frames injection the message reaches every frame; frames
-     * without media stay silent (return false) so only the frame holding
-     * the player answers and the worker takes its response.
+     * without media stay silent so only the frame holding the player
+     * answers. Xiaoyuzhou can acknowledge a seek before its player mounts.
      *
      * @returns {boolean} true when an async response is held open
      *   (getBilibiliCaptions only); every other response is synchronous.
@@ -323,12 +366,10 @@ var YTD_PAGE_BRIDGE = (() => {
           return false;
         }
         const media = findPodcastMedia(seconds);
-        if (media) {
-          try {
-            sendResponse(seekPodcast(seconds, media));
-          } catch (error) {
-            sendResponse({ success: false, error: error?.message || String(error) });
-          }
+        try {
+          sendResponse(seekPodcast(seconds, media));
+        } catch (error) {
+          sendResponse({ success: false, error: error?.message || String(error) });
         }
         return false;
       }

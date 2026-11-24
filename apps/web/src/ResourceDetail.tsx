@@ -3,6 +3,8 @@ import { Alert, Button, Empty, Input, Space, Spin, Tag, Typography } from "antd"
 import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, RightOutlined } from "@ant-design/icons";
 import {
   buildNoteJumpUrl,
+  formatDateTime,
+  formatPosition,
   mergeTranscriptViews,
   noteKindLabel,
   presentDetail,
@@ -13,12 +15,23 @@ import {
   sessionOriginLabel,
 } from "../public/js/library.js";
 
+type SessionDigest = {
+  overview: string[];
+  topics: { startMs: number; title: string; summary?: string; bullets?: string[] }[];
+  categories: { title: string; points: string[] }[];
+  quotes: { startMs: number; text: string }[];
+  todos: string[];
+};
+
+type DigestRead = { digest: SessionDigest | null; error: string | null };
+
 type ResourceDetailProps = {
   state: any;
   onBack: () => void;
   onRetitle: (title: string) => Promise<boolean>;
   onGenerate: () => Promise<void>;
   onShowSummary: (id: string) => Promise<void>;
+  onReadSessionDigest: (id: string) => Promise<DigestRead>;
   onDelete: () => void;
 };
 
@@ -109,12 +122,67 @@ function CollapsibleSection({
   );
 }
 
+function DigestPoints({ points }: { points: string[] }) {
+  return <ul className="summary-list">{points.map((point, index) => <li key={index}>{point}</li>)}</ul>;
+}
+
+function SessionDigestItem({ startedAt, onRead, jumpTo }: {
+  startedAt: string;
+  onRead: () => Promise<DigestRead>;
+  jumpTo: (positionMs: number) => string | null;
+}) {
+  const [result, setResult] = useState<DigestRead>();
+  const [loading, setLoading] = useState(false);
+  const read = async () => {
+    setLoading(true);
+    setResult(await onRead());
+    setLoading(false);
+  };
+  const digest = result?.digest;
+  return (
+    <article className="summary-content">
+      <h3>{formatDateTime(startedAt)} 的学习</h3>
+      {(!result || result.error) && (
+        <Button loading={loading} onClick={() => void read()}>
+          {result?.error ? "重试加载学习纪要" : "查看学习纪要"}
+        </Button>
+      )}
+      {result?.error && <Alert type="warning" showIcon title={result.error} />}
+      {result && !result.error && !digest && <p>本次学习还没有纪要</p>}
+      {digest && (
+        <>
+          {digest.overview.length > 0 && <DigestPoints points={digest.overview} />}
+          {digest.topics.map((topic, index) => (
+            <div key={index}>
+              <h4>{topic.title} <SourceJump href={jumpTo(topic.startMs)}>{formatPosition(topic.startMs)}</SourceJump></h4>
+              {topic.bullets?.length ? <DigestPoints points={topic.bullets} /> : <p>{topic.summary}</p>}
+            </div>
+          ))}
+          {digest.categories.map((category, index) => (
+            <div key={index}>
+              <h4>{category.title}</h4>
+              <DigestPoints points={category.points} />
+            </div>
+          ))}
+          {digest.quotes.map((quote, index) => (
+            <blockquote key={index}>
+              <SourceJump href={jumpTo(quote.startMs)}>{formatPosition(quote.startMs)}</SourceJump> {quote.text}
+            </blockquote>
+          ))}
+          {digest.todos.length > 0 && <><h4>待办</h4><DigestPoints points={digest.todos} /></>}
+        </>
+      )}
+    </article>
+  );
+}
+
 export default function ResourceDetail({
   state,
   onBack,
   onRetitle,
   onGenerate,
   onShowSummary,
+  onReadSessionDigest,
   onDelete,
 }: ResourceDetailProps) {
   const detail = state.detail;
@@ -124,6 +192,7 @@ export default function ResourceDetail({
   const sources = detail.sources || [];
   const notes = detail.notes || [];
   const sessions = detail.sessions || [];
+  const finishedSessions = sessions.filter((session: { status: string }) => session.status === "finished");
   const summaries = presentSummariesList(state.summaries);
   const activeSummary = state.activeSummaryId
     ? state.summaryDetails[state.activeSummaryId]
@@ -309,6 +378,19 @@ export default function ResourceDetail({
           </article>
         )}
       </CollapsibleSection>
+
+      {finishedSessions.length > 0 && (
+        <CollapsibleSection id="session-digests" title="学习纪要">
+          {finishedSessions.map((session: { id: string; sourceId: string; startedAt: string }) => (
+            <SessionDigestItem
+              key={session.id}
+              startedAt={session.startedAt}
+              onRead={() => onReadSessionDigest(session.id)}
+              jumpTo={(positionMs) => buildNoteJumpUrl({ sourceId: session.sourceId, positionMs }, sources)}
+            />
+          ))}
+        </CollapsibleSection>
+      )}
 
       <CollapsibleSection
         id="transcript"

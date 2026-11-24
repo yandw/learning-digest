@@ -31,7 +31,6 @@ async function parseJsonBody(response) {
  * @param {import("./credentials.js").CredentialStore} options.credentials
  * @param {() => void} [options.onUnauthorized] called at most once per 401
  *   on an authenticated call, AFTER the credential was cleared
- * @returns {object} api client with request() plus named wrappers
  */
 export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {}) {
   async function request(method, path, { body, auth = true } = {}) {
@@ -134,6 +133,10 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     return request("GET", `/v1/sessions/${encodeURIComponent(String(id))}/transcript`);
   }
 
+  function getSessionDigest(id) {
+    return request("GET", `/v1/sessions/${encodeURIComponent(String(id))}/digest`);
+  }
+
   // Course summary + usage (round 3, contract-r3 §3.1-§3.4). Generation is
   // the user-initiated POST whose contract body is an empty object — the
   // Resource comes from the path, the account from the credential (D17:
@@ -174,5 +177,5 @@ export function createApiClient({ fetchImpl, credentials, onUnauthorized } = {})
     });
   }
 
-  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, listNotes, getResourceDetail, updateResourceTitle, deleteResource, getSessionTranscript, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
+  return { request, requestCode, verify, logout, me, createLinkRequest, createResource, listResources, listNotes, getResourceDetail, updateResourceTitle, deleteResource, getSessionTranscript, getSessionDigest, generateSummary, listSummaries, getSummary, getUsage, getAdminSiteCapabilities, updateAdminSiteCapability };
 }

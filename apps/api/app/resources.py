@@ -232,7 +232,7 @@ def create_favorite(*, store: Any, account_id: str, request: dict, now, episode:
         "id": generate_id("res"),
         "accountId": account_id,
         # Display title only (never matches); the address is the fallback.
-        "title": episode.get("title") or request["title"] or request["url"],
+        "title": request["title"] or episode.get("title") or request["url"],
         "kind": "video" if source_kind == "replay" else source_kind,
         # Contract §1: ISO 8601 UTC at the fixture sample's second precision;
         # ms stay internal for list ordering.

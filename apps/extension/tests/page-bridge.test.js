@@ -75,6 +75,7 @@ function stubEnvironment({
   createCaptionReader = undefined,
   createYouTubeCaptionReader = undefined,
   scripts = [],
+  episodeDuration = null,
   fetch = undefined,
 } = {}) {
   const sent = [];
@@ -112,6 +113,9 @@ function stubEnvironment({
     },
     querySelector(selector) {
       if (selector === "audio") return audios[0] || null;
+      if (selector === "script#__NEXT_DATA__" && episodeDuration !== null) {
+        return { textContent: JSON.stringify({ props: { pageProps: { episode: { duration: episodeDuration } } } }) };
+      }
       return null;
     },
     querySelectorAll(selector) {
@@ -964,4 +968,74 @@ test("Xiaoyuzhou's panel can read and seek the original audio player's position"
   assert.deepEqual(replies[1], { success: true, position: 420.125 });
   assert.equal(audio.currentTime, 420.125);
   assert.equal(audio.playCalls, 0);
+});
+
+test("Xiaoyuzhou acknowledges a seek before mount and applies it when audio metadata loads", () => {
+  const audios = [];
+  const { bridge, sent, documentStub, messageListeners } = stubEnvironment({
+    audios, location: new URL(PODCAST_URL),
+  });
+  bridge.start();
+  const replies = [];
+  messageListeners[0]({ action: "seekMedia", positionMs: 120125 }, {}, (reply) => replies.push(reply));
+  assert.deepEqual(replies, [{ success: true, pending: true }]);
+
+  const audio = stubVideo({ width: 0, height: 0, duration: NaN, currentTime: 0, paused: true, readyState: 0 });
+  audios.push(audio);
+  documentStub.fire("loadstart", audio);
+  assert.equal(audio.currentTime, 0);
+  audio.readyState = 1;
+  audio.duration = 2544.2;
+  documentStub.fire("loadedmetadata", audio);
+  assert.equal(audio.currentTime, 120.125);
+  assert.equal(sent.at(-1).position, 120.125);
+  assert.equal(audio.playCalls, 0);
+});
+
+test("a Xiaoyuzhou video teaser hands off its final position to lazy full audio", () => {
+  const audio = stubVideo({ width: 0, height: 0, duration: NaN, currentTime: 0, paused: true, readyState: 0 });
+  const preview = stubVideo({ duration: 60, currentTime: 59 });
+  const { bridge, sent, documentStub } = stubEnvironment({
+    videos: [preview], audios: [audio], location: new URL(PODCAST_URL), episodeDuration: 3069,
+  });
+  bridge.start();
+  assert.equal(sent.at(-1).position, 59);
+  preview.currentTime = 60;
+  preview.paused = true;
+  preview.ended = true;
+  documentStub.fire("ended", preview);
+  assert.equal(sent.at(-1).ended, false);
+  assert.equal(sent.at(-1).paused, true);
+  assert.equal(sent.at(-1).episodeDuration, 3069);
+  bridge.reportPosition();
+  assert.equal(sent.at(-1).position, 60);
+
+  audio.duration = 3068.9;
+  audio.readyState = 1;
+  documentStub.fire("loadedmetadata", audio);
+  assert.equal(audio.currentTime, 60);
+  assert.equal(sent.at(-1).position, 60);
+  assert.equal(sent.at(-1).duration, 3068.9);
+  assert.equal(audio.playCalls, 0);
+
+  audio.currentTime = 3068.9;
+  audio.ended = true;
+  documentStub.fire("ended", audio);
+  assert.equal(sent.at(-1).ended, true);
+});
+
+test("a full-length Xiaoyuzhou video can resume on a fresh link and finish the episode", () => {
+  const audio = stubVideo({ width: 0, height: 0, duration: NaN, currentTime: 0, paused: true, readyState: 0 });
+  const video = stubVideo({ duration: 60, currentTime: 0, paused: true });
+  const { bridge, sent, documentStub } = stubEnvironment({
+    videos: [video], audios: [audio], location: new URL(PODCAST_URL + "#ld-position-ms=40125"),
+    episodeDuration: 60,
+  });
+  bridge.start();
+  assert.equal(video.currentTime, 40.125);
+  assert.equal(audio.currentTime, 0);
+  video.currentTime = 60;
+  video.ended = true;
+  documentStub.fire("ended", video);
+  assert.equal(sent.at(-1).ended, true);
 });

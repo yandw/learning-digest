@@ -534,6 +534,7 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
               onRetitle={retitle}
               onGenerate={generateSummary}
               onShowSummary={showSummary}
+              onReadSessionDigest={runtime.library.readSessionDigest}
               onDelete={() => void armDelete(libraryState.detail.resource.id, "detail")}
             />
           </div>

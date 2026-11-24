@@ -163,6 +163,7 @@ createRoot(document.getElementById("root")!).render(
                 onRetitle={async () => true}
                 onGenerate={() => Promise.resolve()}
                 onShowSummary={() => Promise.resolve()}
+                onReadSessionDigest={async () => ({ digest: null, error: null })}
                 onDelete={() => {}}
               />
             </div>

@@ -465,3 +465,38 @@ test("a disabled Xiaoyuzhou episode does not create a learning Session", async (
   assert.equal(started.siteDisabled, true);
   assert.ok(!v1Calls.some(({ path }) => path.endsWith("/sessions")));
 });
+
+test("starting a previously saved Xiaoyuzhou link upgrades the same Source before creating a Session", async () => {
+  const legacy = {
+    ...RESOLVED_SOURCE, url: PODCAST_URL, kind: "url",
+    platformId: null, platformVideoId: null, episodeId: null,
+  };
+  const upgraded = {
+    ...legacy, kind: "audio", platformId: "xiaoyuzhou", durationMs: 2544200,
+    platformVideoId: "6afde79ea4a79edf137b6820",
+  };
+  for (const viaPanel of [false, true]) {
+    const { v1Calls, fetchImpl } = v1Fetch({
+      resolve: [
+        { ...RESOLVE_MATCHED_BODY, source: legacy },
+        { ...RESOLVE_MATCHED_BODY, source: upgraded },
+      ],
+      resources: [{ ...COLLECT_CREATED_BODY, source: upgraded }],
+      sessions: [SESSION_CREATED_BODY],
+    });
+    const helpers = capabilityFlowHelpers({
+      fetchImpl, tabsGet: async (id) => ({ id, url: PODCAST_URL, title: "播客单集" }),
+    });
+    const result = viaPanel
+      ? await helpers.handleStartLearningForTarget({ tabId: 15 })
+      : await helpers.handleStartLearning({ url: PODCAST_URL, tabId: 15 });
+    assert.equal(result.success, true);
+    assert.deepEqual(v1Calls.filter(({ path }) => path === "/v1/resources" || path.endsWith("/sessions"))
+      .map(({ path, method }) => [method, path]), [
+      ["POST", "/v1/resources"],
+      ["POST", "/v1/sources/src_01JABC0002/sessions"],
+    ]);
+    if (viaPanel) assert.equal(result.source.platformId, "xiaoyuzhou");
+    await helpers.handleEndLearning();
+  }
+});

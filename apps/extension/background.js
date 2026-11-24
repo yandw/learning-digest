@@ -2081,10 +2081,15 @@ async function startCaptionsSession(message, recognition, captions) {
   };
 }
 
+function needsLearningFavorite(target, resolution) {
+  return !resolution.matched || !resolution.source?.id ||
+    (target.identity?.platformId === "xiaoyuzhou" && resolution.source.platformId === null);
+}
+
 /**
  * The 开始学习 click for the chosen course tab: resolve first (fresh
- * expectedRevision at start time); an unmatched page favorites INLINE with
- * the P8 collect core and re-resolves (ticket 5.6 #95: 开始学习 = 收藏 +
+ * expectedRevision at start time); a missing favorite or legacy podcast
+ * uses the P8 collect core and re-resolves (ticket 5.6 #95: 开始学习 = 收藏 +
  * 开始 — the 先收藏 intermediate step is retired), then hands over to the
  * capture flow, whose success path locks the target and arms the progress
  * writer.
@@ -2111,7 +2116,7 @@ async function handleStartLearningForTarget({ tabId } = {}) {
       error: resolution.message || "来源解析失败，请稍后重试。",
     };
   }
-  if (!resolution.matched) {
+  if (needsLearningFavorite(target, resolution)) {
     // Favorite network failure / 401 (the P7 handoff ran inside the
     // core) / unconfigured / the 已收藏-无学习源 inconsistency: the
     // helper's final verdict carries the copy — the error surfaces,
@@ -4423,12 +4428,9 @@ async function startCaptureFlowSession(message, recognition, captionsProbe) {
   if (!resolution.ok) {
     return { success: false, error: resolution.message || "来源解析失败，请稍后重试。" };
   }
-  if (!resolution.matched || !resolution.source?.id) {
-    // Ticket 5.6 (#95): the icon path's needsFavorite branch is retired —
-    // an unmatched page favorites inline (P8 collect core) and re-resolves
-    // (decision-1 idempotence: the SAME Source comes back), then the start
-    // proceeds. The helper's final verdict carries every failure copy; the
-    // favorite that DID land is kept for the retry.
+  if (needsLearningFavorite(collectTarget, resolution)) {
+    // Missing favorites and legacy podcast links go through the idempotent
+    // favorite endpoint before Session creation.
     resolution = await favoriteLearningTarget(collectTarget);
     if (!resolution.ok) {
       return { success: false, error: resolution.message };

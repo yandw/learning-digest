@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { createApiClient } from "../public/js/api-client.js";
 import { createLoginFlow } from "../public/js/login-flow.js";
 import { createLibraryFlow } from "../public/js/library.js";
 import { createCredentialStore } from "../public/js/credentials.js";
@@ -34,7 +35,7 @@ const SUMMARY = {
   ],
 };
 
-function makeRuntime({ partialFailure = false, sources = SOURCES } = {}) {
+function makeRuntime({ partialFailure = false, sources = SOURCES, digest = null as object | null, digestStatus = 404 } = {}) {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -73,7 +74,14 @@ function makeRuntime({ partialFailure = false, sources = SOURCES } = {}) {
   };
   let summaries = partialFailure ? [] : [{ ...SUMMARY, content: undefined, citations: undefined, citationCount: 1 }];
   let summaryReadsFail = partialFailure;
+  const digestFetch = vi.fn(async (_path: string, _init?: object) => new Response(
+    JSON.stringify(digestStatus === 200 ? { digest } : { error: {
+      code: digestStatus === 404 ? "digest_not_generated" : "server_error",
+    } }),
+    { status: digestStatus },
+  ));
   const api = {
+    getSessionDigest: createApiClient({ credentials, fetchImpl: digestFetch }).getSessionDigest,
     listResources: async () => ({ ok: true, status: 200, data: { resources: [...resources] } }),
     getResourceDetail: async () => ({ ok: true, status: 200, data: structuredClone(detail) }),
     getSessionTranscript: async () => partialFailure
@@ -119,6 +127,7 @@ function makeRuntime({ partialFailure = false, sources = SOURCES } = {}) {
     library,
     openDetail: vi.fn((id: string) => library.openDetail(id)),
     calls,
+    digestFetch,
   };
 }
 
@@ -142,10 +151,20 @@ describe("React resource learning workbench", () => {
       durationMs: 3661000,
       showNotes,
     };
-    const runtime = makeRuntime({ sources: [source] });
+    const runtime = makeRuntime({
+      sources: [source], digestStatus: 200,
+      digest: {
+        overview: ["本次学习讨论了论文摘要。"],
+        topics: [{ title: "检验结论", startMs: 65000, endMs: 70000, bullets: ["回到原文核对证据"] }],
+        categories: [{ title: "研究方法", points: ["比较样本"] }],
+        quotes: [{ text: "证据很重要。", startMs: 67000 }],
+        todos: ["查阅原始数据"],
+      },
+    });
     const user = userEvent.setup();
     render(<App runtime={runtime} />);
     expect(await screen.findByText("小宇宙 · Research Notes · 1:01:01")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /继续学习/ })).toHaveAttribute("href", url + "#ld-position-ms=250000");
 
     await user.click(await screen.findByRole("link", { name: RESOURCE.title }));
     expect(await screen.findByRole("link", { name: "回到原平台" })).toHaveAttribute("href", url);
@@ -154,6 +173,29 @@ describe("React resource learning workbench", () => {
     const notes = screen.getByText(showNotes);
     expect(notes).toBeInTheDocument();
     expect(notes.querySelector("img")).toBeNull();
+    expect(runtime.digestFetch).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "查看学习纪要" }));
+    expect(await screen.findByText("本次学习讨论了论文摘要。")).toBeInTheDocument();
+    expect(screen.getByText("检验结论")).toBeInTheDocument();
+    expect(screen.getByText("回到原文核对证据")).toBeInTheDocument();
+    expect(screen.getByText("比较样本")).toBeInTheDocument();
+    expect(screen.getByText("证据很重要。")).toBeInTheDocument();
+    expect(screen.getByText("查阅原始数据")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "1:05" }).some(link =>
+      link.getAttribute("href") === url + "#ld-position-ms=65000"
+    )).toBe(true);
+    expect(runtime.digestFetch).toHaveBeenCalledExactlyOnceWith("/v1/sessions/ses_1/digest", {
+      method: "GET", headers: { Authorization: "Bearer web-token" }, body: undefined,
+    });
+  });
+
+  it.each([
+    [404, "本次学习还没有纪要"],
+    [500, "纪要加载失败，请稍后重试"],
+  ])("shows a useful Session Digest result for HTTP %s", async (digestStatus, message) => {
+    const user = await openDetail(makeRuntime({ digestStatus }));
+    await user.click(screen.getByRole("button", { name: "查看学习纪要" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
   });
 
   it("opens sources, notes, transcripts, summary citations and source jumps", async () => {

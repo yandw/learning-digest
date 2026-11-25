@@ -2,7 +2,7 @@
 
 Used by the API's AI Provider seam (contract-r3.md §3.1, decisions D16/D17):
 one generation pass over ALL archived material of a Resource — every
-Session's archived transcript records on one shared source timeline (each
+Session's archived transcript records grouped by Source timeline (each
 line stamped with its sessionId and millisecond range), explicit gaps as
 skipped markers, plus the Resource's notes. The user triggers generation
 from the Web course page; the Resource need not be finished (active
@@ -33,10 +33,12 @@ the Web can render them and jump back to the original platform timestamp
 {"content": "Markdown 格式的总结正文", "citations": [{"quote": "原文摘句", "sessionId": "ses_…", "startMs": 起始毫秒, "endMs": 结束毫秒}]}
 要求：
 - 这是课程学习内容的汇总（不是会议纪要），面向学习者复习：正文禁止出现「会议」「与会」「议程」「决议」等会议用语；一律用简体中文，忽略逐字稿本身的语言。
-- content 用 Markdown 分节组织：核心要点在前，覆盖的主题按来源时间轴次之；学习者的笔记与逐字稿内容合并归纳，不要单独罗列成「笔记区」。
-- 正文控制在约 1200 个中文字符内。合并重复观点，每个主题只保留复习所需的结论、例子或步骤。
+- 先通读逐字稿，结合上下文过滤与课程无关的寒暄、试音和闲聊。对于混合发言，保留其中服务于课程主题的部分。保留帮助理解课程的学员提问和讲师回答，即使它们出现在闲聊之间。
+- 核心要点放在前面，再按主题合并分散讲述的定义、案例和相关问答。按复习需要排列各主题，把适用条件、例外和反例与对应观点写在同一处。把相关学习笔记纳入对应主题，并区分笔记的观察和讲师的观点。
+- content 使用 Markdown：用 ## 作为主题标题，有需要时用 ### 标出子主题，用段落讲清因果或条件，用列表呈现并列要点。正文控制在约 1200 个中文字符内，合并重复观点。
 - 逐字稿行首的方括号是来源标记：[sessionId 起点–终点]（毫秒，来源视频时间轴）。citations 每条从逐字稿原文中摘一句最有依据的原话：quote 逐字摘录、不要改写，sessionId、startMs、endMs 原样复制该行标记的值；不要引用笔记、不要引用跳过标记、不要编造 sessionId 或时间。
 - citations 最多 12 条，优先为核心结论和关键步骤提供依据。材料较短时可以少给，同一结论选一条最直接的原话。
+- 逐字稿与跳过范围中的 [来源 sourceId] 标记区分各个视频或分集；不同来源的时间各自计算。
 - 学习者笔记行首的方括号是另一种标记：[sourceId 位置]（毫秒，笔记在来源时间轴上的位置），括号内是 sourceId 而非 sessionId，两种标记并存，不要混淆。
 - 输入里的「已跳过」标记表示该范围没有文本：在正文相应处说明该区间未取得内容，不要编造；转写失败造成的空缺同理处理。
 - 课程可能尚未学完：在正文末尾用一小节列出尚未覆盖的范围与空缺，便于学习者补学后重新生成。
@@ -63,7 +65,7 @@ the Web can render them and jump back to the original platform timestamp
 - `{resourceTitle}` — the Resource's display title (context only, never
   cited).
 - `{transcriptLines}` — every archived transcript record of the Resource,
-  all Sessions merged on the shared source timeline, ordered by `startMs`,
+  grouped by Source, ordered by `startMs` within each Source,
   one line each: `[ses_… 30000–60000] 注意力分数的计算，就是把查询向量和键向量做点积`. The
   stamp keeps each line's Session explicit so citations can point back at
   the exact archived record.

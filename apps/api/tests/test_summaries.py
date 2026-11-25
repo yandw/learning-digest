@@ -198,6 +198,32 @@ def test_generate_201_full_summary_verbatim_citations_input_chars_and_usage_accr
     assert usage.json["updatedAt"]
 
 
+def test_generate_uses_one_global_prompt_for_theme_based_review(start_app):
+    provider = CapturingProvider()
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    mixed = "能听清吗另外缩放点积的系数要怎么选"
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 0, "endMs": 30000, "text": "查询向量和键向量做点积"},
+            {"startMs": 30000, "endMs": 60000, "text": mixed},
+            {"startMs": 60000, "endMs": 90000, "text": "只在键向量维数较大时显著影响分布"},
+        ],
+        label="theme",
+    )
+
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert len(provider.captured) == 1
+    system, user = provider.captured[0]["system"], provider.captured[0]["user"]
+    for instruction in ("按主题合并", "混合发言", "相关问答", "适用条件", "反例", "###"):
+        assert instruction in system
+    assert mixed in user, "model needs the full utterance to distinguish useful context"
+    assert "只在键向量维数较大时显著影响分布" in user
+
+
 def test_generate_every_post_creates_a_new_summary_regeneration_deterministic_but_separate(start_app):
     app, a, _b = start_summary_app(start_app)
     archived = favorite_and_archive(app, a["token"], records=RECORDS, label="repeat")
@@ -570,3 +596,44 @@ def test_generate_merges_overlapping_sessions_into_one_transcript(start_app):
     # The two sessions' identical gap folds to a single marker line.
     gap_lines = [line for line in user.split("\n") if "已跳过，该范围未取得文本" in line]
     assert len(gap_lines) == 1, gap_lines
+
+
+def test_generate_keeps_same_time_material_and_gaps_from_distinct_sources(start_app):
+    provider = CapturingProvider()
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    first = favorite_and_archive(
+        app,
+        token,
+        records=[{"startMs": 0, "endMs": 30000, "text": "第一集介绍点积"}],
+        gaps=[{"startMs": 30000, "endMs": 60000}],
+        label="part-one",
+    )
+    second = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 0, "endMs": 30000, "text": "第二集回顾课程背景"},
+            {"startMs": 30000, "endMs": 60000, "text": "第二集补充缩放系数与例外"},
+        ],
+        label="part-two",
+        url="https://www.bilibili.com/video/BV1ab411L78c?p=3",
+    )
+    resource_id = first["resource"]["id"]
+    # The favorite endpoint creates one Source at a time. Seed the
+    # supported persisted shape of a Resource with multiple Sources.
+    for collection, entity in (("sources", second["source"]), ("sessions", second["session"])):
+        existing = app.store.get(collection, entity["id"])
+        app.store.set(collection, entity["id"], {**existing, "resourceId": resource_id})
+
+    response = generate(app, token, resource_id)
+    assert response.status == 201, response.json
+    assert {citation["quote"] for citation in response.json["summary"]["citations"]} == {
+        "第一集介绍点积",
+        "第二集补充缩放系数与例外",
+    }
+    user = provider.captured[0]["user"]
+    assert "第二集回顾课程背景" in user
+    assert f"[{first['session']['id']} 30000–60000] 已跳过，该范围未取得文本" in user
+    for archived in (first, second):
+        assert f"[来源 {archived['source']['id']}]" in user

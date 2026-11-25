@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { createLoginFlow } from "../public/js/login-flow.js";
@@ -34,7 +34,7 @@ const SUMMARY = {
   ],
 };
 
-function makeRuntime({ partialFailure = false } = {}) {
+function makeRuntime({ partialFailure = false, organizingTranscript = false } = {}) {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -73,6 +73,7 @@ function makeRuntime({ partialFailure = false } = {}) {
   };
   let summaries = partialFailure ? [] : [{ ...SUMMARY, content: undefined, citations: undefined, citationCount: 1 }];
   let summaryReadsFail = partialFailure;
+  let transcriptReads = 0;
   const api = {
     listResources: async () => ({ ok: true, status: 200, data: { resources: [...resources] } }),
     getResourceDetail: async () => ({ ok: true, status: 200, data: structuredClone(detail) }),
@@ -83,11 +84,18 @@ function makeRuntime({ partialFailure = false } = {}) {
           status: 200,
           data: {
             sourceId: "src_1",
+            sessionId: "ses_1",
             sessionStatus: "finished",
             records: [{ startMs: 65000, endMs: 70000, text: "注意力会选择重要的信息" }],
             gaps: [],
             pending: [],
             failed: [],
+            ...(organizingTranscript && {
+              organized: ++transcriptReads === 1 ? { status: "processing" } : {
+                status: "ready",
+                paragraphs: [{ sentences: [{ text: "注意力会选择重要的信息。", startMs: 65000, endMs: 70000 }] }],
+              },
+            }),
           },
         },
     listSummaries: async () => summaryReadsFail
@@ -148,6 +156,17 @@ describe("React resource learning workbench", () => {
     const jumps = screen.getAllByTitle("回到原视频的这个位置");
     expect(jumps[0]).toHaveAttribute("href", expect.stringContaining("t=65"));
     expect(runtime.openDetail).toHaveBeenCalledWith("res_1");
+  });
+
+  it("updates an open transcript when organization completes", async () => {
+    const runtime = makeRuntime({ organizingTranscript: true });
+    const user = await openDetail(runtime);
+    await user.click(await screen.findByRole("button", { name: "展开逐字稿" }));
+    expect(screen.getByText("注意力会选择重要的信息", { selector: ".transcript-text" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("正在整理逐字稿");
+    const sentence = await screen.findByText("注意力会选择重要的信息。", { selector: ".transcript-text" }, { timeout: 3000 });
+    expect(within(sentence.closest("li")!).getByRole("link", { name: "1:05" }))
+      .toHaveAttribute("href", expect.stringContaining("t=65"));
   });
 
   it("edits the resource title through the existing flow", async () => {

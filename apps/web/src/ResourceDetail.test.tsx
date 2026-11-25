@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { createLoginFlow } from "../public/js/login-flow.js";
@@ -34,7 +34,7 @@ const SUMMARY = {
   ],
 };
 
-function makeRuntime({ partialFailure = false } = {}) {
+function makeRuntime({ partialFailure = false, summary = SUMMARY } = {}) {
   const values = new Map<string, string>();
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -93,7 +93,7 @@ function makeRuntime({ partialFailure = false } = {}) {
     listSummaries: async () => summaryReadsFail
       ? { ok: false, status: 500, data: { error: { message: "总结历史暂不可用" } } }
       : { ok: true, status: 200, data: { summaries: [...summaries] } },
-    getSummary: async () => ({ ok: true, status: 200, data: { summary: structuredClone(SUMMARY) } }),
+    getSummary: async () => ({ ok: true, status: 200, data: { summary: structuredClone(summary) } }),
     updateResourceTitle: async (id: string, title: string) => {
       calls.retitle.push({ id, title });
       detail.resource.title = title;
@@ -144,10 +144,58 @@ describe("React resource learning workbench", () => {
     expect(screen.getByText("核心概念")).toBeInTheDocument();
     expect(screen.getByText("注意力", { selector: "strong" })).toBeInTheDocument();
     expect(screen.getByText("「注意力会选择重要的信息」")).toBeInTheDocument();
+    expect(screen.queryByRole("figure")).not.toBeInTheDocument();
     expect(screen.getByText("上次学到 4:10", { selector: ".detail-sources *" })).toBeInTheDocument();
     const jumps = screen.getAllByTitle("回到原视频的这个位置");
     expect(jumps[0]).toHaveAttribute("href", expect.stringContaining("t=65"));
     expect(runtime.openDetail).toHaveBeenCalledWith("res_1");
+  });
+
+  it("shows a directed course flowchart with per-connection source jumps and a text fallback", async () => {
+    const quote = "若维数大则缩放点积，否则直接使用";
+    const modelText = "<img src=x onerror=alert(1)>";
+    const summary = {
+      ...SUMMARY,
+      content: "## 并列建议\n\n- 记录维数\n- 保存结果",
+      flowchart: {
+        title: "点积处理",
+        nodes: [
+          { id: "check", label: "检查维数" },
+          { id: "scale", label: "缩放点积" },
+          { id: "direct", label: modelText },
+        ],
+        edges: [
+          {
+            from: "check",
+            to: "scale",
+            label: "维数大",
+            citation: { quote, segmentRef: { sessionId: "ses_1", startMs: 65000, endMs: 70000 } },
+          },
+          {
+            from: "check",
+            to: "direct",
+            label: "其他情况",
+            citation: { quote, segmentRef: { sessionId: "ses_missing", startMs: 70000, endMs: 75000 } },
+          },
+        ],
+      },
+    };
+    await openDetail(makeRuntime({ summary }));
+
+    const chart = await screen.findByRole("figure", { name: "点积处理" });
+    const graph = within(chart);
+    expect(graph.getAllByText("检查维数")).toHaveLength(1);
+    expect(graph.getByText("维数大")).toBeInTheDocument();
+    expect(graph.getByText("缩放点积")).toBeInTheDocument();
+    expect(graph.getByText("其他情况")).toBeInTheDocument();
+    expect(graph.getByText(modelText)).toBeInTheDocument();
+    expect(graph.queryByRole("img")).not.toBeInTheDocument();
+    expect(graph.getByRole("link", { name: "1:05–1:10" })).toHaveAttribute("href", expect.stringContaining("t=65"));
+    expect(graph.getByText("1:10–1:15")).toBeInTheDocument();
+    expect(graph.queryByRole("link", { name: "1:10–1:15" })).not.toBeInTheDocument();
+    expect(graph.getAllByText(`「${quote}」`)).toHaveLength(2);
+    expect(screen.getByText("记录维数").closest("li")).toBeInTheDocument();
+    expect(screen.getByText("保存结果").closest("li")).toBeInTheDocument();
   });
 
   it("edits the resource title through the existing flow", async () => {

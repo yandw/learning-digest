@@ -545,26 +545,44 @@ export function presentSummary(summary, sessions, sources) {
     return null;
   }
   const sessionById = new Map((sessions || []).map((session) => [session.id, session]));
+  const presentCitation = ({ quote, segmentRef }) => {
+    const session = sessionById.get(segmentRef?.sessionId);
+    return {
+      quote,
+      stamp: formatRange(segmentRef?.startMs, segmentRef?.endMs),
+      jumpUrl: buildNoteJumpUrl(
+        { sourceId: session?.sourceId, positionMs: segmentRef?.startMs },
+        sources,
+      ),
+      sessionStartedAtText: session ? formatDateTime(session.startedAt) : null,
+      sessionOriginLabel: session ? sessionOriginLabel(session.origin) : null,
+    };
+  };
+  const flowchart = summary.flowchart;
+  const groups = new Map();
+  if (Array.isArray(flowchart?.nodes) && Array.isArray(flowchart?.edges)) {
+    const labels = new Map(flowchart.nodes.map((node) => [node.id, node.label]));
+    for (const edge of flowchart.edges) {
+      if (!labels.has(edge.from) || !labels.has(edge.to) || !edge.citation) {
+        continue;
+      }
+      if (!groups.has(edge.from)) {
+        groups.set(edge.from, { id: edge.from, label: labels.get(edge.from), branches: [] });
+      }
+      groups.get(edge.from).branches.push({
+        step: labels.get(edge.to),
+        condition: edge.label,
+        ...presentCitation(edge.citation),
+      });
+    }
+  }
   return {
     id: summary.id,
     blocks: renderMarkdown(summary.content),
     generatedAtText: formatDateTime(summary.generatedAt),
-    citations: (summary.citations || []).map((citation) => {
-      const session = sessionById.get(citation.segmentRef && citation.segmentRef.sessionId);
-      const startMs = citation.segmentRef && citation.segmentRef.startMs;
-      const endMs = citation.segmentRef && citation.segmentRef.endMs;
-      return {
-        quote: citation.quote,
-        stamp: formatRange(startMs, endMs),
-        jumpUrl: buildNoteJumpUrl(
-          { sourceId: session ? session.sourceId : null, positionMs: startMs },
-          sources,
-        ),
-        sessionStartedAtText: session ? formatDateTime(session.startedAt) : null,
-        sessionOriginLabel: session ? sessionOriginLabel(session.origin) : null,
-      };
-    }),
+    citations: (summary.citations || []).map(presentCitation),
     citationCount: (summary.citations || []).length,
+    flowchart: groups.size ? { title: flowchart.title, groups: [...groups.values()] } : null,
   };
 }
 

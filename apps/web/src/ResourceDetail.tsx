@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Alert, Button, Empty, Input, Space, Spin, Tag, Typography } from "antd";
 import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, RightOutlined } from "@ant-design/icons";
 import {
@@ -62,6 +62,53 @@ function SummaryBlocks({ blocks }: { blocks: any[] }) {
     }
     return <p className="summary-paragraph" key={index}><MarkdownRuns runs={block.runs} /></p>;
   });
+}
+
+type FlowchartView = {
+  title: string;
+  groups: Array<{
+    id: string;
+    label: string;
+    branches: Array<{
+      step: string;
+      condition?: string;
+      quote: string;
+      stamp: string | null;
+      jumpUrl: string | null;
+    }>;
+  }>;
+};
+
+function SummaryFlowchart({ chart }: { chart: FlowchartView }) {
+  const titleId = useId();
+  return (
+    <figure className="summary-flowchart" aria-labelledby={titleId}>
+      <figcaption><h3 id={titleId}>{chart.title}</h3></figcaption>
+      <ul className="flowchart-groups" role="list">
+        {chart.groups.map((group) => (
+          <li className="flowchart-group" key={group.id}>
+            <strong className="flowchart-node">{group.label}</strong>
+            <ul className="flowchart-branches" role="list">
+              {group.branches.map((branch, index) => (
+                <li className="flowchart-branch" key={index}>
+                  <div className="flowchart-connector">
+                    {branch.condition && <span>{branch.condition}</span>}
+                    <span className="flowchart-direction">转到</span>
+                    <span aria-hidden="true">→</span>
+                  </div>
+                  <div className="flowchart-target">
+                    <strong className="flowchart-node">{branch.step}</strong>
+                    <blockquote>「{branch.quote}」</blockquote>
+                    {branch.stamp && <SourceJump href={branch.jumpUrl}>{branch.stamp}</SourceJump>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </figure>
+  );
 }
 
 function CollapsibleSection({
@@ -277,6 +324,7 @@ export default function ResourceDetail({
           <article className="summary-content">
             <p className="summary-meta">生成于 {summary.generatedAtText} · {summary.citationCount} 条引用</p>
             <SummaryBlocks blocks={summary.blocks} />
+            {summary.flowchart && <SummaryFlowchart chart={summary.flowchart} />}
             {summary.citations.length > 0 && (
               <div className="summary-citations">
                 <h3>原文引用</h3>

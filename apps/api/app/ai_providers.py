@@ -496,6 +496,12 @@ def _reply_text(data: Any) -> str:
     return "" if content is None else str(content)
 
 
+class InvalidSummaryPayload(RuntimeError):
+    def __init__(self, usage: dict):
+        super().__init__("Qwen AI Provider returned an unparseable summary payload")
+        self.usage = usage
+
+
 class QwenProvider:
     """Bailian compatible-mode chat/completions (worker/providers/qwen.py is
     the shape precedent — same endpoint family, different credential
@@ -587,10 +593,11 @@ class QwenProvider:
         }
 
     def generate(self, *, system: str, user: str) -> dict:
-        parsed = parse_summary_payload(self._chat(system=system, user=user))
+        reply, usage = self._chat_response(system=system, user=user)
+        parsed = parse_summary_payload(reply)
         if not parsed:
-            raise RuntimeError("Qwen AI Provider returned an unparseable summary payload")
-        return parsed
+            raise InvalidSummaryPayload(usage)
+        return {**parsed, **{key: value for key, value in usage.items() if value is not None}}
 
     def generate_topics(self, *, system: str, user: str) -> list:
         """One rolling-summary tick over chat/completions (contract-r4.md

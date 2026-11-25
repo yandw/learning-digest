@@ -16,7 +16,10 @@ and usage accrues only on success (D18).
 import re
 from types import SimpleNamespace
 
-from app.ai_providers import create_stub_provider
+import httpx
+import pytest
+
+from app.ai_providers import create_qwen_provider, create_stub_provider
 
 from helpers import auth_header, open_account_with_id
 
@@ -687,3 +690,43 @@ def test_generate_prefers_organized_transcript_and_cites_exact_sentence(start_ap
             "segmentRef": {"sessionId": session_id, "startMs": 30000, "endMs": 60000},
         },
     ]
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_status", "expected_outcome"),
+    [('{"content":"## 缩放点积"}', 201, "ready"), ("invalid", 502, "failed")],
+)
+def test_generate_records_reported_tokens_and_one_attempt(
+    start_app, caplog, reply, expected_status, expected_outcome
+):
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": reply}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        })
+
+    provider = create_qwen_provider(api_key="fixture-key", transport=httpx.MockTransport(complete))
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(app, token, records=RECORDS, finish=False, label="metrics")
+
+    with caplog.at_level("INFO", logger="app.summaries"):
+        response = generate(app, token, archived["resource"]["id"])
+    assert response.status == expected_status, response.json
+    assert len(requests) == 1
+    assert len(caplog.records) == 1
+    metrics = dict(caplog.records[0].args)
+    assert metrics.pop("latencyMs") >= 0
+    assert metrics == {
+        "provider": "qwen",
+        "model": provider.model,
+        "status": expected_outcome,
+        "inputTokens": 12,
+        "outputTokens": 3,
+        "callCount": 1,
+        "retryCount": 0,
+    }
+    assert RECORDS[0]["text"] not in caplog.text

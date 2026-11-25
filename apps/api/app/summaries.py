@@ -31,9 +31,11 @@ Generation pipeline (one POST, synchronous, D16):
 
 from __future__ import annotations
 
+import logging
 import re
 from itertools import groupby
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 from .errors import ApiError, not_found_resource
@@ -50,6 +52,8 @@ PROMPT_FILE = Path(__file__).resolve().parents[3] / "prompts" / "course-summary.
 
 GAP_MARKER = "已跳过，该范围未取得文本"
 NOTHING_MARKER = "（无）"
+
+logger = logging.getLogger(__name__)
 
 _cached_template: dict | None = None
 
@@ -415,13 +419,34 @@ def generate_summary(
     if not generation_input["records"]:
         raise no_transcript_to_summarize()
 
+    started = perf_counter()
+    status = "failed"
+    usage = {}
     try:
         generated = ai_provider.generate(system=generation_input["system"], user=generation_input["user"])
-    except Exception:
+        if isinstance(generated, dict):
+            usage = generated
+        content = usage.get("content")
+        if not isinstance(content, str):
+            raise summary_generation_failed()
+        status = "ready"
+    except Exception as error:
+        usage = getattr(error, "usage", usage)
         raise summary_generation_failed() from None
-    content = generated.get("content") if isinstance(generated, dict) else None
-    if not isinstance(content, str):
-        raise summary_generation_failed()
+    finally:
+        telemetry = {
+            "provider": ai_provider.id,
+            "model": ai_provider.model,
+            "status": status,
+            "latencyMs": round((perf_counter() - started) * 1000),
+            "callCount": 1,
+            "retryCount": 0,
+        }
+        for key in ("inputTokens", "outputTokens"):
+            value = usage.get(key) if isinstance(usage, dict) else None
+            telemetry[key] = value if type(value) is int and value >= 0 else None
+        logger.info("course summary attempt %s", telemetry)
+
     citations = reconcile_citations(
         raw_citations=generated.get("citations"), records=generation_input["records"]
     )

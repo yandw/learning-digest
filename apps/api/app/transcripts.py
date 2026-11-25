@@ -145,6 +145,13 @@ def parse_caption_segments(body: Any) -> list:
     return parsed
 
 
+def sorted_records(state: dict) -> list[dict]:
+    return sorted(
+        state["records"],
+        key=lambda record: (record["startMs"], record["endMs"], record.get("segmentIndex", -1)),
+    )
+
+
 def transcript_view(session: dict, state: dict) -> dict:
     """Contract §2.5 TranscriptView — the single shape shared by the
     captions response, the polling endpoint (§3.5) and the resource-detail
@@ -158,7 +165,11 @@ def transcript_view(session: dict, state: dict) -> dict:
         "resourceId": session["resourceId"],
         "sessionStatus": session["status"],
         "origin": session["origin"],
-        "records": sorted(state["records"], key=lambda r: r["startMs"]),
+        "records": [
+            {key: record[key] for key in ("startMs", "endMs", "text", "origin")}
+            for record in sorted_records(state)
+        ],
+        **({"organized": state["organized"]} if state.get("organized") else {}),
         "gaps": state["gaps"],
         "pending": [
             {
@@ -296,7 +307,7 @@ def apply_segment_done(
         return
     segment["status"] = "done"
     for record in records or []:
-        state["records"].append({**record, "origin": "asr"})
+        state["records"].append({**record, "origin": "asr", "segmentIndex": segment_index})
     save_state(store, state)
 
 

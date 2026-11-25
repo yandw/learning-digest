@@ -215,3 +215,21 @@ test("presentTranscript keeps organized paragraphs and links their sentences to 
     ["否则先", "https://www.youtube.com/watch?v=lesson&t=30s"],
   ]);
 });
+
+test("presentTranscript keeps organized and raw ranges in a partially organized session", () => {
+  const records = [
+    { startMs: 0, endMs: 15000, text: "已整理" },
+    { startMs: 15000, endMs: 30000, text: "原始转写" },
+  ];
+  const transcript = view({
+    records,
+    organized: { status: "partial", paragraphs: [
+      { sentences: [{ ...records[0], text: "已整理。" }] },
+      { status: "raw", sentences: [records[1]] },
+    ] },
+  });
+
+  const entries = presentTranscript(mergeTranscriptViews([transcript]), []);
+  assert.deepEqual(entries.map((entry) => entry.sentences[0].text), ["已整理。", "原始转写"]);
+  assert.equal(entries[1].detail, "此段显示原始转写");
+});

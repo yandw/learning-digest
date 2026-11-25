@@ -88,6 +88,7 @@
 Session 结束并且转写任务全部进入终态后，自动整理可用记录。整理中返回
 `organized: { status: "processing" }`，失败返回 `{ status: "failed" }`，两种状态均可直接读取
 `records`。成功返回 `{ status: "ready", paragraphs: [{ sentences: [{ text, startMs, endMs, spans }] }] }`。
+部分窗口整理成功时返回 `{ status: "partial", paragraphs }`。未能整理的段落带有 `status: "raw"`，保留对应原文和来源。
 句子的 `spans` 可包含多个 `{ recordIndex, startMs, endMs, segmentIndex? }`，对应
 `records` 中的零基索引和原有时间范围。句子的时间精度取自这些记录。ASR 记录保有采集段索引时，
 其跨度同时提供 `segmentIndex`。整理稿为附加视图，完整的原文继续通过 `records` 提供。

@@ -283,7 +283,7 @@ export function presentTranscript(view, sources) {
       endMs: record.endMs,
       stamp: formatPosition(record.startMs),
       text: record.text,
-      detail: null,
+      detail: record.detail ?? null,
       origin: record.origin === undefined ? null : record.origin,
       sessionId: record.sessionId === undefined ? null : record.sessionId,
       jumpUrl: buildNoteJumpUrl(
@@ -468,16 +468,17 @@ export function mergeTranscriptViews(viewsIn) {
   const ready = new Map();
   for (const view of views) {
     const survivors = recordsBySession.get(view.sessionId);
-    const paragraphs = view.organized?.status === "ready" && view.organized.paragraphs;
+    const paragraphs = ["ready", "partial"].includes(view.organized?.status) && view.organized.paragraphs;
     // A sentence can consume multiple records, including one trimmed by deduplication.
     if (!paragraphs?.length || !survivors || survivors.length !== view.records.length) continue;
-    ready.set(view.sessionId, paragraphs.map(({ sentences }) => ({
+    ready.set(view.sessionId, paragraphs.map(({ sentences, status }) => ({
       sessionId: view.sessionId,
       sourceId: view.sourceId,
       origin: view.origin,
       startMs: sentences[0].startMs,
       endMs: Math.max(...sentences.map((sentence) => sentence.endMs)),
       sentences,
+      detail: status === "raw" ? "此段显示原始转写" : null,
     })));
   }
   const displayRecords = keptRecords.flatMap((record) => {

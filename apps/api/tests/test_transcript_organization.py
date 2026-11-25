@@ -151,3 +151,121 @@ def test_logout_also_organizes_the_session_it_finishes(start_app):
     assert provider.inputs == []
     assert app.request("POST", "/v1/auth/logout", headers=headers).status == 200
     assert provider.inputs == [{"text": "听课结束", "final": True}]
+
+
+def test_organization_restores_archived_whitespace_between_english_sentences(start_app):
+    provider = TranscriptProvider([["First point.", "Next point."], ["The final"]])
+    request, _ = start_session(start_app, provider)
+    raw = "First point.\t  Next point.  The final"
+    assert request("POST", "captions", {"segments": [
+        {"startMs": 0, "endMs": 1000, "text": raw},
+    ]}).status == 201
+
+    assert request("POST", "finish", {}).status == 200
+    view = request("GET", "transcript").json
+    assert [[sentence["text"] for sentence in paragraph["sentences"]]
+            for paragraph in view["organized"]["paragraphs"]] == [
+        ["First point.", "\t  Next point."], ["  The final"],
+    ]
+    assert view["records"][0]["text"] == raw
+    assert len(provider.inputs) == 1
+
+
+def test_long_transcript_reuses_uncertain_tail_before_the_next_window_and_stops_at_gap(start_app):
+    class WindowProvider(TranscriptProvider):
+        def organize_transcript(self, *, system, user):
+            payload = json.loads(user)
+            self.inputs.append(payload)
+            text = payload["text"]
+            if not payload["final"]:
+                return {"paragraphs": [[opening, text.removeprefix(opening) + "。"]]}
+            if text.startswith("如果"):
+                return {"paragraphs": [[condition + "。", "最后我们还"]]}
+            return {"paragraphs": [[text]]}
+
+    opening = "开场" * 490 + "。"
+    condition = "如果" + "条件" * 8 + "需要补充就继续"
+    records = [
+        {"startMs": 0, "endMs": 1000, "text": opening + "如果"},
+        {"startMs": 1000, "endMs": 2000, "text": condition.removeprefix("如果") + "最后我们还"},
+        {"startMs": 3000, "endMs": 4000, "text": "下一段缺录前的半句"},
+    ]
+    provider = WindowProvider(None)
+    request, _ = start_session(start_app, provider)
+    assert request("POST", "captions", {"segments": records}).status == 201
+    assert request("POST", "finish", {"gaps": [{"startMs": 2000, "endMs": 3000}]}).status == 200
+
+    view = request("GET", "transcript").json
+    paragraphs = view["organized"]["paragraphs"]
+    opening_sentence, joined, tail, after_gap = [
+        sentence for paragraph in paragraphs for sentence in paragraph["sentences"]
+    ]
+    assert [sentence["text"] for sentence in (opening_sentence, joined, tail, after_gap)] == [
+        opening, condition + "。", "最后我们还", "下一段缺录前的半句",
+    ]
+    assert joined["spans"] == [
+        {"recordIndex": 0, "startMs": 0, "endMs": 1000},
+        {"recordIndex": 1, "startMs": 1000, "endMs": 2000},
+    ]
+    assert tail["spans"] == [{"recordIndex": 1, "startMs": 1000, "endMs": 2000}]
+    assert after_gap["spans"] == [{"recordIndex": 2, "startMs": 3000, "endMs": 4000}]
+    assert len(paragraphs[-1]["sentences"]) == 1
+    assert [model_input["final"] for model_input in provider.inputs] == [False, True, True]
+    assert len(provider.inputs[0]["text"]) <= 1000
+    assert provider.inputs[1]["text"] == condition + "最后我们还"
+    assert view["records"] == [{**record, "origin": "captions"} for record in records]
+
+
+def test_failed_window_preserves_exact_raw_range_and_later_window_still_organizes(start_app):
+    class MixedProvider(TranscriptProvider):
+        def organize_transcript(self, *, system, user):
+            payload = json.loads(user)
+            self.inputs.append(payload)
+            if not payload["final"]:
+                return {"paragraphs": [["原词被换掉了。"]]}
+            return {"paragraphs": [["这里已经讲完。", "后面还"]]}
+
+    original = "原话" * 500
+    provider = MixedProvider(None)
+    request, _ = start_session(start_app, provider)
+    records = [
+        {"startMs": 0, "endMs": 1000, "text": original + "这里已经讲完"},
+        {"startMs": 1000, "endMs": 2000, "text": "后面还"},
+    ]
+    assert request("POST", "captions", {"segments": records}).status == 201
+    assert request("POST", "finish", {}).status == 200
+
+    view = request("GET", "transcript").json
+    assert view["organized"]["status"] == "partial"
+    raw, formatted = view["organized"]["paragraphs"]
+    assert raw == {"status": "raw", "sentences": [{
+        "text": original, "startMs": 0, "endMs": 1000,
+        "spans": [{"recordIndex": 0, "startMs": 0, "endMs": 1000}],
+    }]}
+    assert [sentence["text"] for sentence in formatted["sentences"]] == ["这里已经讲完。", "后面还"]
+    assert [sentence["spans"][0]["recordIndex"] for sentence in formatted["sentences"]] == [0, 1]
+    assert [model_input["text"] for model_input in provider.inputs] == [original, original, "这里已经讲完后面还"]
+    assert view["records"] == [{**record, "origin": "captions"} for record in records]
+
+
+def test_raw_fallback_bounds_calls_when_no_sentence_boundary_is_returned(start_app):
+    class EchoProvider(TranscriptProvider):
+        def organize_transcript(self, *, system, user):
+            payload = json.loads(user)
+            self.inputs.append(payload)
+            return {"paragraphs": [[payload["text"]]]}
+
+    source = "原话" * 1005
+    provider = EchoProvider(None)
+    request, _ = start_session(start_app, provider)
+    assert request("POST", "captions", {"segments": [
+        {"startMs": 0, "endMs": 1000, "text": source},
+    ]}).status == 201
+    assert request("POST", "finish", {}).status == 200
+    view = request("GET", "transcript").json
+    assert view["organized"]["status"] == "partial"
+    assert "".join(sentence["text"] for paragraph in view["organized"]["paragraphs"]
+                   for sentence in paragraph["sentences"]) == source
+    assert [(len(payload["text"]), payload["final"]) for payload in provider.inputs] == [
+        (1000, False), (2000, False), (10, True),
+    ]

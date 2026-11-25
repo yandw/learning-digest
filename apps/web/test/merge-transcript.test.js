@@ -178,3 +178,40 @@ test("presentTranscript renders the merged view with per-record origin labels", 
   assert.equal(entries[0].text, "语音转写第一段更完整的文本");
   assert.equal(sessionOriginLabel(entries[0].origin), "语音转写");
 });
+
+test("presentTranscript keeps organized paragraphs and links their sentences to the right source", () => {
+  const captions = view({
+    sessionId: "ses_c",
+    sourceId: "src_2",
+    origin: "captions",
+    records: [{ startMs: 0, endMs: 30000, text: "分集原字幕" }],
+  });
+  const organized = view({
+    records: [
+      { startMs: 0, endMs: 30000, text: "如果输入" },
+      { startMs: 30000, endMs: 60000, text: "足够就继续否则先" },
+    ],
+    organized: { status: "ready", paragraphs: [{ sentences: [
+      { text: "如果输入足够，就继续。", startMs: 0, endMs: 60000, spans: [
+        { recordIndex: 0, startMs: 0, endMs: 30000 },
+        { recordIndex: 1, startMs: 30000, endMs: 60000 },
+      ] },
+      { text: "否则先", startMs: 30000, endMs: 60000, spans: [
+        { recordIndex: 1, startMs: 30000, endMs: 60000 },
+      ] },
+    ] }] },
+  });
+  const sources = [
+    { id: "src_1", platformId: "youtube", url: "https://www.youtube.com/watch?v=lesson" },
+    { id: "src_2", platformId: "bilibili", url: "https://www.bilibili.com/video/BV1ab411L78c?p=2" },
+  ];
+
+  const entries = presentTranscript(mergeTranscriptViews([captions, organized]), sources);
+  assert.equal(entries.length, 2);
+  assert.equal(entries.find((entry) => entry.text === "分集原字幕").jumpUrl,
+    "https://www.bilibili.com/video/BV1ab411L78c?p=2&t=0");
+  assert.deepEqual(entries.find((entry) => entry.sentences).sentences.map(({ text, jumpUrl }) => [text, jumpUrl]), [
+    ["如果输入足够，就继续。", "https://www.youtube.com/watch?v=lesson&t=0s"],
+    ["否则先", "https://www.youtube.com/watch?v=lesson&t=30s"],
+  ]);
+});

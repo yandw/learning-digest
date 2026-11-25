@@ -356,6 +356,9 @@ export default function ResourceDetail({
         count={`${mergedView.records.length} 段 · 合并 ${sessions.length} 次学习`}
         defaultOpen={false}
       >
+        {sessionViews.some((view: any) => view?.organized?.status === "processing") && (
+          <p className="session-hint" role="status">正在整理逐字稿，已归档的原文可先查看。</p>
+        )}
         {sessions.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开始学习后，逐字稿会出现在这里。" />
         ) : sessionViews.every((view: any) => view === null || view === undefined) ? (
@@ -366,15 +369,17 @@ export default function ResourceDetail({
           <ul className="transcript-entries">
             {entries.map((entry: any, index: number) => (
               <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
-                <div className="transcript-line">
-                  {(entry.stamp || entry.jumpUrl) && (
-                    <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
-                  )}
-                  <span className="transcript-text">{entry.text}</span>
-                  {entry.kind === "record" && sessionOriginLabel(entry.origin) && (
-                    <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
-                  )}
-                </div>
+                {(entry.sentences || [entry]).map((line: any, lineIndex: number) => (
+                  <div className="transcript-line" key={lineIndex}>
+                    {(line.stamp || line.jumpUrl) && (
+                      <SourceJump href={line.jumpUrl}>{line.stamp}</SourceJump>
+                    )}
+                    <span className="transcript-text">{line.text}</span>
+                    {lineIndex === 0 && entry.kind === "record" && sessionOriginLabel(entry.origin) && (
+                      <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
+                    )}
+                  </div>
+                ))}
                 {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
               </li>
             ))}

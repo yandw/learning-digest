@@ -33,6 +33,7 @@ Generation pipeline (one POST, synchronous, D16):
 from __future__ import annotations
 
 import re
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Callable
 
@@ -123,7 +124,7 @@ def require_account_resource(*, store: Any, account_id: str, resource_id: str) -
 def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     """Aggregate one Resource's archived material (D17): records and gaps
     from ALL of the account's Sessions on the resource (active and finished
-    alike — 未学完可生成), merged on the shared source timeline.
+    alike — 未学完可生成), merged on each Source's own timeline.
 
     Merge/dedup (owner decision 2026-11-17: 一份资料只有一份逐字稿): multiple
     sessions re-watching the same ranges used to land every overlapping copy
@@ -146,11 +147,13 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     records: list[dict] = []
     gaps: list[dict] = []
     for session in sessions:
-        state = load_state(store, session["id"])
+        session_id, source_id = session["id"], session.get("sourceId")
+        state = load_state(store, session_id)
         for record in state["records"]:
             records.append(
                 {
-                    "sessionId": session["id"],
+                    "sessionId": session_id,
+                    "sourceId": source_id,
                     "origin": session.get("origin"),
                     "startMs": record["startMs"],
                     "endMs": record["endMs"],
@@ -158,10 +161,12 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
                 }
             )
         for gap in state["gaps"]:
-            gaps.append({"sessionId": session["id"], "startMs": gap["startMs"], "endMs": gap["endMs"]})
+            gaps.append(
+                {"sessionId": session_id, "sourceId": source_id, "startMs": gap["startMs"], "endMs": gap["endMs"]}
+            )
 
     def _record_sort_key(r: dict) -> tuple:
-        return (r["startMs"], r["endMs"], str(r["sessionId"]))
+        return (r["sourceId"] or "", r["startMs"], r["endMs"], str(r["sessionId"]))
 
     def _beats(challenger: dict, current: dict) -> bool:
         """Deterministic cluster winner: longest text; tie → captions over
@@ -182,6 +187,8 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
         intersection must cover ≥80% of the shorter span. YouTube caption
         chunks advance by roughly half their width (~50% pairwise overlap),
         so they never cluster; exact copies across sessions do (100%)."""
+        if a["sourceId"] != b["sourceId"]:
+            return False
         overlap = min(a["endMs"], b["endMs"]) - max(a["startMs"], b["startMs"])
         shorter = min(a["endMs"] - a["startMs"], b["endMs"] - b["startMs"])
         return shorter > 0 and overlap * 5 >= shorter * 4
@@ -200,11 +207,11 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     if cluster is not None:
         kept_records.append(cluster["chosen"])
 
-    gaps.sort(key=lambda g: (g["startMs"], g["endMs"], str(g["sessionId"])))
+    gaps.sort(key=_record_sort_key)
     folded_gaps: list[dict] = []
     for gap in gaps:
         last = folded_gaps[-1] if folded_gaps else None
-        if last is not None and gap["startMs"] < last["endMs"]:
+        if last is not None and gap["sourceId"] == last["sourceId"] and gap["startMs"] < last["endMs"]:
             if gap["endMs"] > last["endMs"]:
                 last["endMs"] = gap["endMs"]
         else:
@@ -213,7 +220,9 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
         gap
         for gap in folded_gaps
         if not any(
-            r["startMs"] < gap["endMs"] and gap["startMs"] < r["endMs"]
+            r["sourceId"] == gap["sourceId"]
+            and r["startMs"] < gap["endMs"]
+            and gap["startMs"] < r["endMs"]
             for r in kept_records
         )
     ]
@@ -223,6 +232,13 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
 def stamp_line(entry: dict) -> str:
     """Line the transcript rows up with their session id stamp (D17)."""
     return f"[{entry['sessionId']} {entry['startMs']}–{entry['endMs']}] {entry['text']}"
+
+
+def stamp_sources(entries: list[dict]) -> str:
+    sections = []
+    for source_id, rows in groupby(entries, key=lambda entry: entry["sourceId"]):
+        sections.append("\n".join([f"[来源 {source_id}]", *(stamp_line(row) for row in rows)]))
+    return "\n\n".join(sections)
 
 
 TEMPLATE_VARIABLE = re.compile(r"\{(resourceTitle|transcriptLines|gapLines|noteLines)\}")
@@ -254,8 +270,6 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
     (system + user, code points), the same number the usage report carries."""
     material = collect_material(store=store, account_id=account_id, resource_id=resource["id"])
     records, gaps = material["records"], material["gaps"]
-    transcript_lines = [stamp_line(record) for record in records]
-    gap_lines = [stamp_line({**gap, "text": GAP_MARKER}) for gap in gaps]
     notes = notes_for_resource(store=store, account_id=account_id, resource_id=resource["id"])
     note_lines = [
         f"[{note['sourceId']} {note['positionMs']}] {note['text']}"
@@ -269,8 +283,8 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
         template["user"],
         {
             "resourceTitle": lambda: resource["title"],
-            "transcriptLines": lambda: "\n".join(transcript_lines),
-            "gapLines": lambda: "\n".join(gap_lines) if gap_lines else NOTHING_MARKER,
+            "transcriptLines": lambda: stamp_sources(records),
+            "gapLines": lambda: stamp_sources([{**gap, "text": GAP_MARKER} for gap in gaps]) if gaps else NOTHING_MARKER,
             "noteLines": lambda: "\n".join(note_lines) if note_lines else NOTHING_MARKER,
         },
     )

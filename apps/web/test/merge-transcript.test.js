@@ -242,3 +242,10 @@ test("keeps distinct utterances at the same time within one session", () => {
   assert.deepEqual(mergeTranscriptViews([view({ records })]).records.map((record) => record.text),
     records.map((record) => record.text));
 });
+
+test("presents each source timeline before moving to the next source", () => {
+  const first = view({ sourceId: "src_z", records: [{ startMs: 15000, endMs: 30000, text: "第一集后半" }] });
+  const next = view({ sourceId: "src_a", sessionId: "ses_2", records: [{ startMs: 0, endMs: 15000, text: "第二集开头" }] });
+  const entries = presentTranscript(mergeTranscriptViews([next, first]), [{ id: "src_z" }, { id: "src_a" }]);
+  assert.deepEqual(entries.map((entry) => entry.text), ["第一集后半", "第二集开头"]);
+});

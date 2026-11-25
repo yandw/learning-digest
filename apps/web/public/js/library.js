@@ -279,6 +279,7 @@ export function presentTranscript(view, sources) {
   const entries = [
     ...(view.records || []).map((record) => ({
       kind: "record",
+      sourceId: record.sourceId ?? view.sourceId,
       startMs: record.startMs,
       endMs: record.endMs,
       stamp: formatPosition(record.startMs),
@@ -301,6 +302,7 @@ export function presentTranscript(view, sources) {
     })),
     ...(view.gaps || []).map((gap) => ({
       kind: "gap",
+      sourceId: gap.sourceId ?? view.sourceId,
       startMs: gap.startMs,
       endMs: gap.endMs,
       stamp: formatRange(gap.startMs, gap.endMs),
@@ -310,6 +312,7 @@ export function presentTranscript(view, sources) {
     })),
     ...(view.pending || []).map((segment) => ({
       kind: "pending",
+      sourceId: segment.sourceId ?? view.sourceId,
       startMs: segment.startMs,
       endMs: segment.endMs,
       stamp: formatRange(segment.startMs, segment.endMs),
@@ -319,6 +322,7 @@ export function presentTranscript(view, sources) {
     })),
     ...(view.failed || []).map((segment) => ({
       kind: "failed",
+      sourceId: segment.sourceId ?? view.sourceId,
       startMs: segment.startMs,
       endMs: segment.endMs,
       stamp: formatRange(segment.startMs, segment.endMs),
@@ -327,9 +331,11 @@ export function presentTranscript(view, sources) {
       jumpUrl: null,
     })),
   ];
+  const order = new Map((sources || []).map((source, index) => [source.id, index]));
   return entries.sort(
     (a, b) =>
-      a.startMs - b.startMs || TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind],
+      (order.get(a.sourceId) ?? order.size) - (order.get(b.sourceId) ?? order.size) ||
+      String(a.sourceId).localeCompare(String(b.sourceId)) || a.startMs - b.startMs || TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind],
   );
 }
 

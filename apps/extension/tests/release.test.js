@@ -178,7 +178,7 @@ test("manifest uses minimized install-time permissions", () => {
   ]) {
     assert.ok(manifest.host_permissions.includes(host), `caption transport requires ${host}`);
   }
-  assert.equal(manifest.version, "0.2.48");
+  assert.equal(manifest.version, "0.2.49");
   assert.equal(manifest.name, "Learning Digest");
   assert.equal(packageJson.name, "learning-digest");
   assert.equal(manifest.optional_permissions, undefined);

@@ -350,6 +350,67 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
     });
   }
 
+  /** MAIN-world fallback for the source page's native transcript panel. */
+  async function readYouTubeTranscriptPanel(expectedVideoId, timeoutMs = 3000) {
+    const watch = document.querySelector("ytd-watch-flexy");
+    const ownsVideo = () => new URL(location.href).searchParams.get("v") === expectedVideoId &&
+      watch?.getAttribute("video-id") === expectedVideoId;
+    if (!ownsVideo()) return null;
+
+    const rows = "transcript-segment-view-model, ytd-transcript-segment-renderer";
+    const activeRow = () => Array.from(watch.querySelectorAll(rows)).find((row) =>
+      row.getClientRects().length > 0,
+    );
+    let transcriptPanel = activeRow()?.closest("ytd-engagement-panel-section-list-renderer");
+    const rowText = ".ytAttributedStringHost, .segment-text";
+    const timestamp = ".ytwTranscriptSegmentViewModelTimestamp, .segment-timestamp";
+    const description = watch.querySelector("#description-inline-expander");
+    const transcriptButton = () => description?.querySelector(
+      "ytd-video-description-transcript-section-renderer button",
+    );
+    const expand = description?.querySelector("#expand");
+    const openedDescription = !transcriptButton() && expand && expand.getClientRects().length > 0;
+    const openedPanel = !transcriptPanel;
+
+    try {
+      if (openedDescription) expand.click();
+      if (openedPanel) {
+        const button = transcriptButton();
+        if (!button) return null;
+        button.click();
+      }
+      const deadline = Date.now() + timeoutMs;
+      while (ownsVideo() && !transcriptPanel && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        transcriptPanel = activeRow()?.closest("ytd-engagement-panel-section-list-renderer");
+      }
+      if (!ownsVideo() || !transcriptPanel) return null;
+
+      const durationMs = Math.round(watch.querySelector("video.html5-main-video")?.duration * 1000);
+      if (!Number.isFinite(durationMs) || durationMs <= 0) return null;
+      const segments = Array.from(transcriptPanel.querySelectorAll(rows), (row) => {
+        const stamp = row.querySelector(timestamp)?.textContent.trim();
+        const text = row.querySelector(rowText)?.textContent.trim();
+        if (!stamp || !text || !/^\d+(?::[0-5]\d){1,2}$/.test(stamp)) return null;
+        const seconds = stamp.split(":").reduce((time, part) => time * 60 + Number(part), 0);
+        return { startMs: seconds * 1000, text };
+      });
+      if (!segments.length || segments.some((entry, index) =>
+        !entry || entry.startMs >= durationMs || (index > 0 && entry.startMs < segments[index - 1].startMs),
+      )) return null;
+
+      // shortcut: the native transcript exposes start times only, use the next anchor as the end.
+      return segments.map((entry, index) => ({
+        ...entry, endMs: segments[index + 1]?.startMs ?? durationMs,
+      }));
+    } finally {
+      if (ownsVideo() && openedPanel) {
+        transcriptPanel?.querySelector("#visibility-button button")?.click();
+      }
+      if (ownsVideo() && openedDescription) description.querySelector("#collapse")?.click();
+    }
+  }
+
   // ============================================================
   // Coverage (the 强制转写 ticket's input; same block as bilibili-captions)
   // ============================================================
@@ -686,6 +747,7 @@ var YTD_YOUTUBE_CAPTIONS = (() => {
     createYouTubeCaptionReader,
     readYouTubePlayerCaptionTracks,
     capturePlayerCaptionRequest,
+    readYouTubeTranscriptPanel,
     GATE_EMPTIED_REASON,
     parseBridgeCaptionResponse,
   };

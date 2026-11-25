@@ -950,3 +950,35 @@ test("verdicts that are not the timedtext gate never trigger the MAIN-world capt
 
   await helpers.handleEndLearning();
 });
+
+test("the source transcript panel archives captions after both timedtext reads fail", async () => {
+  const segments = [{ startMs: 1000, endMs: 3500, text: "来源页面的转录稿" }];
+  const { v1Calls, fetchImpl } = v1Fetch({
+    ...ASR_FALLBACK_V1,
+    sessions: [{ status: 201, body: { session: SESSION_CREATE.response.body.session } }],
+    captions: [{ status: 201, body: CAPTIONS_ARCHIVE.response.body }],
+  });
+  const helpers = loadBackgroundHelpers({
+    settings: baseSettings(),
+    stored: CREDENTIAL_STORE,
+    tabsGet: async (tabId) => ({ id: tabId, url: YT_WATCH, title: "YouTube 视频课" }),
+    fetchImpl,
+    tabMessageImpl: (message) => message.action.startsWith("getYouTubeCaptions")
+      ? { success: true, available: false, reason: "timedtext_failed" }
+      : { success: true },
+    executeScriptImpl: async ({ func }) => [{
+      result: func === YTD_YOUTUBE_CAPTIONS.readYouTubePlayerCaptionTracks
+        ? { videoId: "AbCdEfGh123", captionTracks: [{ languageCode: "zh-TW" }] }
+        : func === YTD_YOUTUBE_CAPTIONS.readYouTubeTranscriptPanel ? segments : PLAYER_REQUEST_URL,
+    }],
+    sendMessageImpl: cutChunkSendMessage,
+  });
+
+  const started = await helpers.handleStartLearning({ url: YT_WATCH, tabId: 3 });
+
+  assert.equal(started.success, true, started.error || "");
+  assert.equal(started.capturePath, "captions");
+  assert.deepEqual(v1Calls.find((call) => call.path.endsWith("/captions"))?.body.segments, segments);
+
+  await helpers.handleEndLearning();
+});

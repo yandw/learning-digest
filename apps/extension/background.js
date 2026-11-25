@@ -4122,6 +4122,23 @@ async function probeCaptionsForTab(tabId, url, recognition) {
       captions,
       captionSource,
     );
+    if (!captions.available && captionSource?.captionTracks?.length && videoIdentity?.platformVideoId) {
+      try {
+        const [panel] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: YTD_YOUTUBE_CAPTIONS.readYouTubeTranscriptPanel,
+          args: [videoIdentity.platformVideoId],
+        });
+        const segments = panel?.result;
+        if (Array.isArray(segments) && segments.length &&
+          segments.every(YTD_YOUTUBE_CAPTIONS.isValidSegment)) {
+          captions = { available: true, segments };
+        }
+      } catch (_error) {
+        // Keep the timedtext verdict when the source panel is unavailable.
+      }
+    }
   }
   return { captions, captionSource, coverageInterval };
 }
@@ -4131,7 +4148,7 @@ async function probeCaptionsForTab(tabId, url, recognition) {
  * so the translation lives worker-side). */
 const CAPTIONS_REASON_LABEL = {
   no_subtitle_track: "页面没有可用的字幕轨道",
-  timedtext_failed: "字幕接口返回空内容（YouTube 授权闸门拦截）",
+  timedtext_failed: "YouTube 字幕接口未返回可用内容",
   player_response_unavailable: "读取不到播放器的字幕信息",
   bridge_unreachable: "无法连接页面脚本，请刷新视频页后重试",
   bridge_malformed: "页面脚本响应异常",

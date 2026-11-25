@@ -14,7 +14,7 @@ function readPackageJson() {
   return JSON.parse(fs.readFileSync(path.join(webRoot, "package.json"), "utf8"));
 }
 
-test("apps/web release metadata is 0.1.23", () => {
+test("apps/web release metadata is 0.1.24", () => {
   const packageJson = readPackageJson();
   assert.equal(packageJson.name, "@learning-digest/web");
   // 0.1.23: the login page becomes a fullscreen two-panel layout — the ink
@@ -57,7 +57,7 @@ test("apps/web release metadata is 0.1.23", () => {
   // administrator's 站点管理 surface (isAdmin-driven nav entry, the
   // site-capability table with per-row boolean-subset saves, the D2
   // non-admin denied view) over the round-4 admin API.
-  assert.equal(packageJson.version, "0.1.23");
+  assert.equal(packageJson.version, "0.1.24");
   assert.equal(packageJson.private, true);
 });
 

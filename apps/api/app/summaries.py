@@ -14,9 +14,8 @@ queryable. Each accepted POST creates a NEW record (contract-r3 §1
 
 Generation pipeline (one POST, synchronous, D16):
 1. aggregate the Resource's CURRENT archived material (D17): every
-   Session's transcript records (startMs-ascending across sessions) and
-   gaps as skipped markers, plus the account's notes — pending/failed
-   segments and silent segments contribute nothing (no text);
+   Session's ready organized sentences or raw records, gaps as skipped
+   markers, and the account's notes;
 2. assemble the prompt from the contract template
    prompts/course-summary.md (D17: the copy lives in the template file,
    code only fills the four variables) — inputChars is the full
@@ -24,16 +23,19 @@ Generation pipeline (one POST, synchronous, D16):
 3. call the injected AI Provider (app/ai_providers.py);
 4. reconcile the returned citations against the archived records and
    drop every one that does not resolve (§2.2: sessionId belongs to the
-   resource, the range matches a real record, quote is a verbatim
-   excerpt) — 宁可少引用不落死链;
+   resource, the range matches a selected row, quote is a verbatim
+   excerpt);
 5. store the summary and record usage in the same stroke (D18: the
    record-keeping timepoint is the landing moment).
 """
 
 from __future__ import annotations
 
+import logging
 import re
+from itertools import groupby
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 from .errors import ApiError, not_found_resource
@@ -41,7 +43,8 @@ from .ids import generate_id
 from .jsnum import is_js_integer
 from .notes import notes_for_resource
 from .timeutil import iso_seconds_from_ms
-from .transcripts import load_state
+from .transcript_organization import organized_paragraphs
+from .transcripts import load_state, sorted_records
 from .usage import record_summary_generation
 
 # D17: the prompt template is the contract record at the repo root.
@@ -49,6 +52,8 @@ PROMPT_FILE = Path(__file__).resolve().parents[3] / "prompts" / "course-summary.
 
 GAP_MARKER = "已跳过，该范围未取得文本"
 NOTHING_MARKER = "（无）"
+
+logger = logging.getLogger(__name__)
 
 _cached_template: dict | None = None
 
@@ -123,7 +128,7 @@ def require_account_resource(*, store: Any, account_id: str, resource_id: str) -
 def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     """Aggregate one Resource's archived material (D17): records and gaps
     from ALL of the account's Sessions on the resource (active and finished
-    alike — 未学完可生成), merged on the shared source timeline.
+    alike — 未学完可生成), merged on each Source's own timeline.
 
     Merge/dedup (owner decision 2026-11-17: 一份资料只有一份逐字稿): multiple
     sessions re-watching the same ranges used to land every overlapping copy
@@ -145,23 +150,30 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     ]
     records: list[dict] = []
     gaps: list[dict] = []
+    states = {}
     for session in sessions:
-        state = load_state(store, session["id"])
-        for record in state["records"]:
+        session_id, source_id = session["id"], session.get("sourceId")
+        state = load_state(store, session_id)
+        states[session_id] = state
+        for record_index, record in enumerate(sorted_records(state)):
             records.append(
                 {
-                    "sessionId": session["id"],
+                    "sessionId": session_id,
+                    "sourceId": source_id,
                     "origin": session.get("origin"),
+                    "recordIndex": record_index,
                     "startMs": record["startMs"],
                     "endMs": record["endMs"],
                     "text": record["text"],
                 }
             )
         for gap in state["gaps"]:
-            gaps.append({"sessionId": session["id"], "startMs": gap["startMs"], "endMs": gap["endMs"]})
+            gaps.append(
+                {"sessionId": session_id, "sourceId": source_id, "startMs": gap["startMs"], "endMs": gap["endMs"]}
+            )
 
     def _record_sort_key(r: dict) -> tuple:
-        return (r["startMs"], r["endMs"], str(r["sessionId"]))
+        return (r["sourceId"] or "", r["startMs"], r["endMs"], str(r["sessionId"]))
 
     def _beats(challenger: dict, current: dict) -> bool:
         """Deterministic cluster winner: longest text; tie → captions over
@@ -182,6 +194,8 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
         intersection must cover ≥80% of the shorter span. YouTube caption
         chunks advance by roughly half their width (~50% pairwise overlap),
         so they never cluster; exact copies across sessions do (100%)."""
+        if a["sourceId"] != b["sourceId"]:
+            return False
         overlap = min(a["endMs"], b["endMs"]) - max(a["startMs"], b["startMs"])
         shorter = min(a["endMs"] - a["startMs"], b["endMs"] - b["startMs"])
         return shorter > 0 and overlap * 5 >= shorter * 4
@@ -200,11 +214,11 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     if cluster is not None:
         kept_records.append(cluster["chosen"])
 
-    gaps.sort(key=lambda g: (g["startMs"], g["endMs"], str(g["sessionId"])))
+    gaps.sort(key=_record_sort_key)
     folded_gaps: list[dict] = []
     for gap in gaps:
         last = folded_gaps[-1] if folded_gaps else None
-        if last is not None and gap["startMs"] < last["endMs"]:
+        if last is not None and gap["sourceId"] == last["sourceId"] and gap["startMs"] < last["endMs"]:
             if gap["endMs"] > last["endMs"]:
                 last["endMs"] = gap["endMs"]
         else:
@@ -213,16 +227,62 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
         gap
         for gap in folded_gaps
         if not any(
-            r["startMs"] < gap["endMs"] and gap["startMs"] < r["endMs"]
+            r["sourceId"] == gap["sourceId"]
+            and r["startMs"] < gap["endMs"]
+            and gap["startMs"] < r["endMs"]
             for r in kept_records
         )
     ]
-    return {"sessions": sessions, "records": kept_records, "gaps": kept_gaps}
+    records_by_session: dict[str, list[dict]] = {}
+    for record in kept_records:
+        records_by_session.setdefault(record["sessionId"], []).append(record)
+    selected_records = [
+        record
+        for session_id, session_records in records_by_session.items()
+        for record in prefer_organized(states[session_id], session_records)
+    ]
+    selected_records.sort(key=lambda r: (r["sourceId"] or "", r["startMs"]))
+    return {"sessions": sessions, "records": selected_records, "gaps": kept_gaps}
+
+
+def prefer_organized(state: dict, kept_records: list[dict]) -> list[dict]:
+    paragraphs = organized_paragraphs(state)
+    if not paragraphs:
+        return kept_records
+
+    kept_indices = {record["recordIndex"] for record in kept_records}
+    session_id = kept_records[0]["sessionId"]
+    source_id = kept_records[0]["sourceId"]
+    organized = []
+    for paragraph in paragraphs:
+        for sentence in paragraph["sentences"]:
+            sentence_indices = {span["recordIndex"] for span in sentence["spans"]}
+            selected = sentence_indices & kept_indices
+            if not selected:
+                continue
+            # shortcut: fall back to raw when dedup cuts a sentence, until citations can anchor a partial sentence.
+            if selected != sentence_indices:
+                return kept_records
+            organized.append({
+                "sessionId": session_id,
+                "sourceId": source_id,
+                "startMs": sentence["startMs"],
+                "endMs": sentence["endMs"],
+                "text": sentence["text"],
+            })
+    return organized or kept_records
 
 
 def stamp_line(entry: dict) -> str:
     """Line the transcript rows up with their session id stamp (D17)."""
     return f"[{entry['sessionId']} {entry['startMs']}–{entry['endMs']}] {entry['text']}"
+
+
+def stamp_sources(entries: list[dict]) -> str:
+    sections = []
+    for source_id, rows in groupby(entries, key=lambda entry: entry["sourceId"]):
+        sections.append("\n".join([f"[来源 {source_id}]", *(stamp_line(row) for row in rows)]))
+    return "\n\n".join(sections)
 
 
 TEMPLATE_VARIABLE = re.compile(r"\{(resourceTitle|transcriptLines|gapLines|noteLines)\}")
@@ -254,8 +314,6 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
     (system + user, code points), the same number the usage report carries."""
     material = collect_material(store=store, account_id=account_id, resource_id=resource["id"])
     records, gaps = material["records"], material["gaps"]
-    transcript_lines = [stamp_line(record) for record in records]
-    gap_lines = [stamp_line({**gap, "text": GAP_MARKER}) for gap in gaps]
     notes = notes_for_resource(store=store, account_id=account_id, resource_id=resource["id"])
     note_lines = [
         f"[{note['sourceId']} {note['positionMs']}] {note['text']}"
@@ -269,8 +327,8 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
         template["user"],
         {
             "resourceTitle": lambda: resource["title"],
-            "transcriptLines": lambda: "\n".join(transcript_lines),
-            "gapLines": lambda: "\n".join(gap_lines) if gap_lines else NOTHING_MARKER,
+            "transcriptLines": lambda: stamp_sources(records),
+            "gapLines": lambda: stamp_sources([{**gap, "text": GAP_MARKER} for gap in gaps]) if gaps else NOTHING_MARKER,
             "noteLines": lambda: "\n".join(note_lines) if note_lines else NOTHING_MARKER,
         },
     )
@@ -283,15 +341,13 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
 
 
 def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict]:
-    """Citation reconciliation (§2.2, D17 引用清洗): keep a citation only
-    when the session belongs to this resource, the range matches one of its
-    real archived records exactly, and the quote is a verbatim excerpt of
-    that record's text. Survivors are sorted by source-timeline startMs."""
+    """Require an exact input range and verbatim quote from a raw or organized row."""
     if not isinstance(raw_citations, list):
         return []
-    by_session: dict[str, list[dict]] = {}
+    by_stamp: dict[tuple[str, int, int], list[str]] = {}
     for record in records:
-        by_session.setdefault(record["sessionId"], []).append(record)
+        stamp = (record["sessionId"], record["startMs"], record["endMs"])
+        by_stamp.setdefault(stamp, []).append(record["text"])
     kept: list[dict] = []
     for raw in raw_citations:
         if not isinstance(raw, dict):
@@ -313,15 +369,7 @@ def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict
             continue
         start_ms = int(start_ms)
         end_ms = int(end_ms)
-        record = next(
-            (
-                candidate
-                for candidate in by_session.get(session_id, [])
-                if candidate["startMs"] == start_ms and candidate["endMs"] == end_ms
-            ),
-            None,
-        )
-        if not record or quote not in record["text"]:
+        if not any(quote in text for text in by_stamp.get((session_id, start_ms, end_ms), [])):
             continue
         kept.append({"quote": quote, "segmentRef": {"sessionId": session_id, "startMs": start_ms, "endMs": end_ms}})
     kept.sort(key=lambda c: c["segmentRef"]["startMs"])
@@ -371,13 +419,34 @@ def generate_summary(
     if not generation_input["records"]:
         raise no_transcript_to_summarize()
 
+    started = perf_counter()
+    status = "failed"
+    usage = {}
     try:
         generated = ai_provider.generate(system=generation_input["system"], user=generation_input["user"])
-    except Exception:
+        if isinstance(generated, dict):
+            usage = generated
+        content = usage.get("content")
+        if not isinstance(content, str):
+            raise summary_generation_failed()
+        status = "ready"
+    except Exception as error:
+        usage = getattr(error, "usage", usage)
         raise summary_generation_failed() from None
-    content = generated.get("content") if isinstance(generated, dict) else None
-    if not isinstance(content, str):
-        raise summary_generation_failed()
+    finally:
+        telemetry = {
+            "provider": ai_provider.id,
+            "model": ai_provider.model,
+            "status": status,
+            "latencyMs": round((perf_counter() - started) * 1000),
+            "callCount": 1,
+            "retryCount": 0,
+        }
+        for key in ("inputTokens", "outputTokens"):
+            value = usage.get(key) if isinstance(usage, dict) else None
+            telemetry[key] = value if type(value) is int and value >= 0 else None
+        logger.info("course summary attempt %s", telemetry)
+
     citations = reconcile_citations(
         raw_citations=generated.get("citations"), records=generation_input["records"]
     )

@@ -29,6 +29,7 @@ create_app — no route or storage changes.
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import sys
@@ -80,6 +81,8 @@ def build_app(env: dict, config_file: str | None = None):
 
 
 def main(env: dict | None = None) -> None:
+    logging.basicConfig()
+    logging.getLogger("app").setLevel(logging.INFO)
     env = dict(os.environ if env is None else env)
     app = build_app(env, config_file=DEFAULT_CONFIG_FILE)
     port = _parse_int(env.get("PORT"), 8787)

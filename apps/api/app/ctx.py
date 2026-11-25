@@ -3,7 +3,7 @@ the `ctx` object lib/routes.js receives from createApp."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .config import Config
@@ -18,3 +18,4 @@ class AppContext:
     seed_file: str | None = None
     # AI Provider seam for course summaries (D16), resolved once at startup.
     ai_provider: Any = None
+    organizing_transcripts: set[str] = field(default_factory=set)

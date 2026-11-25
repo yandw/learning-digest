@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
 
 from .accounts import open_or_login
@@ -27,6 +27,7 @@ from .http import read_json_body
 from .invites import is_invited
 from .link_codes import consume_link_code, create_link_code
 from .requests import LinkBody, RequestCodeBody, VerifyBody
+from .transcript_organization import queue_organization
 
 
 
@@ -122,7 +123,7 @@ def register_auth_routes(app, ctx: AppContext) -> None:
         )
 
     @app.post("/v1/auth/logout")
-    async def logout(request: Request) -> JSONResponse:
+    async def logout(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
         # Linked logout (P7, decision 3 of #49): the presented credential's
         # WHOLE credential group is revoked, so the Web session and the
         # extension credential die together (contract §1: 401 = expired OR
@@ -135,7 +136,11 @@ def register_auth_routes(app, ctx: AppContext) -> None:
         record = find_credential_by_token(store=ctx.store, token=token)
         if not record:
             raise unauthorized_expired()
-        revoke_credential_group(store=ctx.store, group_id=record["credentialGroupId"], now=ctx.now)
+        finished_ids = revoke_credential_group(
+            store=ctx.store, group_id=record["credentialGroupId"], now=ctx.now
+        )
+        for session_id in finished_ids:
+            queue_organization(background_tasks, ctx, session_id)
         return JSONResponse(status_code=200, content={"ok": True})
 
     # --- P6: extension account linking (decision 3 of #49) ---

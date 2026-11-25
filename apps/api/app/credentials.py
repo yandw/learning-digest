@@ -21,6 +21,7 @@ from typing import Any, Callable
 from .config import Config
 from .ids import base64url, generate_id
 from .sessions import sessions_finished_on_logout
+from .transcripts import finish_transcript_state
 
 
 def hash_token(token: str) -> str:
@@ -114,14 +115,19 @@ def revoke_credential(*, store: Any, token: str, now: Callable[[], int]) -> bool
     return True
 
 
-def revoke_credential_group(*, store: Any, group_id: str, now: Callable[[], int]) -> bool:
-    """Revoke the linked credentials and end their active study sessions together."""
+def revoke_credential_group(*, store: Any, group_id: str, now: Callable[[], int]) -> list[str]:
+    """Revoke linked credentials and return the IDs of the study sessions now finished."""
     group = store.get("credentialGroups", group_id)
     if not group or group["revokedAt"] is not None:
-        return False
+        return []
     at_ms = now()
+    finished = sessions_finished_on_logout(store=store, group=group, at_ms=at_ms)
     store.set_many({
         "credentialGroups": {group_id: {**group, "revokedAt": at_ms}},
-        "sessions": sessions_finished_on_logout(store=store, group=group, at_ms=at_ms),
+        "sessions": finished,
+        "transcripts": {
+            session_id: finish_transcript_state(store=store, session_id=session_id)
+            for session_id in finished
+        },
     })
-    return True
+    return list(finished)

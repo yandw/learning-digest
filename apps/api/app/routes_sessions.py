@@ -110,7 +110,8 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )
         result = get_transcript(store=ctx.store, session=session)
-        queue_organization(background_tasks, ctx, session_id)
+        if queue_organization(background_tasks, ctx, session_id):
+            result["body"]["organized"] = {"status": "processing"}
         return JSONResponse(status_code=result["status"], content=result["body"])
 
     @app.post(

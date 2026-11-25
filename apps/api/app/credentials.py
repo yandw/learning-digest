@@ -21,6 +21,7 @@ from typing import Any, Callable
 from .config import Config
 from .ids import base64url, generate_id
 from .sessions import sessions_finished_on_logout
+from .transcripts import finish_transcript_state
 
 
 def hash_token(token: str) -> str:
@@ -124,5 +125,9 @@ def revoke_credential_group(*, store: Any, group_id: str, now: Callable[[], int]
     store.set_many({
         "credentialGroups": {group_id: {**group, "revokedAt": at_ms}},
         "sessions": finished,
+        "transcripts": {
+            session_id: finish_transcript_state(store=store, session_id=session_id)
+            for session_id in finished
+        },
     })
     return list(finished)

@@ -537,7 +537,7 @@ class QwenProvider:
     def _chat(self, *, system: str, user: str) -> str:
         return self._chat_response(system=system, user=user)[0]
 
-    def _chat_response(self, *, system: str, user: str) -> tuple[str, dict]:
+    def _chat_response(self, *, system: str, user: str, json_object: bool = False) -> tuple[str, dict]:
         """One chat/completions request, with the reply and reported token usage. A FRESH timeout
         per call, never one shared across calls (the round-3 review fix's
         discipline, shared by both operations).
@@ -566,6 +566,7 @@ class QwenProvider:
                 ],
                 # Bailian's HTTP API reads this top-level field to disable reasoning.
                 "enable_thinking": False,
+                **({"response_format": {"type": "json_object"}} if json_object else {}),
             },
             timeout=timeout,
         )
@@ -611,7 +612,7 @@ class QwenProvider:
         return parsed
 
     def organize_transcript(self, *, system: str, user: str) -> dict:
-        reply, usage = self._chat_response(system=system, user=user)
+        reply, usage = self._chat_response(system=system, user=user, json_object=True)
         parsed = _parse_loose_json(reply)
         paragraphs = parsed.get("paragraphs") if isinstance(parsed, dict) else None
         return {"paragraphs": paragraphs, **usage}

@@ -43,7 +43,7 @@ def start_session(start_app, provider):
 
 
 def test_late_worker_result_organizes_finished_session_once_and_preserves_cross_segment_sources(start_app):
-    provider = TranscriptProvider([["如果输入足够，就继续。", "否则先"]])
+    provider = TranscriptProvider([["如果输入足够，就继续。否则先"]])
     request, worker = start_session(start_app, provider)
     for fixture in ("api-audio-segment-upload", "api-audio-segment-upload-second"):
         segment = audio_example(fixture)["request"]["body"]
@@ -102,7 +102,7 @@ def test_finish_organizes_on_each_side_of_recorded_gap(start_app):
     assert [payload["text"] for payload in provider.inputs] == ["前面没讲完", "这里继续"]
 
 
-def test_qwen_output_with_changed_words_keeps_raw_transcript_and_is_not_retried(start_app, caplog):
+def test_qwen_output_with_changed_words_retries_once_then_reuses_raw_fallback(start_app, caplog):
     import httpx
 
     from app.ai_providers import create_qwen_provider
@@ -126,7 +126,9 @@ def test_qwen_output_with_changed_words_keeps_raw_transcript_and_is_not_retried(
     assert view["organized"] == {"status": "failed"}
     assert view["records"] == [{**raw, "origin": "captions"}]
     assert request("GET", "transcript").json == view
-    assert len(seen) == 1
+    assert len(seen) == 2
+    assert seen[0]["response_format"] == {"type": "json_object"}
+    assert "前一次校验失败" in seen[1]["messages"][0]["content"]
     assert json.loads(seen[0]["messages"][1]["content"]) == {"text": raw["text"], "final": True}
     assert any(
         "'inputTokens': 42" in record.message

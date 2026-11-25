@@ -107,13 +107,11 @@ def parse_gaps(body: Any) -> list:
     return normalized
 
 
-def report_gaps(*, store: Any, session_id: str, gaps: list) -> None:
-    """Store the finish-reported skipped ranges (§2.3: reason "skipped").
-    The ranges replace whatever was there — finish is the single gap
-    producer, reported once at close (回看补录成功的范围不再上报)."""
+def finish_transcript_state(*, store: Any, session_id: str, gaps: list | None = None) -> dict:
     state = load_state(store, session_id)
-    state["gaps"] = [{**gap, "reason": "skipped"} for gap in gaps]
-    save_state(store, state)
+    if gaps is not None:
+        state = {**state, "gaps": [{**gap, "reason": "skipped"} for gap in gaps]}
+    return {**state, "organizationRequested": True}
 
 
 def parse_caption_segments(body: Any) -> list:

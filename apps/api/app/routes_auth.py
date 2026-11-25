@@ -23,11 +23,11 @@ from .credentials import (
     revoke_credential_group,
 )
 from .errors import unauthorized_expired, unauthorized_missing
-from .transcript_organization import queue_organization
 from .http import read_json_body
 from .invites import is_invited
 from .link_codes import consume_link_code, create_link_code
 from .requests import LinkBody, RequestCodeBody, VerifyBody
+from .transcript_organization import queue_organization
 
 
 
@@ -42,7 +42,6 @@ def get_ctx(request: Request) -> AppContext:
     return request.app.state.ctx
 
 
-from .transcript_organization import queue_organization
 from .http import bearer_token  # noqa: E402  (moved to http.py; audio_jobs uses it too)
 
 

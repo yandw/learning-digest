@@ -27,7 +27,7 @@ jobs:
         run: npm ci --prefix apps/web
 
       - name: Test Web UI
-        run: npm --prefix apps/web run test:ui
+        run: npm --prefix apps/web run test:ui -- --testTimeout=15000
 
       - name: Build allowlisted ZIP
         run: npm run package

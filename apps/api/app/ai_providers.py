@@ -11,7 +11,7 @@ Interface (the one thing consumers may rely on):
     provider = { id: str, model: str, generate(*, system, user),
                  generate_topics(*, system, user),
                  generate_digest(*, system, user),
-                 explain(*, system, user) }
+                 organize_transcript(*, system, user), explain(*, system, user) }
     generate returns { content: str, citations: RawCitation[] }
     where RawCitation = { quote, sessionId, startMs, endMs } — the shape
     the model is asked for by prompts/course-summary.md; every citation is
@@ -195,6 +195,9 @@ class StubProvider:
         """The Session Digest path (contract-r4.md §7): deterministic
         one-shot report synthesis from the full-transcript input."""
         return stub_digest_report(parse_digest_user_prompt(user))
+
+    def organize_transcript(self, *, system: str, user: str) -> dict:
+        return {"paragraphs": [[json.loads(user)["text"]]]}
 
     def explain(self, *, system: str, user: str) -> dict:
         """The selected-text explanation path (contract-r4.md §7):
@@ -532,7 +535,10 @@ class QwenProvider:
         self._client = httpx.Client(transport=transport)
 
     def _chat(self, *, system: str, user: str) -> str:
-        """One chat/completions request, reply text back. A FRESH timeout
+        return self._chat_response(system=system, user=user)[0]
+
+    def _chat_response(self, *, system: str, user: str) -> tuple[str, dict]:
+        """One chat/completions request, with the reply and reported token usage. A FRESH timeout
         per call, never one shared across calls (the round-3 review fix's
         discipline, shared by both operations).
 
@@ -572,7 +578,13 @@ class QwenProvider:
             raise RuntimeError(
                 f"Qwen AI Provider request failed with HTTP {response.status_code}{detail}"
             )
-        return _reply_text(response.json())
+        data = response.json()
+        usage = data.get("usage") if isinstance(data, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        return _reply_text(data), {
+            "inputTokens": usage.get("prompt_tokens"),
+            "outputTokens": usage.get("completion_tokens"),
+        }
 
     def generate(self, *, system: str, user: str) -> dict:
         parsed = parse_summary_payload(self._chat(system=system, user=user))
@@ -597,6 +609,12 @@ class QwenProvider:
         if parsed is None:
             raise RuntimeError("Qwen AI Provider returned an unparseable digest payload")
         return parsed
+
+    def organize_transcript(self, *, system: str, user: str) -> dict:
+        reply, usage = self._chat_response(system=system, user=user)
+        parsed = _parse_loose_json(reply)
+        paragraphs = parsed.get("paragraphs") if isinstance(parsed, dict) else None
+        return {"paragraphs": paragraphs, **usage}
 
     def explain(self, *, system: str, user: str) -> dict:
         """One selected-text explanation over chat/completions

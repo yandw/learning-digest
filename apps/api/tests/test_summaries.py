@@ -748,3 +748,93 @@ def test_generate_keeps_same_time_material_and_gaps_from_distinct_sources(start_
     assert f"[{first['session']['id']} 30000–60000] 已跳过，该范围未取得文本" in user
     for archived in (first, second):
         assert f"[来源 {archived['source']['id']}]" in user
+
+
+def test_generate_prefers_organized_transcript_and_cites_exact_sentence(start_app):
+    provider = _ScriptedProvider("organized")
+    provider.organize_transcript = lambda **_: {
+        "paragraphs": [[
+            "大家好。", "现在，如果维数增大，就缩放点积。", "另一种情况不需要。", "也要核对维数。",
+        ]],
+    }
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 0, "endMs": 30000, "text": "大家好现在如果维数增大"},
+            {"startMs": 30000, "endMs": 60000, "text": "就缩放点积另一种情况不需要也要核对维数"},
+        ],
+        label="organized",
+    )
+    session_id = archived["session"]["id"]
+    calls = []
+
+    def summarize(*, system, user):
+        calls.append(user)
+        return {
+            "content": "## 缩放点积\n\n### 适用条件\n\n维数增大时缩放点积。",
+            "citations": [
+                {"quote": "如果维数增大，就缩放点积。", "sessionId": session_id, "startMs": 0, "endMs": 60000},
+                {"quote": "也要核对维数。", "sessionId": session_id, "startMs": 30000, "endMs": 60000},
+                {"quote": "编造的原话。", "sessionId": session_id, "startMs": 0, "endMs": 60000},
+            ],
+        }
+
+    provider.generate = summarize
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert len(calls) == 1
+    assert "大家好现在如果维数增大" not in calls[0]
+    assert f"[{session_id} 0–60000] 现在，如果维数增大，就缩放点积。" in calls[0]
+    assert response.json["summary"]["citations"] == [
+        {
+            "quote": "如果维数增大，就缩放点积。",
+            "segmentRef": {"sessionId": session_id, "startMs": 0, "endMs": 60000},
+        },
+        {
+            "quote": "也要核对维数。",
+            "segmentRef": {"sessionId": session_id, "startMs": 30000, "endMs": 60000},
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_status", "expected_outcome"),
+    [('{"content":"## 缩放点积"}', 201, "ready"), ("invalid", 502, "failed")],
+)
+def test_generate_records_reported_tokens_and_one_attempt(
+    start_app, caplog, reply, expected_status, expected_outcome
+):
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": reply}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        })
+
+    provider = create_qwen_provider(api_key="fixture-key", transport=httpx.MockTransport(complete))
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(app, token, records=RECORDS, finish=False, label="metrics")
+
+    with caplog.at_level("INFO", logger="app.summaries"):
+        response = generate(app, token, archived["resource"]["id"])
+    assert response.status == expected_status, response.json
+    assert len(requests) == 1
+    assert len(caplog.records) == 1
+    metrics = dict(caplog.records[0].args)
+    assert metrics.pop("latencyMs") >= 0
+    assert metrics == {
+        "provider": "qwen",
+        "model": provider.model,
+        "status": expected_outcome,
+        "inputTokens": 12,
+        "outputTokens": 3,
+        "callCount": 1,
+        "retryCount": 0,
+    }
+    assert RECORDS[0]["text"] not in caplog.text

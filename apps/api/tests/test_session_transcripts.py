@@ -458,7 +458,8 @@ def test_transcript_captions_path_finished(start_app):
         headers=auth_header(token),
     )
     assert response.status == example["response"]["status"]
-    assert response.json == {
+    assert response.json["organized"]["status"] == "ready"
+    assert {key: value for key, value in response.json.items() if key != "organized"} == {
         **example["response"]["body"],
         "sessionId": session["id"],
         "sourceId": source["id"],
@@ -529,7 +530,8 @@ def test_transcript_asr_path_finished_with_gap_and_failed_terminal_states(start_
         headers=auth_header(token),
     )
     assert response.status == example["response"]["status"]
-    assert response.json == {
+    assert response.json["organized"]["status"] == "ready"
+    assert {key: value for key, value in response.json.items() if key != "organized"} == {
         **example["response"]["body"],
         "sessionId": session["id"],
         "sourceId": source["id"],
@@ -814,7 +816,8 @@ def test_multiple_sessions_on_one_source_do_not_bleed_into_each_other(start_app)
         f"/v1/sessions/{session_a['id']}/transcript",
         headers=auth_header(token),
     )
-    assert transcript_a.json == {
+    assert transcript_a.json["organized"]["status"] == "ready"
+    assert {key: value for key, value in transcript_a.json.items() if key != "organized"} == {
         **captions_finished["response"]["body"],
         "sessionId": session_a["id"],
         "sourceId": source["id"],

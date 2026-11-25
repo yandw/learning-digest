@@ -11,7 +11,7 @@ Interface (the one thing consumers may rely on):
     provider = { id: str, model: str, generate(*, system, user),
                  generate_topics(*, system, user),
                  generate_digest(*, system, user),
-                 explain(*, system, user) }
+                 organize_transcript(*, system, user), explain(*, system, user) }
     generate returns { content: str, citations: RawCitation[], flowchart? }
     where RawCitation = { quote, sessionId, startMs, endMs } — the shape
     the model is asked for by prompts/course-summary.md; every citation is
@@ -195,6 +195,9 @@ class StubProvider:
         """The Session Digest path (contract-r4.md §7): deterministic
         one-shot report synthesis from the full-transcript input."""
         return stub_digest_report(parse_digest_user_prompt(user))
+
+    def organize_transcript(self, *, system: str, user: str) -> dict:
+        return {"paragraphs": [[json.loads(user)["text"]]]}
 
     def explain(self, *, system: str, user: str) -> dict:
         """The selected-text explanation path (contract-r4.md §7):
@@ -494,6 +497,12 @@ def _reply_text(data: Any) -> str:
     return "" if content is None else str(content)
 
 
+class InvalidSummaryPayload(RuntimeError):
+    def __init__(self, usage: dict):
+        super().__init__("Qwen AI Provider returned an unparseable summary payload")
+        self.usage = usage
+
+
 class QwenProvider:
     """Bailian compatible-mode chat/completions (worker/providers/qwen.py is
     the shape precedent — same endpoint family, different credential
@@ -533,7 +542,10 @@ class QwenProvider:
         self._client = httpx.Client(transport=transport)
 
     def _chat(self, *, system: str, user: str) -> str:
-        """One chat/completions request, reply text back. A FRESH timeout
+        return self._chat_response(system=system, user=user)[0]
+
+    def _chat_response(self, *, system: str, user: str, json_object: bool = False) -> tuple[str, dict]:
+        """One chat/completions request, with the reply and reported token usage. A FRESH timeout
         per call, never one shared across calls (the round-3 review fix's
         discipline, shared by both operations).
 
@@ -561,6 +573,7 @@ class QwenProvider:
                 ],
                 # Bailian's HTTP API reads this top-level field to disable reasoning.
                 "enable_thinking": False,
+                **({"response_format": {"type": "json_object"}} if json_object else {}),
             },
             timeout=timeout,
         )
@@ -573,13 +586,20 @@ class QwenProvider:
             raise RuntimeError(
                 f"Qwen AI Provider request failed with HTTP {response.status_code}{detail}"
             )
-        return _reply_text(response.json())
+        data = response.json()
+        usage = data.get("usage") if isinstance(data, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        return _reply_text(data), {
+            "inputTokens": usage.get("prompt_tokens"),
+            "outputTokens": usage.get("completion_tokens"),
+        }
 
     def generate(self, *, system: str, user: str) -> dict:
-        parsed = parse_summary_payload(self._chat(system=system, user=user))
+        reply, usage = self._chat_response(system=system, user=user)
+        parsed = parse_summary_payload(reply)
         if not parsed:
-            raise RuntimeError("Qwen AI Provider returned an unparseable summary payload")
-        return parsed
+            raise InvalidSummaryPayload(usage)
+        return {**parsed, **{key: value for key, value in usage.items() if value is not None}}
 
     def generate_topics(self, *, system: str, user: str) -> list:
         """One rolling-summary tick over chat/completions (contract-r4.md
@@ -598,6 +618,12 @@ class QwenProvider:
         if parsed is None:
             raise RuntimeError("Qwen AI Provider returned an unparseable digest payload")
         return parsed
+
+    def organize_transcript(self, *, system: str, user: str) -> dict:
+        reply, usage = self._chat_response(system=system, user=user, json_object=True)
+        parsed = _parse_loose_json(reply)
+        paragraphs = parsed.get("paragraphs") if isinstance(parsed, dict) else None
+        return {"paragraphs": paragraphs, **usage}
 
     def explain(self, *, system: str, user: str) -> dict:
         """One selected-text explanation over chat/completions

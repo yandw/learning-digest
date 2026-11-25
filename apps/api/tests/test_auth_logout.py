@@ -136,7 +136,10 @@ def test_web_logout_finishes_linked_study_and_preserves_transcript(start_app, le
     fresh_web = login(app)
     restored = app.request("GET", f"{path}/transcript", headers=auth_header(fresh_web))
     assert restored.status == 200
-    assert restored.json == {**archived.json["transcript"], "sessionStatus": "finished"}
+    assert restored.json["organized"]["status"] == "ready"
+    assert {key: value for key, value in restored.json.items() if key != "organized"} == {
+        **archived.json["transcript"], "sessionStatus": "finished"
+    }
 
     fresh = app.request(
         "POST", f"/v1/sources/{session['sourceId']}/sessions",

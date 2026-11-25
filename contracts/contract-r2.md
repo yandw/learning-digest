@@ -78,11 +78,19 @@
 | `sessionStatus` | enum | 是 | `active` / `finished`，随 Session |
 | `origin` | enum \| null | 是 | 随 Session（§2.1） |
 | `records` | TranscriptRecord[] | 是 | 已取得的文本，按 `startMs` 升序 |
+| `organized` | object | 否 | 结束后对已归档逐字稿的整理结果 |
 | `gaps` | Gap[] | 是 | 显式跳过范围 |
 | `pending` | 段状态[] | 是 | 转写中：`{ segmentIndex, startMs, endMs, status: "pending" \| "transcribing" }` |
 | `failed` | 段状态[] | 是 | 转写失败：`{ segmentIndex, startMs, endMs, error: { code, message } }`，第二轮 `error.code` 固定 `transcription_failed` |
 
 四个数组恒在场（可为空），客户端统一遍历。**状态单调**：`done` / `failed` 为终态不回退；`finished` 后 `pending` 随尾段 drain 渐进清空（插件 `endActiveSession` 先 finish 后 drain，预算 15 拍），视图按 `sessionStatus` 把滞留段标注为排队而非终态——worker 停机且无租约时 `pending` 可滞留，不视作归档损坏。captions 路径的 Session `pending` / `failed` 恒为空。
+
+Session 结束并且转写任务全部进入终态后，自动整理可用记录。整理中返回
+`organized: { status: "processing" }`，失败返回 `{ status: "failed" }`，两种状态均可直接读取
+`records`。成功返回 `{ status: "ready", paragraphs: [{ sentences: [{ text, startMs, endMs, spans }] }] }`。
+句子的 `spans` 可包含多个 `{ recordIndex, startMs, endMs, segmentIndex? }`，对应
+`records` 中的零基索引和原有时间范围。句子的时间精度取自这些记录。ASR 记录保有采集段索引时，
+其跨度同时提供 `segmentIndex`。整理稿为附加视图，完整的原文继续通过 `records` 提供。
 
 ## 3. 端点
 

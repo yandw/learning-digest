@@ -7,7 +7,7 @@ the usage read endpoint the transcription write-back accrues into.
 
 from __future__ import annotations
 
-from fastapi import Depends, Request
+from fastapi import BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
 
 from .audio_jobs import (
@@ -24,6 +24,7 @@ from .routes_auth import CtxDep, CredentialDep
 from .session_digest import generate_digest, get_digest
 from .sessions import create_session, find_account_session, finish_session
 from .session_insights import generate_rolling_summary, get_overview
+from .transcript_organization import queue_organization
 from .transcripts import archive_captions, get_transcript
 from .usage import usage_view
 
@@ -67,7 +68,7 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
 
     @app.post("/v1/sessions/{session_id}/finish")
     async def post_finish(
-        session_id: str, request: Request, credential: CredentialDep, ctx: CtxDep
+        session_id: str, request: Request, credential: CredentialDep, ctx: CtxDep, background_tasks: BackgroundTasks
     ) -> JSONResponse:
         # Close learning (contract-r2 §3.2): optional gaps, 409 on repeat
         # finish (a state transition, not a creation).
@@ -79,6 +80,7 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
             body=body,
             now=ctx.now,
         )
+        queue_organization(background_tasks, ctx, session_id)
         return JSONResponse(status_code=result["status"], content=result["body"])
 
     @app.post("/v1/sessions/{session_id}/captions")
@@ -99,7 +101,7 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
 
     @app.get("/v1/sessions/{session_id}/transcript")
     async def get_session_transcript(
-        session_id: str, credential: CredentialDep, ctx: CtxDep
+        session_id: str, credential: CredentialDep, ctx: CtxDep, background_tasks: BackgroundTasks
     ) -> JSONResponse:
         # Transcript polling (contract-r2 §3.5): the bare TranscriptView,
         # idempotent reads, monotonic states (D12). Cross-account and
@@ -108,6 +110,8 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
             store=ctx.store, account_id=credential["accountId"], session_id=session_id
         )
         result = get_transcript(store=ctx.store, session=session)
+        if queue_organization(background_tasks, ctx, session_id):
+            result["body"]["organized"] = {"status": "processing"}
         return JSONResponse(status_code=result["status"], content=result["body"])
 
     @app.post(
@@ -227,13 +231,15 @@ def register_sessions_routes(app, ctx: AppContext) -> None:
 
     @app.post("/v1/worker/tasks/{task_id}/result")
     async def post_worker_result(
-        task_id: str, request: Request, ctx: CtxDep
+        task_id: str, request: Request, ctx: CtxDep, background_tasks: BackgroundTasks
     ) -> JSONResponse:
         # Worker credential only (§3.7): first result wins, terminal states
         # never roll back; a done result deletes the audio (D14).
         require_worker_credential(request=request, config=ctx.config)
         body = await read_json_body(request, ctx.config.max_body_bytes)
         result = apply_task_result(store=ctx.store, task_id=task_id, body=body, now=ctx.now)
+        task = ctx.store.get("transcriptionTasks", task_id)
+        queue_organization(background_tasks, ctx, task["sessionId"])
         return JSONResponse(status_code=result["status"], content=result["body"])
 
     # --- Usage read (contract-r3 §3.4; D18) ---------------------------------

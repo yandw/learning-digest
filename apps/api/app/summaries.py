@@ -14,9 +14,8 @@ queryable. Each accepted POST creates a NEW record (contract-r3 §1
 
 Generation pipeline (one POST, synchronous, D16):
 1. aggregate the Resource's CURRENT archived material (D17): every
-   Session's transcript records (startMs-ascending across sessions) and
-   gaps as skipped markers, plus the account's notes — pending/failed
-   segments and silent segments contribute nothing (no text);
+   Session's ready organized sentences or raw records, gaps as skipped
+   markers, and the account's notes;
 2. assemble the prompt from the contract template
    prompts/course-summary.md (D17: the copy lives in the template file,
    code only fills the four variables) — inputChars is the full
@@ -24,17 +23,19 @@ Generation pipeline (one POST, synchronous, D16):
 3. call the injected AI Provider (app/ai_providers.py);
 4. reconcile the returned citations against the archived records and
    drop every one that does not resolve (§2.2: sessionId belongs to the
-   resource, the range matches a real record, quote is a verbatim
-   excerpt) — 宁可少引用不落死链;
+   resource, the range matches a selected row, quote is a verbatim
+   excerpt);
 5. store the summary and record usage in the same stroke (D18: the
    record-keeping timepoint is the landing moment).
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from itertools import groupby
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 from .errors import ApiError, not_found_resource
@@ -42,7 +43,8 @@ from .ids import generate_id
 from .jsnum import is_js_integer
 from .notes import notes_for_resource
 from .timeutil import iso_seconds_from_ms
-from .transcripts import load_state
+from .transcript_organization import organized_paragraphs
+from .transcripts import load_state, sorted_records
 from .usage import record_summary_generation
 
 # D17: the prompt template is the contract record at the repo root.
@@ -50,6 +52,8 @@ PROMPT_FILE = Path(__file__).resolve().parents[3] / "prompts" / "course-summary.
 
 GAP_MARKER = "已跳过，该范围未取得文本"
 NOTHING_MARKER = "（无）"
+
+logger = logging.getLogger(__name__)
 
 _cached_template: dict | None = None
 
@@ -146,15 +150,18 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
     ]
     records: list[dict] = []
     gaps: list[dict] = []
+    states = {}
     for session in sessions:
         session_id, source_id = session["id"], session.get("sourceId")
         state = load_state(store, session_id)
-        for record in state["records"]:
+        states[session_id] = state
+        for record_index, record in enumerate(sorted_records(state)):
             records.append(
                 {
                     "sessionId": session_id,
                     "sourceId": source_id,
                     "origin": session.get("origin"),
+                    "recordIndex": record_index,
                     "startMs": record["startMs"],
                     "endMs": record["endMs"],
                     "text": record["text"],
@@ -226,7 +233,44 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
             for r in kept_records
         )
     ]
-    return {"sessions": sessions, "records": kept_records, "gaps": kept_gaps}
+    records_by_session: dict[str, list[dict]] = {}
+    for record in kept_records:
+        records_by_session.setdefault(record["sessionId"], []).append(record)
+    selected_records = [
+        record
+        for session_id, session_records in records_by_session.items()
+        for record in prefer_organized(states[session_id], session_records)
+    ]
+    selected_records.sort(key=lambda r: (r["sourceId"] or "", r["startMs"]))
+    return {"sessions": sessions, "records": selected_records, "gaps": kept_gaps}
+
+
+def prefer_organized(state: dict, kept_records: list[dict]) -> list[dict]:
+    paragraphs = organized_paragraphs(state)
+    if not paragraphs:
+        return kept_records
+
+    kept_indices = {record["recordIndex"] for record in kept_records}
+    session_id = kept_records[0]["sessionId"]
+    source_id = kept_records[0]["sourceId"]
+    organized = []
+    for paragraph in paragraphs:
+        for sentence in paragraph["sentences"]:
+            sentence_indices = {span["recordIndex"] for span in sentence["spans"]}
+            selected = sentence_indices & kept_indices
+            if not selected:
+                continue
+            # shortcut: fall back to raw when dedup cuts a sentence, until citations can anchor a partial sentence.
+            if selected != sentence_indices:
+                return kept_records
+            organized.append({
+                "sessionId": session_id,
+                "sourceId": source_id,
+                "startMs": sentence["startMs"],
+                "endMs": sentence["endMs"],
+                "text": sentence["text"],
+            })
+    return organized or kept_records
 
 
 def stamp_line(entry: dict) -> str:
@@ -297,15 +341,13 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
 
 
 def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict]:
-    """Citation reconciliation (§2.2, D17 引用清洗): keep a citation only
-    when the session belongs to this resource, the range matches one of its
-    real archived records exactly, and the quote is a verbatim excerpt of
-    that record's text. Survivors are sorted by source-timeline startMs."""
+    """Require an exact input range and verbatim quote from a raw or organized row."""
     if not isinstance(raw_citations, list):
         return []
-    by_session: dict[str, list[dict]] = {}
+    by_stamp: dict[tuple[str, int, int], list[str]] = {}
     for record in records:
-        by_session.setdefault(record["sessionId"], []).append(record)
+        stamp = (record["sessionId"], record["startMs"], record["endMs"])
+        by_stamp.setdefault(stamp, []).append(record["text"])
     kept: list[dict] = []
     for raw in raw_citations:
         if not isinstance(raw, dict):
@@ -327,15 +369,7 @@ def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict
             continue
         start_ms = int(start_ms)
         end_ms = int(end_ms)
-        record = next(
-            (
-                candidate
-                for candidate in by_session.get(session_id, [])
-                if candidate["startMs"] == start_ms and candidate["endMs"] == end_ms
-            ),
-            None,
-        )
-        if not record or quote not in record["text"]:
+        if not any(quote in text for text in by_stamp.get((session_id, start_ms, end_ms), [])):
             continue
         kept.append({"quote": quote, "segmentRef": {"sessionId": session_id, "startMs": start_ms, "endMs": end_ms}})
     kept.sort(key=lambda c: c["segmentRef"]["startMs"])
@@ -446,13 +480,34 @@ def generate_summary(
     if not generation_input["records"]:
         raise no_transcript_to_summarize()
 
+    started = perf_counter()
+    status = "failed"
+    usage = {}
     try:
         generated = ai_provider.generate(system=generation_input["system"], user=generation_input["user"])
-    except Exception:
+        if isinstance(generated, dict):
+            usage = generated
+        content = usage.get("content")
+        if not isinstance(content, str):
+            raise summary_generation_failed()
+        status = "ready"
+    except Exception as error:
+        usage = getattr(error, "usage", usage)
         raise summary_generation_failed() from None
-    content = generated.get("content") if isinstance(generated, dict) else None
-    if not isinstance(content, str):
-        raise summary_generation_failed()
+    finally:
+        telemetry = {
+            "provider": ai_provider.id,
+            "model": ai_provider.model,
+            "status": status,
+            "latencyMs": round((perf_counter() - started) * 1000),
+            "callCount": 1,
+            "retryCount": 0,
+        }
+        for key in ("inputTokens", "outputTokens"):
+            value = usage.get(key) if isinstance(usage, dict) else None
+            telemetry[key] = value if type(value) is int and value >= 0 else None
+        logger.info("course summary attempt %s", telemetry)
+
     citations = reconcile_citations(
         raw_citations=generated.get("citations"), records=generation_input["records"]
     )

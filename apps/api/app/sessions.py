@@ -24,7 +24,7 @@ from typing import Any, Callable
 from .errors import not_found_session, not_found_source, session_already_finished, unauthorized_expired
 from .ids import generate_id
 from .timeutil import iso_seconds_from_ms
-from .transcripts import load_state, parse_gaps, report_gaps, transcript_summary
+from .transcripts import finish_transcript_state, load_state, parse_gaps, transcript_summary
 
 
 def serialize_session(session: dict) -> dict:
@@ -143,8 +143,10 @@ def finish_session(
         raise session_already_finished()
 
     session = _finished_session(session, now())
-    store.set("sessions", session["id"], session)
-    report_gaps(store=store, session_id=session["id"], gaps=gaps)
+    store.set_many({
+        "sessions": {session_id: session},
+        "transcripts": {session_id: finish_transcript_state(store=store, session_id=session_id, gaps=gaps)},
+    })
     return {"status": 200, "body": {"session": serialize_session(session)}}
 
 

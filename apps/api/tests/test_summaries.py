@@ -13,6 +13,7 @@ real archived record (§2.2), failures land nothing (D16 不落脏数据),
 and usage accrues only on success (D18).
 """
 
+import json
 import re
 from types import SimpleNamespace
 
@@ -147,6 +148,7 @@ def test_generate_201_full_summary_verbatim_citations_input_chars_and_usage_accr
     assert response.status == 201, response.json
     summary = response.json["summary"]
     assert summary["id"]
+    assert "flowchart" not in summary
     assert summary["resourceId"] == resource["id"]
     assert isinstance(summary["content"], str)
     assert "注意力机制详解 P2：自注意力（happy）" in summary["content"]
@@ -225,6 +227,112 @@ def test_generate_uses_one_global_prompt_for_theme_based_review(start_app):
         assert instruction in system
     assert mixed in user, "model needs the full utterance to distinguish useful context"
     assert "只在键向量维数较大时显著影响分布" in user
+
+
+def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_app):
+    calls = []
+    evidence = "如果维数大就缩放点积否则直接使用点积"
+
+    def reply(request):
+        messages = json.loads(request.content)["messages"]
+        calls.append(messages)
+        session_id = re.search(r"\[(ses_\S+) 30000–60000\]", messages[-1]["content"])[1]
+        ref = {"sessionId": session_id, "startMs": 30000, "endMs": 60000}
+        result = {
+            "content": "## 并列建议\n\n- 记录维数\n- 保存结果",
+            "citations": [],
+            "flowchart": {
+                "title": "点积处理",
+                "nodes": [
+                    {"id": "check", "label": "检查维数"},
+                    {"id": "scale", "label": "缩放点积"},
+                    {"id": "direct", "label": "直接使用点积"},
+                    {"id": "log", "label": "记录维数"},
+                ],
+                "edges": [
+                    {"from": "check", "to": "scale", "label": "维数大", "citation": {**ref, "quote": evidence}},
+                    {"from": "check", "to": "direct", "label": "其他情况", "citation": {**ref, "quote": evidence}},
+                    {"from": "scale", "to": "log", "citation": {**ref, "quote": "先缩放，再记录维数"}},
+                    {"from": "direct", "to": "log", "citation": {**ref, "endMs": 60001, "quote": evidence}},
+                    {"from": "scale", "to": "unknown", "citation": {**ref, "quote": evidence}},
+                ],
+            },
+        }
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    provider = create_qwen_provider(api_key="test", transport=httpx.MockTransport(reply))
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[{"startMs": 30000, "endMs": 60000, "text": evidence}],
+        label="flowchart",
+    )
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert len(calls) == 1
+    assert "并列" in calls[0][0]["content"]
+    summary = response.json["summary"]
+    assert "- 记录维数\n- 保存结果" in summary["content"]
+    citation = {
+        "quote": evidence,
+        "segmentRef": {"sessionId": archived["session"]["id"], "startMs": 30000, "endMs": 60000},
+    }
+    assert summary["flowchart"] == {
+        "title": "点积处理",
+        "nodes": [
+            {"id": "check", "label": "检查维数"},
+            {"id": "scale", "label": "缩放点积"},
+            {"id": "direct", "label": "直接使用点积"},
+        ],
+        "edges": [
+            {"from": "check", "to": "scale", "label": "维数大", "citation": citation},
+            {"from": "check", "to": "direct", "label": "其他情况", "citation": citation},
+        ],
+    }
+    detail = app.request("GET", f"/v1/summaries/{summary['id']}", headers=auth_header(token))
+    assert detail.json["summary"] == summary
+
+
+@pytest.mark.parametrize(
+    ("title", "archive_text"),
+    [
+        ("学习建议", "可以记录维数也可以保存结果"),
+        ("学习建议\ud800", "先记录再保存"),
+    ],
+)
+def test_generate_preserves_text_summary_when_flowchart_cannot_be_used(start_app, title, archive_text):
+    def reply(*, system, user):
+        session_id = re.search(r"\[(ses_\S+) 30000–60000\]", user)[1]
+        return {
+            "content": "## 并列建议\n\n- 记录维数\n- 保存结果",
+            "citations": [],
+            "flowchart": {
+                "title": title,
+                "nodes": [{"id": "a", "label": "记录维数"}, {"id": "b", "label": "保存结果"}],
+                "edges": [{
+                    "from": "a",
+                    "to": "b",
+                    "citation": {"quote": "先记录再保存", "sessionId": session_id, "startMs": 30000, "endMs": 60000},
+                }],
+            },
+        }
+
+    provider = SimpleNamespace(id="stub", model="flowchart-test", generate=reply)
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[{"startMs": 30000, "endMs": 60000, "text": archive_text}],
+        label="parallel",
+    )
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    summary = response.json["summary"]
+    assert "- 记录维数\n- 保存结果" in summary["content"]
+    assert "flowchart" not in summary
 
 
 def test_generate_every_post_creates_a_new_summary_regeneration_deterministic_but_separate(start_app):

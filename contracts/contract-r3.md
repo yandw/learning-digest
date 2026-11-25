@@ -30,6 +30,7 @@
 | `resourceId` | string | 是 | 所属 Resource |
 | `content` | string | 是 | 总结正文，Markdown |
 | `citations` | Citation[] | 是 | 原文引用，按来源时间轴 `startMs` 升序（可为空数组） |
+| `flowchart` | Flowchart | 否 | 逐字稿支持的步骤与条件关系（§2.5），只在完整总结返回 |
 | `generation` | object | 是 | 生成元数据（§2.3） |
 | `generatedAt` | string | 服务端生成 | 生成完成时间，ISO 8601 UTC |
 
@@ -68,6 +69,18 @@
 | `updatedAt` | string | 服务端生成 | 最后一次计数写入时间，ISO 8601 UTC |
 
 只记录不计费：无价格、账单、付款与配额执行（#49 Out of Scope；D18）。账号级累计，无时间窗与资源维度参数；后续计费口径若需要维度扩展，加端点或参数，不改本形态。
+
+### 2.5 Flowchart（流程图）
+
+同一次总结调用可附带一张流程图。逐字稿需要明确描述操作顺序或判断分支。并列建议继续放在正文的列表或分组里，正文包含独立可读的总结。
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| `title` | string | 流程主题，最多 80 个字符 |
+| `nodes` | { id: string, label: string }[] | 2 至 12 个步骤或判断。ID 唯一，使用 1 至 32 个英文字母、数字、下划线或短横线。标签最多 120 个字符 |
+| `edges` | { from: string, to: string, label?: string, citation: Citation }[] | 1 至 16 条有向连线。起点和终点是不同的已有节点 ID，可选标签描述分支条件，最多 120 个字符。每条连线携带一项 §2.2 的可回查引用 |
+
+服务端保留引用命中提交给模型的逐字稿行的连线，移除孤立节点。流程图无有效连线时省略 `flowchart`。Web 在每条连线旁显示引用和时间范围，有可用的定位链接时可回跳原视频。历史记录可缺少此字段，列表投影的 `citationCount` 继续统计 `citations`。
 
 ## 3. 端点
 

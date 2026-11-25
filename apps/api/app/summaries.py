@@ -275,7 +275,8 @@ def prefer_organized(state: dict, kept_records: list[dict]) -> list[dict]:
 
 def stamp_line(entry: dict) -> str:
     """Line the transcript rows up with their session id stamp (D17)."""
-    return f"[{entry['sessionId']} {entry['startMs']}–{entry['endMs']}] {entry['text']}"
+    stamp = f"[{entry['sessionId']} {entry['startMs']}–{entry['endMs']}] {entry['text']}"
+    return f"[引用编号 {entry['recordId']}]\n{stamp}" if "recordId" in entry else stamp
 
 
 def stamp_sources(entries: list[dict]) -> str:
@@ -313,7 +314,11 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
     inputChars, records } — inputChars is the full submitted prompt
     (system + user, code points), the same number the usage report carries."""
     material = collect_material(store=store, account_id=account_id, resource_id=resource["id"])
-    records, gaps = material["records"], material["gaps"]
+    records = [
+        {**record, "recordId": f"R{index}"}
+        for index, record in enumerate(material["records"], start=1)
+    ]
+    gaps = material["gaps"]
     notes = notes_for_resource(store=store, account_id=account_id, resource_id=resource["id"])
     note_lines = [
         f"[{note['sourceId']} {note['positionMs']}] {note['text']}"
@@ -341,9 +346,10 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
 
 
 def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict]:
-    """Require an exact input range and verbatim quote from a raw or organized row."""
+    """Use the exact input row, or check a legacy citation against its input stamp."""
     if not isinstance(raw_citations, list):
         return []
+    by_id = {record["recordId"]: record for record in records}
     by_stamp: dict[tuple[str, int, int], list[str]] = {}
     for record in records:
         stamp = (record["sessionId"], record["startMs"], record["endMs"])
@@ -351,6 +357,15 @@ def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict
     kept: list[dict] = []
     for raw in raw_citations:
         if not isinstance(raw, dict):
+            continue
+        if "recordId" in raw:
+            record_id = raw["recordId"]
+            record = by_id.get(record_id) if isinstance(record_id, str) else None
+            if record and record["text"].strip():
+                kept.append({
+                    "quote": record["text"],
+                    "segmentRef": {key: record[key] for key in ("sessionId", "startMs", "endMs")},
+                })
             continue
         quote = raw.get("quote")
         session_id = raw.get("sessionId")

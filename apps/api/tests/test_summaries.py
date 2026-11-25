@@ -231,12 +231,18 @@ def test_generate_uses_one_global_prompt_for_theme_based_review(start_app):
 
 def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_app):
     calls = []
-    evidence = "如果维数大就缩放点积否则直接使用点积"
+    evidence = "如果维数大，就缩放点积，否则直接使用点积。"
+
+    def completion(result):
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
 
     def reply(request):
         messages = json.loads(request.content)["messages"]
+        user = messages[-1]["content"]
+        if user.startswith("{"):
+            return completion({"paragraphs": [[evidence]]})
         calls.append(messages)
-        session_id = re.search(r"\[(ses_\S+) 30000–60000\]", messages[-1]["content"])[1]
+        session_id = re.search(r"\[(ses_\S+) 30000–60000\]", user)[1]
         ref = {"sessionId": session_id, "startMs": 30000, "endMs": 60000}
         result = {
             "content": "## 并列建议\n\n- 记录维数\n- 保存结果",
@@ -258,7 +264,7 @@ def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_a
                 ],
             },
         }
-        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+        return completion(result)
 
     provider = create_qwen_provider(api_key="test", transport=httpx.MockTransport(reply))
     app, account, _ = start_summary_app(start_app, provider)
@@ -266,13 +272,17 @@ def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_a
     archived = favorite_and_archive(
         app,
         token,
-        records=[{"startMs": 30000, "endMs": 60000, "text": evidence}],
+        records=[
+            {"startMs": 30000, "endMs": 45000, "text": "如果维数大"},
+            {"startMs": 45000, "endMs": 60000, "text": "就缩放点积否则直接使用点积"},
+        ],
         label="flowchart",
     )
     response = generate(app, token, archived["resource"]["id"])
     assert response.status == 201, response.json
     assert len(calls) == 1
     assert "并列" in calls[0][0]["content"]
+    assert f"30000–60000] {evidence}" in calls[0][-1]["content"]
     summary = response.json["summary"]
     assert "- 记录维数\n- 保存结果" in summary["content"]
     citation = {

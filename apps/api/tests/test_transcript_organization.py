@@ -248,6 +248,60 @@ def test_failed_window_preserves_exact_raw_range_and_later_window_still_organize
     assert view["records"] == [{**record, "origin": "captions"} for record in records]
 
 
+def test_provider_timeout_retries_middle_window_and_preserves_other_windows(start_app):
+    class TimingOutProvider(TranscriptProvider):
+        def organize_transcript(self, *, system, user):
+            text = json.loads(user)["text"]
+            self.inputs.append(text)
+            if text == "中间原话":
+                raise TimeoutError
+            return {"paragraphs": [[text + "。"]]}
+
+    provider = TimingOutProvider(None)
+    request, _ = start_session(start_app, provider)
+    records = [
+        {"startMs": 0, "endMs": 1000, "text": "前面的话"},
+        {"startMs": 2000, "endMs": 3000, "text": "中间原话"},
+        {"startMs": 4000, "endMs": 5000, "text": "后面的话"},
+    ]
+    assert request("POST", "captions", {"segments": records}).status == 201
+    assert request("POST", "finish", {"gaps": [
+        {"startMs": 1000, "endMs": 2000}, {"startMs": 3000, "endMs": 4000},
+    ]}).status == 200
+
+    organized = request("GET", "transcript").json["organized"]
+    assert organized["status"] == "partial"
+    assert [(paragraph.get("status"), paragraph["sentences"][0]["text"])
+            for paragraph in organized["paragraphs"]] == [
+        (None, "前面的话。"), ("raw", "中间原话"), (None, "后面的话。"),
+    ]
+    assert provider.inputs == ["前面的话", "中间原话", "中间原话", "后面的话"]
+
+
+def test_failed_organization_write_can_retry_on_transcript_read(start_app, monkeypatch):
+    from app.persistence import FileStore
+
+    provider = TranscriptProvider([["保存后的整理稿。"]])
+    request, _ = start_session(start_app, provider)
+    assert request("POST", "captions", {"segments": [
+        {"startMs": 0, "endMs": 1000, "text": "保存后的整理稿"},
+    ]}).status == 201
+
+    save = FileStore._save
+
+    def fail_organization_write(store, replacements=None):
+        if provider.inputs:
+            raise OSError("disk write failed")
+        return save(store, replacements)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(FileStore, "_save", fail_organization_write)
+        assert request("POST", "finish", {}).status == 200
+
+    assert request("GET", "transcript").json["organized"] == {"status": "processing"}
+    assert request("GET", "transcript").json["organized"]["status"] == "ready"
+
+
 def test_raw_fallback_bounds_calls_when_no_sentence_boundary_is_returned(start_app):
     class EchoProvider(TranscriptProvider):
         def organize_transcript(self, *, system, user):

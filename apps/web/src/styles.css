@@ -1117,6 +1117,71 @@ a:hover {
   padding-inline-start: 24px;
 }
 
+.summary-flowchart {
+  margin: 28px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.summary-flowchart h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.flowchart-groups,
+.flowchart-branches {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flowchart-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--ld-primary-line);
+  border-radius: 8px;
+  background: var(--ld-page-bg);
+}
+
+.flowchart-branch {
+  display: grid;
+  grid-template-columns: minmax(24px, 1fr) minmax(0, 3fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.flowchart-connector {
+  display: grid;
+  padding-block: 4px;
+  color: var(--ld-primary);
+  text-align: center;
+}
+
+.flowchart-direction {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.flowchart-node {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--ld-primary-soft);
+}
+
+.flowchart-target blockquote {
+  margin: 4px 0;
+  white-space: pre-wrap;
+}
+
 .summary-citations {
   margin-top: 28px;
 }

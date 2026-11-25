@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Alert, Button, Empty, Input, Space, Spin, Tag, Typography } from "antd";
 import { ArrowLeftOutlined, DeleteOutlined, DownOutlined, EditOutlined, LinkOutlined, RightOutlined } from "@ant-design/icons";
 import {
@@ -62,6 +62,53 @@ function SummaryBlocks({ blocks }: { blocks: any[] }) {
     }
     return <p className="summary-paragraph" key={index}><MarkdownRuns runs={block.runs} /></p>;
   });
+}
+
+type FlowchartView = {
+  title: string;
+  groups: Array<{
+    id: string;
+    label: string;
+    branches: Array<{
+      step: string;
+      condition?: string;
+      quote: string;
+      stamp: string | null;
+      jumpUrl: string | null;
+    }>;
+  }>;
+};
+
+function SummaryFlowchart({ chart }: { chart: FlowchartView }) {
+  const titleId = useId();
+  return (
+    <figure className="summary-flowchart" aria-labelledby={titleId}>
+      <figcaption><h3 id={titleId}>{chart.title}</h3></figcaption>
+      <ul className="flowchart-groups" role="list">
+        {chart.groups.map((group) => (
+          <li className="flowchart-group" key={group.id}>
+            <strong className="flowchart-node">{group.label}</strong>
+            <ul className="flowchart-branches" role="list">
+              {group.branches.map((branch, index) => (
+                <li className="flowchart-branch" key={index}>
+                  <div className="flowchart-connector">
+                    {branch.condition && <span>{branch.condition}</span>}
+                    <span className="flowchart-direction">转到</span>
+                    <span aria-hidden="true">→</span>
+                  </div>
+                  <div className="flowchart-target">
+                    <strong className="flowchart-node">{branch.step}</strong>
+                    <blockquote>「{branch.quote}」</blockquote>
+                    {branch.stamp && <SourceJump href={branch.jumpUrl}>{branch.stamp}</SourceJump>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </figure>
+  );
 }
 
 function CollapsibleSection({
@@ -277,6 +324,7 @@ export default function ResourceDetail({
           <article className="summary-content">
             <p className="summary-meta">生成于 {summary.generatedAtText} · {summary.citationCount} 条引用</p>
             <SummaryBlocks blocks={summary.blocks} />
+            {summary.flowchart && <SummaryFlowchart chart={summary.flowchart} />}
             {summary.citations.length > 0 && (
               <div className="summary-citations">
                 <h3>原文引用</h3>
@@ -308,6 +356,9 @@ export default function ResourceDetail({
         count={`${mergedView.records.length} 段 · 合并 ${sessions.length} 次学习`}
         defaultOpen={false}
       >
+        {sessionViews.some((view: any) => view?.organized?.status === "processing") && (
+          <p className="session-hint" role="status">正在整理逐字稿，已归档的原文可先查看。</p>
+        )}
         {sessions.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开始学习后，逐字稿会出现在这里。" />
         ) : sessionViews.every((view: any) => view === null || view === undefined) ? (
@@ -318,15 +369,17 @@ export default function ResourceDetail({
           <ul className="transcript-entries">
             {entries.map((entry: any, index: number) => (
               <li className={`transcript-entry transcript-${entry.kind}`} key={`${entry.startMs}-${index}`}>
-                <div className="transcript-line">
-                  {(entry.stamp || entry.jumpUrl) && (
-                    <SourceJump href={entry.jumpUrl}>{entry.stamp}</SourceJump>
-                  )}
-                  <span className="transcript-text">{entry.text}</span>
-                  {entry.kind === "record" && sessionOriginLabel(entry.origin) && (
-                    <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
-                  )}
-                </div>
+                {(entry.sentences || [entry]).map((line: any, lineIndex: number) => (
+                  <div className="transcript-line" key={lineIndex}>
+                    {(line.stamp || line.jumpUrl) && (
+                      <SourceJump href={line.jumpUrl}>{line.stamp}</SourceJump>
+                    )}
+                    <span className="transcript-text">{line.text}</span>
+                    {lineIndex === 0 && entry.kind === "record" && sessionOriginLabel(entry.origin) && (
+                      <Tag color="cyan">{sessionOriginLabel(entry.origin)}</Tag>
+                    )}
+                  </div>
+                ))}
                 {entry.detail && <p className="transcript-detail">{entry.detail}</p>}
               </li>
             ))}

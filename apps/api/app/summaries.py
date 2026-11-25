@@ -383,9 +383,70 @@ def serialize_summary(summary: dict) -> dict:
         "resourceId": summary["resourceId"],
         "content": summary["content"],
         "citations": summary["citations"],
+        **({"flowchart": summary["flowchart"]} if "flowchart" in summary else {}),
         "generation": summary["generation"],
         "generatedAt": summary["generatedAt"],
     }
+
+
+def _is_flowchart_text(text: Any, max_length: int) -> bool:
+    return (
+        isinstance(text, str)
+        and len(text) <= max_length
+        and re.search(r"[\ud800-\udfff]", text) is None
+    )
+
+
+def reconcile_flowchart(raw: Any, records: list[dict]) -> dict | None:
+    """Keep directed connections only when their evidence resolves to the Transcript."""
+    if not isinstance(raw, dict):
+        return None
+    title, raw_nodes, raw_edges = raw.get("title"), raw.get("nodes"), raw.get("edges")
+    if not (
+        _is_flowchart_text(title, 80) and title.strip()
+        and isinstance(raw_nodes, list) and 2 <= len(raw_nodes) <= 12
+        and isinstance(raw_edges, list) and 1 <= len(raw_edges) <= 16
+    ):
+        return None
+
+    nodes = {}
+    for node in raw_nodes:
+        if not isinstance(node, dict):
+            return None
+        node_id, label = node.get("id"), node.get("label")
+        if not isinstance(node_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", node_id):
+            return None
+        if node_id in nodes or not _is_flowchart_text(label, 120) or not label.strip():
+            return None
+        nodes[node_id] = {"id": node_id, "label": label.strip()}
+
+    edges = []
+    connected = set()
+    seen = set()
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            continue
+        origin, target, label = edge.get("from"), edge.get("to"), edge.get("label", "")
+        if not (
+            isinstance(origin, str) and origin in nodes
+            and isinstance(target, str) and target in nodes and origin != target
+            and _is_flowchart_text(label, 120)
+        ):
+            continue
+        label = label.strip()
+        key = (origin, target, label)
+        if key in seen:
+            continue
+        citations = reconcile_citations(raw_citations=[edge.get("citation")], records=records)
+        if not citations:
+            continue
+        seen.add(key)
+        edges.append({"from": origin, "to": target, **({"label": label} if label else {}), "citation": citations[0]})
+        connected.update((origin, target))
+
+    if not edges:
+        return None
+    return {"title": title.strip(), "nodes": [node for key, node in nodes.items() if key in connected], "edges": edges}
 
 
 def serialize_summary_list_item(summary: dict) -> dict:
@@ -450,6 +511,7 @@ def generate_summary(
     citations = reconcile_citations(
         raw_citations=generated.get("citations"), records=generation_input["records"]
     )
+    flowchart = reconcile_flowchart(generated.get("flowchart"), generation_input["records"])
 
     at_ms = now()
     summary = {
@@ -458,6 +520,7 @@ def generate_summary(
         "resourceId": resource["id"],
         "content": content,
         "citations": citations,
+        **({"flowchart": flowchart} if flowchart else {}),
         "generation": {
             "provider": ai_provider.id,
             "model": ai_provider.model,

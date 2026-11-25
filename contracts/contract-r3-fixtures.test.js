@@ -249,6 +249,25 @@ test("summaries cite real archived records and the regeneration covers new mater
   );
 });
 
+test("the optional course flowchart carries a transcript citation on each directed connection", () => {
+  const samples = loadExamples("summary-examples.json").samples;
+  const first = sampleById(samples, "api-summary-generate-bilibili").response.body.summary;
+  const latest = sampleById(samples, "api-summary-generate-after-catch-up").response.body.summary;
+  assert.equal(first.flowchart, undefined);
+  const { title, nodes, edges } = latest.flowchart;
+  assert.ok(title.trim());
+  const ids = new Set(nodes.map((node) => node.id));
+  assert.equal(ids.size, nodes.length);
+  assert.ok(edges.length > 0);
+  const pool = transcriptPool();
+  for (const edge of edges) {
+    assert.ok(ids.has(edge.from) && ids.has(edge.to));
+    assert.notEqual(edge.from, edge.to);
+    assertCitation(edge.citation, "flowchart connection");
+    assertCitationsResolve([edge.citation], pool, "flowchart connection");
+  }
+});
+
 test("generation targets and timestamps agree with the shared story", () => {
   const summarySamples = loadExamples("summary-examples.json").samples;
   for (const id of ["api-summary-generate-bilibili", "api-summary-generate-after-catch-up"]) {

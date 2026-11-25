@@ -232,6 +232,7 @@ def test_generate_uses_one_global_prompt_for_theme_based_review(start_app):
 def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_app):
     calls = []
     evidence = "如果维数大，就缩放点积，否则直接使用点积。"
+    reminder = "练习后要记录维数。"
 
     def completion(result):
         return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
@@ -240,13 +241,16 @@ def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_a
         messages = json.loads(request.content)["messages"]
         user = messages[-1]["content"]
         if user.startswith("{"):
-            return completion({"paragraphs": [[evidence]]})
+            return completion({"paragraphs": [[evidence, reminder]]})
         calls.append(messages)
         session_id = re.search(r"\[(ses_\S+) 30000–60000\]", user)[1]
         ref = {"sessionId": session_id, "startMs": 30000, "endMs": 60000}
         result = {
             "content": "## 并列建议\n\n- 记录维数\n- 保存结果",
-            "citations": [],
+            "citations": [
+                {"recordId": "R2", "quote": "模型转述的记录建议"},
+                {"recordId": "R99", **ref, "quote": evidence},
+            ],
             "flowchart": {
                 "title": "点积处理",
                 "nodes": [
@@ -256,10 +260,11 @@ def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_a
                     {"id": "log", "label": "记录维数"},
                 ],
                 "edges": [
-                    {"from": "check", "to": "scale", "label": "维数大", "citation": {**ref, "quote": evidence}},
+                    {"from": "check", "to": "scale", "label": "维数大", "citation": {"recordId": "R1"}},
                     {"from": "check", "to": "direct", "label": "其他情况", "citation": {**ref, "quote": evidence}},
                     {"from": "scale", "to": "log", "citation": {**ref, "quote": "先缩放，再记录维数"}},
                     {"from": "direct", "to": "log", "citation": {**ref, "endMs": 60001, "quote": evidence}},
+                    {"from": "check", "to": "log", "citation": {"recordId": "R99", **ref, "quote": evidence}},
                     {"from": "scale", "to": "unknown", "citation": {**ref, "quote": evidence}},
                 ],
             },
@@ -275,6 +280,7 @@ def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_a
         records=[
             {"startMs": 30000, "endMs": 45000, "text": "如果维数大"},
             {"startMs": 45000, "endMs": 60000, "text": "就缩放点积否则直接使用点积"},
+            {"startMs": 60000, "endMs": 75000, "text": "练习后要记录维数"},
         ],
         label="flowchart",
     )
@@ -282,12 +288,18 @@ def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_a
     assert response.status == 201, response.json
     assert len(calls) == 1
     assert "并列" in calls[0][0]["content"]
-    assert f"30000–60000] {evidence}" in calls[0][-1]["content"]
+    session_id = archived["session"]["id"]
+    assert f"[引用编号 R1]\n[{session_id} 30000–60000] {evidence}" in calls[0][-1]["content"]
+    assert f"[引用编号 R2]\n[{session_id} 60000–75000] {reminder}" in calls[0][-1]["content"]
     summary = response.json["summary"]
     assert "- 记录维数\n- 保存结果" in summary["content"]
+    assert summary["citations"] == [{
+        "quote": reminder,
+        "segmentRef": {"sessionId": session_id, "startMs": 60000, "endMs": 75000},
+    }]
     citation = {
         "quote": evidence,
-        "segmentRef": {"sessionId": archived["session"]["id"], "startMs": 30000, "endMs": 60000},
+        "segmentRef": {"sessionId": session_id, "startMs": 30000, "endMs": 60000},
     }
     assert summary["flowchart"] == {
         "title": "点积处理",

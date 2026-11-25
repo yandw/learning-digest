@@ -13,10 +13,9 @@ Interface (the one thing consumers may rely on):
                  generate_digest(*, system, user),
                  organize_transcript(*, system, user), explain(*, system, user) }
     generate returns { content: str, citations: RawCitation[], flowchart? }
-    where RawCitation = { quote, sessionId, startMs, endMs } — the shape
-    the model is asked for by prompts/course-summary.md; every citation is
-    later reconciled against the archived records (app/summaries.py)
-    before anything lands.
+    where RawCitation = { recordId } or the legacy { quote, sessionId,
+    startMs, endMs }. The summary domain resolves both shapes against the
+    submitted transcript rows before storing them (app/summaries.py).
     generate_topics returns the RAW Topic entries the topic-tick prompt
     (prompts/topic-tick.md, contract-r4.md §6) asks for — one JSON array
     of {start, end, title, text, continuation?}; the rolling domain

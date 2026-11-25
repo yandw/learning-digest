@@ -50,7 +50,8 @@ from .usage import record_summary_generation
 # D17: the prompt template is the contract record at the repo root.
 PROMPT_FILE = Path(__file__).resolve().parents[3] / "prompts" / "course-summary.md"
 
-GAP_MARKERS = {"skipped": "已跳过，该范围未取得文本", "failed": "转写失败，该范围未取得文本"}
+GAP_MARKER = "已跳过，该范围未取得文本"
+GAP_MARKERS = {"skipped": GAP_MARKER, "failed": "转写失败，该范围未取得文本"}
 NOTHING_MARKER = "（无）"
 
 logger = logging.getLogger(__name__)

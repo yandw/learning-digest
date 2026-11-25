@@ -102,6 +102,26 @@ function LearningLibrary({ runtime }: { runtime: LearningRuntime }) {
     };
   }, [loadAccount, openResource, refresh, runtime]);
 
+  const detailId = libraryState.detail?.resource.id;
+  const hasPendingTranscripts = Boolean(runtime.library.pendingTranscriptIds?.().length);
+  useEffect(() => {
+    if (!detailId || !hasPendingTranscripts) return;
+    let watching = true;
+    const poll = async () => {
+      await runtime.library.refreshPendingTranscripts();
+      if (!watching) return;
+      setLibraryState(runtime.library.getState());
+      if (runtime.library.pendingTranscriptIds().length > 0) {
+        timer = window.setTimeout(poll, 2000);
+      }
+    };
+    let timer = window.setTimeout(poll, 2000);
+    return () => {
+      watching = false;
+      window.clearTimeout(timer);
+    };
+  }, [runtime, detailId, hasPendingTranscripts]);
+
   useEffect(() => runtime.subscribeSessionExpired?.(() => {
     setAccount(null);
     setSurface("library");

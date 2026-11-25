@@ -233,3 +233,12 @@ test("presentTranscript keeps organized and raw ranges in a partially organized 
   assert.deepEqual(entries.map((entry) => entry.sentences[0].text), ["已整理。", "原始转写"]);
   assert.equal(entries[1].detail, "此段显示原始转写");
 });
+
+test("keeps distinct utterances at the same time within one session", () => {
+  const records = [
+    { startMs: 0, endMs: 15000, text: "问句" },
+    { startMs: 0, endMs: 15000, text: "同一区间的回答" },
+  ];
+  assert.deepEqual(mergeTranscriptViews([view({ records })]).records.map((record) => record.text),
+    records.map((record) => record.text));
+});

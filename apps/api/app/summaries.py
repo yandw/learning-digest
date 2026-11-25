@@ -50,7 +50,7 @@ from .usage import record_summary_generation
 # D17: the prompt template is the contract record at the repo root.
 PROMPT_FILE = Path(__file__).resolve().parents[3] / "prompts" / "course-summary.md"
 
-GAP_MARKER = "已跳过，该范围未取得文本"
+GAP_MARKERS = {"skipped": "已跳过，该范围未取得文本", "failed": "转写失败，该范围未取得文本"}
 NOTHING_MARKER = "（无）"
 
 logger = logging.getLogger(__name__)
@@ -167,10 +167,14 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
                     "text": record["text"],
                 }
             )
-        for gap in state["gaps"]:
-            gaps.append(
-                {"sessionId": session_id, "sourceId": source_id, "startMs": gap["startMs"], "endMs": gap["endMs"]}
-            )
+        missing_ranges = [
+            *({"startMs": gap["startMs"], "endMs": gap["endMs"], "reason": "skipped"} for gap in state["gaps"]),
+            *(
+                {"startMs": segment["startMs"], "endMs": segment["endMs"], "reason": "failed"}
+                for segment in state["segments"].values() if segment["status"] == "failed"
+            ),
+        ]
+        gaps.extend({**gap, "sessionId": session_id, "sourceId": source_id} for gap in missing_ranges)
 
     def _record_sort_key(r: dict) -> tuple:
         return (r["sourceId"] or "", r["startMs"], r["endMs"], str(r["sessionId"]))
@@ -194,7 +198,7 @@ def collect_material(*, store: Any, account_id: str, resource_id: str) -> dict:
         intersection must cover ≥80% of the shorter span. YouTube caption
         chunks advance by roughly half their width (~50% pairwise overlap),
         so they never cluster; exact copies across sessions do (100%)."""
-        if a["sourceId"] != b["sourceId"]:
+        if a["sourceId"] != b["sourceId"] or a["sessionId"] == b["sessionId"]:
             return False
         overlap = min(a["endMs"], b["endMs"]) - max(a["startMs"], b["startMs"])
         shorter = min(a["endMs"] - a["startMs"], b["endMs"] - b["startMs"])
@@ -333,7 +337,7 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
         {
             "resourceTitle": lambda: resource["title"],
             "transcriptLines": lambda: stamp_sources(records),
-            "gapLines": lambda: stamp_sources([{**gap, "text": GAP_MARKER} for gap in gaps]) if gaps else NOTHING_MARKER,
+            "gapLines": lambda: stamp_sources([{**gap, "text": GAP_MARKERS[gap["reason"]]} for gap in gaps]) if gaps else NOTHING_MARKER,
             "noteLines": lambda: "\n".join(note_lines) if note_lines else NOTHING_MARKER,
         },
     )

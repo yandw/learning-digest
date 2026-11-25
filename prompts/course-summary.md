@@ -70,7 +70,7 @@ the Web can render them and jump back to the original platform timestamp
 - `{transcriptLines}` — ready organized sentences or archived transcript records of the Resource,
   grouped by Source and ordered by `startMs` within each Source. Each row has a
   request-local marker such as `[引用编号 R1]` on the previous line, followed by a
-  stamped transcript line such as `[ses_… 30000–60000] 注意力分数的计算，就是把查询向量和键向量做点积`.
+  stamped transcript line with `sessionId`, `startMs`, and `endMs`, such as `[ses_… 30000–60000] 注意力分数的计算，就是把查询向量和键向量做点积`.
 - `{gapLines}` — each explicit gap as `[ses_… 150000–210000] 已跳过，该范围未取得文本`,
   or `（无）`.
 - `{noteLines}` — timestamped notes as `[src_… 200000] 3:20 起的例子值得回看`,

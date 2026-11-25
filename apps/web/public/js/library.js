@@ -410,7 +410,7 @@ export function mergeTranscriptViews(viewsIn) {
   function nearDuplicate(a, b) {
     const overlap = Math.min(a.endMs, b.endMs) - Math.max(a.startMs, b.startMs);
     const shorter = Math.min(a.endMs - a.startMs, b.endMs - b.startMs);
-    return a.sourceId === b.sourceId && shorter > 0 && overlap * 5 >= shorter * 4;
+    return a.sourceId === b.sourceId && a.sessionId !== b.sessionId && shorter > 0 && overlap * 5 >= shorter * 4;
   }
 
   const keptRecords = [];

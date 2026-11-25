@@ -238,6 +238,7 @@ def test_story_generate_while_unfinished_catch_up_regenerate_cites_new_material(
     assert NOTE_TEXT in first_summary["content"]
     assert "## 尚未覆盖" in first_summary["content"]
     assert str(CAPTION_GAP["startMs"]) in first_summary["content"]
+    assert f"[{asr_active_session['id']} 210000–240000]" in first_summary["content"]
 
     usage_after_first = app.request("GET", "/v1/usage", headers=auth_header(token))
     assert usage_after_first.json["audioSeconds"] == 90  # 3 done segments x 30s

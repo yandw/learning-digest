@@ -11,7 +11,7 @@ from time import perf_counter
 
 from starlette.concurrency import run_in_threadpool
 
-from .transcripts import load_state, save_state, sorted_records
+from .transcripts import load_state, sorted_records
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +202,11 @@ def organize_window(
             "status": "failed",
         }
         try:
-            response = provider.organize_transcript(system=prompt, user=user)
+            try:
+                response = provider.organize_transcript(system=prompt, user=user)
+            except Exception as error:
+                logger.warning("transcript organization provider failed (%s)", type(error).__name__)
+                continue
             if not isinstance(response, dict):
                 response = {}
             for key in ("inputTokens", "outputTokens"):
@@ -270,7 +274,9 @@ async def organize_session(ctx, session_id: str) -> None:
         current = eligible_state(ctx, session_id)
         if current is state and sorted_records(current) == records:
             try:
-                save_state(ctx.store, {**current, "organized": organized, "organizationAttempts": attempts})
+                ctx.store.set_many({"transcripts": {
+                    session_id: {**current, "organized": organized, "organizationAttempts": attempts},
+                }})
             except Exception as error:
                 logger.error("transcript organization persistence failed (%s)", type(error).__name__)
     finally:

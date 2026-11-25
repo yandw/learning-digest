@@ -581,6 +581,35 @@ class _ScriptedProvider:
         return self.payload
 
 
+def test_generate_keeps_equal_range_utterances_but_only_cites_nonzero_ranges(start_app):
+    class Provider(_ScriptedProvider):
+        def generate(self, *, system, user):
+            self.user = user
+            return {
+                "content": "两种计算方式。",
+                "citations": [{"recordId": "R1"}, {"recordId": "R2"}, {"recordId": "R3"}],
+            }
+
+    provider = Provider("range")
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(app, token, label="range", records=[
+        {"startMs": 0, "endMs": 0, "text": "题目"},
+        {"startMs": 1000, "endMs": 3000, "text": "直接计算"},
+        {"startMs": 1000, "endMs": 3000, "text": "先做缩放"},
+    ])
+
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert [citation["quote"] for citation in response.json["summary"]["citations"]] == [
+        "直接计算", "先做缩放",
+    ]
+    session_id = archived["session"]["id"]
+    assert f"[{session_id} 0–0] 题目" in provider.user
+    assert f"[{session_id} 1000–3000] 直接计算" in provider.user
+    assert f"[{session_id} 1000–3000] 先做缩放" in provider.user
+
+
 def test_citation_reconciliation_refs_that_do_not_resolve_are_dropped_before_landing(start_app):
     provider = _ScriptedProvider("messy")
     app, a, _b = start_summary_app(start_app, provider)

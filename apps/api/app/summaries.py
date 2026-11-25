@@ -366,7 +366,7 @@ def reconcile_citations(*, raw_citations: Any, records: list[dict]) -> list[dict
         if "recordId" in raw:
             record_id = raw["recordId"]
             record = by_id.get(record_id) if isinstance(record_id, str) else None
-            if record and record["text"].strip():
+            if record and record["endMs"] > record["startMs"] and record["text"].strip():
                 kept.append({
                     "quote": record["text"],
                     "segmentRef": {key: record[key] for key in ("sessionId", "startMs", "endMs")},

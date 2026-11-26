@@ -22,7 +22,7 @@
 
 ### 2.1 Course Summary（课程总结）
 
-用户主动发起生成的一份资料级总结，聚合该 Resource 当前全部已归档材料（多次 Session 的逐字稿 + 笔记）。
+用户主动发起生成的一份资料级总结，聚合该 Resource 当前全部已归档材料（多次 Session 的逐字稿和学习笔记）。整理稿就绪时优先使用其中的句子，其余内容使用原始记录。正文按主题归纳讲授内容、相关问答、案例与适用条件。
 
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
@@ -30,6 +30,7 @@
 | `resourceId` | string | 是 | 所属 Resource |
 | `content` | string | 是 | 总结正文，Markdown |
 | `citations` | Citation[] | 是 | 原文引用，按来源时间轴 `startMs` 升序（可为空数组） |
+| `flowchart` | Flowchart | 否 | 逐字稿支持的步骤与条件关系（§2.5），只在完整总结返回 |
 | `generation` | object | 是 | 生成元数据（§2.3） |
 | `generatedAt` | string | 服务端生成 | 生成完成时间，ISO 8601 UTC |
 
@@ -41,12 +42,12 @@
 
 | 字段 | 类型 | 必填 | 语义 |
 | --- | --- | --- | --- |
-| `quote` | string | 是 | 引用的原文摘句（摘自所指记录的文本，逐字不改写） |
+| `quote` | string | 是 | 所指原始记录或整理稿句子的逐字摘录 |
 | `segmentRef.sessionId` | string | 是 | 来源 Session（该 Resource 名下的某次学习） |
 | `segmentRef.startMs` | integer ≥ 0 | 是 | 所指记录的来源时间轴起点（毫秒） |
 | `segmentRef.endMs` | integer > startMs | 是 | 所指记录的终点（毫秒） |
 
-服务端只落库能对上真实归档记录的引用：`segmentRef` 必须命中该 Resource 某 Session 的已归档 TranscriptRecord（contract-r2 §2.2）——sessionId 归属该 Resource，区间对上该记录，quote 是该记录文本的逐字摘句。对不上的引用在落库前丢弃，宁可少引用不落死链。Web 据此可从引用跳回原平台对应时间点（Session 的 Source + `startMs`）。
+服务端只保留能核对生成输入的引用。`sessionId` 属于该 Resource，时间区间与参与生成的某条原始 TranscriptRecord（contract-r2 §2.2）或整理稿句子完全一致，且 `quote` 可在该条文本中逐字找到。跨多条记录的整理稿句子使用覆盖其来源的时间范围。支持定位的来源可通过 Session 的 Source 和 `startMs` 回到原视频。引用区同时保留摘录与时间，方便在逐字稿中核对。
 
 ### 2.3 生成元数据（generation）
 
@@ -68,6 +69,18 @@
 | `updatedAt` | string | 服务端生成 | 最后一次计数写入时间，ISO 8601 UTC |
 
 只记录不计费：无价格、账单、付款与配额执行（#49 Out of Scope；D18）。账号级累计，无时间窗与资源维度参数；后续计费口径若需要维度扩展，加端点或参数，不改本形态。
+
+### 2.5 Flowchart（流程图）
+
+同一次总结调用可附带一张流程图。逐字稿需要明确描述操作顺序或判断分支。并列建议继续放在正文的列表或分组里，正文包含独立可读的总结。
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| `title` | string | 流程主题，最多 80 个字符 |
+| `nodes` | { id: string, label: string }[] | 2 至 12 个步骤或判断。ID 唯一，使用 1 至 32 个英文字母、数字、下划线或短横线。标签最多 120 个字符 |
+| `edges` | { from: string, to: string, label?: string, citation: Citation }[] | 1 至 16 条有向连线。起点和终点是不同的已有节点 ID，可选标签描述分支条件，最多 120 个字符。每条连线携带一项 §2.2 的可回查引用 |
+
+服务端保留引用命中提交给模型的逐字稿行的连线，移除孤立节点。流程图无有效连线时省略 `flowchart`。Web 在每条连线旁显示引用和时间范围，有可用的定位链接时可回跳原视频。历史记录可缺少此字段，列表投影的 `citationCount` 继续统计 `citations`。
 
 ## 3. 端点
 

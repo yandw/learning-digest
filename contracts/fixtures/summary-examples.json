@@ -89,6 +89,23 @@
                 "segmentRef": { "sessionId": "ses_01JABC0031", "startMs": 138000, "endMs": 159000 }
               }
             ],
+            "flowchart": {
+              "title": "计算注意力分数",
+              "nodes": [
+                { "id": "dot", "label": "查询向量与键向量做点积" },
+                { "id": "score", "label": "得到注意力分数" }
+              ],
+              "edges": [
+                {
+                  "from": "dot",
+                  "to": "score",
+                  "citation": {
+                    "quote": "注意力分数的计算，就是把查询向量和键向量做点积",
+                    "segmentRef": { "sessionId": "ses_01JABC0033", "startMs": 30000, "endMs": 60000 }
+                  }
+                }
+              ]
+            },
             "generation": { "provider": "qwen", "model": "qwen-plus", "inputChars": 2264 },
             "generatedAt": "2026-11-10T12:30:00Z"
           }
@@ -161,6 +178,23 @@
                 "segmentRef": { "sessionId": "ses_01JABC0031", "startMs": 138000, "endMs": 159000 }
               }
             ],
+            "flowchart": {
+              "title": "计算注意力分数",
+              "nodes": [
+                { "id": "dot", "label": "查询向量与键向量做点积" },
+                { "id": "score", "label": "得到注意力分数" }
+              ],
+              "edges": [
+                {
+                  "from": "dot",
+                  "to": "score",
+                  "citation": {
+                    "quote": "注意力分数的计算，就是把查询向量和键向量做点积",
+                    "segmentRef": { "sessionId": "ses_01JABC0033", "startMs": 30000, "endMs": 60000 }
+                  }
+                }
+              ]
+            },
             "generation": { "provider": "qwen", "model": "qwen-plus", "inputChars": 2264 },
             "generatedAt": "2026-11-10T12:30:00Z"
           }

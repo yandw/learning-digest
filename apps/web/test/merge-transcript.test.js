@@ -178,3 +178,74 @@ test("presentTranscript renders the merged view with per-record origin labels", 
   assert.equal(entries[0].text, "语音转写第一段更完整的文本");
   assert.equal(sessionOriginLabel(entries[0].origin), "语音转写");
 });
+
+test("presentTranscript keeps organized paragraphs and links their sentences to the right source", () => {
+  const captions = view({
+    sessionId: "ses_c",
+    sourceId: "src_2",
+    origin: "captions",
+    records: [{ startMs: 0, endMs: 30000, text: "分集原字幕" }],
+  });
+  const organized = view({
+    records: [
+      { startMs: 0, endMs: 30000, text: "如果输入" },
+      { startMs: 30000, endMs: 60000, text: "足够就继续否则先" },
+    ],
+    organized: { status: "ready", paragraphs: [{ sentences: [
+      { text: "如果输入足够，就继续。", startMs: 0, endMs: 60000, spans: [
+        { recordIndex: 0, startMs: 0, endMs: 30000 },
+        { recordIndex: 1, startMs: 30000, endMs: 60000 },
+      ] },
+      { text: "否则先", startMs: 30000, endMs: 60000, spans: [
+        { recordIndex: 1, startMs: 30000, endMs: 60000 },
+      ] },
+    ] }] },
+  });
+  const sources = [
+    { id: "src_1", platformId: "youtube", url: "https://www.youtube.com/watch?v=lesson" },
+    { id: "src_2", platformId: "bilibili", url: "https://www.bilibili.com/video/BV1ab411L78c?p=2" },
+  ];
+
+  const entries = presentTranscript(mergeTranscriptViews([captions, organized]), sources);
+  assert.equal(entries.length, 2);
+  assert.equal(entries.find((entry) => entry.text === "分集原字幕").jumpUrl,
+    "https://www.bilibili.com/video/BV1ab411L78c?p=2&t=0");
+  assert.deepEqual(entries.find((entry) => entry.sentences).sentences.map(({ text, jumpUrl }) => [text, jumpUrl]), [
+    ["如果输入足够，就继续。", "https://www.youtube.com/watch?v=lesson&t=0s"],
+    ["否则先", "https://www.youtube.com/watch?v=lesson&t=30s"],
+  ]);
+});
+
+test("presentTranscript keeps organized and raw ranges in a partially organized session", () => {
+  const records = [
+    { startMs: 0, endMs: 15000, text: "已整理" },
+    { startMs: 15000, endMs: 30000, text: "原始转写" },
+  ];
+  const transcript = view({
+    records,
+    organized: { status: "partial", paragraphs: [
+      { sentences: [{ ...records[0], text: "已整理。" }] },
+      { status: "raw", sentences: [records[1]] },
+    ] },
+  });
+
+  const entries = presentTranscript(mergeTranscriptViews([transcript]), []);
+  assert.deepEqual(entries.map((entry) => entry.sentences[0].text), ["已整理。", "原始转写"]);
+  assert.equal(entries[1].detail, "此段显示原始转写");
+});
+
+test("keeps distinct utterances at the same time within one session", () => {
+  const records = [
+    { startMs: 0, endMs: 15000, text: "问句" },
+    { startMs: 0, endMs: 15000, text: "同一区间的回答" },
+  ];
+  assert.deepEqual(mergeTranscriptViews([view({ records })]).records.map((record) => record.text),
+    records.map((record) => record.text));
+});
+
+test("presents each source timeline before moving to the next source", () => {
+  const first = view({ sourceId: "src_z", records: [{ startMs: 15000, endMs: 30000, text: "第一集后半" }] });
+  const next = view({ sourceId: "src_a", sessionId: "ses_2", records: [{ startMs: 0, endMs: 15000, text: "第二集开头" }] });
+  const entries = presentTranscript(mergeTranscriptViews([next, first]), [{ id: "src_z" }, { id: "src_a" }]);
+  assert.deepEqual(entries.map((entry) => entry.text), ["第一集后半", "第二集开头"]);
+});

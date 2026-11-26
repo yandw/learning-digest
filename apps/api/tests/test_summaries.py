@@ -13,10 +13,14 @@ real archived record (§2.2), failures land nothing (D16 不落脏数据),
 and usage accrues only on success (D18).
 """
 
+import json
 import re
 from types import SimpleNamespace
 
-from app.ai_providers import create_stub_provider
+import httpx
+import pytest
+
+from app.ai_providers import create_qwen_provider, create_stub_provider
 
 from helpers import auth_header, open_account_with_id
 
@@ -144,6 +148,7 @@ def test_generate_201_full_summary_verbatim_citations_input_chars_and_usage_accr
     assert response.status == 201, response.json
     summary = response.json["summary"]
     assert summary["id"]
+    assert "flowchart" not in summary
     assert summary["resourceId"] == resource["id"]
     assert isinstance(summary["content"], str)
     assert "注意力机制详解 P2：自注意力（happy）" in summary["content"]
@@ -196,6 +201,179 @@ def test_generate_201_full_summary_verbatim_citations_input_chars_and_usage_accr
     assert usage.json["summaryCount"] == 1
     assert usage.json["summaryInputChars"] == summary["generation"]["inputChars"]
     assert usage.json["updatedAt"]
+
+
+def test_generate_uses_one_global_prompt_for_theme_based_review(start_app):
+    provider = CapturingProvider()
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    mixed = "能听清吗另外缩放点积的系数要怎么选"
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 0, "endMs": 30000, "text": "查询向量和键向量做点积"},
+            {"startMs": 30000, "endMs": 60000, "text": mixed},
+            {"startMs": 60000, "endMs": 90000, "text": "只在键向量维数较大时显著影响分布"},
+        ],
+        label="theme",
+    )
+
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert len(provider.captured) == 1
+    system, user = provider.captured[0]["system"], provider.captured[0]["user"]
+    for instruction in ("按主题合并", "混合发言", "相关问答", "适用条件", "反例", "###"):
+        assert instruction in system
+    assert mixed in user, "model needs the full utterance to distinguish useful context"
+    assert "只在键向量维数较大时显著影响分布" in user
+
+
+def test_configured_prompt_is_used_for_generation_without_changing_other_app_instances(start_app):
+    for version in ("relationship", "detailed"):
+        provider = CapturingProvider()
+        app = start_app(
+            seed_emails=[EMAIL_A],
+            ai_provider=provider,
+            config={"course_summary_prompt": version},
+        )
+        token = open_account_with_id(app, EMAIL_A)["token"]
+        archived = favorite_and_archive(app, token, records=RECORDS, label=version)
+
+        response = generate(app, token, archived["resource"]["id"])
+
+        assert response.status == 201, response.json
+        call, = provider.captured
+        assert ("relation 从" in call["system"]) == (version == "relationship")
+        assert RECORDS[0]["text"] in call["user"]
+
+
+def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_app):
+    calls = []
+    evidence = "如果维数大，就缩放点积，否则直接使用点积。"
+    reminder = "练习后要记录维数。"
+
+    def completion(result):
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(result)}}]})
+
+    def reply(request):
+        messages = json.loads(request.content)["messages"]
+        user = messages[-1]["content"]
+        if user.startswith("{"):
+            return completion({"paragraphs": [[evidence, reminder]]})
+        calls.append(messages)
+        session_id = re.search(r"\[(ses_\S+) 30000–60000\]", user)[1]
+        ref = {"sessionId": session_id, "startMs": 30000, "endMs": 60000}
+        result = {
+            "content": "## 并列建议\n\n- 记录维数\n- 保存结果",
+            "citations": [
+                {"recordId": "R2", "quote": "模型转述的记录建议"},
+                {"recordId": "R99", **ref, "quote": evidence},
+            ],
+            "flowchart": {
+                "title": "点积处理",
+                "nodes": [
+                    {"id": "check", "label": "检查维数"},
+                    {"id": "scale", "label": "缩放点积"},
+                    {"id": "direct", "label": "直接使用点积"},
+                    {"id": "log", "label": "记录维数"},
+                ],
+                "edges": [
+                    {"from": "check", "to": "scale", "label": "维数大", "citation": {"recordId": "R1"}},
+                    {"from": "check", "to": "direct", "label": "其他情况", "citation": {**ref, "quote": evidence}},
+                    {"from": "scale", "to": "log", "citation": {**ref, "quote": "先缩放，再记录维数"}},
+                    {"from": "direct", "to": "log", "citation": {**ref, "endMs": 60001, "quote": evidence}},
+                    {"from": "check", "to": "log", "citation": {"recordId": "R99", **ref, "quote": evidence}},
+                    {"from": "scale", "to": "unknown", "citation": {**ref, "quote": evidence}},
+                ],
+            },
+        }
+        return completion(result)
+
+    provider = create_qwen_provider(api_key="test", transport=httpx.MockTransport(reply))
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 30000, "endMs": 45000, "text": "如果维数大"},
+            {"startMs": 45000, "endMs": 60000, "text": "就缩放点积否则直接使用点积"},
+            {"startMs": 60000, "endMs": 75000, "text": "练习后要记录维数"},
+        ],
+        label="flowchart",
+    )
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert len(calls) == 1
+    assert "并列" in calls[0][0]["content"]
+    session_id = archived["session"]["id"]
+    assert f"[引用编号 R1]\n[{session_id} 30000–60000] {evidence}" in calls[0][-1]["content"]
+    assert f"[引用编号 R2]\n[{session_id} 60000–75000] {reminder}" in calls[0][-1]["content"]
+    summary = response.json["summary"]
+    assert "- 记录维数\n- 保存结果" in summary["content"]
+    assert summary["citations"] == [{
+        "quote": reminder,
+        "segmentRef": {"sessionId": session_id, "startMs": 60000, "endMs": 75000},
+    }]
+    citation = {
+        "quote": evidence,
+        "segmentRef": {"sessionId": session_id, "startMs": 30000, "endMs": 60000},
+    }
+    assert summary["flowchart"] == {
+        "title": "点积处理",
+        "nodes": [
+            {"id": "check", "label": "检查维数"},
+            {"id": "scale", "label": "缩放点积"},
+            {"id": "direct", "label": "直接使用点积"},
+        ],
+        "edges": [
+            {"from": "check", "to": "scale", "label": "维数大", "citation": citation},
+            {"from": "check", "to": "direct", "label": "其他情况", "citation": citation},
+        ],
+    }
+    detail = app.request("GET", f"/v1/summaries/{summary['id']}", headers=auth_header(token))
+    assert detail.json["summary"] == summary
+
+
+@pytest.mark.parametrize(
+    ("title", "archive_text"),
+    [
+        ("学习建议", "可以记录维数也可以保存结果"),
+        ("学习建议\ud800", "先记录再保存"),
+    ],
+)
+def test_generate_preserves_text_summary_when_flowchart_cannot_be_used(start_app, title, archive_text):
+    def reply(*, system, user):
+        session_id = re.search(r"\[(ses_\S+) 30000–60000\]", user)[1]
+        return {
+            "content": "## 并列建议\n\n- 记录维数\n- 保存结果",
+            "citations": [],
+            "flowchart": {
+                "title": title,
+                "nodes": [{"id": "a", "label": "记录维数"}, {"id": "b", "label": "保存结果"}],
+                "edges": [{
+                    "from": "a",
+                    "to": "b",
+                    "citation": {"quote": "先记录再保存", "sessionId": session_id, "startMs": 30000, "endMs": 60000},
+                }],
+            },
+        }
+
+    provider = SimpleNamespace(id="stub", model="flowchart-test", generate=reply)
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[{"startMs": 30000, "endMs": 60000, "text": archive_text}],
+        label="parallel",
+    )
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    summary = response.json["summary"]
+    assert "- 记录维数\n- 保存结果" in summary["content"]
+    assert "flowchart" not in summary
 
 
 def test_generate_every_post_creates_a_new_summary_regeneration_deterministic_but_separate(start_app):
@@ -422,6 +600,35 @@ class _ScriptedProvider:
         return self.payload
 
 
+def test_generate_keeps_equal_range_utterances_but_only_cites_nonzero_ranges(start_app):
+    class Provider(_ScriptedProvider):
+        def generate(self, *, system, user):
+            self.user = user
+            return {
+                "content": "两种计算方式。",
+                "citations": [{"recordId": "R1"}, {"recordId": "R2"}, {"recordId": "R3"}],
+            }
+
+    provider = Provider("range")
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(app, token, label="range", records=[
+        {"startMs": 0, "endMs": 0, "text": "题目"},
+        {"startMs": 1000, "endMs": 3000, "text": "直接计算"},
+        {"startMs": 1000, "endMs": 3000, "text": "先做缩放"},
+    ])
+
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert [citation["quote"] for citation in response.json["summary"]["citations"]] == [
+        "直接计算", "先做缩放",
+    ]
+    session_id = archived["session"]["id"]
+    assert f"[{session_id} 0–0] 题目" in provider.user
+    assert f"[{session_id} 1000–3000] 直接计算" in provider.user
+    assert f"[{session_id} 1000–3000] 先做缩放" in provider.user
+
+
 def test_citation_reconciliation_refs_that_do_not_resolve_are_dropped_before_landing(start_app):
     provider = _ScriptedProvider("messy")
     app, a, _b = start_summary_app(start_app, provider)
@@ -570,3 +777,135 @@ def test_generate_merges_overlapping_sessions_into_one_transcript(start_app):
     # The two sessions' identical gap folds to a single marker line.
     gap_lines = [line for line in user.split("\n") if "已跳过，该范围未取得文本" in line]
     assert len(gap_lines) == 1, gap_lines
+
+
+def test_generate_keeps_same_time_material_and_gaps_from_distinct_sources(start_app):
+    provider = CapturingProvider()
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    first = favorite_and_archive(
+        app,
+        token,
+        records=[{"startMs": 0, "endMs": 30000, "text": "第一集介绍点积"}],
+        gaps=[{"startMs": 30000, "endMs": 60000}],
+        label="part-one",
+    )
+    second = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 0, "endMs": 30000, "text": "第二集回顾课程背景"},
+            {"startMs": 30000, "endMs": 60000, "text": "第二集补充缩放系数与例外"},
+        ],
+        label="part-two",
+        url="https://www.bilibili.com/video/BV1ab411L78c?p=3",
+    )
+    resource_id = first["resource"]["id"]
+    # The favorite endpoint creates one Source at a time. Seed the
+    # supported persisted shape of a Resource with multiple Sources.
+    for collection, entity in (("sources", second["source"]), ("sessions", second["session"])):
+        existing = app.store.get(collection, entity["id"])
+        app.store.set(collection, entity["id"], {**existing, "resourceId": resource_id})
+
+    response = generate(app, token, resource_id)
+    assert response.status == 201, response.json
+    assert {citation["quote"] for citation in response.json["summary"]["citations"]} == {
+        "第一集介绍点积",
+        "第二集补充缩放系数与例外",
+    }
+    user = provider.captured[0]["user"]
+    assert "第二集回顾课程背景" in user
+    assert f"[{first['session']['id']} 30000–60000] 已跳过，该范围未取得文本" in user
+    for archived in (first, second):
+        assert f"[来源 {archived['source']['id']}]" in user
+
+
+def test_generate_prefers_organized_transcript_and_cites_exact_sentence(start_app):
+    provider = _ScriptedProvider("organized")
+    provider.organize_transcript = lambda **_: {
+        "paragraphs": [[
+            "大家好。", "现在，如果维数增大，就缩放点积。", "另一种情况不需要。", "也要核对维数。",
+        ]],
+    }
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(
+        app,
+        token,
+        records=[
+            {"startMs": 0, "endMs": 30000, "text": "大家好现在如果维数增大"},
+            {"startMs": 30000, "endMs": 60000, "text": "就缩放点积另一种情况不需要也要核对维数"},
+        ],
+        label="organized",
+    )
+    session_id = archived["session"]["id"]
+    calls = []
+
+    def summarize(*, system, user):
+        calls.append(user)
+        return {
+            "content": "## 缩放点积\n\n### 适用条件\n\n维数增大时缩放点积。",
+            "citations": [
+                {"quote": "如果维数增大，就缩放点积。", "sessionId": session_id, "startMs": 0, "endMs": 60000},
+                {"quote": "也要核对维数。", "sessionId": session_id, "startMs": 30000, "endMs": 60000},
+                {"quote": "编造的原话。", "sessionId": session_id, "startMs": 0, "endMs": 60000},
+            ],
+        }
+
+    provider.generate = summarize
+    response = generate(app, token, archived["resource"]["id"])
+    assert response.status == 201, response.json
+    assert len(calls) == 1
+    assert "大家好现在如果维数增大" not in calls[0]
+    assert f"[{session_id} 0–60000] 现在，如果维数增大，就缩放点积。" in calls[0]
+    assert response.json["summary"]["citations"] == [
+        {
+            "quote": "如果维数增大，就缩放点积。",
+            "segmentRef": {"sessionId": session_id, "startMs": 0, "endMs": 60000},
+        },
+        {
+            "quote": "也要核对维数。",
+            "segmentRef": {"sessionId": session_id, "startMs": 30000, "endMs": 60000},
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected_status", "expected_outcome"),
+    [('{"content":"## 缩放点积"}', 201, "ready"), ("invalid", 502, "failed")],
+)
+def test_generate_records_reported_tokens_and_one_attempt(
+    start_app, caplog, reply, expected_status, expected_outcome
+):
+    requests = []
+
+    def complete(request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": reply}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        })
+
+    provider = create_qwen_provider(api_key="fixture-key", transport=httpx.MockTransport(complete))
+    app, account, _ = start_summary_app(start_app, provider)
+    token = account["token"]
+    archived = favorite_and_archive(app, token, records=RECORDS, finish=False, label="metrics")
+
+    with caplog.at_level("INFO", logger="app.summaries"):
+        response = generate(app, token, archived["resource"]["id"])
+    assert response.status == expected_status, response.json
+    assert len(requests) == 1
+    assert len(caplog.records) == 1
+    metrics = dict(caplog.records[0].args)
+    assert metrics.pop("latencyMs") >= 0
+    assert metrics == {
+        "provider": "qwen",
+        "model": provider.model,
+        "status": expected_outcome,
+        "promptVersion": "relationship",
+        "inputTokens": 12,
+        "outputTokens": 3,
+        "callCount": 1,
+        "retryCount": 0,
+    }
+    assert RECORDS[0]["text"] not in caplog.text

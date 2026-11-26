@@ -279,20 +279,30 @@ export function presentTranscript(view, sources) {
   const entries = [
     ...(view.records || []).map((record) => ({
       kind: "record",
+      sourceId: record.sourceId ?? view.sourceId,
       startMs: record.startMs,
       endMs: record.endMs,
       stamp: formatPosition(record.startMs),
       text: record.text,
-      detail: null,
+      detail: record.detail ?? null,
       origin: record.origin === undefined ? null : record.origin,
       sessionId: record.sessionId === undefined ? null : record.sessionId,
       jumpUrl: buildNoteJumpUrl(
-        { sourceId: view.sourceId, positionMs: record.startMs },
+        { sourceId: record.sourceId ?? view.sourceId, positionMs: record.startMs },
         sources,
       ),
+      ...(record.sentences && { sentences: record.sentences.map((sentence) => ({
+        text: sentence.text,
+        stamp: formatPosition(sentence.startMs),
+        jumpUrl: buildNoteJumpUrl(
+          { sourceId: record.sourceId ?? view.sourceId, positionMs: sentence.startMs },
+          sources,
+        ),
+      })) }),
     })),
     ...(view.gaps || []).map((gap) => ({
       kind: "gap",
+      sourceId: gap.sourceId ?? view.sourceId,
       startMs: gap.startMs,
       endMs: gap.endMs,
       stamp: formatRange(gap.startMs, gap.endMs),
@@ -302,6 +312,7 @@ export function presentTranscript(view, sources) {
     })),
     ...(view.pending || []).map((segment) => ({
       kind: "pending",
+      sourceId: segment.sourceId ?? view.sourceId,
       startMs: segment.startMs,
       endMs: segment.endMs,
       stamp: formatRange(segment.startMs, segment.endMs),
@@ -311,6 +322,7 @@ export function presentTranscript(view, sources) {
     })),
     ...(view.failed || []).map((segment) => ({
       kind: "failed",
+      sourceId: segment.sourceId ?? view.sourceId,
       startMs: segment.startMs,
       endMs: segment.endMs,
       stamp: formatRange(segment.startMs, segment.endMs),
@@ -319,9 +331,11 @@ export function presentTranscript(view, sources) {
       jumpUrl: null,
     })),
   ];
+  const order = new Map((sources || []).map((source, index) => [source.id, index]));
   return entries.sort(
     (a, b) =>
-      a.startMs - b.startMs || TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind],
+      (order.get(a.sourceId) ?? order.size) - (order.get(b.sourceId) ?? order.size) ||
+      String(a.sourceId).localeCompare(String(b.sourceId)) || a.startMs - b.startMs || TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind],
   );
 }
 
@@ -363,23 +377,23 @@ export function mergeTranscriptViews(viewsIn) {
   const failed = [];
   const pending = [];
   for (const view of views) {
-    const origin = view.origin === undefined ? null : view.origin;
+    const { sourceId, sessionId, origin = null } = view;
     for (const record of view.records || []) {
-      records.push({ ...record, origin, sessionId: view.sessionId });
+      records.push({ ...record, origin, sourceId, sessionId });
     }
     for (const segment of view.failed || []) {
-      failed.push({ ...segment, sessionId: view.sessionId });
+      failed.push({ ...segment, sourceId, sessionId });
     }
     for (const segment of view.pending || []) {
-      pending.push({ ...segment, sessionId: view.sessionId });
+      pending.push({ ...segment, sourceId, sessionId });
     }
   }
-  records.sort(
-    (a, b) =>
-      a.startMs - b.startMs ||
-      a.endMs - b.endMs ||
-      String(a.sessionId).localeCompare(String(b.sessionId)),
-  );
+  function compareRanges(a, b) {
+    return String(a.sourceId).localeCompare(String(b.sourceId)) ||
+      a.startMs - b.startMs || a.endMs - b.endMs ||
+      String(a.sessionId).localeCompare(String(b.sessionId));
+  }
+  records.sort(compareRanges);
 
   // Deterministic winner for a cluster: longest text; tie → captions over
   // asr (authored beats machine); tie → lexicographically smaller
@@ -402,7 +416,7 @@ export function mergeTranscriptViews(viewsIn) {
   function nearDuplicate(a, b) {
     const overlap = Math.min(a.endMs, b.endMs) - Math.max(a.startMs, b.startMs);
     const shorter = Math.min(a.endMs - a.startMs, b.endMs - b.startMs);
-    return shorter > 0 && overlap * 5 >= shorter * 4;
+    return a.sourceId === b.sourceId && a.sessionId !== b.sessionId && shorter > 0 && overlap * 5 >= shorter * 4;
   }
 
   const keptRecords = [];
@@ -424,48 +438,65 @@ export function mergeTranscriptViews(viewsIn) {
   const gaps = [];
   for (const view of views) {
     for (const gap of view.gaps || []) {
-      gaps.push({ ...gap, sessionId: view.sessionId });
+      gaps.push({ ...gap, sourceId: view.sourceId, sessionId: view.sessionId });
     }
   }
-  gaps.sort(
-    (a, b) =>
-      a.startMs - b.startMs ||
-      a.endMs - b.endMs ||
-      String(a.sessionId).localeCompare(String(b.sessionId)),
-  );
+  gaps.sort(compareRanges);
   const foldedGaps = [];
   for (const gap of gaps) {
     const last = foldedGaps[foldedGaps.length - 1];
-    if (last && gap.startMs < last.endMs) {
+    if (last && last.sourceId === gap.sourceId && gap.startMs < last.endMs) {
       if (gap.endMs > last.endMs) last.endMs = gap.endMs;
     } else {
       foldedGaps.push({ ...gap });
     }
   }
   const keptGaps = foldedGaps.filter(
-    (gap) => !keptRecords.some((r) => r.startMs < gap.endMs && gap.startMs < r.endMs),
+    (gap) => !keptRecords.some((r) => r.sourceId === gap.sourceId && r.startMs < gap.endMs && gap.startMs < r.endMs),
   );
 
   // Failed rows: same range dedup, smallest (startMs, endMs, sessionId) kept.
-  failed.sort(
-    (a, b) =>
-      a.startMs - b.startMs ||
-      a.endMs - b.endMs ||
-      String(a.sessionId).localeCompare(String(b.sessionId)),
-  );
+  failed.sort(compareRanges);
   const keptFailed = [];
   for (const segment of failed) {
     const last = keptFailed[keptFailed.length - 1];
-    if (last && segment.startMs < last.endMs && last.startMs < segment.endMs) {
+    if (last && last.sourceId === segment.sourceId && segment.startMs < last.endMs && last.startMs < segment.endMs) {
       continue;
     }
     keptFailed.push(segment);
   }
 
+  const recordsBySession = new Map();
+  for (const record of keptRecords) {
+    if (!recordsBySession.has(record.sessionId)) recordsBySession.set(record.sessionId, []);
+    recordsBySession.get(record.sessionId).push(record);
+  }
+  const ready = new Map();
+  for (const view of views) {
+    const survivors = recordsBySession.get(view.sessionId);
+    const paragraphs = ["ready", "partial"].includes(view.organized?.status) && view.organized.paragraphs;
+    // A sentence can consume multiple records, including one trimmed by deduplication.
+    if (!paragraphs?.length || !survivors || survivors.length !== view.records.length) continue;
+    ready.set(view.sessionId, paragraphs.map(({ sentences, status }) => ({
+      sessionId: view.sessionId,
+      sourceId: view.sourceId,
+      origin: view.origin,
+      startMs: sentences[0].startMs,
+      endMs: Math.max(...sentences.map((sentence) => sentence.endMs)),
+      sentences,
+      detail: status === "raw" ? "此段显示原始转写" : null,
+    })));
+  }
+  const displayRecords = keptRecords.flatMap((record) => {
+    const paragraphs = ready.get(record.sessionId);
+    if (!paragraphs) return [record];
+    return recordsBySession.get(record.sessionId)[0] === record ? paragraphs : [];
+  });
+
   return {
     sourceId,
     sessionStatus,
-    records: keptRecords,
+    records: displayRecords,
     gaps: keptGaps,
     pending,
     failed: keptFailed,
@@ -545,26 +576,44 @@ export function presentSummary(summary, sessions, sources) {
     return null;
   }
   const sessionById = new Map((sessions || []).map((session) => [session.id, session]));
+  const presentCitation = ({ quote, segmentRef }) => {
+    const session = sessionById.get(segmentRef?.sessionId);
+    return {
+      quote,
+      stamp: formatRange(segmentRef?.startMs, segmentRef?.endMs),
+      jumpUrl: buildNoteJumpUrl(
+        { sourceId: session?.sourceId, positionMs: segmentRef?.startMs },
+        sources,
+      ),
+      sessionStartedAtText: session ? formatDateTime(session.startedAt) : null,
+      sessionOriginLabel: session ? sessionOriginLabel(session.origin) : null,
+    };
+  };
+  const flowchart = summary.flowchart;
+  const groups = new Map();
+  if (Array.isArray(flowchart?.nodes) && Array.isArray(flowchart?.edges)) {
+    const labels = new Map(flowchart.nodes.map((node) => [node.id, node.label]));
+    for (const edge of flowchart.edges) {
+      if (!labels.has(edge.from) || !labels.has(edge.to) || !edge.citation) {
+        continue;
+      }
+      if (!groups.has(edge.from)) {
+        groups.set(edge.from, { id: edge.from, label: labels.get(edge.from), branches: [] });
+      }
+      groups.get(edge.from).branches.push({
+        step: labels.get(edge.to),
+        condition: edge.label,
+        ...presentCitation(edge.citation),
+      });
+    }
+  }
   return {
     id: summary.id,
     blocks: renderMarkdown(summary.content),
     generatedAtText: formatDateTime(summary.generatedAt),
-    citations: (summary.citations || []).map((citation) => {
-      const session = sessionById.get(citation.segmentRef && citation.segmentRef.sessionId);
-      const startMs = citation.segmentRef && citation.segmentRef.startMs;
-      const endMs = citation.segmentRef && citation.segmentRef.endMs;
-      return {
-        quote: citation.quote,
-        stamp: formatRange(startMs, endMs),
-        jumpUrl: buildNoteJumpUrl(
-          { sourceId: session ? session.sourceId : null, positionMs: startMs },
-          sources,
-        ),
-        sessionStartedAtText: session ? formatDateTime(session.startedAt) : null,
-        sessionOriginLabel: session ? sessionOriginLabel(session.origin) : null,
-      };
-    }),
+    citations: (summary.citations || []).map(presentCitation),
     citationCount: (summary.citations || []).length,
+    flowchart: groups.size ? { title: flowchart.title, groups: [...groups.values()] } : null,
   };
 }
 
@@ -883,6 +932,23 @@ export function createLibraryFlow({ api, identity, deleteConfirmMs = DELETE_CONF
     return { ok: true };
   }
 
+  function pendingTranscriptIds() {
+    return Object.entries(detail?.transcripts || {})
+      .filter(([, transcript]) => transcript?.sessionStatus === "finished" &&
+        (transcript.organized?.status === "processing" || transcript.pending?.length > 0))
+      .map(([sessionId]) => sessionId);
+  }
+
+  async function refreshPendingTranscripts() {
+    const opened = detail;
+    await Promise.all(pendingTranscriptIds().map(async (sessionId) => {
+      const result = await api.getSessionTranscript(sessionId);
+      if (detail === opened && result.ok) {
+        opened.transcripts[sessionId] = result.data;
+      }
+    }));
+  }
+
   function backToList() {
     disarmDelete();
     view = "list";
@@ -982,5 +1048,8 @@ export function createLibraryFlow({ api, identity, deleteConfirmMs = DELETE_CONF
     return { ok: true };
   }
 
-  return { getState, load, collect, openDetail, backToList, retitle, deleteClick, disarmDelete, generateSummary, showSummary, reset };
+  return {
+    getState, load, collect, openDetail, backToList, retitle, deleteClick, disarmDelete,
+    generateSummary, showSummary, pendingTranscriptIds, refreshPendingTranscripts, reset,
+  };
 }

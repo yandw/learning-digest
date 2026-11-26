@@ -124,8 +124,10 @@ describe("React learning library", () => {
 
     expect(await screen.findByRole("link", { name: "注意力机制详解" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "收藏资料" }));
-    await user.type(await screen.findByLabelText("网页链接"), "https://example.com/course");
-    await user.type(screen.getByLabelText("标题（可选）"), "新课程");
+    await user.click(await screen.findByLabelText("网页链接"));
+    await user.paste("https://example.com/course");
+    await user.click(screen.getByLabelText("标题（可选）"));
+    await user.paste("新课程");
     await user.click(screen.getByRole("button", { name: "收藏", }));
 
     await waitFor(() => expect(runtime.calls.create).toHaveLength(1));

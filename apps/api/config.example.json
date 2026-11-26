@@ -6,6 +6,7 @@
   "aiModel": "qwen3.8-flash",
   "aiBaseUrl": "",
   "aiTimeoutMs": 120000,
+  "courseSummaryPrompt": "relationship",
   "stateFile": "data/state.json",
   "inviteSeed": "data/invites.seed.json",
   "outboxFile": "data/outbox.jsonl",

@@ -112,6 +112,7 @@ Every field follows the same precedence: **environment variable > config file > 
 | `aiModel` | `qwen3.8-flash` | model override |
 | `aiBaseUrl` | Bailian compatible-mode | endpoint override |
 | `aiTimeoutMs` | `120000` | per-generation fetch timeout |
+| `courseSummaryPrompt` | `relationship` | Default to chapter relationship diagrams. Set `detailed` to use the detailed prompt, then restart the API. [Comparison samples](docs/evidence/course-summary-variants/) |
 | `stateFile` | `data/state.json` | embedded store override (relative paths resolve against the API's start directory) |
 | `inviteSeed` | `data/invites.seed.json` | invited-email seed override |
 | `outboxFile` | `data/outbox.jsonl` | dev-mailer outbox override (verification codes) |
@@ -160,6 +161,7 @@ These are the same settings as the config files above with their variable names.
 | `LD_AI_MODEL` | `qwen3.8-flash` | model override |
 | `LD_AI_BASE_URL` | Bailian compatible-mode | endpoint override |
 | `LD_AI_TIMEOUT_MS` | `120000` | per-generation fetch timeout |
+| `LD_COURSE_SUMMARY_PROMPT` | `relationship` | Overrides the configured summary prompt variant. Also accepts `detailed`. |
 
 ### apps/worker (`worker/main.py`)
 

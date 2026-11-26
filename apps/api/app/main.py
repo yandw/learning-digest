@@ -20,6 +20,7 @@ Environment (same names and meanings as the Node server.js):
   LD_AI_MODEL           model override
   LD_AI_BASE_URL        endpoint override
   LD_AI_TIMEOUT_MS      per-generation timeout (default 120000)
+  LD_COURSE_SUMMARY_PROMPT  relationship or detailed (default relationship)
 
 The real email service account is undecided (decision 3 note): until it
 exists, codes are delivered by the dev mailer to the outbox file and
@@ -29,6 +30,7 @@ create_app — no route or storage changes.
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import sys
@@ -75,11 +77,14 @@ def build_app(env: dict, config_file: str | None = None):
             "ai_model": cfg["aiModel"],
             "ai_base_url": cfg["aiBaseUrl"],
             "ai_timeout_ms": cfg["aiTimeoutMs"],
+            "course_summary_prompt": cfg["courseSummaryPrompt"],
         },
     )
 
 
 def main(env: dict | None = None) -> None:
+    logging.basicConfig()
+    logging.getLogger("app").setLevel(logging.INFO)
     env = dict(os.environ if env is None else env)
     app = build_app(env, config_file=DEFAULT_CONFIG_FILE)
     port = _parse_int(env.get("PORT"), 8787)

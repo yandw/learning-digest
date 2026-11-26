@@ -112,7 +112,7 @@ cd apps/worker && cp config.example.json config.json
 | `aiModel` | `qwen3.8-flash` | 模型覆盖 |
 | `aiBaseUrl` | 百炼 compatible-mode | 端点覆盖 |
 | `aiTimeoutMs` | `120000` | 单次生成 fetch 超时 |
-| `courseSummaryPrompt` | `detailed` | 课程总结提示词版本，`relationship` 启用章内关系图版，修改后重启 API。[同源对照样稿](docs/evidence/course-summary-variants/) |
+| `courseSummaryPrompt` | `relationship` | 默认使用章内关系图版，设为 `detailed` 可切换详细总结版，修改后重启 API。[同源对照样稿](docs/evidence/course-summary-variants/) |
 | `stateFile` | `data/state.json` | 内嵌存储覆盖（相对路径相对 API 进程启动目录解析） |
 | `inviteSeed` | `data/invites.seed.json` | 受邀邮箱 seed 覆盖 |
 | `outboxFile` | `data/outbox.jsonl` | dev mailer outbox 覆盖（验证码） |
@@ -161,7 +161,7 @@ cd apps/worker && cp config.example.json config.json
 | `LD_AI_MODEL` | `qwen3.8-flash` | 模型覆盖 |
 | `LD_AI_BASE_URL` | 百炼 compatible-mode | 端点覆盖 |
 | `LD_AI_TIMEOUT_MS` | `120000` | 单次生成 fetch 超时 |
-| `LD_COURSE_SUMMARY_PROMPT` | `detailed` | 覆盖配置文件的课程总结提示词版本，可设为 `relationship` |
+| `LD_COURSE_SUMMARY_PROMPT` | `relationship` | 覆盖配置文件的课程总结提示词版本，可设为 `detailed` |
 
 ### apps/worker（`worker/main.py`）
 

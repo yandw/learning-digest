@@ -20,7 +20,7 @@ Environment (same names and meanings as the Node server.js):
   LD_AI_MODEL           model override
   LD_AI_BASE_URL        endpoint override
   LD_AI_TIMEOUT_MS      per-generation timeout (default 120000)
-  LD_COURSE_SUMMARY_PROMPT  detailed or relationship (default detailed)
+  LD_COURSE_SUMMARY_PROMPT  relationship or detailed (default relationship)
 
 The real email service account is undecided (decision 3 note): until it
 exists, codes are delivered by the dev mailer to the outbox file and

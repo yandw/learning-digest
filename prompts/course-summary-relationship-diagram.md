@@ -1,6 +1,6 @@
 # Course Summary Prompt · Chapter Relationship Diagram
 
-Candidate template for comparison. The default template remains course-summary.md.
+Default course summary template. Set the API prompt version to detailed to use course-summary.md.
 
 Based on the API's AI Provider seam (contract-r3.md §3.1, decisions D16/D17):
 one generation pass over ALL archived material of a Resource — every

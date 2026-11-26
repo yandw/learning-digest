@@ -67,7 +67,7 @@ class Config:
     ai_model: str = ""
     ai_base_url: str = ""
     ai_timeout_ms: int = 120_000
-    course_summary_prompt: str = "detailed"
+    course_summary_prompt: str = "relationship"
 
     def __post_init__(self) -> None:
         if not isinstance(self.course_summary_prompt, str) or self.course_summary_prompt not in COURSE_SUMMARY_PROMPT_FILES:

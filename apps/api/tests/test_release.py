@@ -55,7 +55,7 @@ def test_pyproject_is_the_api_unit_release_metadata():
     # recording. 0.1.6 (round-3 review fixes): per-generate timeout signal
     # + course-summary prompt notes-marker. The contract generation (/v1)
     # is unchanged.
-    assert pyproject["project"]["version"] == "0.2.17"
+    assert pyproject["project"]["version"] == "0.2.18"
     assert pyproject["project"]["requires-python"] == ">=3.12"
 
 

@@ -902,7 +902,7 @@ def test_generate_records_reported_tokens_and_one_attempt(
         "provider": "qwen",
         "model": provider.model,
         "status": expected_outcome,
-        "promptVersion": "detailed",
+        "promptVersion": "relationship",
         "inputTokens": 12,
         "outputTokens": 3,
         "callCount": 1,

@@ -33,7 +33,7 @@ def test_load_config_defaults_match_the_entrypoint_tables():
     assert config["aiModel"] == ""
     assert config["aiBaseUrl"] == ""
     assert config["aiTimeoutMs"] == 120000
-    assert config["courseSummaryPrompt"] == "detailed"
+    assert config["courseSummaryPrompt"] == "relationship"
     # The data-path defaults are the pre-5.8 entrypoint defaults: files
     # next to the API package (data/state.json, invites seed, outbox) and
     # the system temp audio directory.

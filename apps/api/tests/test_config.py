@@ -33,6 +33,7 @@ def test_load_config_defaults_match_the_entrypoint_tables():
     assert config["aiModel"] == ""
     assert config["aiBaseUrl"] == ""
     assert config["aiTimeoutMs"] == 120000
+    assert config["courseSummaryPrompt"] == "detailed"
     # The data-path defaults are the pre-5.8 entrypoint defaults: files
     # next to the API package (data/state.json, invites seed, outbox) and
     # the system temp audio directory.
@@ -58,6 +59,7 @@ def test_config_file_values_form_the_base_layer(tmp_path):
             "aiModel": "qwen3.8-flash",
             "aiBaseUrl": "https://file.example.com/v1",
             "aiTimeoutMs": 90000,
+            "courseSummaryPrompt": "relationship",
             "stateFile": str(tmp_path / "state.json"),
             "inviteSeed": str(tmp_path / "seed.json"),
             "outboxFile": str(tmp_path / "outbox.jsonl"),
@@ -71,6 +73,7 @@ def test_config_file_values_form_the_base_layer(tmp_path):
     assert config["aiModel"] == "qwen3.8-flash"
     assert config["aiBaseUrl"] == "https://file.example.com/v1"
     assert config["aiTimeoutMs"] == 90000
+    assert config["courseSummaryPrompt"] == "relationship"
     assert config["stateFile"] == str(tmp_path / "state.json")
     assert config["inviteSeed"] == str(tmp_path / "seed.json")
     assert config["outboxFile"] == str(tmp_path / "outbox.jsonl")
@@ -87,6 +90,7 @@ def test_env_overrides_the_config_file(tmp_path):
             "aiProvider": "qwen",
             "aiApiKey": "sk-file",
             "aiTimeoutMs": 90000,
+            "courseSummaryPrompt": "relationship",
             "stateFile": str(tmp_path / "file-state.json"),
         },
     )
@@ -96,6 +100,7 @@ def test_env_overrides_the_config_file(tmp_path):
             "LD_AI_PROVIDER": "local-qwen",
             "LD_AI_API_KEY": "sk-env",
             "LD_AI_TIMEOUT_MS": "60000",
+            "LD_COURSE_SUMMARY_PROMPT": "detailed",
             "LD_API_STATE_FILE": str(tmp_path / "env-state.json"),
         },
         config_file=path,
@@ -104,6 +109,7 @@ def test_env_overrides_the_config_file(tmp_path):
     assert config["aiProvider"] == "local-qwen"
     assert config["aiApiKey"] == "sk-env"
     assert config["aiTimeoutMs"] == 60000
+    assert config["courseSummaryPrompt"] == "detailed"
     assert config["stateFile"] == str(tmp_path / "env-state.json")
     assert config["aiModel"] == ""
 
@@ -144,6 +150,7 @@ def test_build_app_wires_config_file_values_into_the_context(tmp_path):
             "workerToken": "file-worker-secret",
             "aiApiKey": "sk-file",
             "aiTimeoutMs": 90000,
+            "courseSummaryPrompt": "relationship",
             "stateFile": str(tmp_path / "state.json"),
             "inviteSeed": str(tmp_path / "seed.json"),
             "outboxFile": str(tmp_path / "outbox.jsonl"),
@@ -155,6 +162,7 @@ def test_build_app_wires_config_file_values_into_the_context(tmp_path):
     assert ctx.config.worker_token == "file-worker-secret"
     assert ctx.config.ai_api_key == "sk-file"
     assert ctx.config.ai_timeout_ms == 90000
+    assert ctx.config.course_summary_prompt == "relationship"
     assert ctx.config.audio_dir == str(tmp_path / "audio")
     assert ctx.store.file == str(tmp_path / "state.json")
     assert ctx.seed_file == str(tmp_path / "seed.json")
@@ -176,3 +184,14 @@ def test_build_app_without_a_config_file_keeps_the_env_only_behavior(tmp_path):
     assert ctx.config.worker_token == "env-worker-secret"
     assert ctx.store.file == str(tmp_path / "state.json")
     assert ctx.seed_file == str(tmp_path / "seed.json")
+
+def test_build_app_rejects_unknown_course_summary_prompt(tmp_path):
+    from app.main import build_app
+
+    path = write_config_file(tmp_path, {
+        "stateFile": str(tmp_path / "state.json"),
+        "outboxFile": str(tmp_path / "outbox.jsonl"),
+        "courseSummaryPrompt": "unknown",
+    })
+    with pytest.raises(ValueError, match="courseSummaryPrompt"):
+        build_app({}, config_file=path)

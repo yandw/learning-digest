@@ -229,6 +229,25 @@ def test_generate_uses_one_global_prompt_for_theme_based_review(start_app):
     assert "只在键向量维数较大时显著影响分布" in user
 
 
+def test_configured_prompt_is_used_for_generation_without_changing_other_app_instances(start_app):
+    for version in ("relationship", "detailed"):
+        provider = CapturingProvider()
+        app = start_app(
+            seed_emails=[EMAIL_A],
+            ai_provider=provider,
+            config={"course_summary_prompt": version},
+        )
+        token = open_account_with_id(app, EMAIL_A)["token"]
+        archived = favorite_and_archive(app, token, records=RECORDS, label=version)
+
+        response = generate(app, token, archived["resource"]["id"])
+
+        assert response.status == 201, response.json
+        call, = provider.captured
+        assert ("relation 从" in call["system"]) == (version == "relationship")
+        assert RECORDS[0]["text"] in call["user"]
+
+
 def test_generate_keeps_only_flowchart_connections_with_verbatim_sources(start_app):
     calls = []
     evidence = "如果维数大，就缩放点积，否则直接使用点积。"
@@ -883,6 +902,7 @@ def test_generate_records_reported_tokens_and_one_attempt(
         "provider": "qwen",
         "model": provider.model,
         "status": expected_outcome,
+        "promptVersion": "detailed",
         "inputTokens": 12,
         "outputTokens": 3,
         "callCount": 1,

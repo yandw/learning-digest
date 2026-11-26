@@ -4,7 +4,7 @@ server.js. Later round-4 tickets extend this dataclass as domains land.
 
 Ticket 5.8 (#97) adds the config-file layer: apps/api/config.json (when it
 exists) holds base values keyed by the camelCase names (workerToken,
-aiProvider, aiApiKey, aiModel, aiBaseUrl, aiTimeoutMs, stateFile,
+aiProvider, aiApiKey, aiModel, aiBaseUrl, aiTimeoutMs, courseSummaryPrompt, stateFile,
 inviteSeed, outboxFile, audioDir — PORT stays script-managed), environment
 variables override it, the built-in defaults fill the rest. A missing file
 is the pre-5.8 behavior; invalid JSON fails at startup with the file path.
@@ -30,6 +30,12 @@ PATH_DEFAULTS: dict[str, str] = {
     "stateFile": os.path.join(API_DIR, "data", "state.json"),
     "inviteSeed": os.path.join(API_DIR, "data", "invites.seed.json"),
     "outboxFile": os.path.join(API_DIR, "data", "outbox.jsonl"),
+}
+
+
+COURSE_SUMMARY_PROMPT_FILES = {
+    "detailed": "course-summary.md",
+    "relationship": "course-summary-relationship-diagram.md",
 }
 
 
@@ -61,6 +67,11 @@ class Config:
     ai_model: str = ""
     ai_base_url: str = ""
     ai_timeout_ms: int = 120_000
+    course_summary_prompt: str = "detailed"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.course_summary_prompt, str) or self.course_summary_prompt not in COURSE_SUMMARY_PROMPT_FILES:
+            raise ValueError("courseSummaryPrompt (LD_COURSE_SUMMARY_PROMPT) must be detailed or relationship")
 
 
 DEFAULT_CONFIG = Config()
@@ -147,6 +158,10 @@ def load_config(env: dict[str, str] | None = None, config_file: str | None = Non
             env,
             "LD_AI_TIMEOUT_MS",
             file_int(file_values.get("aiTimeoutMs"), DEFAULT_CONFIG.ai_timeout_ms),
+        ),
+        "courseSummaryPrompt": env_string(
+            env, "LD_COURSE_SUMMARY_PROMPT",
+            file_string(file_values.get("courseSummaryPrompt")) or DEFAULT_CONFIG.course_summary_prompt,
         ),
         "stateFile": env_string(env, "LD_API_STATE_FILE", file_string(file_values.get("stateFile")) or PATH_DEFAULTS["stateFile"]),
         "inviteSeed": env_string(env, "LD_API_INVITE_SEED", file_string(file_values.get("inviteSeed")) or PATH_DEFAULTS["inviteSeed"]),

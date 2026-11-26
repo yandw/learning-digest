@@ -33,11 +33,13 @@ from __future__ import annotations
 
 import logging
 import re
+from functools import cache
 from itertools import groupby
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable
 
+from .config import COURSE_SUMMARY_PROMPT_FILES
 from .errors import ApiError, not_found_resource
 from .ids import generate_id
 from .jsnum import is_js_integer
@@ -48,15 +50,13 @@ from .transcripts import load_state, sorted_records
 from .usage import record_summary_generation
 
 # D17: the prompt template is the contract record at the repo root.
-PROMPT_FILE = Path(__file__).resolve().parents[3] / "prompts" / "course-summary.md"
+PROMPT_DIR = Path(__file__).resolve().parents[3] / "prompts"
 
 GAP_MARKER = "已跳过，该范围未取得文本"
 GAP_MARKERS = {"skipped": GAP_MARKER, "failed": "转写失败，该范围未取得文本"}
 NOTHING_MARKER = "（无）"
 
 logger = logging.getLogger(__name__)
-
-_cached_template: dict | None = None
 
 
 def extract_fenced_block(markdown: str, heading: str) -> str:
@@ -72,16 +72,14 @@ def extract_fenced_block(markdown: str, heading: str) -> str:
     return markdown[content_start:closing].rstrip("\n")
 
 
-def load_course_summary_template() -> dict:
-    """Load (and cache) the { system, user } template from the contract file."""
-    global _cached_template
-    if _cached_template is None:
-        markdown = PROMPT_FILE.read_text(encoding="utf-8")
-        _cached_template = {
-            "system": extract_fenced_block(markdown, "## System prompt"),
-            "user": extract_fenced_block(markdown, "## User prompt"),
-        }
-    return _cached_template
+@cache
+def load_course_summary_template(version: str) -> dict:
+    """Cache each configured template independently."""
+    markdown = (PROMPT_DIR / COURSE_SUMMARY_PROMPT_FILES[version]).read_text(encoding="utf-8")
+    return {
+        "system": extract_fenced_block(markdown, "## System prompt"),
+        "user": extract_fenced_block(markdown, "## User prompt"),
+    }
 
 
 def count_code_points(text: str) -> int:
@@ -314,7 +312,9 @@ def fill_template(template: str, values: dict) -> str:
     return TEMPLATE_VARIABLE.sub(replace, template)
 
 
-def build_generation_input(*, store: Any, account_id: str, resource: dict) -> dict:
+def build_generation_input(
+    *, store: Any, account_id: str, resource: dict, prompt_version: str
+) -> dict:
     """Assemble the generation input (D17). Returns { system, user,
     inputChars, records } — inputChars is the full submitted prompt
     (system + user, code points), the same number the usage report carries."""
@@ -332,7 +332,7 @@ def build_generation_input(*, store: Any, account_id: str, resource: dict) -> di
         for note in notes
     ]
 
-    template = load_course_summary_template()
+    template = load_course_summary_template(prompt_version)
     user = fill_template(
         template["user"],
         {
@@ -488,6 +488,7 @@ def generate_summary(
     resource_id: str,
     ai_provider: Any,
     now: Callable[[], int],
+    prompt_version: str,
 ) -> dict:
     """POST /v1/resources/{id}/summaries (contract §3.1): aggregate ->
     prompt -> provider -> reconcile -> land + count. Any provider failure
@@ -495,7 +496,9 @@ def generate_summary(
     written."""
     resource = require_account_resource(store=store, account_id=account_id, resource_id=resource_id)
 
-    generation_input = build_generation_input(store=store, account_id=account_id, resource=resource)
+    generation_input = build_generation_input(
+        store=store, account_id=account_id, resource=resource, prompt_version=prompt_version
+    )
     # 409 before any AI call: gaps/failed/silent-only archives have no text.
     if not generation_input["records"]:
         raise no_transcript_to_summarize()
@@ -519,6 +522,7 @@ def generate_summary(
             "provider": ai_provider.id,
             "model": ai_provider.model,
             "status": status,
+            "promptVersion": prompt_version,
             "latencyMs": round((perf_counter() - started) * 1000),
             "callCount": 1,
             "retryCount": 0,

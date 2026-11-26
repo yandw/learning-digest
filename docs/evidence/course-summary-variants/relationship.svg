@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="470" viewBox="0 0 960 470" role="img" aria-labelledby="title desc">
+<title id="title">模型公司建立护城河的三个条件</title>
+<desc id="desc">讲者提出，跳出价格战需要在三项条件中至少满足两项。各条件和组合门槛附有原文时间链接。</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0 L9 5 L0 10 Z" fill="#5273a0"/></marker></defs>
+<style>
+text{font-family:PingFang SC,Hiragino Sans GB,Noto Sans CJK SC,Microsoft YaHei,sans-serif;fill:#162d48;text-anchor:middle}
+.heading{font-size:30px;font-weight:700}.sub{font-size:15px;fill:#425672}.label{font-size:21px;font-weight:650}.detail{font-size:15px;fill:#425672}.time{font-size:14px;fill:#1e54a7;text-decoration:underline}.joint{font-size:22px;font-weight:700}
+</style>
+<rect width="960" height="470" rx="24" fill="#eef4fb"/>
+<text x="480" y="57" class="heading">模型公司建立护城河的三个条件</text>
+<text x="480" y="83" class="sub">讲者对如何跳出价格战提出的判断</text>
+
+<rect x="33" y="112" width="274" height="112" rx="14" fill="#fff" stroke="#b9cbdf"/>
+<text x="170" y="146" class="label">塔尖任务智能代差</text>
+<text x="170" y="175" class="detail">高难度任务产生溢价</text>
+<a href="https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820#ld-position-ms=1710000"><text x="170" y="204" class="time">28:30 原文</text></a>
+<path d="M170 224 V256 Q170 276 263.0 276 H480" fill="none" stroke="#5273a0" stroke-width="2"/>
+<rect x="343" y="112" width="274" height="112" rx="14" fill="#fff" stroke="#b9cbdf"/>
+<text x="480" y="146" class="label">捆绑工作流与记忆</text>
+<text x="480" y="175" class="detail">提高切换成本形成复利</text>
+<a href="https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820#ld-position-ms=1830000"><text x="480" y="204" class="time">30:30 原文</text></a>
+<path d="M480 224 V256 Q480 276 480.0 276 H480" fill="none" stroke="#5273a0" stroke-width="2"/>
+<rect x="653" y="112" width="274" height="112" rx="14" fill="#fff" stroke="#b9cbdf"/>
+<text x="790" y="146" class="label">极致低成本生产</text>
+<text x="790" y="175" class="detail">价格战中维持盈利</text>
+<a href="https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820#ld-position-ms=1950000"><text x="790" y="204" class="time">32:30 原文</text></a>
+<path d="M790 224 V256 Q790 276 697.0 276 H480" fill="none" stroke="#5273a0" stroke-width="2"/>
+<path d="M480 276 V300" fill="none" stroke="#5273a0" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="269" y="308" width="422" height="74" rx="14" fill="#dce9fc" stroke="#a9c0de"/>
+<text x="480" y="340" class="joint">三项中至少满足两项</text>
+<a href="https://www.xiaoyuzhoufm.com/episode/6afde79ea4a79edf137b6820#ld-position-ms=1650000"><text x="480" y="366" class="time">27:30 原文</text></a>
+<path d="M480 382 V404" fill="none" stroke="#5273a0" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="269" y="411" width="422" height="40" rx="10" fill="#fff" stroke="#b9cbdf"/>
+<text x="480" y="437" class="label">目标　跳出价格战，留住超额利润</text></svg>

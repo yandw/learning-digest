@@ -33,6 +33,7 @@ def register_summaries_routes(app, ctx: AppContext) -> None:
             account_id=credential["accountId"],
             resource_id=resource_id,
             ai_provider=ctx.ai_provider,
+            prompt_version=ctx.config.course_summary_prompt,
             now=ctx.now,
         )
         return JSONResponse(status_code=result["status"], content=result["body"])
